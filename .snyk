@@ -1,0 +1,31 @@
+# Snyk policy: documented accepted findings for croxy.
+# croxy is a loopback-only development proxy (binds 127.0.0.1, never exposed);
+# its clients are the developer's own tools on the same machine.
+version: v1.5.0
+ignore:
+  'javascript/HttpToHttps':
+    - '*':
+        reason: >-
+          croxy is a local loopback proxy bound to 127.0.0.1; Claude Code
+          requires a plain-HTTP local base URL. Traffic never leaves the
+          machine and both upstream legs (api.anthropic.com, chatgpt.com)
+          use TLS.
+        expires: 2027-07-21T00:00:00.000Z
+  'javascript/HttpToHttps/test':
+    - '*':
+        reason: Test fake upstreams listen on 127.0.0.1 only.
+        expires: 2027-07-21T00:00:00.000Z
+  'javascript/ServerLeak':
+    - '*':
+        reason: >-
+          Intentional proxy behavior: upstream error detail (status + bounded
+          error body) is relayed to the local client for debuggability, as is
+          retry-after on 429. Error messages are static strings; token
+          material is unrepresentable in this path.
+        expires: 2027-07-21T00:00:00.000Z
+  'javascript/Ssrf/test':
+    - '*':
+        reason: >-
+          Integration tests fetch URLs of fake upstream servers the tests
+          themselves started on 127.0.0.1; there is no untrusted input.
+        expires: 2027-07-21T00:00:00.000Z

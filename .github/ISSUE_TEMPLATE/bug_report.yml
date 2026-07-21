@@ -1,0 +1,63 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of croxy is affected?
+      options:
+        - Routing (which leg a request goes to)
+        - Anthropic passthrough
+        - Codex leg — auth / token refresh
+        - Codex leg — request translation
+        - Codex leg — response translation
+        - Reasoning round-trip / cache
+        - CLI (serve / doctor)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you see? Include any error messages or unexpected output. Do NOT paste tokens or auth.json contents.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start croxy with `npm run serve`
+        2. Give a subagent `model: gpt-5.5`
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant croxy logs
+      description: Single-line structured log lines around the failure (they never contain tokens or bodies).
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS / environment
+      description: e.g. macOS 15 arm64, Ubuntu 24.04 x86_64. Include Node version and Claude Code version.
+    validations:
+      required: true

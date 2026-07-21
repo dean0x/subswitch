@@ -1,0 +1,6 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_fail1","model":"gpt-5.5","status":"in_progress"}}
+
+event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_fail1","model":"gpt-5.5","status":"failed","error":{"code":"server_error","message":"upstream exploded"}}}
+

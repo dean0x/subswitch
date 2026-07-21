@@ -1,0 +1,47 @@
+{
+  "name": "croxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local subscription-routing proxy for Claude Code — route a single subagent to a different model (OpenAI Codex) while every other request stays on Claude. Per-subagent routing, no API keys.",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "proxy",
+    "subagent",
+    "codex",
+    "openai",
+    "anthropic",
+    "llm",
+    "ai",
+    "developer-tools"
+  ],
+  "homepage": "https://github.com/dean0x/croxy#readme",
+  "bugs": {
+    "url": "https://github.com/dean0x/croxy/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dean0x/croxy.git"
+  },
+  "author": "dean0x",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "serve": "tsx src/cli.ts serve",
+    "doctor": "tsx src/cli.ts doctor",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test \"test/unit/*.test.ts\" \"test/integration/*.test.ts\"",
+    "check": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}

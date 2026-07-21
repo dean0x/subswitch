@@ -1,0 +1,273 @@
+import { describe, it, after } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  makeAccessToken,
+  makeAuthFileContent,
+  sseHandler,
+  startCroxy,
+  startFakeUpstream,
+  type CroxyInstance,
+  type FakeUpstream,
+  type UpstreamHandler,
+} from "./fake-upstreams.js";
+
+const FAR_FUTURE_MS = Date.now() + 24 * 3600 * 1000;
+
+const loadSse = (name: string): string => readFileSync(new URL(`../fixtures/response/${name}`, import.meta.url), "utf8");
+const loadRequest = (name: string): string => readFileSync(new URL(`../fixtures/request/${name}`, import.meta.url), "utf8");
+
+const cleanups: (() => Promise<void>)[] = [];
+after(async () => {
+  for (const cleanup of cleanups.reverse()) await cleanup();
+});
+
+interface Rig {
+  readonly croxy: CroxyInstance;
+  readonly codex: FakeUpstream;
+  readonly anthropic: FakeUpstream;
+  readonly oauth: FakeUpstream;
+  readonly authFilePath: string;
+}
+
+const setupRig = async (codexHandler: UpstreamHandler, options: { authFileContent?: string } = {}): Promise<Rig> => {
+  const codex = await startFakeUpstream(codexHandler);
+  const anthropic = await startFakeUpstream((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "msg_from_anthropic" }));
+  });
+  const oauth = await startFakeUpstream((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        // A later expiry than the auth-file token so the two JWTs differ.
+        access_token: makeAccessToken(FAR_FUTURE_MS + 3_600_000),
+        id_token: "id.rotated.x",
+        refresh_token: "refresh-int-2",
+      }),
+    );
+  });
+  const dir = await mkdtemp(join(tmpdir(), "croxy-test-"));
+  const authFilePath = join(dir, "auth.json");
+  await writeFile(authFilePath, options.authFileContent ?? makeAuthFileContent(makeAccessToken(FAR_FUTURE_MS)), "utf8");
+
+  const croxy = await startCroxy({
+    anthropic: { baseUrl: anthropic.url },
+    codex: { baseUrl: codex.url, oauthTokenUrl: `${oauth.url}/token`, authFile: authFilePath },
+  });
+  cleanups.push(croxy.close, codex.close, anthropic.close, oauth.close);
+  return { croxy, codex, anthropic, oauth, authFilePath };
+};
+
+const postMessages = (croxy: CroxyInstance, body: string, path = "/v1/messages?beta=true"): Promise<Response> =>
+  fetch(`${croxy.url}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer sk-ant-oat-CLAUDE-OAUTH",
+      "anthropic-beta": "oauth-2025-04-20",
+      "content-type": "application/json",
+    },
+    body,
+  });
+
+const sseFrameTypes = (sseText: string): string[] =>
+  sseText
+    .split("\n\n")
+    .filter((frame) => frame.includes("data: "))
+    .map((frame) => (JSON.parse(frame.split("\n").find((l) => l.startsWith("data: "))!.slice(6)) as { type: string }).type);
+
+describe("codex leg", () => {
+  it("translates request and response end-to-end with correct codex headers", async () => {
+    const rig = await setupRig(sseHandler(loadSse("tool-call-with-reasoning.sse")));
+
+    const response = await postMessages(rig.croxy, loadRequest("simple-text.json"));
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
+    const text = await response.text();
+    assert.deepEqual(sseFrameTypes(text), [
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+    ]);
+    assert.match(text, /"type":"tool_use","id":"call_abc","name":"list_files"/);
+
+    const seen = rig.codex.requests[0]!;
+    assert.equal(seen.url, "/responses");
+    assert.match(String(seen.headers["authorization"]), /^Bearer ey/);
+    assert.equal(seen.headers["chatgpt-account-id"], "acct_integration_1");
+    assert.equal(seen.headers["openai-beta"], "responses=experimental");
+    assert.equal(seen.headers["originator"], "codex_cli_rs");
+    assert.ok(typeof seen.headers["session_id"] === "string" && seen.headers["session_id"].length > 0);
+    // The claude.ai OAuth credential must never leak to the codex leg.
+    assert.equal(String(seen.headers["authorization"]).includes("sk-ant"), false);
+    assert.equal("anthropic-beta" in seen.headers, false);
+
+    const sent = JSON.parse(seen.body.toString("utf8")) as Record<string, unknown>;
+    assert.equal(sent["model"], "gpt-5.5");
+    assert.equal(sent["stream"], true);
+    assert.equal(sent["store"], false);
+    assert.deepEqual(sent["include"], ["reasoning.encrypted_content"]);
+    assert.equal(sent["instructions"], "You are a helpful worker agent.");
+    assert.equal(rig.anthropic.requests.length, 0);
+    assert.equal(rig.oauth.requests.length, 0);
+  });
+
+  it("forwards output_config.effort to the codex upstream as reasoning.effort", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+
+    const body = JSON.stringify({
+      model: "gpt-5.5",
+      stream: true,
+      messages: [{ role: "user", content: "hi" }],
+      output_config: { effort: "low" },
+    });
+    const response = await postMessages(rig.croxy, body);
+    assert.equal(response.status, 200);
+    await response.text();
+
+    const sent = JSON.parse(rig.codex.requests[0]!.body.toString("utf8")) as Record<string, unknown>;
+    assert.deepEqual(sent["reasoning"], { effort: "low" });
+  });
+
+  it("round-trips encrypted reasoning across two requests (acid test)", async () => {
+    const scripts = [loadSse("tool-call-with-reasoning.sse"), loadSse("text-only.sse")];
+    const rig = await setupRig((_req, res, _body, index) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(scripts[index]);
+    });
+
+    // Request 1 produces a tool call whose reasoning croxy must cache.
+    const first = await postMessages(rig.croxy, loadRequest("simple-text.json"));
+    assert.equal(first.status, 200);
+    await first.text();
+
+    // Request 2 echoes the assistant tool_use + tool_result back, as Claude Code would.
+    const second = await postMessages(rig.croxy, loadRequest("tool-roundtrip.json"));
+    assert.equal(second.status, 200);
+    await second.text();
+
+    const sent = JSON.parse(rig.codex.requests[1]!.body.toString("utf8")) as { input: Record<string, unknown>[] };
+    const reasoningIndex = sent.input.findIndex((item) => item["type"] === "reasoning");
+    assert.notEqual(reasoningIndex, -1, "request 2 must carry the cached encrypted reasoning item");
+    assert.equal(sent.input[reasoningIndex]!["encrypted_content"], "ENCRYPTED_REASONING_BLOB_1");
+    const next = sent.input[reasoningIndex + 1]!;
+    assert.equal(next["type"], "function_call", "reasoning item must sit directly before its function_call");
+    assert.equal(next["call_id"], "call_abc");
+    const output = sent.input.find((item) => item["type"] === "function_call_output");
+    assert.equal(output?.["call_id"], "call_abc");
+  });
+
+  it("refreshes and retries exactly once on a pre-stream 401", async () => {
+    const text = loadSse("text-only.sse");
+    const rig = await setupRig((_req, res, _body, index) => {
+      if (index === 0) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "token expired" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(text);
+    });
+
+    const response = await postMessages(rig.croxy, loadRequest("simple-text.json"));
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /message_stop/);
+
+    assert.equal(rig.oauth.requests.length, 1);
+    assert.equal(rig.codex.requests.length, 2);
+    assert.notEqual(rig.codex.requests[0]!.headers["authorization"], rig.codex.requests[1]!.headers["authorization"]);
+
+    const authFile = JSON.parse(await readFile(rig.authFilePath, "utf8")) as Record<string, unknown>;
+    assert.equal((authFile["tokens"] as Record<string, unknown>)["refresh_token"], "refresh-int-2");
+    assert.deepEqual(authFile["future_cli_key"], { must: "survive" });
+  });
+
+  it("passes 429 through with retry-after and a rate_limit_error body", async () => {
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(429, { "content-type": "application/json", "retry-after": "7" });
+      res.end(JSON.stringify({ error: { message: "rate limited" } }));
+    });
+
+    const response = await postMessages(rig.croxy, loadRequest("simple-text.json"));
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get("retry-after"), "7");
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "rate_limit_error");
+  });
+
+  it("answers count_tokens locally with the chars/4 estimate", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const body = JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "estimate me" }] });
+    const response = await postMessages(rig.croxy, body, "/v1/messages/count_tokens");
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { input_tokens: Math.ceil(body.length / 4) });
+    assert.equal(rig.codex.requests.length, 0);
+  });
+
+  it("routes claude models to anthropic even when the codex leg is configured", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const response = await postMessages(
+      rig.croxy,
+      JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { id: "msg_from_anthropic" });
+    assert.equal(rig.codex.requests.length, 0);
+    assert.equal(rig.anthropic.requests.length, 1);
+  });
+
+  it("aggregates the upstream stream for non-streaming clients", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const response = await postMessages(
+      rig.croxy,
+      JSON.stringify({ model: "gpt-5.5", max_tokens: 64, messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /application\/json/);
+    const message = (await response.json()) as Record<string, unknown>;
+    assert.equal(message["type"], "message");
+    assert.equal(message["role"], "assistant");
+    assert.deepEqual(message["content"], [{ type: "text", text: "Hello from codex" }]);
+    assert.equal(message["stop_reason"], "end_turn");
+  });
+
+  it("degrades only the codex leg when the auth file is corrupt", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")), { authFileContent: "not json at all" });
+
+    const codexResponse = await postMessages(rig.croxy, loadRequest("simple-text.json"));
+    assert.equal(codexResponse.status, 401);
+    const body = (await codexResponse.json()) as { error: { type: string; message: string } };
+    assert.equal(body.error.type, "authentication_error");
+    assert.match(body.error.message, /codex login/);
+
+    const anthropicResponse = await postMessages(
+      rig.croxy,
+      JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(anthropicResponse.status, 200);
+    assert.deepEqual(await anthropicResponse.json(), { id: "msg_from_anthropic" });
+  });
+
+  it("shapes mid-stream upstream failures as an SSE error event", async () => {
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write('event: response.created\ndata: {"type":"response.created","response":{"id":"resp_x","model":"gpt-5.5"}}\n\n');
+      setTimeout(() => res.destroy(), 30);
+    });
+
+    const response = await postMessages(rig.croxy, loadRequest("simple-text.json"));
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.match(text, /event: message_start/);
+    assert.match(text, /event: error/);
+    assert.match(text, /codex stream interrupted/);
+    assert.equal(rig.codex.requests.length, 1, "mid-stream failures must not be retried");
+  });
+});

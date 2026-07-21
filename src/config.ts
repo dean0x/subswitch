@@ -1,0 +1,83 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { z } from "zod";
+import { type Result, ok, err } from "./result.js";
+import type { ProxyError } from "./errors.js";
+import type { LogLevel } from "./logger.js";
+
+const LimitsSchema = z.object({
+  maxBodyBytes: z.number().int().positive().default(32 * 1024 * 1024),
+  connectTimeoutMs: z.number().int().positive().default(10_000),
+  streamIdleTimeoutMs: z.number().int().positive().default(300_000),
+  requestTimeoutMs: z.number().int().positive().default(600_000),
+  pingIntervalMs: z.number().int().positive().default(15_000),
+  maxSseEventBytes: z.number().int().positive().default(4 * 1024 * 1024),
+});
+
+const ConfigSchema = z.object({
+  port: z.number().int().min(1).max(65535).default(4141),
+  logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  anthropic: z
+    .object({
+      baseUrl: z.url().default("https://api.anthropic.com"),
+    })
+    .prefault({}),
+  codex: z
+    .object({
+      baseUrl: z.url().default("https://chatgpt.com/backend-api/codex"),
+      oauthTokenUrl: z.url().default("https://auth.openai.com/oauth/token"),
+      authFile: z.string().min(1).default("~/.codex/auth.json"),
+      models: z.array(z.string().min(1)).default(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]),
+    })
+    .prefault({}),
+  reasoningCache: z
+    .object({
+      maxEntries: z.number().int().positive().default(256),
+    })
+    .prefault({}),
+  limits: LimitsSchema.prefault({}),
+});
+
+export type Config = z.infer<typeof ConfigSchema>;
+export type Limits = z.infer<typeof LimitsSchema>;
+
+const expandHome = (path: string): string =>
+  path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+
+export interface LoadConfigOptions {
+  readonly configPath?: string;
+  readonly readFile?: (path: string) => string;
+}
+
+/**
+ * Load croxy.config.json (all fields optional) merged over defaults.
+ * A missing file yields pure defaults; an unreadable or invalid file is an error.
+ */
+export const loadConfig = (options: LoadConfigOptions = {}): Result<Config, ProxyError> => {
+  const configPath = options.configPath ?? join(process.cwd(), "croxy.config.json");
+  const readFile = options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
+
+  let raw: unknown = {};
+  try {
+    raw = JSON.parse(readFile(configPath));
+  } catch (cause) {
+    const isMissingFile = cause instanceof Error && "code" in cause && cause.code === "ENOENT";
+    if (!isMissingFile) {
+      return err({ kind: "translate", message: `failed to read config at ${configPath}: ${String(cause)}` });
+    }
+  }
+
+  const parsed = ConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    return err({ kind: "translate", message: `invalid config: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}` });
+  }
+
+  const config = parsed.data;
+  return ok({
+    ...config,
+    codex: { ...config.codex, authFile: expandHome(config.codex.authFile) },
+  });
+};
+
+export const logLevelOf = (config: Config): LogLevel => config.logLevel;

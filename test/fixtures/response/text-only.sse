@@ -1,0 +1,18 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_text1","model":"gpt-5.5","status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_out1","role":"assistant"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_out1","output_index":0,"delta":"Hello"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_out1","output_index":0,"delta":" from codex"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_out1","role":"assistant"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_text1","model":"gpt-5.5","status":"completed","usage":{"input_tokens":12,"output_tokens":5}}}
+

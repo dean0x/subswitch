@@ -1,0 +1,11 @@
+{
+  "model": "gpt-5.5",
+  "max_tokens": 4096,
+  "stream": true,
+  "temperature": 1,
+  "system": "You are a helpful worker agent.",
+  "messages": [
+    { "role": "user", "content": "List the files in this directory." }
+  ],
+  "metadata": { "user_id": "should-be-omitted" }
+}

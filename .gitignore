@@ -1,0 +1,22 @@
+node_modules/
+croxy.config.json
+
+# OS / editor / local logs
+.DS_Store
+*.log
+
+# Local Claude Code state (the example agent under .claude/agents/ is tracked)
+.claude/settings.local.json
+
+# Devflow runtime data — local by default (memory, learning, docs, locks).
+# Exception: feature knowledge bases under .devflow/features/ are shared via git —
+# index.md and every {slug}/KNOWLEDGE.md are tracked and committed; everything else
+# under .devflow/features/ stays local. To stop sharing, re-add `.devflow/features/`
+# to your own .gitignore.
+.devflow/*
+!.devflow/features/
+.devflow/features/*
+!.devflow/features/index.md
+!.devflow/features/*/
+.devflow/features/*/*
+!.devflow/features/*/KNOWLEDGE.md
