@@ -60,7 +60,7 @@ export const startCroxy = async (overrides: Record<string, unknown>): Promise<Cr
     readFile: () => JSON.stringify({ logLevel: "error", ...overrides }),
   });
   if (!configResult.ok) throw new Error(configResult.error.message);
-  const server = createProxyServer(buildDeps(configResult.value));
+  const server = createProxyServer(buildDeps(configResult.value.config));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {

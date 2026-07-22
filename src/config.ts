@@ -33,7 +33,8 @@ const ConfigSchema = z.object({
     .prefault({}),
   reasoningCache: z
     .object({
-      maxEntries: z.number().int().positive().default(256),
+      maxEntries: z.number().int().positive().default(4096),
+      maxBytes: z.number().int().positive().default(64 * 1024 * 1024),
     })
     .prefault({}),
   limits: LimitsSchema.prefault({}),
@@ -46,37 +47,81 @@ const expandHome = (path: string): string =>
   path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 
 export interface LoadConfigOptions {
+  /** Explicit config file path. Takes precedence over CROXY_CONFIG and the implicit cwd default. */
   readonly configPath?: string;
+  /** Injectable file reader. Defaults to `readFileSync`. Used by tests to supply inline config. */
   readonly readFile?: (path: string) => string;
+  /** Injectable environment variable map. Defaults to `process.env`. Used by tests. */
+  readonly env?: Record<string, string | undefined>;
+}
+
+export interface LoadConfigResult {
+  readonly config: Config;
+  readonly configPath: string;
+  readonly fileFound: boolean;
 }
 
 /**
  * Load croxy.config.json (all fields optional) merged over defaults.
- * A missing file yields pure defaults; an unreadable or invalid file is an error.
+ *
+ * Path precedence (highest to lowest):
+ *   1. explicit `configPath` option
+ *   2. `CROXY_CONFIG` env var (tilde-expanded)
+ *   3. implicit `<cwd>/croxy.config.json`
+ *
+ * Only the implicit cwd default silently falls back to pure defaults on ENOENT.
+ * An explicitly-requested path (option or CROXY_CONFIG) that is missing is an error.
  */
-export const loadConfig = (options: LoadConfigOptions = {}): Result<Config, ProxyError> => {
-  const configPath = options.configPath ?? join(process.cwd(), "croxy.config.json");
+export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigResult, ProxyError> => {
+  const env = options.env ?? process.env;
   const readFile = options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
 
+  let resolvedPath: string;
+  let isExplicit: boolean;
+
+  if (options.configPath !== undefined) {
+    resolvedPath = options.configPath;
+    isExplicit = true;
+  } else if (env["CROXY_CONFIG"] !== undefined && env["CROXY_CONFIG"] !== "") {
+    resolvedPath = expandHome(env["CROXY_CONFIG"]);
+    isExplicit = true;
+  } else {
+    resolvedPath = join(process.cwd(), "croxy.config.json");
+    isExplicit = false;
+  }
+
   let raw: unknown = {};
+  let fileFound = false;
+
   try {
-    raw = JSON.parse(readFile(configPath));
+    raw = JSON.parse(readFile(resolvedPath));
+    fileFound = true;
   } catch (cause) {
-    const isMissingFile = cause instanceof Error && "code" in cause && cause.code === "ENOENT";
-    if (!isMissingFile) {
-      return err({ kind: "translate", message: `failed to read config at ${configPath}: ${String(cause)}` });
+    const isMissingFile =
+      cause instanceof Error && "code" in cause && (cause as NodeJS.ErrnoException).code === "ENOENT";
+
+    if (isMissingFile && !isExplicit) {
+      // Implicit cwd default: silently fall back to pure defaults.
+    } else if (isMissingFile && isExplicit) {
+      return err({ kind: "translate", message: `config file not found at ${resolvedPath}` });
+    } else {
+      return err({ kind: "translate", message: `failed to read config at ${resolvedPath}: ${String(cause)}` });
     }
   }
 
   const parsed = ConfigSchema.safeParse(raw);
   if (!parsed.success) {
-    return err({ kind: "translate", message: `invalid config: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}` });
+    return err({
+      kind: "translate",
+      message: `invalid config: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
+    });
   }
 
   const config = parsed.data;
   return ok({
-    ...config,
-    codex: { ...config.codex, authFile: expandHome(config.codex.authFile) },
+    config: { ...config, codex: { ...config.codex, authFile: expandHome(config.codex.authFile) } },
+    configPath: resolvedPath,
+    fileFound,
   });
 };
 

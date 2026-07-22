@@ -11,7 +11,8 @@
     "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
   },
   "reasoningCache": {
-    "maxEntries": 256
+    "maxEntries": 4096,
+    "maxBytes": 67108864
   },
   "limits": {
     "maxBodyBytes": 33554432,
