@@ -255,6 +255,128 @@ describe("codex leg", () => {
     assert.deepEqual(await anthropicResponse.json(), { id: "msg_from_anthropic" });
   });
 
+  it("sets the user-agent header from codex.userAgent config", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const response = await postMessages(rig.croxy, loadRequest("simple-text.json"));
+    assert.equal(response.status, 200);
+    await response.text();
+
+    const seen = rig.codex.requests[0]!;
+    // The default UA must be set explicitly and match the configured knob.
+    assert.ok(
+      typeof seen.headers["user-agent"] === "string" && seen.headers["user-agent"].length > 0,
+      "user-agent header must be present",
+    );
+    assert.match(seen.headers["user-agent"] as string, /codex_cli_rs\/\d+/);
+    // originator and openai-beta must remain unchanged (hard rule: verified working against /responses 2026-07-21)
+    assert.equal(seen.headers["originator"], "codex_cli_rs");
+    assert.equal(seen.headers["openai-beta"], "responses=experimental");
+  });
+
+  it("sends a custom user-agent when codex.userAgent is overridden in config", async () => {
+    const codex = await startFakeUpstream(sseHandler(loadSse("text-only.sse")));
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
+    });
+    const oauth = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ access_token: makeAccessToken(Date.now() + 3_600_000) }));
+    });
+    const dir = await mkdtemp(join(tmpdir(), "croxy-test-ua-"));
+    const authFilePath = join(dir, "auth.json");
+    await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
+
+    const croxy = await startCroxy({
+      anthropic: { baseUrl: anthropic.url },
+      codex: {
+        baseUrl: codex.url,
+        oauthTokenUrl: `${oauth.url}/token`,
+        authFile: authFilePath,
+        userAgent: "my-custom-agent/1.0",
+      },
+    });
+    cleanups.push(croxy.close, codex.close, anthropic.close, oauth.close);
+
+    const response = await fetch(`${croxy.url}/v1/messages?beta=true`, {
+      method: "POST",
+      headers: { authorization: "Bearer sk-ant", "anthropic-beta": "oauth-2025-04-20", "content-type": "application/json" },
+      body: loadRequest("simple-text.json"),
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.equal(codex.requests[0]!.headers["user-agent"], "my-custom-agent/1.0");
+  });
+
+  it("session_id is stable across two turns of the same conversation", async () => {
+    const scripts = [loadSse("text-only.sse"), loadSse("text-only.sse")];
+    const rig = await setupRig((_req, res, _body, index) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(scripts[index]);
+    });
+
+    // Send the same request twice — same model + system + first user message → same derived key.
+    const first = await postMessages(rig.croxy, loadRequest("simple-text.json"));
+    await first.text();
+    const second = await postMessages(rig.croxy, loadRequest("simple-text.json"));
+    await second.text();
+
+    const id1 = rig.codex.requests[0]!.headers["session_id"];
+    const id2 = rig.codex.requests[1]!.headers["session_id"];
+    assert.ok(typeof id1 === "string" && id1.length > 0);
+    assert.equal(id1, id2, "session_id must be stable across turns of the same conversation");
+  });
+
+  it("session_id is stable across the 401→refresh→retry path (same session on retry)", async () => {
+    const text = loadSse("text-only.sse");
+    const rig = await setupRig((_req, res, _body, index) => {
+      if (index === 0) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "token expired" } }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(text);
+    });
+
+    const response = await postMessages(rig.croxy, loadRequest("simple-text.json"));
+    assert.equal(response.status, 200);
+    await response.text();
+
+    const id0 = rig.codex.requests[0]!.headers["session_id"];
+    const id1 = rig.codex.requests[1]!.headers["session_id"];
+    assert.ok(typeof id0 === "string" && id0.length > 0);
+    // Same request → same conversation key → same session_id, even though the auth token changed.
+    assert.equal(id0, id1, "session_id must not change between the initial attempt and the auth retry");
+    // Auth token must have changed (proves the retry path was exercised).
+    assert.notEqual(
+      rig.codex.requests[0]!.headers["authorization"],
+      rig.codex.requests[1]!.headers["authorization"],
+    );
+  });
+
+  it("session_id differs across distinct conversations (different first user messages)", async () => {
+    const scripts = [loadSse("text-only.sse"), loadSse("text-only.sse")];
+    const rig = await setupRig((_req, res, _body, index) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(scripts[index]);
+    });
+
+    const req1 = JSON.stringify({ model: "gpt-5.5", stream: true, messages: [{ role: "user", content: "conversation A" }] });
+    const req2 = JSON.stringify({ model: "gpt-5.5", stream: true, messages: [{ role: "user", content: "conversation B" }] });
+
+    const r1 = await postMessages(rig.croxy, req1);
+    await r1.text();
+    const r2 = await postMessages(rig.croxy, req2);
+    await r2.text();
+
+    const id1 = rig.codex.requests[0]!.headers["session_id"];
+    const id2 = rig.codex.requests[1]!.headers["session_id"];
+    assert.ok(typeof id1 === "string" && id1.length > 0);
+    assert.ok(typeof id2 === "string" && id2.length > 0);
+    assert.notEqual(id1, id2, "distinct conversations must produce distinct session_ids");
+  });
+
   it("shapes mid-stream upstream failures as an SSE error event", async () => {
     const rig = await setupRig((_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });

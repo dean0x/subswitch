@@ -30,6 +30,10 @@ const ConfigSchema = z.object({
       oauthTokenUrl: z.url().default("https://auth.openai.com/oauth/token"),
       authFile: z.string().min(1).default("~/.codex/auth.json"),
       models: z.array(z.string().min(1)).default(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]),
+      // default UA format verified from codex-cli 0.144.6 live capture 2026-07-22;
+      // machine-telemetry (OS/arch/terminal) intentionally omitted — set codex.userAgent
+      // to override (vendor-drift pressure valve).
+      userAgent: z.string().min(1).default("codex_cli_rs/0.144.6"),
     })
     .prefault({}),
   reasoningCache: z
