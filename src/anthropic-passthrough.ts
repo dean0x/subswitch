@@ -79,19 +79,8 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
   // Residual risk: a stale pooled socket can ECONNRESET a POST; the existing
   // upstream.on("error") handler returns a clean 502 and Claude Code retries.
   // This is the same behaviour as any keep-alive HTTP client.
-  const agent =
-    options.agent ??
-    (target.protocol === "https:"
-      ? new https.Agent({
-          keepAlive: true,
-          maxSockets: options.maxUpstreamSockets,
-          scheduling: "lifo",
-        })
-      : new http.Agent({
-          keepAlive: true,
-          maxSockets: options.maxUpstreamSockets,
-          scheduling: "lifo",
-        }));
+  const agentOpts: http.AgentOptions = { keepAlive: true, maxSockets: options.maxUpstreamSockets, scheduling: "lifo" };
+  const agent = options.agent ?? (target.protocol === "https:" ? new https.Agent(agentOpts) : new http.Agent(agentOpts));
 
   return (req, res, body) => {
     const path = `${basePath}${req.url ?? "/"}`;

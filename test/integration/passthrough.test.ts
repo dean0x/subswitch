@@ -17,6 +17,13 @@ const setup = async (
   return { anthropic, croxy };
 };
 
+/** Convert a flat [name, value, ...] raw-header array to [name, value] pairs. */
+const toPairs = (raw: string[]): [string, string][] => {
+  const pairs: [string, string][] = [];
+  for (let i = 0; i + 1 < raw.length; i += 2) pairs.push([raw[i]!, raw[i + 1]!]);
+  return pairs;
+};
+
 describe("anthropic passthrough", () => {
   it("forwards method, path+query, auth headers, and body verbatim", async () => {
     const { anthropic, croxy } = await setup((_req, res) => {
@@ -223,13 +230,6 @@ describe("anthropic passthrough", () => {
     const seen = anthropic.requests[0]!;
     const upstreamRaw = seen.rawHeaders;
 
-    // Helper: convert flat raw-header array to [name, value] pairs
-    const toPairs = (raw: string[]): [string, string][] => {
-      const pairs: [string, string][] = [];
-      for (let i = 0; i + 1 < raw.length; i += 2) pairs.push([raw[i]!, raw[i + 1]!]);
-      return pairs;
-    };
-
     const upstreamPairs = toPairs(upstreamRaw);
     const upstreamNameSet = new Set(upstreamPairs.map(([n]) => n.toLowerCase()));
 
@@ -303,12 +303,6 @@ describe("anthropic passthrough", () => {
     });
 
     assert.equal(response.status, 200);
-
-    const toPairs = (raw: string[]): [string, string][] => {
-      const pairs: [string, string][] = [];
-      for (let i = 0; i + 1 < raw.length; i += 2) pairs.push([raw[i]!, raw[i + 1]!]);
-      return pairs;
-    };
 
     const receivedPairs = toPairs(response.rawHeaders);
     const receivedNames = new Set(receivedPairs.map(([n]) => n.toLowerCase()));

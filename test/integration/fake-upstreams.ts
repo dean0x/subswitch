@@ -168,8 +168,8 @@ export const rawHttpRequest = (
 
     // Collect headers preserving insertion order and handling duplicates.
     // The first occurrence's name casing wins; duplicates are sent as arrays.
+    // Map preserves insertion order, so no separate order-tracking array is needed.
     const seen = new Map<string, { name: string; values: string[] }>();
-    const order: string[] = [];
     for (let i = 0; i + 1 < options.rawHeaders.length; i += 2) {
       const name = options.rawHeaders[i]!;
       const value = options.rawHeaders[i + 1]!;
@@ -177,13 +177,11 @@ export const rawHttpRequest = (
       const entry = seen.get(key);
       if (entry === undefined) {
         seen.set(key, { name, values: [value] });
-        order.push(key);
       } else {
         entry.values.push(value);
       }
     }
-    for (const key of order) {
-      const { name, values } = seen.get(key)!;
+    for (const { name, values } of seen.values()) {
       req.setHeader(name, values.length === 1 ? values[0]! : values);
     }
 
