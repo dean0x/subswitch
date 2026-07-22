@@ -5,6 +5,7 @@ import { ReasoningCache } from "../../src/reasoning-cache.js";
 
 const LARGE_BYTES = 64 * 1024 * 1024;
 import { estimateTokens, translateRequest } from "../../src/codex-request.js";
+import { deriveConversationKey } from "../../src/conversation-key.js";
 import { AnthropicRequestSchema, type AnthropicRequest } from "../../src/wire-types.js";
 
 const loadFixture = (name: string): AnthropicRequest => {
@@ -197,6 +198,57 @@ describe("translateRequest", () => {
     assert.ok(result.ok);
     assert.equal(result.value.stream, false);
     assert.equal(result.value.body["stream"], true, "upstream is always streamed regardless of client mode");
+  });
+});
+
+describe("prompt_cache_key via conversationKey parameter", () => {
+  const baseRequest = AnthropicRequestSchema.parse({
+    model: "gpt-5.5",
+    messages: [{ role: "user", content: "hello" }],
+    system: "You are helpful.",
+  });
+
+  it("adds prompt_cache_key to body when a conversation key is provided", () => {
+    const key = deriveConversationKey(baseRequest);
+    assert.ok(key !== undefined);
+    const result = translateRequest(baseRequest, new ReasoningCache(4, LARGE_BYTES), key);
+    assert.ok(result.ok);
+    assert.equal(result.value.body["prompt_cache_key"], key);
+    assert.equal(result.value.conversationKey, key);
+  });
+
+  it("produces the same prompt_cache_key for two identical requests", () => {
+    const req = AnthropicRequestSchema.parse({
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "stable input" }],
+    });
+    const key = deriveConversationKey(req);
+    assert.ok(key !== undefined);
+    const r1 = translateRequest(req, new ReasoningCache(4, LARGE_BYTES), key);
+    const r2 = translateRequest(req, new ReasoningCache(4, LARGE_BYTES), key);
+    assert.ok(r1.ok);
+    assert.ok(r2.ok);
+    assert.equal(r1.value.body["prompt_cache_key"], r2.value.body["prompt_cache_key"]);
+  });
+
+  it("produces different prompt_cache_keys for different first user messages", () => {
+    const req1 = AnthropicRequestSchema.parse({ model: "gpt-5.5", messages: [{ role: "user", content: "alpha" }] });
+    const req2 = AnthropicRequestSchema.parse({ model: "gpt-5.5", messages: [{ role: "user", content: "beta" }] });
+    const key1 = deriveConversationKey(req1)!;
+    const key2 = deriveConversationKey(req2)!;
+    const r1 = translateRequest(req1, new ReasoningCache(4, LARGE_BYTES), key1);
+    const r2 = translateRequest(req2, new ReasoningCache(4, LARGE_BYTES), key2);
+    assert.ok(r1.ok);
+    assert.ok(r2.ok);
+    assert.notEqual(r1.value.body["prompt_cache_key"], r2.value.body["prompt_cache_key"]);
+  });
+
+  it("omits prompt_cache_key when no conversation key is provided", () => {
+    const req = AnthropicRequestSchema.parse({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] });
+    const result = translateRequest(req, new ReasoningCache(4, LARGE_BYTES));
+    assert.ok(result.ok);
+    assert.equal("prompt_cache_key" in result.value.body, false);
+    assert.equal(result.value.conversationKey, undefined);
   });
 });
 

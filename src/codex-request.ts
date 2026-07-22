@@ -20,6 +20,8 @@ export interface TranslateOutcome {
   readonly stream: boolean;
   readonly warnings: readonly TranslateWarning[];
   readonly effort?: string;
+  /** Derived conversation key (v7-shaped UUID) used for prompt_cache_key and session_id. */
+  readonly conversationKey?: string;
 }
 
 type Block = Record<string, unknown>;
@@ -236,7 +238,7 @@ const translateEffort = (
   return effort;
 };
 
-const buildInstructions = (system: AnthropicRequest["system"]): string | undefined => {
+export const buildInstructions = (system: AnthropicRequest["system"]): string | undefined => {
   if (system === undefined) return undefined;
   if (typeof system === "string") return system;
   const text = textOfBlocks(system);
@@ -246,6 +248,7 @@ const buildInstructions = (system: AnthropicRequest["system"]): string | undefin
 export const translateRequest = (
   request: AnthropicRequest,
   cache: ReasoningCache,
+  conversationKey?: string,
 ): Result<TranslateOutcome, ProxyError> => {
   const builder: InputBuilder = { items: [], warnings: [], injectedReasoningIds: new Set() };
 
@@ -278,7 +281,8 @@ export const translateRequest = (
     ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
     ...(effort !== undefined ? { reasoning: { effort } } : {}),
     // max_tokens is intentionally not mapped: the Codex backend rejects
-    // max_output_tokens with 400 "Unsupported parameter" (verified live).
+    // max_output_tokens with 400 "Unsupported parameter" (verified live). [avoids PF-002]
+    ...(conversationKey !== undefined ? { prompt_cache_key: conversationKey } : {}),
   };
 
   return ok({
@@ -286,6 +290,7 @@ export const translateRequest = (
     stream: request.stream === true,
     warnings: builder.warnings,
     ...(effort !== undefined ? { effort } : {}),
+    ...(conversationKey !== undefined ? { conversationKey } : {}),
   });
 };
 
