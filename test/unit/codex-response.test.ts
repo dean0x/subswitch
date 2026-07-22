@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { noopLogger } from "../../src/logger.js";
+import { noopLogger, createConsoleLogger } from "../../src/logger.js";
 import {
   aggregateFrames,
   createAnthropicSseTranslator,
@@ -191,6 +191,60 @@ describe("createAnthropicSseTranslator", () => {
       "message_delta",
       "message_stop",
     ]);
+  });
+});
+
+describe("cache observability logging", () => {
+  // Inline SSE with response.completed that includes input_tokens_details.cached_tokens
+  const cachedTokensSse = [
+    'data: {"type":"response.created","response":{"id":"resp_obs","model":"gpt-5.5"}}',
+    "",
+    'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}',
+    "",
+    'data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"hi"}',
+    "",
+    'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}',
+    "",
+    'data: {"type":"response.completed","response":{"id":"resp_obs","model":"gpt-5.5","status":"completed","usage":{"input_tokens":100,"output_tokens":5,"input_tokens_details":{"cached_tokens":80}}}}',
+    "",
+    "data: [DONE]",
+    "",
+    "",
+  ].join("\n");
+
+  it("logs cachedTokens at debug level from response.completed usage", async () => {
+    const logs: string[] = [];
+    const logger = createConsoleLogger("debug", (line) => logs.push(line));
+    await pipeline(
+      Readable.from([Buffer.from(cachedTokensSse)]),
+      createSseParser(1024 * 1024),
+      createAnthropicSseTranslator({ model: "gpt-5.5", logger }),
+      async (source) => {
+        for await (const _ of source) { /* drain */ }
+      },
+    );
+    const cacheLine = logs.find((l) => l.includes("cachedTokens="));
+    assert.ok(cacheLine !== undefined, "expected a debug log line with cachedTokens");
+    assert.match(cacheLine, /cachedTokens=80/);
+  });
+
+  it("logs sessionKey (8 hex chars) at debug level when a conversationKey is provided", async () => {
+    const logs: string[] = [];
+    const logger = createConsoleLogger("debug", (line) => logs.push(line));
+    const key = "a1b2c3d4-5e6f-7a8b-9c0d-e1f2a3b4c5d6";
+    await pipeline(
+      Readable.from([Buffer.from(cachedTokensSse)]),
+      createSseParser(1024 * 1024),
+      createAnthropicSseTranslator({ model: "gpt-5.5", logger, conversationKey: key }),
+      async (source) => {
+        for await (const _ of source) { /* drain */ }
+      },
+    );
+    const keyLine = logs.find((l) => l.includes("sessionKey="));
+    assert.ok(keyLine !== undefined, "expected a debug log line with sessionKey");
+    // sessionKey must be the first 8 chars of the conversation key UUID (8 hex chars)
+    assert.match(keyLine, /sessionKey=a1b2c3d4/);
+    assert.match(keyLine, /sessionKey=[0-9a-f]{8}(\s|$)/);
   });
 });
 

@@ -80,6 +80,10 @@ export interface TranslatorOptions {
   readonly logger: Logger;
   readonly onReasoningItems?: (callId: string, items: readonly unknown[]) => void;
   readonly pingIntervalMs?: number;
+  /** Derived conversation key (v7-shaped UUID). When present, the first 8 hex
+   *  chars are logged as `sessionKey` at debug level on response.completed so
+   *  key stability across turns can be verified without logging the full key. */
+  readonly conversationKey?: string;
 }
 
 export const createAnthropicSseTranslator = (options: TranslatorOptions): Transform => {
@@ -267,6 +271,19 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
             }),
           );
           this.push(frame("message_stop", { type: "message_stop" }));
+          // Cache-efficacy observability: log cachedTokens to prove prompt_cache_key
+          // is effective, and sessionKey (truncated, non-reversible) to verify key
+          // stability across turns.
+          const cachedTokens = response.usage?.input_tokens_details?.cached_tokens;
+          if (cachedTokens !== undefined && cachedTokens > 0) {
+            options.logger.log("debug", "codex_cache_tokens", { cachedTokens });
+          }
+          if (options.conversationKey !== undefined) {
+            options.logger.log("debug", "codex_session_key", {
+              // First 8 hex chars of the UUID (chars before the first dash).
+              sessionKey: options.conversationKey.slice(0, 8),
+            });
+          }
           break;
         }
         case "response.failed": {

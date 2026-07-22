@@ -13,6 +13,13 @@ export interface LogFields {
   readonly eventType?: string;
   readonly errorCode?: string;
   readonly effort?: string;
+  /** Number of cached input tokens from the Codex backend response.completed usage.
+   *  Proves prompt_cache_key is effective. Non-reversible (a count, not content). */
+  readonly cachedTokens?: number;
+  /** First 8 hex chars of the derived conversation key (the session_id prefix).
+   *  Verifies key stability across turns without revealing the full key.
+   *  Truncated: non-reversible. */
+  readonly sessionKey?: string;
 }
 
 export interface Logger {
@@ -21,7 +28,18 @@ export interface Logger {
 
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
-const FIELD_KEYS = ["model", "path", "route", "status", "latencyMs", "eventType", "errorCode", "effort"] as const;
+const FIELD_KEYS = [
+  "model",
+  "path",
+  "route",
+  "status",
+  "latencyMs",
+  "eventType",
+  "errorCode",
+  "effort",
+  "cachedTokens",
+  "sessionKey",
+] as const;
 
 export const createConsoleLogger = (
   minLevel: LogLevel,

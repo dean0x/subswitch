@@ -22,4 +22,11 @@ describe("createConsoleLogger", () => {
     logger.log("info", "request_complete", { latencyMs: 12, model: "gpt-5.5", status: 200, route: "codex:messages" });
     assert.equal(lines[0], "level=info event=request_complete model=gpt-5.5 route=codex:messages status=200 latencyMs=12");
   });
+
+  it("emits cachedTokens and sessionKey in the closed field set", () => {
+    const lines: string[] = [];
+    const logger = createConsoleLogger("debug", (line) => lines.push(line));
+    logger.log("debug", "codex_cache_tokens", { cachedTokens: 80, sessionKey: "a1b2c3d4" });
+    assert.equal(lines[0], "level=debug event=codex_cache_tokens cachedTokens=80 sessionKey=a1b2c3d4");
+  });
 });
