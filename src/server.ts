@@ -36,6 +36,7 @@ export const buildDeps = (config: Config): ServerDeps => {
       baseUrl: config.anthropic.baseUrl,
       connectTimeoutMs: config.limits.connectTimeoutMs,
       streamIdleTimeoutMs: config.limits.streamIdleTimeoutMs,
+      maxUpstreamSockets: config.limits.maxUpstreamSockets,
       logger,
     }),
     codex: createCodexHandler({ config, logger, auth, cache }),

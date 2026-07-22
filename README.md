@@ -109,6 +109,7 @@ New knobs added in this release:
 |-----|---------|-------------|
 | `reasoningCache.maxEntries` | `4096` | Maximum number of reasoning cache LRU entries |
 | `reasoningCache.maxBytes` | `67108864` (64 MiB) | Maximum total byte footprint of the reasoning cache |
+| `limits.maxUpstreamSockets` | `32` | Maximum sockets in the Anthropic keep-alive connection pool |
 
 ## How the Codex leg works
 

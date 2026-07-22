@@ -20,6 +20,7 @@
     "streamIdleTimeoutMs": 300000,
     "requestTimeoutMs": 600000,
     "pingIntervalMs": 15000,
-    "maxSseEventBytes": 4194304
+    "maxSseEventBytes": 4194304,
+    "maxUpstreamSockets": 32
   }
 }

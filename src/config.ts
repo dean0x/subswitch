@@ -13,6 +13,7 @@ const LimitsSchema = z.object({
   requestTimeoutMs: z.number().int().positive().default(600_000),
   pingIntervalMs: z.number().int().positive().default(15_000),
   maxSseEventBytes: z.number().int().positive().default(4 * 1024 * 1024),
+  maxUpstreamSockets: z.number().int().positive().default(32),
 });
 
 const ConfigSchema = z.object({
