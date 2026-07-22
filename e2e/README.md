@@ -56,6 +56,36 @@ In any project that should use croxy, add `.claude/settings.json`:
 No credential variables — the subscription OAuth flows through. Projects
 without this setting are completely unaffected.
 
+## Transport finding (2026-07-22, codex-cli 0.144.6)
+
+The Phase A wire capture (2026-07-22) revealed that the real `codex exec` CLI
+uses a **WebSocket app-server transport** for AI inference — it does NOT POST
+to `/responses` over HTTP. The capture's header comparison was therefore against
+the wrong transport for the croxy Codex leg.
+
+**Consequence for header parity**: croxy's current `/responses` HTTP headers
+(`openai-beta: responses=experimental`, `originator: codex_cli_rs`, `accept:
+text/event-stream`, and `session_id` as a request header) are verified working
+against the real `/responses` backend (live-verified 2026-07-21) and are NOT
+changed. The capture data for `originator`, `openai-beta`, `accept`, and
+`session_id` location apply to the WebSocket transport and are not applicable
+here.
+
+What WAS applied from the capture findings:
+
+- **`user-agent`** header: added as `codex.userAgent` config knob (default
+  `codex_cli_rs/0.144.6`, matching the `originator` croxy already sends).
+  Machine-specific OS/arch/terminal telemetry is intentionally omitted — it
+  cannot be honestly populated by a proxy. Override via config if needed.
+- **session_id stability**: the real CLI uses a UUID v7 that is stable within
+  an invocation and new per invocation. croxy now derives a deterministic
+  v7-shaped UUID from `sha256(model + instructions + first-user-message)`,
+  stable across turns of the same conversation and per-invocation-stable from
+  Claude Code's perspective.
+- **prompt_cache_key**: the backend demonstrates effective prompt caching
+  (observed 76% hit in the capture). croxy now adds `prompt_cache_key` to
+  `/responses` request bodies to reinforce cache affinity.
+
 ## Codex wire capture
 
 A dev-only recorder tool that sits transparently between croxy and the real

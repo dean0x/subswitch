@@ -8,7 +8,8 @@
     "baseUrl": "https://chatgpt.com/backend-api/codex",
     "oauthTokenUrl": "https://auth.openai.com/oauth/token",
     "authFile": "~/.codex/auth.json",
-    "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+    "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
+    "userAgent": "codex_cli_rs/0.144.6"
   },
   "reasoningCache": {
     "maxEntries": 4096,
