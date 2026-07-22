@@ -28,16 +28,16 @@ const capBytes = (s: string): string => {
  * affinity and session_id, which is benign under store:false. [applies ADR-003]
  *
  * Escape hatch: to stop including instructions in the hash (e.g., if Claude Code
- * mutates system mid-conversation causing key flap), remove the
- * `instructionsComponent` element from the components array below — that is the
- * only edit needed.
+ * mutates system mid-conversation causing key flap), replace the right-hand side
+ * of the `instructionsComponent` assignment below with `""` — that is the only
+ * edit needed (keeps the binding so the template literal still compiles).
  */
 export const deriveConversationKey = (request: AnthropicRequest): string | undefined => {
   const firstUserMessage = request.messages.find((m) => m.role === "user");
   if (firstUserMessage === undefined) return undefined;
 
   const modelComponent = capBytes(request.model);
-  // Escape hatch: remove the next line to drop instructions from the hash.
+  // Escape hatch: set the next line's right-hand side to `""` to drop instructions from the hash.
   const instructionsComponent = capBytes(buildInstructions(request.system) ?? "");
   const userMessageComponent = capBytes(JSON.stringify(firstUserMessage));
 
