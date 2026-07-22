@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen.svg)](https://nodejs.org/)
 
-**Route one Claude Code subagent to a different model — keep everything else on Claude.**
+**Route Claude Code subagents to a different model - keep everything else on Claude.**
 
 subroute is a local subscription-routing proxy for Claude Code. Give a subagent a
 Codex model in its frontmatter (`model: gpt-5.5`) and *that subagent alone* runs
