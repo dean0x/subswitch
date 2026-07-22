@@ -98,6 +98,18 @@ Optional configuration goes in `croxy.config.json` (gitignored). See
 [`croxy.config.example.json`](croxy.config.example.json) for every knob and its
 default.
 
+The config file is located by the following precedence (highest wins):
+
+1. `CROXY_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
+2. `croxy.config.json` in the current working directory — silently uses defaults if absent
+
+New knobs added in this release:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `reasoningCache.maxEntries` | `4096` | Maximum number of reasoning cache LRU entries |
+| `reasoningCache.maxBytes` | `67108864` (64 MiB) | Maximum total byte footprint of the reasoning cache |
+
 ## How the Codex leg works
 
 - **Auth**: reads `~/.codex/auth.json`, proactively refreshes the OAuth access
