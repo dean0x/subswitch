@@ -470,13 +470,13 @@ const server = http.createServer((req, res) => {
 
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
   println("╔══════════════════════════════════════════════════════════════╗");
-  println("║         croxy Codex wire-capture recorder (dev only)        ║");
+  println("║         subroute Codex wire-capture recorder (dev only)        ║");
   println("╚══════════════════════════════════════════════════════════════╝");
   println(`  Listening : http://${LISTEN_HOST}:${LISTEN_PORT}`);
   println(`  Upstream  : ${UPSTREAM_BASE}`);
   println("");
-  println("  To route croxy through this recorder, set codex.baseUrl in");
-  println(`  croxy.config.json to "http://${LISTEN_HOST}:${LISTEN_PORT}"`);
+  println("  To route subroute through this recorder, set codex.baseUrl in");
+  println(`  subroute.config.json to "http://${LISTEN_HOST}:${LISTEN_PORT}"`);
   println("");
   println("  Override upstream: CODEX_RECORDER_UPSTREAM=https://... npx tsx ...");
   println("");

@@ -64,12 +64,12 @@ export const sseHandler = (sseText: string): UpstreamHandler => (_req, res) => {
   res.end(sseText);
 };
 
-export interface CroxyInstance {
+export interface SubrouteInstance {
   readonly url: string;
   close(): Promise<void>;
 }
 
-export const startCroxy = async (overrides: Record<string, unknown>): Promise<CroxyInstance> => {
+export const startSubroute = async (overrides: Record<string, unknown>): Promise<SubrouteInstance> => {
   const configResult = loadConfig({
     configPath: "inline-test-config.json",
     readFile: () => JSON.stringify({ logLevel: "error", ...overrides }),

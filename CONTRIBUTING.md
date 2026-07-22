@@ -1,6 +1,6 @@
-# Contributing to croxy
+# Contributing to subroute
 
-Thanks for your interest in improving croxy.
+Thanks for your interest in improving subroute.
 
 ## Prerequisites
 

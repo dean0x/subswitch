@@ -1,6 +1,6 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { startCroxy, startFakeUpstream, rawHttpRequest, type CroxyInstance, type FakeUpstream } from "./fake-upstreams.js";
+import { startSubroute, startFakeUpstream, rawHttpRequest, type SubrouteInstance, type FakeUpstream } from "./fake-upstreams.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 after(async () => {
@@ -10,11 +10,11 @@ after(async () => {
 const setup = async (
   handler: Parameters<typeof startFakeUpstream>[0],
   limits: Record<string, unknown> = {},
-): Promise<{ anthropic: FakeUpstream; croxy: CroxyInstance }> => {
+): Promise<{ anthropic: FakeUpstream; subroute: SubrouteInstance }> => {
   const anthropic = await startFakeUpstream(handler);
-  const croxy = await startCroxy({ anthropic: { baseUrl: anthropic.url }, limits });
-  cleanups.push(croxy.close, anthropic.close);
-  return { anthropic, croxy };
+  const subroute = await startSubroute({ anthropic: { baseUrl: anthropic.url }, limits });
+  cleanups.push(subroute.close, anthropic.close);
+  return { anthropic, subroute };
 };
 
 /** Convert a flat [name, value, ...] raw-header array to [name, value] pairs. */
@@ -26,13 +26,13 @@ const toPairs = (raw: string[]): [string, string][] => {
 
 describe("anthropic passthrough", () => {
   it("forwards method, path+query, auth headers, and body verbatim", async () => {
-    const { anthropic, croxy } = await setup((_req, res) => {
+    const { anthropic, subroute } = await setup((_req, res) => {
       res.writeHead(200, { "content-type": "application/json", "request-id": "req_fake_1" });
       res.end(JSON.stringify({ id: "msg_ok" }));
     });
 
     const body = JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 32, messages: [{ role: "user", content: "hi" }] });
-    const response = await fetch(`${croxy.url}/v1/messages?beta=true`, {
+    const response = await fetch(`${subroute.url}/v1/messages?beta=true`, {
       method: "POST",
       headers: {
         authorization: "Bearer sk-ant-oat-FAKE-OAUTH",
@@ -64,12 +64,12 @@ describe("anthropic passthrough", () => {
       'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n',
       'event: message_stop\ndata: {"type":"message_stop"}\n\n',
     ].join("");
-    const { croxy } = await setup((_req, res) => {
+    const { subroute } = await setup((_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(sse);
     });
 
-    const response = await fetch(`${croxy.url}/v1/messages?beta=true`, {
+    const response = await fetch(`${subroute.url}/v1/messages?beta=true`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: "claude-sonnet-4-6", stream: true, messages: [] }),
@@ -79,7 +79,7 @@ describe("anthropic passthrough", () => {
   });
 
   it("passes through HEAD / and GET /v1/models without buffering", async () => {
-    const { anthropic, croxy } = await setup((req, res) => {
+    const { anthropic, subroute } = await setup((req, res) => {
       if (req.method === "HEAD") {
         res.writeHead(200, { "x-probe": "ok" });
         res.end();
@@ -89,17 +89,17 @@ describe("anthropic passthrough", () => {
       res.end(JSON.stringify({ data: [] }));
     });
 
-    const head = await fetch(`${croxy.url}/`, { method: "HEAD" });
+    const head = await fetch(`${subroute.url}/`, { method: "HEAD" });
     assert.equal(head.status, 200);
     assert.equal(head.headers.get("x-probe"), "ok");
 
-    const models = await fetch(`${croxy.url}/v1/models?limit=5`);
+    const models = await fetch(`${subroute.url}/v1/models?limit=5`);
     assert.equal(models.status, 200);
     assert.equal(anthropic.requests[1]!.url, "/v1/models?limit=5");
   });
 
   it("responds 413 with an anthropic-shaped error when the body exceeds the cap", async () => {
-    const { anthropic, croxy } = await setup(
+    const { anthropic, subroute } = await setup(
       (_req, res) => {
         res.writeHead(200);
         res.end();
@@ -107,7 +107,7 @@ describe("anthropic passthrough", () => {
       { maxBodyBytes: 1024 },
     );
 
-    const response = await fetch(`${croxy.url}/v1/messages`, {
+    const response = await fetch(`${subroute.url}/v1/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: `{"model":"claude-sonnet-4-6","padding":"${"x".repeat(4096)}"}`,
@@ -122,10 +122,10 @@ describe("anthropic passthrough", () => {
   it("responds 502 anthropic-shaped when the upstream is unreachable", async () => {
     const anthropic = await startFakeUpstream((_req, res) => res.end());
     await anthropic.close();
-    const croxy = await startCroxy({ anthropic: { baseUrl: anthropic.url } });
-    cleanups.push(croxy.close);
+    const subroute = await startSubroute({ anthropic: { baseUrl: anthropic.url } });
+    cleanups.push(subroute.close);
 
-    const response = await fetch(`${croxy.url}/v1/messages`, {
+    const response = await fetch(`${subroute.url}/v1/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
@@ -140,7 +140,7 @@ describe("anthropic passthrough", () => {
   // ---------------------------------------------------------------------------
 
   it("reuses a single TCP connection for two sequential requests (keep-alive)", async () => {
-    const { anthropic, croxy } = await setup((_req, res) => {
+    const { anthropic, subroute } = await setup((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ id: "msg_ok" }));
     });
@@ -151,15 +151,15 @@ describe("anthropic passthrough", () => {
       body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
     };
 
-    const r1 = await fetch(`${croxy.url}/v1/messages`, opts);
+    const r1 = await fetch(`${subroute.url}/v1/messages`, opts);
     assert.equal(r1.status, 200);
     await r1.body?.cancel(); // drain
 
-    const r2 = await fetch(`${croxy.url}/v1/messages`, opts);
+    const r2 = await fetch(`${subroute.url}/v1/messages`, opts);
     assert.equal(r2.status, 200);
     await r2.body?.cancel();
 
-    // croxy must have reused one TCP connection to the fake upstream
+    // subroute must have reused one TCP connection to the fake upstream
     assert.equal(anthropic.connectionCount, 1, "keep-alive: expected 1 TCP connection for 2 requests");
   });
 
@@ -170,11 +170,11 @@ describe("anthropic passthrough", () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ id: "ok" }));
     });
-    const croxy = await startCroxy({ anthropic: { baseUrl: anthropic.url } });
-    cleanups.push(croxy.close, anthropic.close);
+    const subroute = await startSubroute({ anthropic: { baseUrl: anthropic.url } });
+    cleanups.push(subroute.close, anthropic.close);
 
     const makePost = () =>
-      fetch(`${croxy.url}/v1/messages`, {
+      fetch(`${subroute.url}/v1/messages`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
@@ -200,11 +200,11 @@ describe("anthropic passthrough", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Header byte-parity — request direction (client → croxy → upstream)
+  // Header byte-parity — request direction (client → subroute → upstream)
   // ---------------------------------------------------------------------------
 
   it("forwards request headers byte-identically: preserves casing, order, and duplicates", async () => {
-    const { anthropic, croxy } = await setup((_req, res) => {
+    const { anthropic, subroute } = await setup((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ id: "ok" }));
     });
@@ -221,7 +221,7 @@ describe("anthropic passthrough", () => {
       "Content-Type", "application/json",
     ];
 
-    await rawHttpRequest(`${croxy.url}/v1/messages`, {
+    await rawHttpRequest(`${subroute.url}/v1/messages`, {
       method: "POST",
       rawHeaders: sentRawHeaders,
       body: Buffer.from(JSON.stringify({ model: "claude-sonnet-4-6", messages: [] })),
@@ -233,9 +233,9 @@ describe("anthropic passthrough", () => {
     const upstreamPairs = toPairs(upstreamRaw);
     const upstreamNameSet = new Set(upstreamPairs.map(([n]) => n.toLowerCase()));
 
-    // 1. croxy must inject ONLY Host and Connection — nothing else.
+    // 1. subroute must inject ONLY Host and Connection — nothing else.
     // content-length is auto-added by the HTTP client for the request body; it is NOT
-    // injected by croxy, so we allow it here for POST requests.
+    // injected by subroute, so we allow it here for POST requests.
     const allowed = new Set(["host", "connection", "content-length"]);
     const sentNames = new Set(
       toPairs(sentRawHeaders)
@@ -244,7 +244,7 @@ describe("anthropic passthrough", () => {
     for (const [name] of upstreamPairs) {
       const lc = name.toLowerCase();
       if (!sentNames.has(lc)) {
-        assert.ok(allowed.has(lc), `croxy injected unexpected header: ${name}`);
+        assert.ok(allowed.has(lc), `subroute injected unexpected header: ${name}`);
       }
     }
 
@@ -277,7 +277,7 @@ describe("anthropic passthrough", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Header byte-parity — response direction (upstream → croxy → client)
+  // Header byte-parity — response direction (upstream → subroute → client)
   // ---------------------------------------------------------------------------
 
   it("forwards response headers byte-identically: preserves casing, order, and duplicates", async () => {
@@ -291,13 +291,13 @@ describe("anthropic passthrough", () => {
     ];
 
     const body = JSON.stringify({ id: "ok" });
-    const { croxy } = await setup((_req, res) => {
+    const { subroute } = await setup((_req, res) => {
       // Use writeHead with flat raw array so headers go out with original casing
       res.writeHead(200, upstreamResponseHeaders as string[]);
       res.end(body);
     });
 
-    const response = await rawHttpRequest(`${croxy.url}/v1/models`, {
+    const response = await rawHttpRequest(`${subroute.url}/v1/models`, {
       method: "GET",
       rawHeaders: ["Accept", "application/json"],
     });
@@ -314,7 +314,7 @@ describe("anthropic passthrough", () => {
       assert.ok(found, `upstream response header ${name}: ${value} must reach client byte-identically`);
     }
 
-    // 2. croxy must add only headers Node's HTTP server must inject.
+    // 2. subroute must add only headers Node's HTTP server must inject.
     // Node adds Date, Connection, and Keep-Alive (on keep-alive connections), plus
     // Transfer-Encoding when there is no explicit Content-Length.
     const upstreamNames = new Set(expectedPairs.map(([n]) => n.toLowerCase()));
@@ -322,7 +322,7 @@ describe("anthropic passthrough", () => {
     for (const [name] of receivedPairs) {
       const lc = name.toLowerCase();
       if (!upstreamNames.has(lc)) {
-        assert.ok(allowedInjections.has(lc), `croxy injected unexpected response header: ${name}`);
+        assert.ok(allowedInjections.has(lc), `subroute injected unexpected response header: ${name}`);
       }
     }
 

@@ -12,7 +12,7 @@ updated: 2026-07-22
 
 ## Overview
 
-croxy translates Anthropic Messages API requests (`gpt-*` model names) into OpenAI Responses API
+subroute translates Anthropic Messages API requests (`gpt-*` model names) into OpenAI Responses API
 calls against `https://chatgpt.com/backend-api/codex/responses`. Routing is decided in
 `src/router.ts` by exact match against `config.codex.models` (applies ADR-001). Everything else
 passes through to the Anthropic leg unchanged.
@@ -24,12 +24,12 @@ Codex backend differs from the Responses API in ways that are not obvious from i
 
 ## Business Context
 
-Claude Code's subagent harness calls croxy as if it were the Anthropic Messages API. When the
-model is a `gpt-*` slug, croxy must produce Anthropic-shaped SSE frames on the way back — Claude
+Claude Code's subagent harness calls subroute as if it were the Anthropic Messages API. When the
+model is a `gpt-*` slug, subroute must produce Anthropic-shaped SSE frames on the way back — Claude
 Code never knows it spoke to a different backend. The translation must be invisible to the caller.
 
 The Codex backend is accessed with the user's ChatGPT subscription OAuth credentials, forwarded
-from `~/.codex/auth.json` (applies ADR-002). croxy holds no API keys for this leg.
+from `~/.codex/auth.json` (applies ADR-002). subroute holds no API keys for this leg.
 
 ## Critical Transport Finding (verified live 2026-07-22, codex-cli 0.144.6)
 
@@ -37,15 +37,15 @@ from `~/.codex/auth.json` (applies ADR-002). croxy holds no API keys for this le
 It uses a WebSocket app-server transport (`rpc_transport: "app_server"`). The HTTP calls captured
 from `codex exec` are analytics and session management only.
 
-Consequence: croxy's `/responses` protocol constants were independently verified working against
+Consequence: subroute's `/responses` protocol constants were independently verified working against
 the HTTP backend (2026-07-21), not derived from a `codex exec` wire capture. The parity gaps
-table in `e2e/README.md` (Section "Parity gaps — croxy vs real CLI") compares croxy against
+table in `e2e/README.md` (Section "Parity gaps — subroute vs real CLI") compares subroute against
 analytics-endpoint headers from the wrong transport. **Do not use that table to "fix"** the
 `buildHeaders` function in `codex-handler.ts`.
 
 What this means concretely:
 
-| croxy `/responses` header | Status |
+| subroute `/responses` header | Status |
 |---|---|
 | `openai-beta: responses=experimental` | Verified working; keep as-is |
 | `originator: codex_cli_rs` | Verified working; keep as-is |
@@ -78,8 +78,8 @@ preserved in `e2e/README.md` for future audit but must not drive header changes 
 
 - `store: false` — prevents reasoning items from persisting server-side (applies ADR-003).
 - `include: ["reasoning.encrypted_content"]` — requests encrypted reasoning in the response so
-  croxy can cache it server-side and re-inject on the next turn (applies ADR-003).
-- `stream: true` — always streamed internally; croxy's aggregator reconstructs non-stream
+  subroute can cache it server-side and re-inject on the next turn (applies ADR-003).
+- `stream: true` — always streamed internally; subroute's aggregator reconstructs non-stream
   responses for callers that set `stream: false`.
 - `prompt_cache_key` — injected when a conversation key is derived (see below). Drives prompt
   caching; 76% hit rate observed live.
@@ -95,7 +95,7 @@ preserved in `e2e/README.md` for future audit but must not drive header changes 
 
 The conversation key is a deterministic, v7-shaped UUID. It drives BOTH `prompt_cache_key` in the
 outbound request body AND `session_id` in request headers. The real codex-cli uses UUID v7 for
-its session_id; croxy forces the version nibble to 7 and variant bits to 10xx for fingerprint
+its session_id; subroute forces the version nibble to 7 and variant bits to 10xx for fingerprint
 parity.
 
 Derivation: `sha256(capBytes(model) + " " + capBytes(buildInstructions(system)) + " " + capBytes(JSON.stringify(firstUserMessage)))`
@@ -199,12 +199,12 @@ for this field. Drop it unconditionally (avoids PF-002).
 
 ## Gotchas
 
-**`stream: true` is always sent, even when the client sets `stream: false`.** croxy always
+**`stream: true` is always sent, even when the client sets `stream: false`.** subroute always
 requests an SSE stream from the backend, then `aggregateFrames` assembles a non-streaming response
 from the Anthropic SSE frames it has already emitted. The `wantStream` flag controls only how
-croxy writes to the client, not how it reads from the backend.
+subroute writes to the client, not how it reads from the backend.
 
-**`session_id` appears in two different places with different semantics.** In croxy's
+**`session_id` appears in two different places with different semantics.** In subroute's
 `buildHeaders`, it is a request header. In the live `codex exec` analytics captures, `session_id`
 appears as a body field in analytics POST payloads. These are different transports and the
 discrepancy is expected and intentional.

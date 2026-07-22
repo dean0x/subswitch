@@ -28,7 +28,7 @@ export const createFsAuthFileStore = (path: string): AuthFileStore => ({
     }
   },
   async writeAtomic(content) {
-    const tmpPath = `${path}.croxy-${process.pid}.tmp`;
+    const tmpPath = `${path}.subroute-${process.pid}.tmp`;
     try {
       const handle = await open(tmpPath, "w", 0o600);
       try {
