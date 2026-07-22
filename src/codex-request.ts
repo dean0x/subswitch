@@ -210,7 +210,7 @@ const translateToolChoice = (
       warnings.push("unknown_tool_choice");
       return undefined;
   }
-}
+};
 
 const stripCacheControl = (value: Record<string, unknown>): Record<string, unknown> => {
   const { cache_control: _dropped, ...rest } = value;
