@@ -96,7 +96,8 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
         agent,
         // No headers here — http.request uses Object.keys on the headers option,
         // which would produce numeric indices for an array.  We apply headers via
-        // setHeader calls below to preserve original casing, order, and duplicates.
+        // setHeader calls below to preserve original casing and per-name value order
+        // (cross-name position of interleaved duplicates is not guaranteed).
       },
       (upstreamRes) => {
         responded = true;
@@ -116,7 +117,11 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
 
     // Request direction: build a Map from the filtered rawHeaders so that
     // duplicates (same lowercase key, different values) are preserved as array
-    // values, and setHeader sends them with original name casing.
+    // values, and setHeader sends them with original name casing.  Caveat:
+    // interleaved duplicates of the same name (A,B,A) are regrouped adjacent
+    // (A,A,B); per-name value order is preserved (RFC 7230 §3.2.2) and adjacent
+    // duplicates are byte-exact.  Anthropic clients do not interleave duplicate
+    // header names, so this is safe in practice.
     const filteredRaw = filterRawHeaders(req.rawHeaders);
     const headerMap = new Map<string, { name: string; values: string[] }>();
     for (let i = 0; i + 1 < filteredRaw.length; i += 2) {
