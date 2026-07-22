@@ -9,6 +9,7 @@ import type { Logger } from "./logger.js";
 import type { CodexAuthManager, CodexCredentials } from "./codex-auth.js";
 import type { ReasoningCache } from "./reasoning-cache.js";
 import { estimateTokens, translateRequest } from "./codex-request.js";
+import { deriveConversationKey } from "./conversation-key.js";
 import { aggregateFrames, createAnthropicSseTranslator, createSseParser } from "./codex-response.js";
 import { AnthropicRequestSchema } from "./wire-types.js";
 
@@ -63,14 +64,20 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
   const newSessionId = deps.newSessionId ?? randomUUID;
   const responsesUrl = `${config.codex.baseUrl.replace(/\/$/, "")}/responses`;
 
-  const buildHeaders = (credentials: CodexCredentials): Record<string, string> => ({
+  const buildHeaders = (credentials: CodexCredentials, sessionId: string): Record<string, string> => ({
     authorization: `Bearer ${credentials.accessToken}`,
     "chatgpt-account-id": credentials.accountId,
+    // These constants are verified working against the /responses HTTP API (2026-07-21).
+    // The real `codex exec` CLI uses a WebSocket app-server transport for inference,
+    // so its REST headers are a different transport and not a valid parity reference.
+    // We are adding UA/session stability here, NOT re-doing the working protocol
+    // constants on unverified wrong-transport data. See e2e/README.md.
     "openai-beta": "responses=experimental",
     originator: "codex_cli_rs",
-    session_id: newSessionId(),
+    session_id: sessionId,
     accept: "text/event-stream",
     "content-type": "application/json",
+    "user-agent": config.codex.userAgent,
   });
 
   const handleMessages = async (_req: IncomingMessage, res: ServerResponse, rawBody: Buffer): Promise<void> => {
@@ -88,7 +95,17 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
     }
     const model = parsed.data.model;
 
-    const translated = translateRequest(parsed.data, cache);
+    // Derive the conversation key from the raw inbound request (not builder output,
+    // which may be a translated developer-role message for subagents per PF-003).
+    // The key is stable within a conversation (same model + system + first user message)
+    // and v7-shaped for session_id fingerprint parity with the real codex-cli.
+    const conversationKey = deriveConversationKey(parsed.data);
+    // session_id is stable per conversation; falls back to a random UUID when no
+    // user message is present. The same id is reused on the 401-refresh retry
+    // below (sessionId is captured once before the loop).
+    const sessionId = conversationKey ?? newSessionId();
+
+    const translated = translateRequest(parsed.data, cache, conversationKey);
     if (!translated.ok) {
       respondProxyError(res, translated.error);
       return;
@@ -135,7 +152,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
         try {
           response = await fetchImpl(responsesUrl, {
             method: "POST",
-            headers: buildHeaders(credentials),
+            headers: buildHeaders(credentials, sessionId),
             body: JSON.stringify(translated.value.body),
             signal: controller.signal,
           });
@@ -193,6 +210,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
         model,
         logger,
         onReasoningItems: (callId, items) => cache.put(callId, items),
+        ...(conversationKey !== undefined ? { conversationKey } : {}),
         ...(wantStream ? { pingIntervalMs: config.limits.pingIntervalMs } : {}),
       });
       const bodyStream = Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>);

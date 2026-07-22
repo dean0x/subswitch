@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { loadConfig, type Config } from "./config.js";
+import { type Config, loadConfig } from "./config.js";
 import { inspectAuthFile } from "./codex-auth.js";
-import { buildDeps, createProxyServer } from "./server.js";
+import { buildDeps, createProxyServer, listenServer } from "./server.js";
+import { probeCroxy, probeTlsReachable, makeLiveHttpGet, makeLiveTlsConnect } from "./doctor.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
 
@@ -14,12 +15,20 @@ const fail = (message: string): void => {
   process.exitCode = 1;
 };
 
-const serve = (config: Config): void => {
+const serve = async (config: Config, configPath: string, fileFound: boolean): Promise<void> => {
   const deps = buildDeps(config);
   const server = createProxyServer(deps);
-  server.listen(config.port, "127.0.0.1", () => {
-    deps.logger.log("info", "listening", { path: `http://127.0.0.1:${config.port}` });
-  });
+  const listenResult = await listenServer(server, config.port, "127.0.0.1");
+  if (!listenResult.ok) {
+    if (listenResult.error.code === "EADDRINUSE") {
+      fail(`port ${config.port} already in use — is another croxy running?`);
+    } else {
+      fail(`failed to start: ${listenResult.error.message}`);
+    }
+    return;
+  }
+  deps.logger.log("info", "config_loaded", { path: configPath, eventType: fileFound ? "loaded" : "defaults" });
+  deps.logger.log("info", "listening", { path: `http://127.0.0.1:${config.port}` });
 
   const shutdown = (): void => {
     deps.logger.log("info", "shutting_down");
@@ -31,8 +40,9 @@ const serve = (config: Config): void => {
   process.on("SIGTERM", shutdown);
 };
 
-const doctor = async (config: Config): Promise<void> => {
+const doctor = async (config: Config, configPath: string, fileFound: boolean): Promise<void> => {
   out("croxy doctor");
+  out(`  config:             ${configPath}${fileFound ? "" : " (defaults — file not found)"}`);
   out(`  port:               ${config.port}`);
   out(`  logLevel:           ${config.logLevel}`);
   out(`  anthropic.baseUrl:  ${config.anthropic.baseUrl}`);
@@ -40,24 +50,55 @@ const doctor = async (config: Config): Promise<void> => {
   out(`  codex.models:       ${config.codex.models.join(", ")}`);
   out(`  codex.authFile:     ${config.codex.authFile}`);
 
-  let raw: string;
   try {
-    raw = await readFile(config.codex.authFile, "utf8");
+    const raw = await readFile(config.codex.authFile, "utf8");
+    const inspection = inspectAuthFile(raw);
+    if (!inspection.ok) {
+      out(`  codex auth:         INVALID (${inspection.error.message})`);
+    } else {
+      const info = inspection.value;
+      out(`  codex auth mode:    ${info.authMode}`);
+      out(`  codex account:      ${info.accountIdSuffix}`);
+      out(`  token expires:      ${info.accessTokenExpiresAt ?? "(no exp claim)"}`);
+      out(`  last refresh:       ${info.lastRefresh ?? "(unknown)"}`);
+    }
   } catch {
     out("  codex auth:         UNAVAILABLE (cannot read auth file — run `codex login`)");
     out("  note: the Anthropic leg works without codex auth; only configured codex models are affected");
-    return;
   }
-  const inspection = inspectAuthFile(raw);
-  if (!inspection.ok) {
-    out(`  codex auth:         INVALID (${inspection.error.message})`);
-    return;
+
+  const httpGet = makeLiveHttpGet();
+  const tlsConnect = makeLiveTlsConnect();
+
+  const croxyStatus = await probeCroxy(config.port, { httpGet });
+  switch (croxyStatus.kind) {
+    case "running":
+      out(`  croxy running:      YES (version ${croxyStatus.version})`);
+      break;
+    case "connection_refused":
+      out(`  croxy running:      NO (port ${config.port} not in use)`);
+      break;
+    case "not_croxy":
+      out(`  croxy running:      UNKNOWN (something else is on port ${config.port})`);
+      break;
   }
-  const info = inspection.value;
-  out(`  codex auth mode:    ${info.authMode}`);
-  out(`  codex account:      ${info.accountIdSuffix}`);
-  out(`  token expires:      ${info.accessTokenExpiresAt ?? "(no exp claim)"}`);
-  out(`  last refresh:       ${info.lastRefresh ?? "(unknown)"}`);
+
+  const anthropicHost = new URL(config.anthropic.baseUrl).hostname;
+  const codexHost = new URL(config.codex.baseUrl).hostname;
+
+  const anthropicTls = await probeTlsReachable(anthropicHost, { tlsConnect });
+  out(
+    anthropicTls.kind === "reachable"
+      ? `  anthropic TLS:      OK (${anthropicHost})`
+      : `  anthropic TLS:      FAIL (${anthropicHost}: ${anthropicTls.message})`,
+  );
+
+  const codexTls = await probeTlsReachable(codexHost, { tlsConnect });
+  out(
+    codexTls.kind === "reachable"
+      ? `  codex TLS:          OK (${codexHost})`
+      : `  codex TLS:          FAIL (${codexHost}: ${codexTls.message})`,
+  );
 };
 
 const main = async (): Promise<void> => {
@@ -67,12 +108,13 @@ const main = async (): Promise<void> => {
     fail(configResult.error.message);
     return;
   }
+  const { config, configPath, fileFound } = configResult.value;
   if (command === "serve") {
-    serve(configResult.value);
+    await serve(config, configPath, fileFound);
     return;
   }
   if (command === "doctor") {
-    await doctor(configResult.value);
+    await doctor(config, configPath, fileFound);
     return;
   }
   fail(`unknown command "${command}" — usage: croxy [serve|doctor]`);

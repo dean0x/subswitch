@@ -86,6 +86,12 @@ export const ResponsesResponseObjectSchema = z
       .object({
         input_tokens: z.number().optional(),
         output_tokens: z.number().optional(),
+        input_tokens_details: z
+          .object({
+            cached_tokens: z.number().optional(),
+          })
+          .passthrough()
+          .optional(),
       })
       .passthrough()
       .nullish(),

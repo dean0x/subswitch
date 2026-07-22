@@ -8,10 +8,12 @@
     "baseUrl": "https://chatgpt.com/backend-api/codex",
     "oauthTokenUrl": "https://auth.openai.com/oauth/token",
     "authFile": "~/.codex/auth.json",
-    "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
+    "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
+    "userAgent": "codex_cli_rs/0.144.6"
   },
   "reasoningCache": {
-    "maxEntries": 256
+    "maxEntries": 4096,
+    "maxBytes": 67108864
   },
   "limits": {
     "maxBodyBytes": 33554432,
@@ -19,6 +21,7 @@
     "streamIdleTimeoutMs": 300000,
     "requestTimeoutMs": 600000,
     "pingIntervalMs": 15000,
-    "maxSseEventBytes": 4194304
+    "maxSseEventBytes": 4194304,
+    "maxUpstreamSockets": 32
   }
 }
