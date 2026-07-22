@@ -56,6 +56,81 @@ In any project that should use croxy, add `.claude/settings.json`:
 No credential variables — the subscription OAuth flows through. Projects
 without this setting are completely unaffected.
 
+## Codex wire capture
+
+A dev-only recorder tool that sits transparently between croxy and the real
+Codex backend, printing the wire shape of every request and response to
+stdout. Credential values are **never** printed — headers like
+`authorization`, `cookie`, and `openai-sentinel-*` are replaced with a
+structural fingerprint: `<len:N,sha8:XXXXXXXX>`. All other string values in
+JSON bodies are replaced with `<len:N>`.
+
+### How to run
+
+In one terminal start the recorder:
+
+```sh
+npx tsx e2e/capture/codex-recorder.ts
+```
+
+It listens on `http://127.0.0.1:4142` and by default forwards to
+`https://chatgpt.com/backend-api/codex`. Override the upstream with the
+`CODEX_RECORDER_UPSTREAM` environment variable:
+
+```sh
+CODEX_RECORDER_UPSTREAM=https://chatgpt.com/backend-api/codex \
+  npx tsx e2e/capture/codex-recorder.ts
+```
+
+### Routing croxy through the recorder
+
+Edit (or create) `croxy.config.json` and set `codex.baseUrl` to point at the
+recorder instead of directly to Codex:
+
+```json
+{
+  "codex": {
+    "baseUrl": "http://127.0.0.1:4142"
+  }
+}
+```
+
+Then start croxy as normal (`npm run serve`). Every Codex-leg request will
+flow through the recorder, which logs the wire details and forwards them to
+the real backend transparently.
+
+### What the output means
+
+For each round-trip the recorder prints two sections separated by a
+horizontal rule.
+
+**REQUEST block** — logged before forwarding:
+- `REQUEST HEADERS` — all headers in original casing and order; sensitive
+  headers shown as `<len:N,sha8:XXXXXXXX>` (length + first 8 hex of SHA-256)
+- `REQUEST BODY SHAPE` — structural skeleton of the JSON body. Every string
+  value is replaced with `<len:N>`. JWT-looking strings get
+  `<jwt,len:N,sha8:XXXXXXXX>`. Arrays appear as `{ "_array": N, "_item": <shape> }`.
+  Numbers and booleans are shown verbatim (non-sensitive). Capped at 100
+  fields / depth 6.
+
+**RESPONSE block** — logged while streaming:
+- `RESPONSE HEADERS` — same redaction rules as request headers
+- `SSE EVENTS` — one line per event showing its `type` field (from the JSON
+  `data` payload). For `response.completed` events the `usage` object is
+  printed verbatim (token counts are not sensitive). Capped at the first 200
+  events; beyond that a running counter appears.
+- `SSE TOTAL` — total event count for the response.
+
+### Bounds and safety
+
+| Limit | Value |
+|---|---|
+| Max body-shape fields | 100 |
+| Max body-shape depth | 6 |
+| SSE events printed | 200 (counter continues) |
+
+The recorder never writes files. All output goes to stdout.
+
 ## Troubleshooting
 
 - `npm run doctor` — prints config plus codex auth state (mode, account
