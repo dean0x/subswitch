@@ -1,0 +1,1 @@
+- **codex-leg** — src — Use when modifying Codex request translation, session/cache key derivation, protocol headers, reasoning round-trips, or the codex-recorder dev tool. Keywords: codex, gpt, responses, conversation key, session_id, prompt_cache_key, reasoning, effort, translation.
