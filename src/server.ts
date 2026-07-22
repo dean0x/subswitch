@@ -11,6 +11,7 @@ import { CodexAuthManager, createFsAuthFileStore } from "./codex-auth.js";
 import { ReasoningCache } from "./reasoning-cache.js";
 import { createCodexHandler, type CodexHandler } from "./codex-handler.js";
 import { ModelPeekSchema } from "./wire-types.js";
+import { CROXY_NAME, CROXY_VERSION } from "./version.js";
 
 export interface ServerDeps {
   readonly config: Config;
@@ -22,7 +23,7 @@ export interface ServerDeps {
 /** The only wiring site: every production dependency is constructed here. */
 export const buildDeps = (config: Config): ServerDeps => {
   const logger = createConsoleLogger(config.logLevel);
-  const cache = new ReasoningCache(config.reasoningCache.maxEntries);
+  const cache = new ReasoningCache(config.reasoningCache.maxEntries, config.reasoningCache.maxBytes);
   const auth = new CodexAuthManager({
     store: createFsAuthFileStore(config.codex.authFile),
     oauthTokenUrl: config.codex.oauthTokenUrl,
@@ -40,6 +41,31 @@ export const buildDeps = (config: Config): ServerDeps => {
     codex: createCodexHandler({ config, logger, auth, cache }),
   };
 };
+
+/**
+ * Listen on `port`/`host` and return a Result rather than throwing.
+ * Attaches the error listener before calling listen() so EADDRINUSE is captured cleanly.
+ */
+export const listenServer = (
+  server: Server,
+  port: number,
+  host: string,
+): Promise<Result<void, { code: string; message: string }>> =>
+  new Promise((resolve) => {
+    const onErr = (e: NodeJS.ErrnoException): void => {
+      server.removeListener("listening", onListen);
+      resolve(err({ code: e.code ?? "UNKNOWN", message: e.message }));
+    };
+    const onListen = (): void => {
+      server.removeListener("error", onErr);
+      resolve(ok(undefined));
+    };
+    server.once("error", onErr);
+    server.once("listening", onListen);
+    server.listen(port, host);
+  });
+
+const HEALTH_BODY = JSON.stringify({ name: CROXY_NAME, version: CROXY_VERSION });
 
 const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buffer, ProxyError>> =>
   new Promise((resolve) => {
@@ -93,6 +119,18 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     });
 
     const dispatch = async (): Promise<void> => {
+      // /__croxy/* namespace: handled locally, never forwarded upstream.
+      if (pathname.startsWith("/__croxy/")) {
+        if (req.method === "GET" && pathname === "/__croxy/health") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(HEALTH_BODY);
+          return;
+        }
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "not found" }));
+        return;
+      }
+
       // Only /v1/messages* bodies are buffered, and only to peek the model for
       // routing; the raw bytes are forwarded untouched so Content-Length holds.
       if (req.method !== "POST" || !pathname.startsWith("/v1/messages")) {
