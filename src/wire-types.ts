@@ -116,7 +116,7 @@ export const ResponsesErrorEventSchema = z
 
 // ---------------------------------------------------------------------------
 // OAuth token endpoint + auth.json. Passthrough at every level so unknown keys
-// written by the Codex CLI survive croxy's read-modify-write cycle.
+// written by the Codex CLI survive subroute's read-modify-write cycle.
 // ---------------------------------------------------------------------------
 
 export const AuthTokensSchema = z

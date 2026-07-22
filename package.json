@@ -1,5 +1,5 @@
 {
-  "name": "croxy",
+  "name": "subroute",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -16,13 +16,13 @@
     "ai",
     "developer-tools"
   ],
-  "homepage": "https://github.com/dean0x/croxy#readme",
+  "homepage": "https://github.com/dean0x/subroute#readme",
   "bugs": {
-    "url": "https://github.com/dean0x/croxy/issues"
+    "url": "https://github.com/dean0x/subroute/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dean0x/croxy.git"
+    "url": "git+https://github.com/dean0x/subroute.git"
   },
   "author": "dean0x",
   "license": "MIT",

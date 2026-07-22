@@ -1,4 +1,4 @@
-# croxy end-to-end verification
+# subroute end-to-end verification
 
 Manual verification against the real Claude Code CLI and real upstreams.
 Run each step in order; every step depends on the previous one working.
@@ -17,7 +17,7 @@ Expect a `listening` log line for `http://127.0.0.1:4141`.
 ANTHROPIC_BASE_URL=http://127.0.0.1:4141 claude -p "say hi"
 ```
 
-Must behave identically to running without the proxy. croxy logs one
+Must behave identically to running without the proxy. subroute logs one
 `request_complete` line per call with `route=anthropic`. No credential
 env vars should be set — the stored claude.ai OAuth login is forwarded
 verbatim.
@@ -28,9 +28,9 @@ Create a scratch project and copy `agents/gpt-worker.md` into
 `.claude/agents/` there:
 
 ```sh
-mkdir -p /tmp/croxy-e2e/.claude/agents
-cp e2e/agents/gpt-worker.md /tmp/croxy-e2e/.claude/agents/
-cd /tmp/croxy-e2e
+mkdir -p /tmp/subroute-e2e/.claude/agents
+cp e2e/agents/gpt-worker.md /tmp/subroute-e2e/.claude/agents/
+cd /tmp/subroute-e2e
 ANTHROPIC_BASE_URL=http://127.0.0.1:4141 claude -p "Use the gpt-worker agent to list files here and summarize"
 ```
 
@@ -38,12 +38,12 @@ This exercises, in one run:
 - the Codex leg (`model: gpt-5.5` from the agent frontmatter routes to chatgpt.com),
 - multi-turn tool calling — the second Codex request must carry the cached
   encrypted reasoning item (watch for `reasoning_cache_miss` warnings in the
-  croxy log; there should be none),
+  subroute log; there should be none),
 - concurrent `claude-*` utility traffic on the Anthropic leg.
 
 ## 4. Per-project wiring (the deliverable)
 
-In any project that should use croxy, add `.claude/settings.json`:
+In any project that should use subroute, add `.claude/settings.json`:
 
 ```json
 {
@@ -61,9 +61,9 @@ without this setting are completely unaffected.
 The Phase A wire capture (2026-07-22) revealed that the real `codex exec` CLI
 uses a **WebSocket app-server transport** for AI inference — it does NOT POST
 to `/responses` over HTTP. The capture's header comparison was therefore against
-the wrong transport for the croxy Codex leg.
+the wrong transport for the subroute Codex leg.
 
-**Consequence for header parity**: croxy's current `/responses` HTTP headers
+**Consequence for header parity**: subroute's current `/responses` HTTP headers
 (`openai-beta: responses=experimental`, `originator: codex_cli_rs`, `accept:
 text/event-stream`, and `session_id` as a request header) are verified working
 against the real `/responses` backend (live-verified 2026-07-21) and are NOT
@@ -74,21 +74,21 @@ here.
 What WAS applied from the capture findings:
 
 - **`user-agent`** header: added as `codex.userAgent` config knob (default
-  `codex_cli_rs/0.144.6`, matching the `originator` croxy already sends).
+  `codex_cli_rs/0.144.6`, matching the `originator` subroute already sends).
   Machine-specific OS/arch/terminal telemetry is intentionally omitted — it
   cannot be honestly populated by a proxy. Override via config if needed.
 - **session_id stability**: the real CLI uses a UUID v7 that is stable within
-  an invocation and new per invocation. croxy now derives a deterministic
+  an invocation and new per invocation. subroute now derives a deterministic
   v7-shaped UUID from `sha256(model + instructions + first-user-message)`,
   stable across turns of the same conversation and per-invocation-stable from
   Claude Code's perspective.
 - **prompt_cache_key**: the backend demonstrates effective prompt caching
-  (observed 76% hit in the capture). croxy now adds `prompt_cache_key` to
+  (observed 76% hit in the capture). subroute now adds `prompt_cache_key` to
   `/responses` request bodies to reinforce cache affinity.
 
 ## Codex wire capture
 
-A dev-only recorder tool that sits transparently between croxy and the real
+A dev-only recorder tool that sits transparently between subroute and the real
 Codex backend, printing the wire shape of every request and response to
 stdout. Credential values are **never** printed — headers like
 `authorization`, `cookie`, and `openai-sentinel-*` are replaced with a
@@ -112,9 +112,9 @@ CODEX_RECORDER_UPSTREAM=https://chatgpt.com/backend-api/codex \
   npx tsx e2e/capture/codex-recorder.ts
 ```
 
-### Routing croxy through the recorder
+### Routing subroute through the recorder
 
-Edit (or create) `croxy.config.json` and set `codex.baseUrl` to point at the
+Edit (or create) `subroute.config.json` and set `codex.baseUrl` to point at the
 recorder instead of directly to Codex:
 
 ```json
@@ -125,7 +125,7 @@ recorder instead of directly to Codex:
 }
 ```
 
-Then start croxy as normal (`npm run serve`). Every Codex-leg request will
+Then start subroute as normal (`npm run serve`). Every Codex-leg request will
 flow through the recorder, which logs the wire details and forwards them to
 the real backend transparently.
 
@@ -187,10 +187,10 @@ All chatgpt.com REST calls from `codex exec` carry these headers in this order:
 |---|---|---|
 | `authorization` | `Bearer eyJhbGciOiJSUzI1NiJ9.<len:1800>` | JWT; fabricated |
 | `chatgpt-account-id` | `00000000-0000-4000-a000-000000000001` | fabricated UUID |
-| `oai-product-sku` | `codex` | **MISSING from croxy** |
-| `accept` | `*/*` | croxy sends `text/event-stream` |
-| `originator` | `codex_exec` | croxy sends `codex_cli_rs` |
-| `user-agent` | see below | **MISSING from croxy** |
+| `oai-product-sku` | `codex` | **MISSING from subroute** |
+| `accept` | `*/*` | subroute sends `text/event-stream` |
+| `originator` | `codex_exec` | subroute sends `codex_cli_rs` |
+| `user-agent` | see below | **MISSING from subroute** |
 | `host` | `127.0.0.1:4142` | set by recorder; real: `chatgpt.com` |
 
 Not present on REST calls: `openai-beta`, `session_id`, `content-type`
@@ -218,7 +218,7 @@ Confirmed consistent across two independent capture runs.
 | Stability | Stable within a single `codex exec` invocation; new value per invocation |
 | Example (fabricated) | `019f0000-0000-7000-a000-000000000001` |
 
-croxy currently sends `session_id` as a **request header** — this is wrong per
+subroute currently sends `session_id` as a **request header** — this is wrong per
 the live capture. The real CLI never sends `session_id` as a header on REST calls.
 
 #### Request body field inventory (analytics events)
@@ -243,9 +243,9 @@ Fields observed in the analytics event body (`POST /backend-api/codex/ps/event`)
 `prompt_cache_key` was NOT observed in any captured body (inference goes via
 WebSocket, not HTTP POST).
 
-#### Parity gaps — croxy vs real CLI
+#### Parity gaps — subroute vs real CLI
 
-| # | Field | Real CLI | croxy current | Fix |
+| # | Field | Real CLI | subroute current | Fix |
 |---|---|---|---|---|
 | 1 | `originator` header | `codex_exec` | `codex_cli_rs` | Update `buildHeaders` |
 | 2 | `oai-product-sku` header | `codex` | absent | Add to `buildHeaders` |
@@ -260,4 +260,4 @@ WebSocket, not HTTP POST).
   suffix, token expiry). Never prints token material.
 - Codex requests failing 401 after a refresh → run `codex login`, then retry.
 - `claude-*` traffic must never appear with `route=codex:*` in the logs;
-  if it does, check `codex.models` in croxy.config.json.
+  if it does, check `codex.models` in subroute.config.json.

@@ -4,10 +4,10 @@ import tls from "node:tls";
 // Discriminated-union result types
 // ---------------------------------------------------------------------------
 
-export type CroxyStatus =
+export type SubrouteStatus =
   | { readonly kind: "running"; readonly name: string; readonly version: string }
   | { readonly kind: "connection_refused" }
-  | { readonly kind: "not_croxy" };
+  | { readonly kind: "not_subroute" };
 
 export type TlsStatus =
   | { readonly kind: "reachable" }
@@ -22,7 +22,7 @@ export type HttpGetResult =
   | { readonly ok: false; readonly connectionRefused: true }
   | { readonly ok: false; readonly connectionRefused: false; readonly message: string };
 
-export interface ProbeCroxyDeps {
+export interface ProbeSubrouteDeps {
   readonly httpGet: (url: string) => Promise<HttpGetResult>;
 }
 
@@ -35,28 +35,28 @@ export interface ProbeTlsDeps {
 // ---------------------------------------------------------------------------
 
 /**
- * Probe whether croxy is listening on `port`.
+ * Probe whether subroute is listening on `port`.
  *
  * Returns:
- * - "running"            — GET /__croxy/health responded with the croxy health shape
+ * - "running"            — GET /__subroute/health responded with the subroute health shape
  * - "connection_refused" — nothing is listening on the port
- * - "not_croxy"          — something else is on the port, or an unexpected response
+ * - "not_subroute"          — something else is on the port, or an unexpected response
  */
-export const probeCroxy = async (port: number, deps: ProbeCroxyDeps): Promise<CroxyStatus> => {
-  const result = await deps.httpGet(`http://127.0.0.1:${port}/__croxy/health`);
+export const probeSubroute = async (port: number, deps: ProbeSubrouteDeps): Promise<SubrouteStatus> => {
+  const result = await deps.httpGet(`http://127.0.0.1:${port}/__subroute/health`);
   if (!result.ok) {
     if (result.connectionRefused) return { kind: "connection_refused" };
-    return { kind: "not_croxy" };
+    return { kind: "not_subroute" };
   }
-  if (result.status !== 200) return { kind: "not_croxy" };
+  if (result.status !== 200) return { kind: "not_subroute" };
   try {
     const body = JSON.parse(result.body) as { name?: unknown; version?: unknown };
-    if (body.name === "croxy" && typeof body.version === "string") {
+    if (body.name === "subroute" && typeof body.version === "string") {
       return { kind: "running", name: body.name, version: body.version };
     }
-    return { kind: "not_croxy" };
+    return { kind: "not_subroute" };
   } catch {
-    return { kind: "not_croxy" };
+    return { kind: "not_subroute" };
   }
 };
 
@@ -84,7 +84,7 @@ const isConnectionRefused = (e: unknown): boolean => {
   return false;
 };
 
-export const makeLiveHttpGet = (): ProbeCroxyDeps["httpGet"] => async (url) => {
+export const makeLiveHttpGet = (): ProbeSubrouteDeps["httpGet"] => async (url) => {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(3_000) });
     const body = await res.text();

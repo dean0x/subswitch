@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { type Config, loadConfig } from "./config.js";
 import { inspectAuthFile } from "./codex-auth.js";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
-import { probeCroxy, probeTlsReachable, makeLiveHttpGet, makeLiveTlsConnect } from "./doctor.js";
+import { probeSubroute, probeTlsReachable, makeLiveHttpGet, makeLiveTlsConnect } from "./doctor.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
 
@@ -11,7 +11,7 @@ const out = (line: string): void => {
 };
 
 const fail = (message: string): void => {
-  process.stderr.write(`croxy: ${message}\n`);
+  process.stderr.write(`subroute: ${message}\n`);
   process.exitCode = 1;
 };
 
@@ -21,7 +21,7 @@ const serve = async (config: Config, configPath: string, fileFound: boolean): Pr
   const listenResult = await listenServer(server, config.port, "127.0.0.1");
   if (!listenResult.ok) {
     if (listenResult.error.code === "EADDRINUSE") {
-      fail(`port ${config.port} already in use — is another croxy running?`);
+      fail(`port ${config.port} already in use — is another subroute running?`);
     } else {
       fail(`failed to start: ${listenResult.error.message}`);
     }
@@ -41,7 +41,7 @@ const serve = async (config: Config, configPath: string, fileFound: boolean): Pr
 };
 
 const doctor = async (config: Config, configPath: string, fileFound: boolean): Promise<void> => {
-  out("croxy doctor");
+  out("subroute doctor");
   out(`  config:             ${configPath}${fileFound ? "" : " (defaults — file not found)"}`);
   out(`  port:               ${config.port}`);
   out(`  logLevel:           ${config.logLevel}`);
@@ -70,16 +70,16 @@ const doctor = async (config: Config, configPath: string, fileFound: boolean): P
   const httpGet = makeLiveHttpGet();
   const tlsConnect = makeLiveTlsConnect();
 
-  const croxyStatus = await probeCroxy(config.port, { httpGet });
-  switch (croxyStatus.kind) {
+  const subrouteStatus = await probeSubroute(config.port, { httpGet });
+  switch (subrouteStatus.kind) {
     case "running":
-      out(`  croxy running:      YES (version ${croxyStatus.version})`);
+      out(`  subroute running:      YES (version ${subrouteStatus.version})`);
       break;
     case "connection_refused":
-      out(`  croxy running:      NO (port ${config.port} not in use)`);
+      out(`  subroute running:      NO (port ${config.port} not in use)`);
       break;
-    case "not_croxy":
-      out(`  croxy running:      UNKNOWN (something else is on port ${config.port})`);
+    case "not_subroute":
+      out(`  subroute running:      UNKNOWN (something else is on port ${config.port})`);
       break;
   }
 
@@ -117,7 +117,7 @@ const main = async (): Promise<void> => {
     await doctor(config, configPath, fileFound);
     return;
   }
-  fail(`unknown command "${command}" — usage: croxy [serve|doctor]`);
+  fail(`unknown command "${command}" — usage: subroute [serve|doctor]`);
 };
 
 void main();

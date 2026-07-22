@@ -1,5 +1,5 @@
 node_modules/
-croxy.config.json
+subroute.config.json
 
 # OS / editor / local logs
 .DS_Store

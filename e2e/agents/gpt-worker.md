@@ -1,6 +1,6 @@
 ---
 name: gpt-worker
-description: Worker agent that runs on the Codex subscription via croxy. Use for tasks explicitly delegated to the GPT worker.
+description: Worker agent that runs on the Codex subscription via subroute. Use for tasks explicitly delegated to the GPT worker.
 model: gpt-5.5
 ---
 
