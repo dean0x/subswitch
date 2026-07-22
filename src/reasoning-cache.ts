@@ -23,7 +23,7 @@ const computeBytes = (items: readonly unknown[]): number => JSON.stringify(items
  */
 export class ReasoningCache {
   private readonly entries = new Map<string, CacheEntry>();
-  private totalBytesCount = 0;
+  private totalBytes = 0;
 
   constructor(
     private readonly maxEntries: number,
@@ -39,27 +39,27 @@ export class ReasoningCache {
     // Remove existing entry first so a key overwrite correctly subtracts its old bytes.
     const existing = this.entries.get(callId);
     if (existing !== undefined) {
-      this.totalBytesCount -= existing.bytes;
+      this.totalBytes -= existing.bytes;
       this.entries.delete(callId);
     }
 
     this.entries.set(callId, { items, bytes });
-    this.totalBytesCount += bytes;
+    this.totalBytes += bytes;
 
     // Evict LRU entries while over either bound. The size > 1 guard on the byte
     // condition ensures a single oversized entry is kept rather than looping forever.
-    while (this.entries.size > this.maxEntries || (this.totalBytesCount > this.maxBytes && this.entries.size > 1)) {
+    while (this.entries.size > this.maxEntries || (this.totalBytes > this.maxBytes && this.entries.size > 1)) {
       const oldest = this.entries.keys().next().value;
       if (oldest === undefined) break;
       const oldestEntry = this.entries.get(oldest);
-      if (oldestEntry === undefined) break; // defensive; should never happen
-      this.totalBytesCount -= oldestEntry.bytes;
+      assert(oldestEntry !== undefined, "BUG: Map key without value in reasoning cache");
+      this.totalBytes -= oldestEntry.bytes;
       this.entries.delete(oldest);
     }
 
     assert(this.entries.size <= this.maxEntries, "reasoning cache exceeded entry bound");
     // The byte bound may be exceeded by a single oversized entry (degenerate case documented above).
-    assert(this.entries.size <= 1 || this.totalBytesCount <= this.maxBytes, "reasoning cache exceeded byte bound");
+    assert(this.entries.size <= 1 || this.totalBytes <= this.maxBytes, "reasoning cache exceeded byte bound");
   }
 
   get(callId: string): readonly unknown[] | undefined {
@@ -76,6 +76,6 @@ export class ReasoningCache {
   }
 
   get byteSize(): number {
-    return this.totalBytesCount;
+    return this.totalBytes;
   }
 }

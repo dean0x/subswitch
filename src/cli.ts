@@ -50,17 +50,8 @@ const doctor = async (config: Config, configPath: string, fileFound: boolean): P
   out(`  codex.models:       ${config.codex.models.join(", ")}`);
   out(`  codex.authFile:     ${config.codex.authFile}`);
 
-  // Codex auth inspection
-  let raw: string;
   try {
-    raw = await readFile(config.codex.authFile, "utf8");
-  } catch {
-    out("  codex auth:         UNAVAILABLE (cannot read auth file — run `codex login`)");
-    out("  note: the Anthropic leg works without codex auth; only configured codex models are affected");
-    raw = "";
-  }
-
-  if (raw !== "") {
+    const raw = await readFile(config.codex.authFile, "utf8");
     const inspection = inspectAuthFile(raw);
     if (!inspection.ok) {
       out(`  codex auth:         INVALID (${inspection.error.message})`);
@@ -71,9 +62,11 @@ const doctor = async (config: Config, configPath: string, fileFound: boolean): P
       out(`  token expires:      ${info.accessTokenExpiresAt ?? "(no exp claim)"}`);
       out(`  last refresh:       ${info.lastRefresh ?? "(unknown)"}`);
     }
+  } catch {
+    out("  codex auth:         UNAVAILABLE (cannot read auth file — run `codex login`)");
+    out("  note: the Anthropic leg works without codex auth; only configured codex models are affected");
   }
 
-  // R4: health probes
   const httpGet = makeLiveHttpGet();
   const tlsConnect = makeLiveTlsConnect();
 

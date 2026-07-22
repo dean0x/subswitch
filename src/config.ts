@@ -97,16 +97,14 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     raw = JSON.parse(readFile(resolvedPath));
     fileFound = true;
   } catch (cause) {
-    const isMissingFile =
-      cause instanceof Error && "code" in cause && (cause as NodeJS.ErrnoException).code === "ENOENT";
-
-    if (isMissingFile && !isExplicit) {
-      // Implicit cwd default: silently fall back to pure defaults.
-    } else if (isMissingFile && isExplicit) {
+    const isEnoent = cause instanceof Error && (cause as NodeJS.ErrnoException).code === "ENOENT";
+    if (isEnoent && isExplicit) {
       return err({ kind: "translate", message: `config file not found at ${resolvedPath}` });
-    } else {
+    }
+    if (!isEnoent) {
       return err({ kind: "translate", message: `failed to read config at ${resolvedPath}: ${String(cause)}` });
     }
+    // Implicit cwd ENOENT — silently fall back to pure defaults.
   }
 
   const parsed = ConfigSchema.safeParse(raw);
