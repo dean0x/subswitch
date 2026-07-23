@@ -11,7 +11,7 @@ import { CodexAuthManager, createFsAuthFileStore } from "./codex-auth.js";
 import { ReasoningCache } from "./reasoning-cache.js";
 import { createCodexHandler, type CodexHandler } from "./codex-handler.js";
 import { ModelPeekSchema } from "./wire-types.js";
-import { SUBROUTE_NAME, SUBROUTE_VERSION } from "./version.js";
+import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 
 export interface ServerDeps {
   readonly config: Config;
@@ -66,7 +66,7 @@ export const listenServer = (
     server.listen(port, host);
   });
 
-const HEALTH_BODY = JSON.stringify({ name: SUBROUTE_NAME, version: SUBROUTE_VERSION });
+const HEALTH_BODY = JSON.stringify({ name: SUBSWITCH_NAME, version: SUBSWITCH_VERSION });
 
 const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buffer, ProxyError>> =>
   new Promise((resolve) => {
@@ -120,9 +120,9 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     });
 
     const dispatch = async (): Promise<void> => {
-      // /__subroute/* namespace: handled locally, never forwarded upstream.
-      if (pathname.startsWith("/__subroute/")) {
-        if (req.method === "GET" && pathname === "/__subroute/health") {
+      // /__subswitch/* namespace: handled locally, never forwarded upstream.
+      if (pathname.startsWith("/__subswitch/")) {
+        if (req.method === "GET" && pathname === "/__subswitch/health") {
           res.writeHead(200, { "content-type": "application/json" });
           res.end(HEALTH_BODY);
           return;

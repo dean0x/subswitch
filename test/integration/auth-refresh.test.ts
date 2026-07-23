@@ -25,7 +25,7 @@ const setupOauth = async (): Promise<{ oauth: FakeUpstream; newToken: string }> 
 describe("codex auth refresh against the real filesystem", () => {
   it("refreshes a near-expiry token and atomically rewrites auth.json preserving unknown keys", async () => {
     const { oauth, newToken } = await setupOauth();
-    const dir = await mkdtemp(join(tmpdir(), "subroute-auth-"));
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-auth-"));
     const authFilePath = join(dir, "auth.json");
     await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 60_000)), "utf8");
 
@@ -62,7 +62,7 @@ describe("codex auth refresh against the real filesystem", () => {
 
   it("caches credentials after one refresh so repeat calls stay off the token endpoint", async () => {
     const { oauth } = await setupOauth();
-    const dir = await mkdtemp(join(tmpdir(), "subroute-auth-"));
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-auth-"));
     const authFilePath = join(dir, "auth.json");
     await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 60_000)), "utf8");
 

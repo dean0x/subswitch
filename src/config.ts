@@ -52,7 +52,7 @@ const expandHome = (path: string): string =>
   path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 
 export interface LoadConfigOptions {
-  /** Explicit config file path. Takes precedence over SUBROUTE_CONFIG and the implicit cwd default. */
+  /** Explicit config file path. Takes precedence over SUBSWITCH_CONFIG and the implicit cwd default. */
   readonly configPath?: string;
   /** Injectable file reader. Defaults to `readFileSync`. Used by tests to supply inline config. */
   readonly readFile?: (path: string) => string;
@@ -67,15 +67,15 @@ export interface LoadConfigResult {
 }
 
 /**
- * Load subroute.config.json (all fields optional) merged over defaults.
+ * Load subswitch.config.json (all fields optional) merged over defaults.
  *
  * Path precedence (highest to lowest):
  *   1. explicit `configPath` option
- *   2. `SUBROUTE_CONFIG` env var (tilde-expanded)
- *   3. implicit `<cwd>/subroute.config.json`
+ *   2. `SUBSWITCH_CONFIG` env var (tilde-expanded)
+ *   3. implicit `<cwd>/subswitch.config.json`
  *
  * Only the implicit cwd default silently falls back to pure defaults on ENOENT.
- * An explicitly-requested path (option or SUBROUTE_CONFIG) that is missing is an error.
+ * An explicitly-requested path (option or SUBSWITCH_CONFIG) that is missing is an error.
  */
 export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigResult, ProxyError> => {
   const env = options.env ?? process.env;
@@ -87,11 +87,11 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
   if (options.configPath !== undefined) {
     resolvedPath = options.configPath;
     isExplicit = true;
-  } else if (env["SUBROUTE_CONFIG"] !== undefined && env["SUBROUTE_CONFIG"] !== "") {
-    resolvedPath = expandHome(env["SUBROUTE_CONFIG"]);
+  } else if (env["SUBSWITCH_CONFIG"] !== undefined && env["SUBSWITCH_CONFIG"] !== "") {
+    resolvedPath = expandHome(env["SUBSWITCH_CONFIG"]);
     isExplicit = true;
   } else {
-    resolvedPath = join(process.cwd(), "subroute.config.json");
+    resolvedPath = join(process.cwd(), "subswitch.config.json");
     isExplicit = false;
   }
 

@@ -1,5 +1,5 @@
 {
-  "name": "subroute",
+  "name": "subswitch",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -16,13 +16,13 @@
     "ai",
     "developer-tools"
   ],
-  "homepage": "https://github.com/dean0x/subroute#readme",
+  "homepage": "https://github.com/dean0x/subswitch#readme",
   "bugs": {
-    "url": "https://github.com/dean0x/subroute/issues"
+    "url": "https://github.com/dean0x/subswitch/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dean0x/subroute.git"
+    "url": "git+https://github.com/dean0x/subswitch.git"
   },
   "author": "dean0x",
   "license": "MIT",

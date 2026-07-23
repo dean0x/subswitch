@@ -1,15 +1,15 @@
-# subroute
+# subswitch
 
-[![CI](https://github.com/dean0x/subroute/actions/workflows/ci.yml/badge.svg)](https://github.com/dean0x/subroute/actions/workflows/ci.yml)
+[![CI](https://github.com/dean0x/subswitch/actions/workflows/ci.yml/badge.svg)](https://github.com/dean0x/subswitch/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen.svg)](https://nodejs.org/)
 
 **Route Claude Code subagents to a different model - keep everything else on Claude.**
 
-subroute is a local subscription-routing proxy for Claude Code. Give a subagent a
+subswitch is a local subscription-routing proxy for Claude Code. Give a subagent a
 Codex model in its frontmatter (`model: gpt-5.5`) and *that subagent alone* runs
 on your **Codex subscription**; your main agent and every other request stay on
-your **claude.ai subscription**, untouched. No API keys — subroute forwards the
+your **claude.ai subscription**, untouched. No API keys — subswitch forwards the
 subscription credential each leg already uses.
 
 ## Why this is different
@@ -19,7 +19,7 @@ global setting, so existing routers point *all* of Claude Code's traffic at one
 endpoint and typically swap the model for the entire session — your orchestrator,
 your utility calls, everything moves at once.
 
-subroute is the first proxy that splits traffic **per subagent, by model name**:
+subswitch is the first proxy that splits traffic **per subagent, by model name**:
 
 - Requests whose `model` is one of your configured `gpt-*` models are translated
   and sent to the Codex backend.
@@ -31,7 +31,7 @@ subagent to GPT for a second opinion, a cheaper worker, or a specialized task �
 without giving up either subscription and without touching an API key.
 
 ```
-Claude Code ──► subroute (127.0.0.1:4141)
+Claude Code ──► subswitch (127.0.0.1:4141)
                   ├─ model ∈ codex.models ──► chatgpt.com Codex backend
                   │    (Anthropic Messages ⇄ OpenAI Responses translation,
                   │     ~/.codex/auth.json OAuth, reasoning round-trip cache)
@@ -52,14 +52,14 @@ background `claude-*` utility traffic is never misrouted.
 ## Quick start
 
 ```sh
-git clone https://github.com/dean0x/subroute.git
-cd subroute
+git clone https://github.com/dean0x/subswitch.git
+cd subswitch
 npm install
 npm run serve      # starts on 127.0.0.1:4141
 npm run doctor     # config + codex auth health (never prints tokens)
 ```
 
-Wire a project to subroute with `.claude/settings.json`:
+Wire a project to subswitch with `.claude/settings.json`:
 
 ```json
 {
@@ -85,23 +85,23 @@ Now that subagent runs on Codex while the rest of the session stays on Claude.
 ## Effort control
 
 The optional `effort` frontmatter field works on the Codex leg too. Claude Code
-sends it as `output_config.effort`, and subroute forwards it verbatim as Responses
+sends it as `output_config.effort`, and subswitch forwards it verbatim as Responses
 `reasoning.effort`. The Codex backend accepts `none`, `minimal`, `low`,
 `medium`, `high`, `xhigh`, and `max` (Claude Code itself emits the last five); a
 value outside that set is dropped with an `unsupported_effort_dropped` warning
-and the backend default applies. When effort is forwarded, subroute logs
+and the backend default applies. When effort is forwarded, subswitch logs
 `codex_effort_applied`.
 
 ## Configuration
 
-Optional configuration goes in `subroute.config.json` (gitignored). See
-[`subroute.config.example.json`](subroute.config.example.json) for every knob and its
+Optional configuration goes in `subswitch.config.json` (gitignored). See
+[`subswitch.config.example.json`](subswitch.config.example.json) for every knob and its
 default.
 
 The config file is located by the following precedence (highest wins):
 
-1. `SUBROUTE_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
-2. `subroute.config.json` in the current working directory — silently uses defaults if absent
+1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
+2. `subswitch.config.json` in the current working directory — silently uses defaults if absent
 
 New knobs added in this release:
 
@@ -116,7 +116,7 @@ New knobs added in this release:
 - **Auth**: reads `~/.codex/auth.json`, proactively refreshes the OAuth access
   token when it expires within 120 s, and writes back atomically while
   preserving unknown keys. If the Codex CLI rotates tokens concurrently, the
-  newer file wins. On a 401 mid-flight, subroute force-refreshes and retries
+  newer file wins. On a 401 mid-flight, subswitch force-refreshes and retries
   exactly once.
 - **Request**: Anthropic Messages → OpenAI Responses (`system` →
   `instructions`, tools → function tools, `tool_use`/`tool_result` →
@@ -157,7 +157,7 @@ End-to-end verification against the real CLI and real upstreams:
   SSE event types are logged at debug level and ignored.
 - Images in tool results are dropped on the Codex leg (logged as
   `image_dropped`).
-- One subroute instance holds the reasoning cache in memory; restarting it
+- One subswitch instance holds the reasoning cache in memory; restarting it
   mid-conversation degrades the next Codex turn to a cache miss.
 
 ## Contributing
@@ -168,7 +168,7 @@ commit conventions. By participating you agree to the
 
 ## Security
 
-subroute is a loopback-only proxy that handles subscription credentials. Report
+subswitch is a loopback-only proxy that handles subscription credentials. Report
 vulnerabilities privately — see [SECURITY.md](SECURITY.md). Do not open a public
 issue for security reports.
 

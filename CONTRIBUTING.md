@@ -1,6 +1,6 @@
-# Contributing to subroute
+# Contributing to subswitch
 
-Thanks for your interest in improving subroute.
+Thanks for your interest in improving subswitch.
 
 ## Prerequisites
 
