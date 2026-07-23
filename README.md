@@ -66,14 +66,20 @@ subswitch init
 ```
 
 `init` walks you through port selection and model configuration, then writes
-`ANTHROPIC_BASE_URL` into `.claude/settings.local.json` (gitignored, per-developer)
-and saves `subswitch.config.json` in your project directory.
+`ANTHROPIC_BASE_URL` into `.claude/settings.local.json` (per-developer, typically
+gitignored — safe default) and saves `subswitch.config.json` in your project directory.
 
 > **Non-interactive / CI:**
 > ```sh
 > subswitch init --yes --port 4141 --settings-target local
 > ```
-> Use `--settings-target shared` to write `.claude/settings.json` instead.
+> `--settings-target local` (default) writes `.claude/settings.local.json` — per-developer,
+> typically gitignored. Use `--settings-target shared` to write `.claude/settings.json`
+> instead (committed, visible to all team members).
+>
+> `init` without `--yes` refuses to write anything when stdin is not a TTY (e.g., in CI)
+> and exits with code 1. Use `--dry-run` to preview what would be written without actually
+> writing — `--dry-run` works in non-TTY and CI contexts.
 
 **3. Start the proxy and verify your setup:**
 
@@ -98,6 +104,8 @@ on Claude.
 ### CLI reference
 
 ```
+subswitch — local subscription-routing proxy for Claude Code
+
 Usage: subswitch [command] [flags]
 
 Commands:
@@ -112,18 +120,47 @@ Flags (global):
 Flags (serve):
       --verbose    Set log level to debug for this run
       --quiet      Set log level to warn for this run
+      --port <n>   Override listen port (default: 4141)
 
 Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
+      --dry-run              Show what would be written; writes nothing
       --port <n>             Proxy port (default: 4141)
       --codex-model <name>   Include this Codex model (repeatable)
       --codex-models <csv>   Comma-separated list of Codex models
       --settings-target <t>  "local" (.claude/settings.local.json, default)
                              or "shared" (.claude/settings.json)
+
+Examples:
+  subswitch serve                      # start proxy on port 4141
+  subswitch serve --port 8080          # start proxy on a custom port
+  subswitch init                       # interactive setup
+  subswitch init --yes                 # non-interactive with defaults
+  subswitch init --dry-run             # preview what would be written
+  subswitch doctor                     # check config + auth health
+
+Environment:
+  NO_COLOR      Disable color output (also respected as standard)
+  FORCE_COLOR   Force color output even when not a TTY
+  CI            Non-interactive detection — init refuses without --yes
 ```
 
-`doctor` exits with code `0` when all checks pass and code `1` when any check
-fails — use it as a preflight gate in scripts or CI.
+**Exit codes:**
+
+| Command | Condition | Code |
+|---------|-----------|------|
+| `serve` | server listening | 0 (kept alive) |
+| `serve` | invalid `--port`, EADDRINUSE, config error | 1 |
+| `doctor` | all checks pass | 0 |
+| `doctor` | any check fails | 1 |
+| `init` | success (interactive, non-interactive, or dry-run) | 0 |
+| `init` | cancel at any prompt / empty selection / write failure / invalid flag | 1 |
+| `init` | non-TTY or CI without `--yes` (fail-closed, zero writes) | 1 |
+| unknown command or flag | always | 1 |
+
+`doctor` exits 1 whenever any preflight check fails — use it as a gate in scripts. `init` without `--yes` refuses to write anything when stdin is not a TTY (e.g. in CI) and exits 1 immediately with no filesystem side effects.
+
+**Model flag merging** (`--codex-model` and `--codex-models`): the two flags are additive — use `--codex-model` multiple times to add individual models and/or `--codex-models` to pass a comma-separated list; the results are combined and deduplicated. When `--yes` or the wizard confirms, the merged set becomes `codex.models` in the written config.
 
 ### Advanced: manual setup
 
@@ -216,6 +253,12 @@ content are unrepresentable in the logger *by type* — nothing sensitive can be
 logged. When stderr is a TTY and `NO_COLOR` is unset, level and event tokens
 are colorized and a timestamp prefix is added; the key=value structure is
 unchanged.
+
+Color behavior is controlled by three environment variables (all standard):
+`NO_COLOR` — disable color output; `FORCE_COLOR` — force color even when stderr
+is not a TTY (useful in terminals that misreport TTY state); `CI` — also suppresses
+color and disables interactive `init` prompts (treated as a non-interactive
+environment).
 
 ## Testing
 

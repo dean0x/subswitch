@@ -71,7 +71,7 @@ Effectful layer:
 
 ### src/doctor.ts — Preflight gate
 
-`runDoctor` returns `0` (all checks pass) or `1` (any check fails). `cli.ts` assigns the return value to `process.exitCode`. The check list: config file detection, codex auth file parse (via lazy import of `inspectAuthFile`), subswitch health endpoint probe, Anthropic TLS reachability, Codex TLS reachability. Each failure increments `failures`; the final verdict line is colored red on failure, green on all-pass.
+`runDoctor` returns `0` (all checks pass) or `1` (any check fails). `cli.ts` assigns the return value to `process.exitCode`. The check list: config file detection (informational only — does NOT increment `failures` because missing a config file is fine; defaults produce a working proxy), codex auth file parse (via lazy import of `inspectAuthFile`), subswitch health endpoint probe, Anthropic TLS reachability, Codex TLS reachability. Only the last four categories increment `failures`; the final verdict line is colored red on failure, green on all-pass.
 
 Color is decided at the call site in `cli.ts` (`process.stdout.isTTY === true && !("NO_COLOR" in process.env)`) and passed as a boolean `io.color` into `runDoctor`. Inside, `createColors(io.color)` is used so there is exactly one source of truth for color enablement.
 
