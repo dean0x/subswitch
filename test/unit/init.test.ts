@@ -236,6 +236,16 @@ describe("resolveOptionsFromFlags", () => {
     assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.5"]);
   });
 
+  it("merged models are deduplicated, preserving first-occurrence order", () => {
+    // README documents the two model flags as "combined and deduplicated".
+    const result = resolveOptionsFromFlags({
+      codexModel: ["gpt-5.6-sol", "gpt-5.5"],
+      codexModels: "gpt-5.5,gpt-5.6-sol,gpt-5.6-luna",
+    });
+    assert.ok(result.ok);
+    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.5", "gpt-5.6-luna"]);
+  });
+
   it("--codex-models \"\" (empty string) → error (model flags given but resolve to empty)", () => {
     const result = resolveOptionsFromFlags({ codexModels: "" });
     assert.ok(!result.ok);

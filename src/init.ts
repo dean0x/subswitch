@@ -433,14 +433,17 @@ export const resolveOptionsFromFlags = (flags: InitFlags): Result<InitOptions, I
       merged.push(...flags.codexModels.split(",").map((s) => s.trim()).filter((s) => s.length > 0));
     }
     const filtered = merged.map((m) => m.trim()).filter((m) => m.length > 0);
-    if (filtered.length === 0) {
+    // Deduplicate, preserving first-occurrence order — the two model flags are
+    // documented as "combined and deduplicated" (README CLI reference). [F16/F17]
+    const deduped = [...new Set(filtered)];
+    if (deduped.length === 0) {
       // Model flags were given but resolved to nothing (e.g. --codex-models "").
       return err({
         kind: "invalid_input",
         message: `invalid --codex-models "${flags.codexModels ?? ""}": at least one model is required`,
       });
     }
-    resolvedModels = filtered;
+    resolvedModels = deduped;
   }
 
   return ok({
