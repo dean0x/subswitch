@@ -102,9 +102,8 @@ const INIT_FLAGS = new Set(["yes", "dry-run", "port", "codex-model", "codex-mode
  * callers pass it to fail() which adds the prefix). [A3.18/A3.19/A3.21]
  */
 const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: false; error: { message: string } } => {
-  let parseResult: ReturnType<typeof parseArgs>;
   try {
-    parseResult = parseArgs({
+    const parseResult = parseArgs({
       args: argv,
       options: {
         help:              { type: "boolean", short: "h" },
@@ -124,6 +123,84 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
       strict: true,
       tokens: true,
     });
+
+    const { values, positionals, tokens } = parseResult;
+
+    // Global flags take precedence over everything
+    if (values.help === true) return { ok: true, value: { kind: "help" } };
+    if (values.version === true) return { ok: true, value: { kind: "version" } };
+
+    const command = positionals[0] ?? "serve";
+
+    // Unknown command
+    if (command !== "serve" && command !== "doctor" && command !== "init") {
+      return {
+        ok: false,
+        error: { message: `unknown command "${command}" — run \`subswitch --help\` for usage` },
+      };
+    }
+
+    // Per-command flag validation from tokens (A3.19)
+    let allowedFlags: Set<string>;
+    if (command === "serve") {
+      allowedFlags = SERVE_FLAGS;
+    } else if (command === "doctor") {
+      allowedFlags = DOCTOR_FLAGS;
+    } else {
+      allowedFlags = INIT_FLAGS;
+    }
+
+    if (tokens !== undefined) {
+      for (const token of tokens) {
+        if (token.kind !== "option") continue;
+        const flagName = token.name;
+        if (GLOBAL_FLAGS.has(flagName)) continue;
+        if (!allowedFlags.has(flagName)) {
+          return {
+            ok: false,
+            error: {
+              message: `flag '--${flagName}' is not valid for '${command}' — run \`subswitch --help\` for usage`,
+            },
+          };
+        }
+      }
+    }
+
+    if (command === "init") {
+      return {
+        ok: true,
+        value: {
+          kind: "init",
+          yes: values.yes === true,
+          dryRun: values["dry-run"] === true,
+          flags: {
+            ...(typeof values.port === "string" ? { port: values.port } : {}),
+            ...(Array.isArray(values["codex-model"])
+              ? { codexModel: values["codex-model"] }
+              : {}),
+            ...(typeof values["codex-models"] === "string" ? { codexModels: values["codex-models"] } : {}),
+            ...(typeof values["settings-target"] === "string"
+              ? { settingsTarget: values["settings-target"] }
+              : {}),
+          },
+        },
+      };
+    }
+
+    if (command === "serve") {
+      return {
+        ok: true,
+        value: {
+          kind: "serve",
+          verbose: values.verbose === true,
+          quiet: values.quiet === true,
+          ...(typeof values.port === "string" ? { port: values.port } : {}),
+        },
+      };
+    }
+
+    // command === "doctor"
+    return { ok: true, value: { kind: "doctor" } };
   } catch (e) {
     // Translate parseArgs throw to Result err (A3.21)
     if (e instanceof Error) {
@@ -140,84 +217,6 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     }
     throw e; // Unexpected error — let it propagate
   }
-
-  const { values, positionals, tokens } = parseResult;
-
-  // Global flags take precedence over everything
-  if (values.help === true) return { ok: true, value: { kind: "help" } };
-  if (values.version === true) return { ok: true, value: { kind: "version" } };
-
-  const command = positionals[0] ?? "serve";
-
-  // Unknown command
-  if (command !== "serve" && command !== "doctor" && command !== "init") {
-    return {
-      ok: false,
-      error: { message: `unknown command "${command}" — run \`subswitch --help\` for usage` },
-    };
-  }
-
-  // Per-command flag validation from tokens (A3.19)
-  let allowedFlags: Set<string>;
-  if (command === "serve") {
-    allowedFlags = SERVE_FLAGS;
-  } else if (command === "doctor") {
-    allowedFlags = DOCTOR_FLAGS;
-  } else {
-    allowedFlags = INIT_FLAGS;
-  }
-
-  if (tokens !== undefined) {
-    for (const token of tokens) {
-      if (token.kind !== "option") continue;
-      const flagName = token.name;
-      if (GLOBAL_FLAGS.has(flagName)) continue;
-      if (!allowedFlags.has(flagName)) {
-        return {
-          ok: false,
-          error: {
-            message: `flag '--${flagName}' is not valid for '${command}' — run \`subswitch --help\` for usage`,
-          },
-        };
-      }
-    }
-  }
-
-  if (command === "init") {
-    return {
-      ok: true,
-      value: {
-        kind: "init",
-        yes: values.yes === true,
-        dryRun: values["dry-run"] === true,
-        flags: {
-          ...(typeof values.port === "string" ? { port: values.port } : {}),
-          ...(Array.isArray(values["codex-model"])
-            ? { codexModel: values["codex-model"] as string[] }
-            : {}),
-          ...(typeof values["codex-models"] === "string" ? { codexModels: values["codex-models"] } : {}),
-          ...(typeof values["settings-target"] === "string"
-            ? { settingsTarget: values["settings-target"] }
-            : {}),
-        },
-      },
-    };
-  }
-
-  if (command === "serve") {
-    return {
-      ok: true,
-      value: {
-        kind: "serve",
-        verbose: values.verbose === true,
-        quiet: values.quiet === true,
-        ...(typeof values.port === "string" ? { port: values.port } : {}),
-      },
-    };
-  }
-
-  // command === "doctor"
-  return { ok: true, value: { kind: "doctor" } };
 };
 
 // ---------------------------------------------------------------------------
