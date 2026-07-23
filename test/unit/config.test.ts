@@ -66,6 +66,19 @@ describe("loadConfig", () => {
     assert.ok(!result.ok);
   });
 
+  it("returns an actionable error for malformed JSON", () => {
+    const result = loadConfig({
+      configPath: "/some/path/subswitch.config.json",
+      readFile: () => "{not valid json",
+    });
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "translate");
+    assert.match(
+      result.error.message,
+      /malformed JSON in \/some\/path\/subswitch\.config\.json — fix or delete the file/,
+    );
+  });
+
   it("explicit configPath that is missing returns an error", () => {
     const result = loadConfig({ configPath: "/nope/subswitch.config.json", readFile: missingFile });
     assert.ok(!result.ok);

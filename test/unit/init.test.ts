@@ -1,15 +1,32 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   planSettingsWrite,
-  buildSubswitchConfig,
+  planConfigWrite,
+  settingsPathFor,
   resolveOptionsFromFlags,
   resolveInitDispatch,
+  collectPreconditionWarnings,
   executeInit,
   runInitNonInteractive,
   type InitFsDeps,
 } from "../../src/init.js";
+
+// ---------------------------------------------------------------------------
+// settingsPathFor — pure path resolution
+// ---------------------------------------------------------------------------
+
+describe("settingsPathFor", () => {
+  it("local target uses settings.local.json", () => {
+    assert.equal(settingsPathFor("local", "/project"), join("/project", ".claude/settings.local.json"));
+  });
+
+  it("shared target uses settings.json", () => {
+    assert.equal(settingsPathFor("shared", "/project"), join("/project", ".claude/settings.json"));
+  });
+});
 
 // ---------------------------------------------------------------------------
 // planSettingsWrite — pure planning tests
@@ -79,20 +96,64 @@ describe("planSettingsWrite", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildSubswitchConfig — pure tests
+// planConfigWrite — pure planning tests [F1]
 // ---------------------------------------------------------------------------
 
-describe("buildSubswitchConfig", () => {
-  it("includes the port and codex models", () => {
-    const content = buildSubswitchConfig(4141, ["gpt-5.6-sol", "gpt-5.5"]);
-    const parsed = JSON.parse(content) as { port: number; codex: { models: string[] } };
+describe("planConfigWrite", () => {
+  it("fresh file: writes port and codex.models", () => {
+    const result = planConfigWrite(null, 4141, ["gpt-5.6-sol", "gpt-5.5"], "/project");
+    assert.ok(result.ok);
+    assert.equal(result.value.path, join("/project", "subswitch.config.json"));
+    const parsed = JSON.parse(result.value.content) as { port: number; codex: { models: string[] } };
     assert.equal(parsed.port, 4141);
     assert.deepEqual(parsed.codex.models, ["gpt-5.6-sol", "gpt-5.5"]);
   });
 
-  it("produces valid JSON", () => {
-    const content = buildSubswitchConfig(5555, ["gpt-5.6-luna"]);
-    assert.doesNotThrow(() => JSON.parse(content));
+  it("preserves unknown top-level keys", () => {
+    const existing = JSON.stringify({ port: 4141, codex: { models: ["gpt-5.6-sol"] }, logLevel: "debug" });
+    const result = planConfigWrite(existing, 9090, ["gpt-5.5"], "/project");
+    assert.ok(result.ok);
+    const parsed = JSON.parse(result.value.content) as {
+      port: number;
+      codex: { models: string[] };
+      logLevel: string;
+    };
+    assert.equal(parsed.port, 9090, "port should be updated");
+    assert.deepEqual(parsed.codex.models, ["gpt-5.5"], "models should be updated");
+    assert.equal(parsed.logLevel, "debug", "unknown top-level key must be preserved");
+  });
+
+  it("preserves unknown codex.* keys (deep merge within codex)", () => {
+    const existing = JSON.stringify({
+      codex: { models: ["gpt-5.6-sol"], userAgent: "custom-ua", baseUrl: "https://example.com" },
+    });
+    const result = planConfigWrite(existing, 4141, ["gpt-5.5"], "/project");
+    assert.ok(result.ok);
+    const parsed = JSON.parse(result.value.content) as {
+      codex: { models: string[]; userAgent: string; baseUrl: string };
+    };
+    assert.deepEqual(parsed.codex.models, ["gpt-5.5"], "models should be updated");
+    assert.equal(parsed.codex.userAgent, "custom-ua", "codex.userAgent must be preserved");
+    assert.equal(parsed.codex.baseUrl, "https://example.com", "codex.baseUrl must be preserved");
+  });
+
+  it("returns error on malformed JSON input", () => {
+    const result = planConfigWrite("{bad", 4141, ["gpt-5.6-sol"], "/project");
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "malformed_json");
+    assert.ok(result.error.message.includes("malformed JSON"));
+  });
+
+  it("returns error on non-object JSON input", () => {
+    const result = planConfigWrite(JSON.stringify([1, 2, 3]), 4141, ["gpt-5.6-sol"], "/project");
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "malformed_json");
+  });
+
+  it("produces valid JSON output", () => {
+    const result = planConfigWrite(null, 5555, ["gpt-5.6-luna"], "/project");
+    assert.ok(result.ok);
+    assert.doesNotThrow(() => JSON.parse(result.value.content));
   });
 });
 
@@ -115,17 +176,18 @@ describe("resolveOptionsFromFlags", () => {
     assert.equal(result.value.port, 9090);
   });
 
-  it("rejects an invalid port string", () => {
+  it("rejects an invalid port string — unified error message shape", () => {
     const result = resolveOptionsFromFlags({ port: "not-a-number" });
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "invalid_input");
-    assert.ok(result.error.message.includes("--port"));
+    assert.match(result.error.message, /invalid --port "not-a-number":/);
   });
 
   it("rejects a port out of range", () => {
     const result = resolveOptionsFromFlags({ port: "99999" });
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "invalid_input");
+    assert.match(result.error.message, /invalid --port "99999":/);
   });
 
   it("accepts settings-target=local", () => {
@@ -140,23 +202,90 @@ describe("resolveOptionsFromFlags", () => {
     assert.equal(result.value.settingsTarget, "shared");
   });
 
-  it("rejects an invalid settings-target", () => {
+  it("rejects an invalid settings-target — unified error message shape", () => {
     const result = resolveOptionsFromFlags({ settingsTarget: "global" });
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "invalid_input");
-    assert.ok(result.error.message.includes("--settings-target"));
+    assert.match(result.error.message, /invalid --settings-target "global":/);
   });
 
-  it("accepts custom codex models", () => {
-    const result = resolveOptionsFromFlags({ codexModels: ["gpt-5.6-sol", "gpt-5.5"] });
+  // Merged-flag matrix [F16/F17/F35]
+
+  it("no model flags → uses default model list (no model flags = defaults)", () => {
+    const result = resolveOptionsFromFlags({});
+    assert.ok(result.ok);
+    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
+  });
+
+  it("--codex-model (repeatable) sets models", () => {
+    const result = resolveOptionsFromFlags({ codexModel: ["gpt-5.6-sol", "gpt-5.5"] });
     assert.ok(result.ok);
     assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.5"]);
   });
 
-  it("rejects empty codex models list", () => {
-    const result = resolveOptionsFromFlags({ codexModels: [] });
+  it("--codex-models CSV string sets models", () => {
+    const result = resolveOptionsFromFlags({ codexModels: "gpt-5.6-sol,gpt-5.5" });
+    assert.ok(result.ok);
+    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.5"]);
+  });
+
+  it("--codex-model and --codex-models are merged", () => {
+    const result = resolveOptionsFromFlags({ codexModel: ["gpt-5.6-sol"], codexModels: "gpt-5.5" });
+    assert.ok(result.ok);
+    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.5"]);
+  });
+
+  it("--codex-models \"\" (empty string) → error (model flags given but resolve to empty)", () => {
+    const result = resolveOptionsFromFlags({ codexModels: "" });
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "invalid_input");
+    // Unified error shape: invalid --flag "value": reason [F14/F15]
+    assert.match(result.error.message, /invalid --codex-models "":/);
+    assert.ok(result.error.message.includes("at least one model is required"));
+  });
+
+  it("--codex-models CSV with whitespace-only entries → error", () => {
+    const result = resolveOptionsFromFlags({ codexModels: " , , " });
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "invalid_input");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// collectPreconditionWarnings — pure helper
+// ---------------------------------------------------------------------------
+
+describe("collectPreconditionWarnings", () => {
+  it("returns empty array when no problems", () => {
+    const warnings = collectPreconditionWarnings({}, true, "/home/user/.codex/auth.json");
+    assert.deepEqual(warnings, []);
+  });
+
+  it("warns when ANTHROPIC_API_KEY is set", () => {
+    const warnings = collectPreconditionWarnings({ ANTHROPIC_API_KEY: "sk-xxx" }, true, "/home/user/.codex/auth.json");
+    assert.equal(warnings.length, 1);
+    assert.ok(warnings[0]?.includes("ANTHROPIC_API_KEY"), "should mention the env var");
+  });
+
+  it("does not warn when ANTHROPIC_API_KEY is empty string", () => {
+    const warnings = collectPreconditionWarnings({ ANTHROPIC_API_KEY: "" }, true, "/home/user/.codex/auth.json");
+    assert.deepEqual(warnings, []);
+  });
+
+  it("warns when auth file does not exist", () => {
+    const authPath = "/home/user/.codex/auth.json";
+    const warnings = collectPreconditionWarnings({}, false, authPath);
+    assert.equal(warnings.length, 1);
+    assert.ok(warnings[0]?.includes(authPath), "should mention the auth file path");
+  });
+
+  it("returns both warnings when both problems present", () => {
+    const warnings = collectPreconditionWarnings(
+      { ANTHROPIC_API_KEY: "sk-xxx" },
+      false,
+      "/home/user/.codex/auth.json",
+    );
+    assert.equal(warnings.length, 2);
   });
 });
 
@@ -166,16 +295,19 @@ describe("resolveOptionsFromFlags", () => {
 
 const makeFakeDeps = (existingFiles: Record<string, string> = {}): InitFsDeps & {
   written: Record<string, string>;
+  writeOrder: string[];
 } => {
   const written: Record<string, string> = {};
+  const writeOrder: string[] = [];
   return {
     readFile: async (path) => existingFiles[path] ?? null,
     writeFile: async (path, content) => {
       written[path] = content;
+      writeOrder.push(path);
     },
     exists: (path) => path in existingFiles,
-    cwd: "/project",
     written,
+    writeOrder,
   };
 };
 
@@ -253,6 +385,46 @@ describe("executeInit", () => {
     // No files written (no partial write).
     assert.equal(Object.keys(deps.written).length, 0);
   });
+
+  it("writes config BEFORE settings (config-first order) [F6]", async () => {
+    const deps = makeFakeDeps();
+    const result = await executeInit(
+      { port: 4141, codexModels: ["gpt-5.6-sol"], settingsTarget: "local" },
+      deps,
+      "/project",
+    );
+    assert.ok(result.ok);
+    const configPath = join("/project", "subswitch.config.json");
+    const settingsPath = join("/project", ".claude/settings.local.json");
+    assert.equal(deps.writeOrder[0], configPath, "config must be written first");
+    assert.equal(deps.writeOrder[1], settingsPath, "settings must be written second");
+  });
+
+  it("returns [configPath, settingsPath] tuple on success", async () => {
+    const deps = makeFakeDeps();
+    const result = await executeInit(
+      { port: 4141, codexModels: ["gpt-5.6-sol"], settingsTarget: "local" },
+      deps,
+      "/project",
+    );
+    assert.ok(result.ok);
+    const [configPath, settingsPath] = result.value;
+    assert.equal(configPath, join("/project", "subswitch.config.json"));
+    assert.equal(settingsPath, join("/project", ".claude/settings.local.json"));
+  });
+
+  it("returns error on malformed existing config JSON — no partial write", async () => {
+    const configPath = join("/project", "subswitch.config.json");
+    const deps = makeFakeDeps({ [configPath]: "{bad json" });
+    const result = await executeInit(
+      { port: 4141, codexModels: ["gpt-5.6-sol"], settingsTarget: "local" },
+      deps,
+      "/project",
+    );
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "malformed_json");
+    assert.equal(Object.keys(deps.written).length, 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -261,7 +433,10 @@ describe("executeInit", () => {
 
 describe("runInitNonInteractive", () => {
   it("succeeds with defaults when no flags given", async () => {
-    const deps = makeFakeDeps();
+    // Populate auth file to suppress the auth warning; pass empty env to suppress
+    // the ANTHROPIC_API_KEY warning so errLines stays empty.
+    const authFilePath = join(homedir(), ".codex", "auth.json");
+    const deps = makeFakeDeps({ [authFilePath]: '{"token":"x"}' });
     const outLines: string[] = [];
     const errLines: string[] = [];
     const exitCode = await runInitNonInteractive(
@@ -270,6 +445,7 @@ describe("runInitNonInteractive", () => {
       deps,
       (l) => outLines.push(l),
       (l) => errLines.push(l),
+      {},  // empty env — no ANTHROPIC_API_KEY
     );
     assert.equal(exitCode, 0);
     assert.ok(outLines.some((l) => l.includes("Written:")), "should mention written files");
@@ -331,6 +507,20 @@ describe("runInitNonInteractive", () => {
     assert.equal(exitCode, 0);
     assert.ok(Object.keys(deps.written).length > 0, "files must be written on the --yes path");
   });
+
+  it("--codex-models empty string → error", async () => {
+    const deps = makeFakeDeps();
+    const errLines: string[] = [];
+    const exitCode = await runInitNonInteractive(
+      { codexModels: "" },
+      "/project",
+      deps,
+      () => undefined,
+      (l) => errLines.push(l),
+    );
+    assert.equal(exitCode, 1);
+    assert.ok(errLines.some((l) => l.includes("codex-models")), "should mention codex-models in error");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -339,18 +529,11 @@ describe("runInitNonInteractive", () => {
 
 describe("resolveInitDispatch", () => {
   it("non-TTY without --yes → refuse (fail closed)", () => {
-    const deps = makeFakeDeps();
-    const decision = resolveInitDispatch(false, false, false, false);
-    assert.equal(decision, "refuse");
-    // The refuse branch emits an error and does NOT call runInitNonInteractive — no files written
-    assert.equal(Object.keys(deps.written).length, 0, "writeFile must not be called on refuse path");
+    assert.equal(resolveInitDispatch(false, false, false, false), "refuse");
   });
 
   it("CI env without --yes → refuse", () => {
-    const deps = makeFakeDeps();
-    const decision = resolveInitDispatch(true, true, true, false);
-    assert.equal(decision, "refuse");
-    assert.equal(Object.keys(deps.written).length, 0, "writeFile must not be called on refuse path");
+    assert.equal(resolveInitDispatch(true, true, true, false), "refuse");
   });
 
   it("--yes flag (no TTY) → non-interactive", () => {

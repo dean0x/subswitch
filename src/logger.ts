@@ -1,4 +1,5 @@
 import { createColors } from "picocolors";
+import { resolveColorEnabled } from "./tty.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -64,7 +65,10 @@ const formatTime = (): string => {
 export const createConsoleLogger = (
   minLevel: LogLevel,
   write: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
-  color: boolean = process.stderr.isTTY === true && !("NO_COLOR" in process.env),
+  color: boolean = resolveColorEnabled(
+    process.env as Record<string, string | undefined>,
+    process.stderr.isTTY === true,
+  ),
 ): Logger => {
   // createColors(enabled) bypasses picocolors' own TTY detection so that the
   // `color` parameter is the single source of truth.

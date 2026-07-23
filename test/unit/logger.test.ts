@@ -10,8 +10,11 @@ describe("createConsoleLogger", () => {
     logger.log("info", "b");
     logger.log("warn", "c");
     logger.log("error", "d");
+    assert.equal(lines.length, 2, "should emit exactly warn + error");
+    // Use regex rather than positional split so the test is robust to any
+    // future reordering or timestamp prefix. [F48]
     assert.deepEqual(
-      lines.map((line) => line.split(" ")[1]),
+      lines.map((line) => { const m = line.match(/event=(\S+)/); return m !== null ? `event=${m[1]}` : undefined; }),
       ["event=c", "event=d"],
     );
   });
@@ -91,6 +94,21 @@ describe("createConsoleLogger", () => {
       lines[0],
       "level=info event=request_complete model=gpt-5.5 route=codex:messages status=200 latencyMs=12",
     );
+  });
+
+  it("silently drops unknown fields — redaction boundary [F27]", () => {
+    const lines: string[] = [];
+    const logger = createConsoleLogger("info", (line) => lines.push(line));
+    // Cast through unknown to simulate a caller that sneaks in an extra field at runtime.
+    logger.log("info", "test_event", { model: "gpt-5.5", status: 200 } as unknown as import("../../src/logger.js").LogFields);
+    // Force an out-of-band field the TypeScript type does NOT allow.
+    const malicious = { model: "gpt-5.5", secret: "should-not-appear" };
+    logger.log("info", "test_event2", malicious as unknown as import("../../src/logger.js").LogFields);
+    const line1 = lines[0];
+    const line2 = lines[1];
+    assert.ok(line1 !== undefined && line2 !== undefined, "should emit two lines");
+    assert.ok(!line2.includes("secret"), "unknown field name must not appear");
+    assert.ok(!line2.includes("should-not-appear"), "unknown field value must not appear");
   });
 
   it("level=warn is yellow when color=true, level=error is red when color=true", () => {

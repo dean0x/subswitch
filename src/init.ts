@@ -1,8 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile as fsReadFile, writeFile as fsWriteFile, rename as fsRename, unlink as fsUnlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
+import { DEFAULT_PORT, DEFAULT_CODEX_MODELS } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,6 +32,13 @@ export const PortSchema = z.coerce.number().int().min(1).max(65535, { message: "
 export const SettingsTargetSchema = z.enum(["local", "shared"]);
 
 // ---------------------------------------------------------------------------
+// Plain-object guard (used in all JSON object checks)
+// ---------------------------------------------------------------------------
+
+export const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+// ---------------------------------------------------------------------------
 // Init dispatch decision (pure — injectable for tests)
 // ---------------------------------------------------------------------------
 
@@ -52,7 +61,8 @@ export const resolveInitDispatch = (
   return "refuse";
 };
 
-export const ALL_CODEX_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"] as const;
+// ALL_CODEX_MODELS derives from the config constant — no duplicated literals [F10].
+export const ALL_CODEX_MODELS = DEFAULT_CODEX_MODELS;
 export type CodexModelName = (typeof ALL_CODEX_MODELS)[number];
 
 // ---------------------------------------------------------------------------
@@ -63,6 +73,20 @@ export interface SettingsWritePlan {
   readonly path: string;
   readonly content: string;
 }
+
+export interface ConfigWritePlan {
+  readonly path: string;
+  readonly content: string;
+}
+
+/**
+ * Single source of truth for the Claude settings file path.
+ * Used by planSettingsWrite and executeInit to avoid drift.
+ */
+export const settingsPathFor = (target: SettingsTarget, projectDir: string): string => {
+  const filename = target === "local" ? ".claude/settings.local.json" : ".claude/settings.json";
+  return join(projectDir, filename);
+};
 
 /**
  * Pure: merge ANTHROPIC_BASE_URL into an existing (or absent) settings JSON file.
@@ -75,37 +99,31 @@ export const planSettingsWrite = (
   settingsTarget: SettingsTarget,
   projectDir: string,
 ): Result<SettingsWritePlan, InitError> => {
-  const filename =
-    settingsTarget === "local" ? ".claude/settings.local.json" : ".claude/settings.json";
-  const path = join(projectDir, filename);
+  const path = settingsPathFor(settingsTarget, projectDir);
   const baseUrl = `http://127.0.0.1:${port}`;
 
   let existing: Record<string, unknown> = {};
   if (existingJson !== null) {
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(existingJson) as unknown;
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        return err({
-          kind: "malformed_json",
-          message: `${path}: expected a JSON object — fix or delete this file and run init again`,
-        });
-      }
-      existing = parsed as Record<string, unknown>;
+      parsed = JSON.parse(existingJson);
     } catch {
       return err({
         kind: "malformed_json",
         message: `${path}: malformed JSON — fix or delete this file and run init again`,
       });
     }
+    if (!isPlainObject(parsed)) {
+      return err({
+        kind: "malformed_json",
+        message: `${path}: expected a JSON object — fix or delete this file and run init again`,
+      });
+    }
+    existing = parsed;
   }
 
   // Merge ONLY env.ANTHROPIC_BASE_URL — preserve all other keys untouched.
-  const existingEnv =
-    typeof existing["env"] === "object" &&
-    existing["env"] !== null &&
-    !Array.isArray(existing["env"])
-      ? (existing["env"] as Record<string, unknown>)
-      : {};
+  const existingEnv = isPlainObject(existing["env"]) ? existing["env"] : {};
 
   const merged: Record<string, unknown> = {
     ...existing,
@@ -116,10 +134,53 @@ export const planSettingsWrite = (
 };
 
 /**
- * Pure: build the subswitch.config.json content.
+ * Pure: merge port and codex.models into an existing (or absent) subswitch.config.json.
+ * Preserves every other top-level key and every other codex.* key.
+ * Fails on malformed JSON or non-object input.
+ * No side effects — callers supply the current file content.
  */
-export const buildSubswitchConfig = (port: number, codexModels: readonly string[]): string =>
-  `${JSON.stringify({ port, codex: { models: [...codexModels] } }, null, 2)}\n`;
+export const planConfigWrite = (
+  existingJson: string | null,
+  port: number,
+  models: readonly string[],
+  projectDir: string,
+): Result<ConfigWritePlan, InitError> => {
+  const path = join(projectDir, "subswitch.config.json");
+
+  let existing: Record<string, unknown> = {};
+  if (existingJson !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(existingJson);
+    } catch {
+      return err({
+        kind: "malformed_json",
+        message: `${path}: malformed JSON — fix or delete this file and run init again`,
+      });
+    }
+    if (!isPlainObject(parsed)) {
+      return err({
+        kind: "malformed_json",
+        message: `${path}: expected a JSON object — fix or delete this file and run init again`,
+      });
+    }
+    existing = parsed;
+  }
+
+  // Preserve all codex.* keys except models (deep merge).
+  const existingCodex = isPlainObject(existing["codex"]) ? existing["codex"] : {};
+
+  const merged: Record<string, unknown> = {
+    ...existing,
+    port,
+    codex: {
+      ...existingCodex,
+      models: [...models],
+    },
+  };
+
+  return ok({ path, content: `${JSON.stringify(merged, null, 2)}\n` });
+};
 
 // ---------------------------------------------------------------------------
 // Effectful write (injectable fs deps for tests)
@@ -132,14 +193,12 @@ export interface InitFsDeps {
   readonly writeFile: (path: string, content: string) => Promise<void>;
   /** Returns true if path exists. */
   readonly exists: (path: string) => boolean;
-  /** Current working directory for subswitch.config.json. */
-  readonly cwd: string;
 }
 
 export const makeRealFsDeps = (): InitFsDeps => ({
   readFile: async (path: string): Promise<string | null> => {
     try {
-      return await readFile(path, "utf8");
+      return await fsReadFile(path, "utf8");
     } catch (e) {
       if (e instanceof Error && (e as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw e;
@@ -147,71 +206,90 @@ export const makeRealFsDeps = (): InitFsDeps => ({
   },
   writeFile: async (path: string, content: string): Promise<void> => {
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, content, "utf8");
+    // Atomic write: write to a temp file then rename over the target so a
+    // crash mid-write never leaves a partially-written config. [F2]
+    const tmp = `${path}.tmp.${process.pid}`;
+    try {
+      await fsWriteFile(tmp, content, "utf8");
+      await fsRename(tmp, path);
+    } catch (e) {
+      try { await fsUnlink(tmp); } catch { /* ignore cleanup error */ }
+      throw e;
+    }
   },
   exists: (path: string): boolean => existsSync(path),
-  cwd: process.cwd(),
 });
 
 /**
- * Execute the init plan: write settings file + subswitch.config.json.
- * Returns the list of files written on success.
+ * Execute the init plan: write subswitch.config.json then the settings file.
+ *
+ * Write order is config-first: a dangling settings pointer (ANTHROPIC_BASE_URL
+ * pointing at a port with no config) is the harmful partial state. [F1/F50]
+ *
+ * Returns [configPath, settingsPath] on success.
+ * If either plan fails, nothing is written.
  */
 export const executeInit = async (
   options: InitOptions,
   deps: InitFsDeps,
   projectDir: string,
-): Promise<Result<readonly string[], InitError>> => {
-  // 1. Plan the settings file write.
-  const settingsPath =
-    options.settingsTarget === "local"
-      ? join(projectDir, ".claude/settings.local.json")
-      : join(projectDir, ".claude/settings.json");
+): Promise<Result<readonly [string, string], InitError>> => {
+  const configPath = join(projectDir, "subswitch.config.json");
+  const settingsPath = settingsPathFor(options.settingsTarget, projectDir);
 
-  let existingJson: string | null = null;
+  // 1. Read both existing files (all reads before any write).
+  let existingConfigJson: string | null;
+  let existingSettingsJson: string | null;
   try {
-    existingJson = await deps.readFile(settingsPath);
+    existingConfigJson = await deps.readFile(configPath);
   } catch (e) {
-    return err({
-      kind: "write_error",
-      message: `cannot read ${settingsPath}: ${String(e)}`,
-    });
+    return err({ kind: "write_error", message: `cannot read ${configPath}: ${String(e)}` });
+  }
+  try {
+    existingSettingsJson = await deps.readFile(settingsPath);
+  } catch (e) {
+    return err({ kind: "write_error", message: `cannot read ${settingsPath}: ${String(e)}` });
   }
 
-  const settingsPlan = planSettingsWrite(existingJson, options.port, options.settingsTarget, projectDir);
+  // 2. Plan both writes (pure — if either fails, nothing is written).
+  const configPlan = planConfigWrite(existingConfigJson, options.port, options.codexModels, projectDir);
+  if (!configPlan.ok) return err(configPlan.error);
+
+  const settingsPlan = planSettingsWrite(existingSettingsJson, options.port, options.settingsTarget, projectDir);
   if (!settingsPlan.ok) return err(settingsPlan.error);
 
-  // 2. Build the subswitch.config.json content.
-  const configPath = join(deps.cwd, "subswitch.config.json");
-  const configContent = buildSubswitchConfig(options.port, options.codexModels);
-
-  // 3. Write both files (no partial writes — plan phase catches all validation errors above).
+  // 3. Write: config before settings (config-first order). [F6]
   try {
+    await deps.writeFile(configPlan.value.path, configPlan.value.content);
     await deps.writeFile(settingsPlan.value.path, settingsPlan.value.content);
-    await deps.writeFile(configPath, configContent);
   } catch (e) {
-    return err({
-      kind: "write_error",
-      message: `file write failed: ${String(e)}`,
-    });
+    return err({ kind: "write_error", message: `file write failed: ${String(e)}` });
   }
 
-  return ok([settingsPlan.value.path, configPath]);
+  return ok([configPlan.value.path, settingsPlan.value.path] as const);
 };
 
 // ---------------------------------------------------------------------------
 // Non-interactive path (from flags + defaults)
 // ---------------------------------------------------------------------------
 
+/**
+ * Raw CLI flag shape as produced by parseArgs.
+ *
+ * - codexModel: from --codex-model (multiple, repeatable)
+ * - codexModels: from --codex-models (single CSV string)
+ * Merging and normalisation happen inside resolveOptionsFromFlags. [F11]
+ */
 export interface InitFlags {
   readonly port?: string;
-  readonly codexModels?: readonly string[];
+  readonly codexModel?: readonly string[];
+  readonly codexModels?: string;
   readonly settingsTarget?: string;
 }
 
 export const resolveOptionsFromFlags = (flags: InitFlags): Result<InitOptions, InitError> => {
   // Validate port.
-  const rawPort = flags.port ?? "4141";
+  const rawPort = flags.port ?? String(DEFAULT_PORT);
   const portResult = PortSchema.safeParse(rawPort);
   if (!portResult.success) {
     return err({
@@ -230,21 +308,67 @@ export const resolveOptionsFromFlags = (flags: InitFlags): Result<InitOptions, I
     });
   }
 
-  // Validate codex-models.
-  const rawModels = flags.codexModels ?? ALL_CODEX_MODELS;
-  if (rawModels.length === 0) {
-    return err({ kind: "invalid_input", message: "--codex-models: at least one model is required" });
-  }
-  const models = rawModels.map((m) => m.trim()).filter((m) => m.length > 0);
-  if (models.length === 0) {
-    return err({ kind: "invalid_input", message: "--codex-models: at least one non-empty model is required" });
+  // Merge codex model flags.
+  // Distinguish "no model flags at all → use defaults" from
+  // "model flags given but resolve to empty → error" so --codex-models ""
+  // is always an error. [F16/F17/F35]
+  const hasModelFlags = flags.codexModel !== undefined || flags.codexModels !== undefined;
+
+  let resolvedModels: readonly string[];
+  if (!hasModelFlags) {
+    // No model flags provided — default to ALL_CODEX_MODELS.
+    resolvedModels = DEFAULT_CODEX_MODELS;
+  } else {
+    const merged: string[] = [...(flags.codexModel ?? [])];
+    if (flags.codexModels !== undefined && flags.codexModels !== "") {
+      merged.push(...flags.codexModels.split(",").map((s) => s.trim()).filter((s) => s.length > 0));
+    }
+    const filtered = merged.map((m) => m.trim()).filter((m) => m.length > 0);
+    if (filtered.length === 0) {
+      // Model flags were given but resolved to nothing (e.g. --codex-models "").
+      return err({
+        kind: "invalid_input",
+        message: `invalid --codex-models "${flags.codexModels ?? ""}": at least one model is required`,
+      });
+    }
+    resolvedModels = filtered;
   }
 
   return ok({
     port: portResult.data,
-    codexModels: models,
+    codexModels: resolvedModels,
     settingsTarget: targetResult.data,
   });
+};
+
+// ---------------------------------------------------------------------------
+// Precondition warnings (pure — injectable for tests)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure: collect warning strings for known precondition problems.
+ * Auth path must be computed from homedir() by the caller, not env.HOME
+ * (env.HOME is undefined on Windows). [F12/F13]
+ */
+export const collectPreconditionWarnings = (
+  env: Record<string, string | undefined>,
+  authFileExists: boolean,
+  authFilePath: string,
+): string[] => {
+  const warnings: string[] = [];
+  if (env["ANTHROPIC_API_KEY"] !== undefined && env["ANTHROPIC_API_KEY"] !== "") {
+    warnings.push(
+      "ANTHROPIC_API_KEY is set. This variable breaks claude.ai subscription auth in Claude Code.\n" +
+        "  Unset it before starting Claude Code to avoid auth errors.",
+    );
+  }
+  if (!authFileExists) {
+    warnings.push(
+      `Codex auth file not found at ${authFilePath}.\n` +
+        "  Run `codex login` first to authenticate your Codex subscription.",
+    );
+  }
+  return warnings;
 };
 
 // ---------------------------------------------------------------------------
@@ -262,26 +386,17 @@ export const runInitInteractive = async (
   clack.intro("subswitch init — interactive setup");
 
   // --- Precondition checks ---
-  if (env["ANTHROPIC_API_KEY"] !== undefined && env["ANTHROPIC_API_KEY"] !== "") {
-    clack.log.warn(
-      "ANTHROPIC_API_KEY is set. This variable breaks claude.ai subscription auth in Claude Code.\n" +
-        "  Unset it before starting Claude Code to avoid auth errors.",
-    );
-  }
-
-  const authFile = join(env["HOME"] ?? "~", ".codex", "auth.json");
-  if (!deps.exists(authFile)) {
-    clack.log.warn(
-      `Codex auth file not found at ${authFile}.\n` +
-        "  Run \`codex login\` first to authenticate your Codex subscription.",
-    );
+  const authFilePath = join(homedir(), ".codex", "auth.json");
+  const warnings = collectPreconditionWarnings(env, deps.exists(authFilePath), authFilePath);
+  for (const warning of warnings) {
+    clack.log.warn(warning);
   }
 
   // --- Port ---
   const portInput = await clack.text({
     message: "Proxy port",
-    placeholder: "4141",
-    initialValue: "4141",
+    placeholder: String(DEFAULT_PORT),
+    initialValue: String(DEFAULT_PORT),
     validate(value) {
       const r = PortSchema.safeParse(value);
       return r.success ? undefined : `invalid port: ${r.error.issues.map((i) => i.message).join("; ")}`;
@@ -357,14 +472,14 @@ export const runInitInteractive = async (
   spinner.stop("Files written.");
 
   // --- Outro summary ---
-  const [settingsFile, configFile] = result.value;
+  const [configFile, settingsFile] = result.value;
   clack.note(
     [
-      `Written: ${settingsFile ?? "(settings file)"}`,
-      `Written: ${configFile ?? "(config file)"}`,
+      `Written: ${configFile}`,
+      `Written: ${settingsFile}`,
       "",
       `Next steps:`,
-      `  1. Run \`subswitch serve\` from ${deps.cwd}`,
+      `  1. Run \`subswitch serve\` from ${projectDir}`,
       `     (subswitch.config.json is resolved from the working directory)`,
       `  2. Run \`subswitch doctor\` to verify config + codex auth health`,
       `  3. Route a subagent to Codex by adding to its frontmatter:`,
@@ -387,7 +502,15 @@ export const runInitNonInteractive = async (
   deps: InitFsDeps,
   write: (line: string) => void,
   errWrite: (line: string) => void,
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
 ): Promise<number> => {
+  // Emit precondition warnings before resolving options. [F12/F13]
+  const authFilePath = join(homedir(), ".codex", "auth.json");
+  const warnings = collectPreconditionWarnings(env, deps.exists(authFilePath), authFilePath);
+  for (const w of warnings) {
+    errWrite(`warning: ${w}`);
+  }
+
   const optionsResult = resolveOptionsFromFlags(flags);
   if (!optionsResult.ok) {
     errWrite(`subswitch init: ${optionsResult.error.message}`);
@@ -400,10 +523,10 @@ export const runInitNonInteractive = async (
     return 1;
   }
 
-  const [settingsFile, configFile] = result.value;
-  write(`Written: ${settingsFile ?? "(settings file)"}`);
-  write(`Written: ${configFile ?? "(config file)"}`);
-  write(`Next: run \`subswitch serve\` from ${deps.cwd}`);
+  const [configFile, settingsFile] = result.value;
+  write(`Written: ${configFile}`);
+  write(`Written: ${settingsFile}`);
+  write(`Next: run \`subswitch serve\` from ${projectDir}`);
   write(`      add \`model: ${optionsResult.value.codexModels[0] ?? "gpt-5.6-sol"}\` to a subagent's frontmatter to route it`);
   return 0;
 };

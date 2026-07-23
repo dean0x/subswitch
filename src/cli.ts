@@ -10,6 +10,7 @@ import {
   makeRealFsDeps,
   resolveInitDispatch,
 } from "./init.js";
+import { resolveColorEnabled } from "./tty.js";
 import { SUBSWITCH_VERSION } from "./version.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
@@ -112,8 +113,10 @@ const serve = async (
 // ---------------------------------------------------------------------------
 
 const doctor = async (config: Config, configPath: string, fileFound: boolean): Promise<void> => {
-  const color =
-    process.stdout.isTTY === true && !("NO_COLOR" in process.env);
+  const color = resolveColorEnabled(
+    process.env as Record<string, string | undefined>,
+    process.stdout.isTTY === true,
+  );
 
   const exitCode = await runDoctor(config, configPath, fileFound, {
     write: out,
@@ -140,15 +143,12 @@ const init = async (
   const projectDir = process.cwd();
   const fsDeps = makeRealFsDeps();
 
-  // Merge --codex-model (repeatable) and --codex-models (csv).
-  const allModels: string[] = [...codexModelFlags];
-  if (codexModelsFlag !== undefined && codexModelsFlag !== "") {
-    allModels.push(...codexModelsFlag.split(",").map((s) => s.trim()).filter((s) => s.length > 0));
-  }
-
+  // Pass raw CLI flag values directly — merging of --codex-model / --codex-models
+  // and all normalization happens inside resolveOptionsFromFlags.
   const flags = {
     ...(portFlag !== undefined ? { port: portFlag } : {}),
-    ...(allModels.length > 0 ? { codexModels: allModels } : {}),
+    ...(codexModelFlags.length > 0 ? { codexModel: codexModelFlags } : {}),
+    ...(codexModelsFlag !== undefined ? { codexModels: codexModelsFlag } : {}),
     ...(settingsTargetFlag !== undefined ? { settingsTarget: settingsTargetFlag } : {}),
   };
 
