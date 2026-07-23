@@ -85,8 +85,8 @@ export const createConsoleLogger = (
   return {
     log(level, event, fields) {
       if (LEVEL_ORDER[level] < LEVEL_ORDER[minLevel]) return;
-      const levelStr = color ? colorLevelStr(level) : `level=${level}`;
-      const eventStr = color ? `event=${pc.bold(event)}` : `event=${event}`;
+      const levelStr = colorLevelStr(level);
+      const eventStr = `event=${pc.bold(event)}`;
       const parts = [levelStr, eventStr];
       if (fields !== undefined) {
         for (const key of FIELD_KEYS) {

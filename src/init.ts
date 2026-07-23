@@ -246,11 +246,7 @@ export const runInitInteractive = async (
     );
   }
 
-  const authFile = join(
-    env["HOME"] ?? (process.env["HOME"] ?? "~"),
-    ".codex",
-    "auth.json",
-  );
+  const authFile = join(env["HOME"] ?? "~", ".codex", "auth.json");
   if (!deps.exists(authFile)) {
     clack.log.warn(
       `Codex auth file not found at ${authFile}.\n` +

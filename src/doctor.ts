@@ -138,8 +138,8 @@ export const runDoctor = async (
   io: DoctorIO,
 ): Promise<number> => {
   const pc = createColors(io.color);
-  const pass = (text: string): string => (io.color ? pc.green(text) : text);
-  const failStr = (text: string): string => (io.color ? pc.red(text) : text);
+  const pass = (text: string): string => pc.green(text);
+  const failStr = (text: string): string => pc.red(text);
   let failures = 0;
 
   io.write("subswitch doctor");
