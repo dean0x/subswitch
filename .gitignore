@@ -1,5 +1,7 @@
 node_modules/
 subswitch.config.json
+dist/
+*.tgz
 
 # OS / editor / local logs
 .DS_Store

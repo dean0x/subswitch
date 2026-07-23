@@ -52,6 +52,21 @@ background `claude-*` utility traffic is never misrouted.
 ## Quick start
 
 ```sh
+npx subswitch serve    # starts on 127.0.0.1:4141 (no install needed)
+npx subswitch doctor   # config + codex auth health (never prints tokens)
+```
+
+Or install globally:
+
+```sh
+npm install -g subswitch
+subswitch serve
+subswitch doctor
+```
+
+### From source
+
+```sh
 git clone https://github.com/dean0x/subswitch.git
 cd subswitch
 npm install

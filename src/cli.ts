@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { type Config, loadConfig } from "./config.js";
 import { inspectAuthFile } from "./codex-auth.js";
