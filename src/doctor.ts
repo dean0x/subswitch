@@ -1,6 +1,7 @@
 import tls from "node:tls";
 import { createColors } from "picocolors";
 import type { Config } from "./config.js";
+import { isPlainObject } from "./init.js";
 
 // ---------------------------------------------------------------------------
 // Discriminated-union result types
@@ -52,9 +53,9 @@ export const probeSubswitch = async (port: number, deps: ProbeSubswitchDeps): Pr
   }
   if (result.status !== 200) return { kind: "not_subswitch" };
   try {
-    const body = JSON.parse(result.body) as { name?: unknown; version?: unknown };
-    if (body.name === "subswitch" && typeof body.version === "string") {
-      return { kind: "running", name: body.name, version: body.version };
+    const parsed: unknown = JSON.parse(result.body);
+    if (isPlainObject(parsed) && parsed["name"] === "subswitch" && typeof parsed["version"] === "string") {
+      return { kind: "running", name: parsed["name"] as string, version: parsed["version"] };
     }
     return { kind: "not_subswitch" };
   } catch {
@@ -86,10 +87,38 @@ const isConnectionRefused = (e: unknown): boolean => {
   return false;
 };
 
+// Maximum bytes read from the health-endpoint body — the response is small JSON;
+// cap prevents unbounded buffering if the port is occupied by a chatty service. [F49]
+const MAX_BODY_BYTES = 8 * 1024;
+
 export const makeLiveHttpGet = (): ProbeSubswitchDeps["httpGet"] => async (url) => {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(3_000) });
-    const body = await res.text();
+    let body = "";
+    const { body: stream } = res;
+    if (stream !== null) {
+      const reader = stream.getReader();
+      const chunks: Uint8Array[] = [];
+      let totalBytes = 0;
+      try {
+        while (totalBytes < MAX_BODY_BYTES) {
+          const { done, value } = await reader.read();
+          if (done || value === undefined) break;
+          chunks.push(value);
+          totalBytes += value.byteLength;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      body = new TextDecoder().decode(
+        chunks.reduce<Uint8Array>((acc, chunk) => {
+          const merged = new Uint8Array(acc.byteLength + chunk.byteLength);
+          merged.set(acc);
+          merged.set(chunk, acc.byteLength);
+          return merged;
+        }, new Uint8Array(0)),
+      );
+    }
     return { ok: true, status: res.status, body };
   } catch (e) {
     if (isConnectionRefused(e)) return { ok: false, connectionRefused: true };
@@ -127,6 +156,12 @@ export interface DoctorIO {
   readonly color: boolean;
 }
 
+// Column width for the label portion of each output row. [F24]
+const LABEL_WIDTH = 22;
+
+/** Format one doctor output row with a consistent label column width. */
+const row = (label: string, value: string): string => `  ${label}`.padEnd(LABEL_WIDTH) + value;
+
 /**
  * Run all doctor checks and write output to io.write.
  * Returns 0 if all checks passed, 1 if any check failed.
@@ -138,18 +173,20 @@ export const runDoctor = async (
   io: DoctorIO,
 ): Promise<number> => {
   const pc = createColors(io.color);
-  const pass = (text: string): string => pc.green(text);
+  const passStr = (text: string): string => pc.green(text);
   const failStr = (text: string): string => pc.red(text);
   let failures = 0;
 
   io.write("subswitch doctor");
-  io.write(`  config:             ${configPath}${fileFound ? "" : " (defaults — file not found)"}`);
-  io.write(`  port:               ${config.port}`);
-  io.write(`  logLevel:           ${config.logLevel}`);
-  io.write(`  anthropic.baseUrl:  ${config.anthropic.baseUrl}`);
-  io.write(`  codex.baseUrl:      ${config.codex.baseUrl}`);
-  io.write(`  codex.models:       ${config.codex.models.join(", ")}`);
-  io.write(`  codex.authFile:     ${config.codex.authFile}`);
+  // Config-file detection is informational — a missing config file uses defaults and does
+  // not increment the failure count, because defaults produce a working proxy. [F53]
+  io.write(row("config:", `${configPath}${fileFound ? "" : " (defaults — file not found)"}`));
+  io.write(row("port:", String(config.port)));
+  io.write(row("logLevel:", config.logLevel));
+  io.write(row("anthropic.baseUrl:", config.anthropic.baseUrl));
+  io.write(row("codex.baseUrl:", config.codex.baseUrl));
+  io.write(row("codex.models:", config.codex.models.join(", ")));
+  io.write(row("codex.authFile:", config.codex.authFile));
 
   try {
     const raw = await io.readAuthFile(config.codex.authFile);
@@ -158,56 +195,60 @@ export const runDoctor = async (
     const inspection = inspectAuthFile(raw);
     if (!inspection.ok) {
       failures++;
-      io.write(`  codex auth:         ${failStr(`INVALID (${inspection.error.message})`)}`);
+      io.write(row("codex auth:", failStr(`INVALID (${inspection.error.message})`)));
     } else {
       const info = inspection.value;
-      io.write(`  codex auth mode:    ${pass(info.authMode)}`);
-      io.write(`  codex account:      ${info.accountIdSuffix}`);
-      io.write(`  token expires:      ${info.accessTokenExpiresAt ?? "(no exp claim)"}`);
-      io.write(`  last refresh:       ${info.lastRefresh ?? "(unknown)"}`);
+      io.write(row("codex auth mode:", passStr(info.authMode)));
+      io.write(row("codex account:", info.accountIdSuffix));
+      io.write(row("token expires:", info.accessTokenExpiresAt ?? "(no exp claim)"));
+      io.write(row("last refresh:", info.lastRefresh ?? "(unknown)"));
     }
   } catch {
     failures++;
-    io.write(`  codex auth:         ${failStr("UNAVAILABLE")} (cannot read auth file — run \`codex login\`)`);
+    io.write(row("codex auth:", failStr("UNAVAILABLE") + ` (cannot read auth file — run \`codex login\`)`));
     io.write("  note: the Anthropic leg works without codex auth; only configured codex models are affected");
   }
 
-  const subswitchStatus = await probeSubswitch(config.port, { httpGet: io.httpGet });
-  switch (subswitchStatus.kind) {
-    case "running":
-      io.write(`  subswitch running:      ${pass(`YES (version ${subswitchStatus.version})`)}`);
-      break;
-    case "connection_refused":
-      failures++;
-      io.write(`  subswitch running:      ${failStr("NO")} (port ${config.port} not in use — run \`subswitch serve\`)`);
-      break;
-    case "not_subswitch":
-      failures++;
-      io.write(`  subswitch running:      ${failStr("UNKNOWN")} (something else is on port ${config.port})`);
-      break;
-  }
-
+  // Run all three network probes in parallel; write results in the fixed output order below. [F28/F5]
   const anthropicHost = new URL(config.anthropic.baseUrl).hostname;
   const codexHost = new URL(config.codex.baseUrl).hostname;
 
-  const anthropicTls = await probeTlsReachable(anthropicHost, { tlsConnect: io.tlsConnect });
-  if (anthropicTls.kind === "reachable") {
-    io.write(`  anthropic TLS:      ${pass(`OK (${anthropicHost})`)}`);
-  } else {
-    failures++;
-    io.write(`  anthropic TLS:      ${failStr(`FAIL (${anthropicHost}: ${anthropicTls.message})`)}`);
+  const [subswitchStatus, anthropicTls, codexTls] = await Promise.all([
+    probeSubswitch(config.port, { httpGet: io.httpGet }),
+    probeTlsReachable(anthropicHost, { tlsConnect: io.tlsConnect }),
+    probeTlsReachable(codexHost, { tlsConnect: io.tlsConnect }),
+  ]);
+
+  // Write subswitch probe result
+  switch (subswitchStatus.kind) {
+    case "running":
+      io.write(row("subswitch running:", passStr(`YES (version ${subswitchStatus.version})`)));
+      break;
+    case "connection_refused":
+      failures++;
+      io.write(row("subswitch running:", failStr("NO") + ` (port ${config.port} not in use — run \`subswitch serve\`)`));
+      break;
+    case "not_subswitch":
+      failures++;
+      io.write(row("subswitch running:", failStr("UNKNOWN") + ` (something else is on port ${config.port})`));
+      break;
   }
 
-  const codexTls = await probeTlsReachable(codexHost, { tlsConnect: io.tlsConnect });
-  if (codexTls.kind === "reachable") {
-    io.write(`  codex TLS:          ${pass(`OK (${codexHost})`)}`);
-  } else {
-    failures++;
-    io.write(`  codex TLS:          ${failStr(`FAIL (${codexHost}: ${codexTls.message})`)}`);
-  }
+  // Write TLS results using a shared helper to eliminate duplication. [F28]
+  const checkTls = (label: string, host: string, status: TlsStatus): void => {
+    if (status.kind === "reachable") {
+      io.write(row(`${label}:`, passStr(`OK (${host})`)));
+    } else {
+      failures++;
+      io.write(row(`${label}:`, failStr(`FAIL (${host}: ${status.message})`)));
+    }
+  };
+
+  checkTls("anthropic TLS", anthropicHost, anthropicTls);
+  checkTls("codex TLS", codexHost, codexTls);
 
   if (failures === 0) {
-    io.write(pass("all checks passed"));
+    io.write(passStr("all checks passed"));
   } else {
     io.write(failStr(`${failures} problem${failures === 1 ? "" : "s"} found`));
   }

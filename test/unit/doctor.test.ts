@@ -211,4 +211,16 @@ describe("runDoctor", () => {
       assert.ok(!line.includes("\x1b"), `line should not have ANSI codes: ${line}`);
     }
   });
+
+  it("includes ANSI escape codes in the verdict line when color=true", async () => {
+    const lines: string[] = [];
+    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      color: true,
+    });
+    assert.equal(exitCode, 0);
+    const verdictLine = lines.find((l) => l.includes("all checks passed"));
+    assert.ok(verdictLine !== undefined, "must include all-pass verdict line");
+    assert.ok(verdictLine.includes("\x1b"), "verdict line must contain ANSI escape code when color=true");
+  });
 });
