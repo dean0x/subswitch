@@ -48,6 +48,8 @@
     "prepublishOnly": "npm run check"
   },
   "dependencies": {
+    "@clack/prompts": "^1.7.0",
+    "picocolors": "^1.1.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
