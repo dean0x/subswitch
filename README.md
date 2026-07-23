@@ -21,10 +21,11 @@ your utility calls, everything moves at once.
 
 subswitch is the first proxy that splits traffic **per subagent, by model name**:
 
-- Requests whose `model` is one of your configured `gpt-*` models are translated
-  and sent to the Codex backend.
-- Everything else — the main agent, background `claude-*` utility calls, token
-  counting — is relayed to Anthropic as **verbatim bytes**, credentials and all.
+- Requests whose `model` is one of the exact names in your `codex.models` list are
+  translated and sent to the Codex backend.
+- Everything else — the main agent, background utility calls (e.g. `claude-sonnet-*`
+  for token counting and context management), all non-matching models — is relayed
+  to Anthropic as **verbatim bytes**, credentials and all.
 
 So you keep Claude Opus/Sonnet driving the session and delegate a specific
 subagent to GPT for a second opinion, a cheaper worker, or a specialized task —
@@ -39,9 +40,9 @@ Claude Code ──► subswitch (127.0.0.1:4141)
                        (verbatim byte relay, claude.ai OAuth untouched)
 ```
 
-Routing is by the request body's `model` field, exact match against
+Routing is by the request body's `model` field, **exact membership** in
 `codex.models`. Unknown models pass through to Anthropic and fail visibly there;
-background `claude-*` utility traffic is never misrouted.
+non-matching utility traffic is never misrouted.
 
 ## Requirements
 
@@ -51,30 +52,85 @@ background `claude-*` utility traffic is never misrouted.
 
 ## Quick start
 
-```sh
-npx subswitch serve    # starts on 127.0.0.1:4141 (no install needed)
-npx subswitch doctor   # config + codex auth health (never prints tokens)
-```
-
-Or install globally:
+**1. Install** — use it on demand with `npx`, or install the CLI globally:
 
 ```sh
-npm install -g subswitch
-subswitch serve
-subswitch doctor
+npm install -g subswitch          # then run `subswitch <command>`
+# or, without installing, prefix any command with npx, e.g. `npx subswitch serve`
 ```
 
-### From source
+**2. Run interactive setup:**
 
 ```sh
-git clone https://github.com/dean0x/subswitch.git
-cd subswitch
-npm install
-npm run serve      # starts on 127.0.0.1:4141
-npm run doctor     # config + codex auth health (never prints tokens)
+subswitch init
 ```
 
-Wire a project to subswitch with `.claude/settings.json`:
+`init` walks you through port selection and model configuration, then writes
+`ANTHROPIC_BASE_URL` into `.claude/settings.local.json` (gitignored, per-developer)
+and saves `subswitch.config.json` in your project directory.
+
+> **Non-interactive / CI:**
+> ```sh
+> subswitch init --yes --port 4141 --settings-target local
+> ```
+> Use `--settings-target shared` to write `.claude/settings.json` instead.
+
+**3. Start the proxy and verify your setup:**
+
+```sh
+subswitch serve      # starts on 127.0.0.1:4141
+subswitch doctor     # checks config + codex auth + network (exits non-zero on problems)
+```
+
+**4. Route a subagent to Codex** — add a `model:` line to the subagent's frontmatter:
+
+```yaml
+---
+name: gpt-worker
+model: gpt-5.6-sol   # any exact name from codex.models routes to Codex
+effort: low          # optional reasoning effort (see Effort control below)
+---
+```
+
+That subagent alone now runs on Codex; your main agent and every other request stay
+on Claude.
+
+### CLI reference
+
+```
+Usage: subswitch [command] [flags]
+
+Commands:
+  serve     Start the proxy (default command)
+  doctor    Check config, codex auth, and network reachability
+  init      Interactive setup — writes config + wires Claude Code
+
+Flags (global):
+  -h, --help       Show this help message
+  -v, --version    Print version
+
+Flags (serve):
+      --verbose    Set log level to debug for this run
+      --quiet      Set log level to warn for this run
+
+Flags (init):
+  -y, --yes                  Non-interactive mode — use flags + defaults
+      --port <n>             Proxy port (default: 4141)
+      --codex-model <name>   Include this Codex model (repeatable)
+      --codex-models <csv>   Comma-separated list of Codex models
+      --settings-target <t>  "local" (.claude/settings.local.json, default)
+                             or "shared" (.claude/settings.json)
+```
+
+`doctor` exits with code `0` when all checks pass and code `1` when any check
+fails — use it as a preflight gate in scripts or CI.
+
+### Advanced: manual setup
+
+If you prefer to configure manually instead of using `init`:
+
+**Point Claude Code at subswitch** in your project's `.claude/settings.local.json`
+(recommended, gitignored) or `.claude/settings.json`:
 
 ```json
 {
@@ -84,18 +140,19 @@ Wire a project to subswitch with `.claude/settings.json`:
 }
 ```
 
-Then give a subagent a Codex model in its frontmatter
-(see [`e2e/agents/gpt-worker.md`](e2e/agents/gpt-worker.md)):
+Optionally create `subswitch.config.json` in your project root for custom port or
+model selection (all fields optional — see
+[`subswitch.config.example.json`](subswitch.config.example.json)).
 
-```yaml
----
-name: gpt-worker
-model: gpt-5.5
-effort: low
----
+### Run from source
+
+```sh
+git clone https://github.com/dean0x/subswitch.git
+cd subswitch
+npm install
+npm run serve      # same as `subswitch serve`
+npm run doctor     # same as `subswitch doctor`
 ```
-
-Now that subagent runs on Codex while the rest of the session stays on Claude.
 
 ## Effort control
 
@@ -117,6 +174,12 @@ The config file is located by the following precedence (highest wins):
 
 1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
 2. `subswitch.config.json` in the current working directory — silently uses defaults if absent
+
+The routing knob that matters most is **`codex.models`** — the exact model names that
+get sent to Codex (everything else passes through to Anthropic). It defaults to
+`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.5`. Add the exact
+model name to a subagent's `model:` frontmatter to route it; names not in this
+list always go to Anthropic.
 
 New knobs added in this release:
 
@@ -150,7 +213,9 @@ New knobs added in this release:
 Structured single-line logs with a closed field set (model, path, route,
 status, latency, event/error codes). Token material and request/response
 content are unrepresentable in the logger *by type* — nothing sensitive can be
-logged.
+logged. When stderr is a TTY and `NO_COLOR` is unset, level and event tokens
+are colorized and a timestamp prefix is added; the key=value structure is
+unchanged.
 
 ## Testing
 
