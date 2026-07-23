@@ -11,6 +11,7 @@ import {
   collectPreconditionWarnings,
   executeInit,
   runInitNonInteractive,
+  runInitDryRun,
   type InitFsDeps,
 } from "../../src/init.js";
 
@@ -546,5 +547,76 @@ describe("resolveInitDispatch", () => {
 
   it("both TTYs, no CI, no --yes → interactive", () => {
     assert.equal(resolveInitDispatch(true, true, false, false), "interactive");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runInitDryRun — A2.17: plan-only, no writes, always exit 0 on success
+// ---------------------------------------------------------------------------
+
+describe("runInitDryRun", () => {
+  it("exits 0 and writes NO files to disk", async () => {
+    const deps = makeFakeDeps();
+    const outLines: string[] = [];
+    const exitCode = await runInitDryRun({}, "/project", deps, (l) => outLines.push(l), () => undefined);
+
+    assert.equal(exitCode, 0);
+    assert.equal(Object.keys(deps.written).length, 0, "dry-run must not write any files");
+  });
+
+  it("includes planned config path in output", async () => {
+    const deps = makeFakeDeps();
+    const outLines: string[] = [];
+    await runInitDryRun({}, "/project", deps, (l) => outLines.push(l), () => undefined);
+
+    const output = outLines.join("\n");
+    assert.ok(output.includes("subswitch.config.json"), "output should mention config path");
+  });
+
+  it("includes planned settings path in output", async () => {
+    const deps = makeFakeDeps();
+    const outLines: string[] = [];
+    await runInitDryRun({}, "/project", deps, (l) => outLines.push(l), () => undefined);
+
+    const output = outLines.join("\n");
+    assert.ok(
+      output.includes("settings.local.json") || output.includes("settings.json"),
+      "output should mention settings path",
+    );
+  });
+
+  it("uses custom port from flags in planned output", async () => {
+    const deps = makeFakeDeps();
+    const outLines: string[] = [];
+    await runInitDryRun({ port: "8080" }, "/project", deps, (l) => outLines.push(l), () => undefined);
+
+    const content = outLines.join("\n");
+    assert.ok(content.includes("8080"), "dry-run output should reflect the custom port");
+  });
+
+  it("exits 1 with error message on invalid port flag", async () => {
+    const deps = makeFakeDeps();
+    const errLines: string[] = [];
+    const exitCode = await runInitDryRun(
+      { port: "99999" },
+      "/project",
+      deps,
+      () => undefined,
+      (l) => errLines.push(l),
+    );
+
+    assert.equal(exitCode, 1);
+    assert.ok(errLines.some((l) => l.includes("port")), "should report port error");
+  });
+
+  it("labels output as dry-run so operator knows nothing was written", async () => {
+    const deps = makeFakeDeps();
+    const outLines: string[] = [];
+    await runInitDryRun({}, "/project", deps, (l) => outLines.push(l), () => undefined);
+
+    assert.ok(
+      outLines.some((l) => l.toLowerCase().includes("dry-run") || l.toLowerCase().includes("no files")),
+      "output should label itself as dry-run",
+    );
   });
 });

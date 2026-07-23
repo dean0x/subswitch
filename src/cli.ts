@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { type Config, loadConfig } from "./config.js";
+import { type Config, loadConfig, DEFAULT_PORT } from "./config.js";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect } from "./doctor.js";
 import {
   runInitInteractive,
   runInitNonInteractive,
+  runInitDryRun,
+  makeClackPrompts,
   makeRealFsDeps,
   resolveInitDispatch,
+  PortSchema,
+  type InitFlags,
 } from "./init.js";
 import { resolveColorEnabled } from "./tty.js";
 import { SUBSWITCH_VERSION } from "./version.js";
@@ -23,16 +27,19 @@ const errOut = (line: string): void => {
   process.stderr.write(`${line}\n`);
 };
 
+/** Write a prefixed error to stderr and set exit code 1. Always `return` after calling. */
 const fail = (message: string): void => {
   process.stderr.write(`subswitch: ${message}\n`);
   process.exitCode = 1;
 };
 
 // ---------------------------------------------------------------------------
-// Usage help
+// Usage help (A3.23)
 // ---------------------------------------------------------------------------
 
 const USAGE = `\
+subswitch — local subscription-routing proxy for Claude Code
+
 Usage: subswitch [command] [flags]
 
 Commands:
@@ -47,15 +54,167 @@ Flags (global):
 Flags (serve):
       --verbose    Set log level to debug for this run
       --quiet      Set log level to warn for this run
+      --port <n>   Override listen port (default: ${DEFAULT_PORT})
 
 Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
-      --port <n>             Proxy port (default: 4141)
+      --dry-run              Show what would be written; writes nothing
+      --port <n>             Proxy port (default: ${DEFAULT_PORT})
       --codex-model <name>   Include this Codex model (repeatable)
       --codex-models <csv>   Comma-separated list of Codex models
       --settings-target <t>  "local" (.claude/settings.local.json, default)
                              or "shared" (.claude/settings.json)
+
+Examples:
+  subswitch serve                      # start proxy on port ${DEFAULT_PORT}
+  subswitch serve --port 8080          # start proxy on a custom port
+  subswitch init                       # interactive setup
+  subswitch init --yes                 # non-interactive with defaults
+  subswitch init --dry-run             # preview what would be written
+  subswitch doctor                     # check config + auth health
+
+Environment:
+  NO_COLOR      Disable color output (also respected as standard)
+  FORCE_COLOR   Force color output even when not a TTY
+  CI            Non-interactive detection — init refuses without --yes
 `;
+
+// ---------------------------------------------------------------------------
+// Typed CLI command union (A3.18)
+// ---------------------------------------------------------------------------
+
+type CliCommand =
+  | { readonly kind: "help" }
+  | { readonly kind: "version" }
+  | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly port?: string }
+  | { readonly kind: "doctor" }
+  | { readonly kind: "init"; readonly yes: boolean; readonly dryRun: boolean; readonly flags: InitFlags };
+
+// Flag sets per command — used for per-command validation (A3.19)
+const GLOBAL_FLAGS = new Set(["help", "version"]);
+const SERVE_FLAGS = new Set(["verbose", "quiet", "port"]);
+const DOCTOR_FLAGS = new Set<string>();
+const INIT_FLAGS = new Set(["yes", "dry-run", "port", "codex-model", "codex-models", "settings-target"]);
+
+/**
+ * Pure: parse process.argv slice into a typed CliCommand.
+ * Returns err with a human-readable message (without "subswitch: " prefix —
+ * callers pass it to fail() which adds the prefix). [A3.18/A3.19/A3.21]
+ */
+const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: false; error: { message: string } } => {
+  let parseResult: ReturnType<typeof parseArgs>;
+  try {
+    parseResult = parseArgs({
+      args: argv,
+      options: {
+        help:              { type: "boolean", short: "h" },
+        version:           { type: "boolean", short: "v" },
+        // serve flags
+        verbose:           { type: "boolean" },
+        quiet:             { type: "boolean" },
+        // init flags
+        yes:               { type: "boolean", short: "y" },
+        "dry-run":         { type: "boolean" },
+        port:              { type: "string" },
+        "codex-models":    { type: "string" },
+        "codex-model":     { type: "string", multiple: true },
+        "settings-target": { type: "string" },
+      },
+      allowPositionals: true,
+      strict: true,
+      tokens: true,
+    });
+  } catch (e) {
+    // Translate parseArgs throw to Result err (A3.21)
+    if (e instanceof Error) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" || code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE") {
+        // Extract flag name from message: "Unknown option '--foo'." or similar
+        const match = /[Uu]nknown option '(--?[^']+)'/.exec(e.message);
+        const flag = match?.[1] ?? "unknown";
+        return { ok: false, error: { message: `unknown flag '${flag}' — run \`subswitch --help\`` } };
+      }
+      if (code?.startsWith("ERR_PARSE_ARGS_")) {
+        return { ok: false, error: { message: `invalid arguments — run \`subswitch --help\`` } };
+      }
+    }
+    throw e; // Unexpected error — let it propagate
+  }
+
+  const { values, positionals, tokens } = parseResult;
+
+  // Global flags take precedence over everything
+  if (values.help === true) return { ok: true, value: { kind: "help" } };
+  if (values.version === true) return { ok: true, value: { kind: "version" } };
+
+  const command = positionals[0] ?? "serve";
+
+  // Unknown command
+  if (command !== "serve" && command !== "doctor" && command !== "init") {
+    return {
+      ok: false,
+      error: { message: `unknown command "${command}" — run \`subswitch --help\` for usage` },
+    };
+  }
+
+  // Per-command flag validation from tokens (A3.19)
+  const allowedFlags =
+    command === "serve" ? SERVE_FLAGS
+    : command === "doctor" ? DOCTOR_FLAGS
+    : INIT_FLAGS;
+
+  if (tokens !== undefined) {
+    for (const token of tokens) {
+      if (token.kind !== "option") continue;
+      const flagName = token.name;
+      if (GLOBAL_FLAGS.has(flagName)) continue;
+      if (!allowedFlags.has(flagName)) {
+        return {
+          ok: false,
+          error: {
+            message: `flag '--${flagName}' is not valid for '${command}' — run \`subswitch --help\` for usage`,
+          },
+        };
+      }
+    }
+  }
+
+  if (command === "init") {
+    return {
+      ok: true,
+      value: {
+        kind: "init",
+        yes: values.yes === true,
+        dryRun: values["dry-run"] === true,
+        flags: {
+          ...(typeof values.port === "string" ? { port: values.port } : {}),
+          ...(Array.isArray(values["codex-model"])
+            ? { codexModel: values["codex-model"] as string[] }
+            : {}),
+          ...(typeof values["codex-models"] === "string" ? { codexModels: values["codex-models"] } : {}),
+          ...(typeof values["settings-target"] === "string"
+            ? { settingsTarget: values["settings-target"] }
+            : {}),
+        },
+      },
+    };
+  }
+
+  if (command === "serve") {
+    return {
+      ok: true,
+      value: {
+        kind: "serve",
+        verbose: values.verbose === true,
+        quiet: values.quiet === true,
+        ...(typeof values.port === "string" ? { port: values.port } : {}),
+      },
+    };
+  }
+
+  // command === "doctor"
+  return { ok: true, value: { kind: "doctor" } };
+};
 
 // ---------------------------------------------------------------------------
 // serve
@@ -67,13 +226,26 @@ const serve = async (
   fileFound: boolean,
   verbose: boolean,
   quiet: boolean,
+  portStr?: string,
 ): Promise<void> => {
+  // Validate --port if given, with byte-identical wording to init port validation. [F3/F15]
+  let effectivePort = config.port;
+  if (portStr !== undefined) {
+    const portResult = PortSchema.safeParse(portStr);
+    if (!portResult.success) {
+      fail(`invalid --port "${portStr}": port must be an integer between 1 and 65535`);
+      return;
+    }
+    effectivePort = portResult.data;
+  }
+
   // Apply verbosity flag override without mutating config.
   const logLevel =
     verbose ? ("debug" as const)
     : quiet  ? ("warn" as const)
     :          config.logLevel;
-  const effectiveConfig = logLevel !== config.logLevel ? { ...config, logLevel } : config;
+
+  const effectiveConfig = { ...config, logLevel, port: effectivePort };
 
   const deps = buildDeps(effectiveConfig);
   const server = createProxyServer(deps);
@@ -130,129 +302,98 @@ const doctor = async (config: Config, configPath: string, fileFound: boolean): P
 };
 
 // ---------------------------------------------------------------------------
-// init
+// init dispatch (A3.22 — single unified dispatch)
 // ---------------------------------------------------------------------------
 
-const init = async (
-  yes: boolean,
-  portFlag: string | undefined,
-  codexModelFlags: string[],
-  codexModelsFlag: string | undefined,
-  settingsTargetFlag: string | undefined,
-): Promise<void> => {
+const runInit = async (command: Extract<CliCommand, { kind: "init" }>): Promise<void> => {
   const projectDir = process.cwd();
   const fsDeps = makeRealFsDeps();
+  const env = process.env as Record<string, string | undefined>;
 
-  // Pass raw CLI flag values directly — merging of --codex-model / --codex-models
-  // and all normalization happens inside resolveOptionsFromFlags.
-  const flags = {
-    ...(portFlag !== undefined ? { port: portFlag } : {}),
-    ...(codexModelFlags.length > 0 ? { codexModel: codexModelFlags } : {}),
-    ...(codexModelsFlag !== undefined ? { codexModels: codexModelsFlag } : {}),
-    ...(settingsTargetFlag !== undefined ? { settingsTarget: settingsTargetFlag } : {}),
-  };
+  // --dry-run: always use non-interactive planning path; no TTY check required
+  // because it writes nothing — the fail-closed contract only protects writes. [F34]
+  if (command.dryRun) {
+    const exitCode = await runInitDryRun(command.flags, projectDir, fsDeps, out, errOut);
+    process.exitCode = exitCode;
+    return;
+  }
 
   const decision = resolveInitDispatch(
     process.stdin.isTTY === true,
     process.stdout.isTTY === true,
     "CI" in process.env,
-    yes,
+    command.yes,
   );
 
   if (decision === "interactive") {
-    await runInitInteractive(projectDir, fsDeps, process.env as Record<string, string | undefined>);
+    const prompts = await makeClackPrompts();
+    const exitCode = await runInitInteractive(projectDir, fsDeps, env, prompts, command.flags);
+    process.exitCode = exitCode;
   } else if (decision === "non-interactive") {
-    const exitCode = await runInitNonInteractive(flags, projectDir, fsDeps, out, errOut);
+    const exitCode = await runInitNonInteractive(command.flags, projectDir, fsDeps, out, errOut);
     process.exitCode = exitCode;
   } else {
-    // decision === "refuse": non-TTY / CI without --yes — fail closed, no files written
-    errOut(
-      "subswitch init: no interactive terminal detected. Re-run with --yes to accept defaults " +
+    // refuse: non-TTY / CI without --yes — fail closed, no files written [F18]
+    fail(
+      "no interactive terminal detected. Re-run with --yes to accept defaults " +
         "(optionally with --port / --settings-target / --codex-models), or run in an interactive shell.",
     );
-    process.exitCode = 1;
   }
 };
 
 // ---------------------------------------------------------------------------
-// main
+// main — exhaustive switch with never guard
 // ---------------------------------------------------------------------------
 
 const main = async (): Promise<void> => {
-  let parsed: ReturnType<typeof parseArgs>;
-  try {
-    parsed = parseArgs({
-      args: process.argv.slice(2),
-      options: {
-        help:              { type: "boolean", short: "h" },
-        version:           { type: "boolean", short: "v" },
-        // serve flags
-        verbose:           { type: "boolean" },
-        quiet:             { type: "boolean" },
-        // init flags
-        yes:               { type: "boolean", short: "y" },
-        port:              { type: "string" },
-        "codex-models":    { type: "string" },
-        "codex-model":     { type: "string", multiple: true },
-        "settings-target": { type: "string" },
-      },
-      allowPositionals: true,
-      strict: true,
-    });
-  } catch (e) {
-    fail(`${String(e)}\n\n${USAGE}`);
+  const parsed = parseCliArgs(process.argv.slice(2));
+  if (!parsed.ok) {
+    fail(parsed.error.message);
     return;
   }
 
-  const { values, positionals } = parsed;
+  const command = parsed.value;
 
-  if (values.help === true) {
-    out(USAGE);
-    return;
+  switch (command.kind) {
+    case "help":
+      out(USAGE);
+      return;
+
+    case "version":
+      out(SUBSWITCH_VERSION);
+      return;
+
+    case "init":
+      await runInit(command);
+      return;
+
+    case "serve": {
+      const configResult = loadConfig();
+      if (!configResult.ok) {
+        fail(configResult.error.message);
+        return;
+      }
+      const { config, configPath, fileFound } = configResult.value;
+      await serve(config, configPath, fileFound, command.verbose, command.quiet, command.port);
+      return;
+    }
+
+    case "doctor": {
+      const configResult = loadConfig();
+      if (!configResult.ok) {
+        fail(configResult.error.message);
+        return;
+      }
+      const { config, configPath, fileFound } = configResult.value;
+      await doctor(config, configPath, fileFound);
+      return;
+    }
+
+    default: {
+      const _exhaustive: never = command;
+      fail(`unreachable command: ${JSON.stringify(_exhaustive)}`);
+    }
   }
-
-  if (values.version === true) {
-    out(SUBSWITCH_VERSION);
-    return;
-  }
-
-  const command = positionals[0] ?? "serve";
-
-  // Commands that don't need config.
-  if (command === "init") {
-    await init(
-      values.yes === true,
-      typeof values.port === "string" ? values.port : undefined,
-      Array.isArray(values["codex-model"])
-        ? (values["codex-model"] as string[])
-        : typeof values["codex-model"] === "string"
-          ? [values["codex-model"]]
-          : [],
-      typeof values["codex-models"] === "string" ? values["codex-models"] : undefined,
-      typeof values["settings-target"] === "string" ? values["settings-target"] : undefined,
-    );
-    return;
-  }
-
-  // Commands that need config.
-  const configResult = loadConfig();
-  if (!configResult.ok) {
-    fail(configResult.error.message);
-    return;
-  }
-  const { config, configPath, fileFound } = configResult.value;
-
-  if (command === "serve") {
-    await serve(config, configPath, fileFound, values.verbose === true, values.quiet === true);
-    return;
-  }
-
-  if (command === "doctor") {
-    await doctor(config, configPath, fileFound);
-    return;
-  }
-
-  fail(`unknown command "${command}" — run \`subswitch --help\` for usage`);
 };
 
 void main();
