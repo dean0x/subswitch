@@ -619,10 +619,21 @@ export const runInitInteractive = async (
   const port = portParsed.data;
 
   // --- Codex models ---
-  const modelOptions: SelectOption[] = ALL_CODEX_MODELS.map((m) => ({
+  // Build options: all known models first, then any extra models from flags/existing config
+  // that are not in ALL_CODEX_MODELS. This ensures a custom/forward-compat model that is
+  // already in the config appears as a selectable option and can be preselected. [self-review P2]
+  const knownModelSet = new Set<string>(ALL_CODEX_MODELS);
+  const extraModelOptions = modelsSeed.filter((m) => !knownModelSet.has(m));
+  const allModelsForOptions = [...ALL_CODEX_MODELS, ...extraModelOptions];
+  const extraModelSet = new Set<string>(extraModelOptions);
+  const modelOptions: SelectOption[] = allModelsForOptions.map((m) => ({
     value: m,
     label: m,
-    ...(m === "gpt-5.6-sol" ? { hint: "recommended fast model" } : {}),
+    ...(m === "gpt-5.6-sol"
+      ? { hint: "recommended fast model" }
+      : extraModelSet.has(m)
+      ? { hint: "(custom)" }
+      : {}),
   }));
 
   const modelsResult = await prompt<readonly string[]>(
@@ -734,6 +745,18 @@ export const runInitDryRun = async (
   }
 
   const options = optionsResult.value;
+
+  // Forward-compat warning for unknown model names (non-fatal). [F32]
+  // Parity with runInitNonInteractive — both non-interactive paths emit this warning. [self-review P2]
+  const knownDryRunModels: ReadonlyArray<string> = ALL_CODEX_MODELS;
+  for (const model of options.codexModels) {
+    if (!knownDryRunModels.includes(model)) {
+      errWrite(
+        `warning: model "${model}" is not in the known list (${ALL_CODEX_MODELS.join(", ")}) — proceeding anyway`,
+      );
+    }
+  }
+
   const configPath = join(projectDir, "subswitch.config.json");
   const settingsPath = settingsPathFor(options.settingsTarget, projectDir);
 

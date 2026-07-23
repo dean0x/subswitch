@@ -31,6 +31,7 @@ interface TextCall {
 }
 interface MultiselectCall {
   message: string;
+  options: ReadonlyArray<{ value: string; label: string; hint?: string }>;
   initialValues?: readonly string[];
 }
 interface SelectCall {
@@ -89,6 +90,7 @@ const makeScriptedPrompts = (
     multiselect: (opts) => {
       multiselectCalls.push({
         message: opts.message,
+        options: [...opts.options],
         ...(opts.initialValues !== undefined ? { initialValues: opts.initialValues } : {}),
       });
       return Promise.resolve(config.multiselectResponse);
@@ -573,5 +575,84 @@ describe("runInitInteractive — precondition warnings", () => {
     await runInitInteractive("/project", deps, {}, prompts);
 
     assert.equal(prompts.warnArgs.length, 0, "should emit no warnings when conditions are met");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Custom model from existing config — option presence + preselection [self-review P2]
+// ---------------------------------------------------------------------------
+
+describe("runInitInteractive — custom model from existing config", () => {
+  it("includes custom model as option and preselects it when present in existing config", async () => {
+    const configPath = join("/project", "subswitch.config.json");
+    const existingConfig = JSON.stringify({ port: 4141, codex: { models: ["my-custom-model"] } });
+    const deps = makeFakeDeps({ [configPath]: existingConfig });
+    const prompts = makeScriptedPrompts({
+      textResponse: "4141",
+      multiselectResponse: ["my-custom-model"],
+      selectResponse: "local",
+    });
+
+    const exitCode = await runInitInteractive("/project", deps, {}, prompts);
+
+    assert.equal(exitCode, 0, "should return exit code 0");
+
+    const multiselectCall = prompts.multiselectCalls[0];
+    assert.ok(multiselectCall !== undefined, "multiselect should have been called");
+
+    // Custom model appears as an option so clack can render it.
+    assert.ok(
+      multiselectCall.options.some((o) => o.value === "my-custom-model"),
+      "custom model from existing config should appear as a selectable option",
+    );
+
+    // Custom model is preselected (initialValues contains it).
+    assert.ok(
+      (multiselectCall.initialValues ?? []).includes("my-custom-model"),
+      "custom model from existing config should be preselected",
+    );
+  });
+
+  it("custom model round-trips into the written config when selected", async () => {
+    const configPath = join("/project", "subswitch.config.json");
+    const existingConfig = JSON.stringify({ port: 4141, codex: { models: ["my-custom-model"] } });
+    const deps = makeFakeDeps({ [configPath]: existingConfig });
+    const prompts = makeScriptedPrompts({
+      textResponse: "4141",
+      multiselectResponse: ["my-custom-model"],
+      selectResponse: "local",
+    });
+
+    await runInitInteractive("/project", deps, {}, prompts);
+
+    const writtenConfig = JSON.parse(deps.written[configPath] as string) as {
+      codex: { models: string[] };
+    };
+    assert.ok(
+      writtenConfig.codex.models.includes("my-custom-model"),
+      "custom model should be written back to config when selected",
+    );
+  });
+
+  it("custom model option carries a (custom) hint label", async () => {
+    const configPath = join("/project", "subswitch.config.json");
+    const existingConfig = JSON.stringify({ port: 4141, codex: { models: ["my-custom-model"] } });
+    const deps = makeFakeDeps({ [configPath]: existingConfig });
+    const prompts = makeScriptedPrompts({
+      textResponse: "4141",
+      multiselectResponse: ["my-custom-model"],
+      selectResponse: "local",
+    });
+
+    await runInitInteractive("/project", deps, {}, prompts);
+
+    const multiselectCall = prompts.multiselectCalls[0];
+    assert.ok(multiselectCall !== undefined);
+    const customOption = multiselectCall.options.find((o) => o.value === "my-custom-model");
+    assert.ok(customOption !== undefined, "custom option must be present");
+    assert.ok(
+      customOption.hint?.includes("custom"),
+      "custom model option should carry a hint mentioning 'custom'",
+    );
   });
 });

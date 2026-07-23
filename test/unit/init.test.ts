@@ -611,4 +611,24 @@ describe("runInitDryRun", () => {
       "output should label itself as dry-run",
     );
   });
+
+  it("emits unknown-model warning to stderr — parity with non-interactive [self-review P2]", async () => {
+    const deps = makeFakeDeps();
+    const outLines: string[] = [];
+    const errLines: string[] = [];
+    const exitCode = await runInitDryRun(
+      { codexModel: ["my-custom-model"] },
+      "/project",
+      deps,
+      (l) => outLines.push(l),
+      (l) => errLines.push(l),
+    );
+
+    assert.equal(exitCode, 0, "exit 0 even with an unknown model name");
+    assert.equal(Object.keys(deps.written).length, 0, "dry-run must write no files");
+    assert.ok(
+      errLines.some((l) => l.includes("warning") && l.includes("my-custom-model")),
+      "should emit warning mentioning the unknown model name to stderr",
+    );
+  });
 });
