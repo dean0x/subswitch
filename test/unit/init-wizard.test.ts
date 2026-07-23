@@ -12,34 +12,14 @@ import { homedir } from "node:os";
 import {
   runInitInteractive,
   type InitPrompts,
-  type InitFsDeps,
   type InitFlags,
 } from "../../src/init.js";
 import { DEFAULT_PORT, DEFAULT_CODEX_MODELS } from "../../src/config.js";
+import { makeFakeDeps } from "./init-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Test doubles
 // ---------------------------------------------------------------------------
-
-/** A fake InitFsDeps with captured write state. */
-const makeFakeDeps = (
-  existingFiles: Record<string, string> = {},
-  failOnWrite = false,
-): InitFsDeps & { written: Record<string, string>; writeOrder: string[] } => {
-  const written: Record<string, string> = {};
-  const writeOrder: string[] = [];
-  return {
-    readFile: async (path) => existingFiles[path] ?? null,
-    writeFile: async (path, content) => {
-      if (failOnWrite) throw new Error("simulated write failure");
-      written[path] = content;
-      writeOrder.push(path);
-    },
-    exists: (path) => path in existingFiles,
-    written,
-    writeOrder,
-  };
-};
 
 // Cancel sentinel — any symbol satisfies isCancel since our fake just checks typeof
 const CANCEL = Symbol("cancel");

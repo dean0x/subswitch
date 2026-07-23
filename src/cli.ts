@@ -158,10 +158,14 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
   }
 
   // Per-command flag validation from tokens (A3.19)
-  const allowedFlags =
-    command === "serve" ? SERVE_FLAGS
-    : command === "doctor" ? DOCTOR_FLAGS
-    : INIT_FLAGS;
+  let allowedFlags: Set<string>;
+  if (command === "serve") {
+    allowedFlags = SERVE_FLAGS;
+  } else if (command === "doctor") {
+    allowedFlags = DOCTOR_FLAGS;
+  } else {
+    allowedFlags = INIT_FLAGS;
+  }
 
   if (tokens !== undefined) {
     for (const token of tokens) {
@@ -240,10 +244,14 @@ const serve = async (
   }
 
   // Apply verbosity flag override without mutating config.
-  const logLevel =
-    verbose ? ("debug" as const)
-    : quiet  ? ("warn" as const)
-    :          config.logLevel;
+  let logLevel: Config["logLevel"];
+  if (verbose) {
+    logLevel = "debug";
+  } else if (quiet) {
+    logLevel = "warn";
+  } else {
+    logLevel = config.logLevel;
+  }
 
   const effectiveConfig = { ...config, logLevel, port: effectivePort };
 
@@ -290,15 +298,13 @@ const doctor = async (config: Config, configPath: string, fileFound: boolean): P
     process.stdout.isTTY === true,
   );
 
-  const exitCode = await runDoctor(config, configPath, fileFound, {
+  process.exitCode = await runDoctor(config, configPath, fileFound, {
     write: out,
     readAuthFile: (path) => readFile(path, "utf8"),
     httpGet: makeLiveHttpGet(),
     tlsConnect: makeLiveTlsConnect(),
     color,
   });
-
-  process.exitCode = exitCode;
 };
 
 // ---------------------------------------------------------------------------
@@ -313,8 +319,7 @@ const runInit = async (command: Extract<CliCommand, { kind: "init" }>): Promise<
   // --dry-run: always use non-interactive planning path; no TTY check required
   // because it writes nothing — the fail-closed contract only protects writes. [F34]
   if (command.dryRun) {
-    const exitCode = await runInitDryRun(command.flags, projectDir, fsDeps, out, errOut);
-    process.exitCode = exitCode;
+    process.exitCode = await runInitDryRun(command.flags, projectDir, fsDeps, out, errOut);
     return;
   }
 
@@ -327,11 +332,9 @@ const runInit = async (command: Extract<CliCommand, { kind: "init" }>): Promise<
 
   if (decision === "interactive") {
     const prompts = await makeClackPrompts();
-    const exitCode = await runInitInteractive(projectDir, fsDeps, env, prompts, command.flags);
-    process.exitCode = exitCode;
+    process.exitCode = await runInitInteractive(projectDir, fsDeps, env, prompts, command.flags);
   } else if (decision === "non-interactive") {
-    const exitCode = await runInitNonInteractive(command.flags, projectDir, fsDeps, out, errOut);
-    process.exitCode = exitCode;
+    process.exitCode = await runInitNonInteractive(command.flags, projectDir, fsDeps, out, errOut);
   } else {
     // refuse: non-TTY / CI without --yes — fail closed, no files written [F18]
     fail(

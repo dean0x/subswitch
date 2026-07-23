@@ -206,6 +206,24 @@ export const settingsPathFor = (target: SettingsTarget, projectDir: string): str
 };
 
 /**
+ * Parse `json` and assert it is a plain object.
+ * Returns the parsed object on success, or a malformed_json error referencing `path`.
+ * Shared by planSettingsWrite and planConfigWrite.
+ */
+const parseExistingJson = (json: string, path: string): Result<Record<string, unknown>, InitError> => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return err({ kind: "malformed_json", message: `${path}: malformed JSON — fix or delete this file and run init again` });
+  }
+  if (!isPlainObject(parsed)) {
+    return err({ kind: "malformed_json", message: `${path}: expected a JSON object — fix or delete this file and run init again` });
+  }
+  return ok(parsed);
+};
+
+/**
  * Pure: merge ANTHROPIC_BASE_URL into an existing (or absent) settings JSON file.
  * Preserves all other keys. Fails on malformed JSON.
  * No side effects — callers supply the current file content.
@@ -221,22 +239,9 @@ export const planSettingsWrite = (
 
   let existing: Record<string, unknown> = {};
   if (existingJson !== null) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(existingJson);
-    } catch {
-      return err({
-        kind: "malformed_json",
-        message: `${path}: malformed JSON — fix or delete this file and run init again`,
-      });
-    }
-    if (!isPlainObject(parsed)) {
-      return err({
-        kind: "malformed_json",
-        message: `${path}: expected a JSON object — fix or delete this file and run init again`,
-      });
-    }
-    existing = parsed;
+    const parseResult = parseExistingJson(existingJson, path);
+    if (!parseResult.ok) return err(parseResult.error);
+    existing = parseResult.value;
   }
 
   // Merge ONLY env.ANTHROPIC_BASE_URL — preserve all other keys untouched.
@@ -266,22 +271,9 @@ export const planConfigWrite = (
 
   let existing: Record<string, unknown> = {};
   if (existingJson !== null) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(existingJson);
-    } catch {
-      return err({
-        kind: "malformed_json",
-        message: `${path}: malformed JSON — fix or delete this file and run init again`,
-      });
-    }
-    if (!isPlainObject(parsed)) {
-      return err({
-        kind: "malformed_json",
-        message: `${path}: expected a JSON object — fix or delete this file and run init again`,
-      });
-    }
-    existing = parsed;
+    const parseResult = parseExistingJson(existingJson, path);
+    if (!parseResult.ok) return err(parseResult.error);
+    existing = parseResult.value;
   }
 
   // Preserve all codex.* keys except models (deep merge).

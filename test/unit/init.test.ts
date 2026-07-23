@@ -12,8 +12,8 @@ import {
   executeInit,
   runInitNonInteractive,
   runInitDryRun,
-  type InitFsDeps,
 } from "../../src/init.js";
+import { makeFakeDeps } from "./init-test-helpers.js";
 
 // ---------------------------------------------------------------------------
 // settingsPathFor — pure path resolution
@@ -293,24 +293,6 @@ describe("collectPreconditionWarnings", () => {
 // ---------------------------------------------------------------------------
 // executeInit — integration tests with fake fs deps
 // ---------------------------------------------------------------------------
-
-const makeFakeDeps = (existingFiles: Record<string, string> = {}): InitFsDeps & {
-  written: Record<string, string>;
-  writeOrder: string[];
-} => {
-  const written: Record<string, string> = {};
-  const writeOrder: string[] = [];
-  return {
-    readFile: async (path) => existingFiles[path] ?? null,
-    writeFile: async (path, content) => {
-      written[path] = content;
-      writeOrder.push(path);
-    },
-    exists: (path) => path in existingFiles,
-    written,
-    writeOrder,
-  };
-};
 
 describe("executeInit", () => {
   it("writes subswitch.config.json and settings.local.json for target=local", async () => {
