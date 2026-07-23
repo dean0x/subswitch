@@ -29,6 +29,29 @@ export const PortSchema = z.coerce.number().int().min(1).max(65535, { message: "
 
 export const SettingsTargetSchema = z.enum(["local", "shared"]);
 
+// ---------------------------------------------------------------------------
+// Init dispatch decision (pure — injectable for tests)
+// ---------------------------------------------------------------------------
+
+export type InitDispatchDecision = "interactive" | "non-interactive" | "refuse";
+
+/**
+ * Pure: determine which init path to take based on terminal/environment state.
+ * - "interactive": both TTYs present, no CI env, no --yes → run the clack wizard.
+ * - "non-interactive": --yes is set (anywhere) → run the non-interactive writer.
+ * - "refuse": non-TTY / CI without explicit --yes → fail closed; caller must not write files.
+ */
+export const resolveInitDispatch = (
+  stdinIsTTY: boolean,
+  stdoutIsTTY: boolean,
+  hasCIEnv: boolean,
+  yesFlag: boolean,
+): InitDispatchDecision => {
+  if (stdinIsTTY && stdoutIsTTY && !hasCIEnv && !yesFlag) return "interactive";
+  if (yesFlag) return "non-interactive";
+  return "refuse";
+};
+
 export const ALL_CODEX_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"] as const;
 export type CodexModelName = (typeof ALL_CODEX_MODELS)[number];
 
@@ -193,7 +216,7 @@ export const resolveOptionsFromFlags = (flags: InitFlags): Result<InitOptions, I
   if (!portResult.success) {
     return err({
       kind: "invalid_input",
-      message: `invalid --port "${rawPort}": ${portResult.error.issues.map((i) => i.message).join("; ")}`,
+      message: `invalid --port "${rawPort}": port must be an integer between 1 and 65535`,
     });
   }
 

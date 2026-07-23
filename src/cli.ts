@@ -8,6 +8,7 @@ import {
   runInitInteractive,
   runInitNonInteractive,
   makeRealFsDeps,
+  resolveInitDispatch,
 } from "./init.js";
 import { SUBSWITCH_VERSION } from "./version.js";
 
@@ -151,17 +152,25 @@ const init = async (
     ...(settingsTargetFlag !== undefined ? { settingsTarget: settingsTargetFlag } : {}),
   };
 
-  const isInteractive =
-    process.stdin.isTTY === true &&
-    process.stdout.isTTY === true &&
-    !("CI" in process.env) &&
-    !yes;
+  const decision = resolveInitDispatch(
+    process.stdin.isTTY === true,
+    process.stdout.isTTY === true,
+    "CI" in process.env,
+    yes,
+  );
 
-  if (isInteractive) {
+  if (decision === "interactive") {
     await runInitInteractive(projectDir, fsDeps, process.env as Record<string, string | undefined>);
-  } else {
+  } else if (decision === "non-interactive") {
     const exitCode = await runInitNonInteractive(flags, projectDir, fsDeps, out, errOut);
     process.exitCode = exitCode;
+  } else {
+    // decision === "refuse": non-TTY / CI without --yes — fail closed, no files written
+    errOut(
+      "subswitch init: no interactive terminal detected. Re-run with --yes to accept defaults " +
+        "(optionally with --port / --settings-target / --codex-models), or run in an interactive shell.",
+    );
+    process.exitCode = 1;
   }
 };
 

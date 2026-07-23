@@ -23,9 +23,9 @@ subswitch is the first proxy that splits traffic **per subagent, by model name**
 
 - Requests whose `model` is one of the exact names in your `codex.models` list are
   translated and sent to the Codex backend.
-- Everything else — the main agent, background utility calls (e.g. `claude-sonnet-*`
-  for token counting and context management), all non-matching models — is relayed
-  to Anthropic as **verbatim bytes**, credentials and all.
+- Everything else — the main agent, background utility calls (token counting,
+  context management), all non-matching models — is relayed to Anthropic as
+  **verbatim bytes**, credentials and all.
 
 So you keep Claude Opus/Sonnet driving the session and delegate a specific
 subagent to GPT for a second opinion, a cheaper worker, or a specialized task —

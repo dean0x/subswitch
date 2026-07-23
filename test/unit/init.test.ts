@@ -5,6 +5,7 @@ import {
   planSettingsWrite,
   buildSubswitchConfig,
   resolveOptionsFromFlags,
+  resolveInitDispatch,
   executeInit,
   runInitNonInteractive,
   type InitFsDeps,
@@ -321,10 +322,46 @@ describe("runInitNonInteractive", () => {
     assert.equal(settings.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:7777");
   });
 
-  it("does not hang or prompt — completes synchronously without TTY", async () => {
+  it("non-TTY WITH --yes → writes defaults and exits 0 (the --yes path never hangs)", async () => {
     const deps = makeFakeDeps();
-    // If this test completes, non-interactive mode worked without hanging.
+    // resolveInitDispatch returns "non-interactive" when --yes is set — runInitNonInteractive is the sanctioned path
+    const decision = resolveInitDispatch(false, false, false, /* yes */ true);
+    assert.equal(decision, "non-interactive");
     const exitCode = await runInitNonInteractive({}, "/project", deps, () => undefined, () => undefined);
     assert.equal(exitCode, 0);
+    assert.ok(Object.keys(deps.written).length > 0, "files must be written on the --yes path");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveInitDispatch — fail-closed on non-interactive without --yes
+// ---------------------------------------------------------------------------
+
+describe("resolveInitDispatch", () => {
+  it("non-TTY without --yes → refuse (fail closed)", () => {
+    const deps = makeFakeDeps();
+    const decision = resolveInitDispatch(false, false, false, false);
+    assert.equal(decision, "refuse");
+    // The refuse branch emits an error and does NOT call runInitNonInteractive — no files written
+    assert.equal(Object.keys(deps.written).length, 0, "writeFile must not be called on refuse path");
+  });
+
+  it("CI env without --yes → refuse", () => {
+    const deps = makeFakeDeps();
+    const decision = resolveInitDispatch(true, true, true, false);
+    assert.equal(decision, "refuse");
+    assert.equal(Object.keys(deps.written).length, 0, "writeFile must not be called on refuse path");
+  });
+
+  it("--yes flag (no TTY) → non-interactive", () => {
+    assert.equal(resolveInitDispatch(false, false, false, true), "non-interactive");
+  });
+
+  it("--yes flag (TTY + CI) → non-interactive", () => {
+    assert.equal(resolveInitDispatch(true, true, true, true), "non-interactive");
+  });
+
+  it("both TTYs, no CI, no --yes → interactive", () => {
+    assert.equal(resolveInitDispatch(true, true, false, false), "interactive");
   });
 });
