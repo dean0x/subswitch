@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { probeSubswitch, probeTlsReachable, type HttpGetResult, type TlsStatus } from "../../src/doctor.js";
+import { probeSubswitch, probeTlsReachable, runDoctor, type HttpGetResult, type TlsStatus } from "../../src/doctor.js";
+import type { Config } from "../../src/config.js";
 
 describe("probeSubswitch", () => {
   it("returns running when the health endpoint responds with the subswitch shape", async () => {
@@ -104,5 +105,110 @@ describe("probeTlsReachable", () => {
     await probeTlsReachable("chatgpt.com", { tlsConnect });
     assert.equal(capturedHost, "chatgpt.com");
     assert.equal(capturedPort, 443);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runDoctor — verdict line + exit code tests
+// ---------------------------------------------------------------------------
+
+/** Minimal valid config for testing */
+const makeTestConfig = (): Config => ({
+  port: 4141,
+  logLevel: "info",
+  anthropic: { baseUrl: "https://api.anthropic.com" },
+  codex: {
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    oauthTokenUrl: "https://auth.openai.com/oauth/token",
+    authFile: "/home/user/.codex/auth.json",
+    models: ["gpt-5.6-sol", "gpt-5.5"],
+    userAgent: "codex_cli_rs/0.144.6",
+  },
+  reasoningCache: { maxEntries: 4096, maxBytes: 64 * 1024 * 1024 },
+  limits: {
+    maxBodyBytes: 32 * 1024 * 1024,
+    connectTimeoutMs: 10_000,
+    streamIdleTimeoutMs: 300_000,
+    requestTimeoutMs: 600_000,
+    pingIntervalMs: 15_000,
+    maxSseEventBytes: 4 * 1024 * 1024,
+    maxUpstreamSockets: 32,
+  },
+});
+
+const allPassIO = (lines: string[]) => ({
+  write: (line: string) => lines.push(line),
+  readAuthFile: async (): Promise<string> =>
+    // Minimal valid auth JSON that inspectAuthFile will parse successfully.
+    // AuthFileSchema expects { tokens: { access_token, refresh_token } }.
+    JSON.stringify({
+      tokens: {
+        access_token: "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIn0.sig",
+        refresh_token: "ref",
+      },
+      auth_mode: "oauth",
+    }),
+  httpGet: async (): Promise<HttpGetResult> => ({
+    ok: true,
+    status: 200,
+    body: JSON.stringify({ name: "subswitch", version: "0.1.0" }),
+  }),
+  tlsConnect: async (): Promise<TlsStatus> => ({ kind: "reachable" }),
+  color: false,
+});
+
+const failingProbeIO = (lines: string[]) => ({
+  ...allPassIO(lines),
+  httpGet: async (): Promise<HttpGetResult> => ({ ok: false, connectionRefused: true }),
+  tlsConnect: async (): Promise<TlsStatus> => ({ kind: "unreachable", message: "ECONNREFUSED" }),
+  readAuthFile: async (): Promise<string> => {
+    throw new Error("ENOENT");
+  },
+});
+
+describe("runDoctor", () => {
+  it("returns exit code 0 when all checks pass", async () => {
+    const lines: string[] = [];
+    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines));
+    assert.equal(exitCode, 0);
+  });
+
+  it("includes a verdict line 'all checks passed' on success", async () => {
+    const lines: string[] = [];
+    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines));
+    assert.ok(lines.some((l) => l.includes("all checks passed")), "must include all-pass verdict");
+  });
+
+  it("returns exit code 1 when a check fails (subswitch not running + TLS unreachable + auth unavailable)", async () => {
+    const lines: string[] = [];
+    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, failingProbeIO(lines));
+    assert.equal(exitCode, 1);
+  });
+
+  it("includes a failure verdict line showing problem count", async () => {
+    const lines: string[] = [];
+    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, failingProbeIO(lines));
+    assert.ok(lines.some((l) => /\d+ problem/.test(l)), "must include problem count in verdict");
+  });
+
+  it("hints 'subswitch serve' when proxy is not running", async () => {
+    const lines: string[] = [];
+    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      httpGet: async (): Promise<HttpGetResult> => ({ ok: false, connectionRefused: true }),
+    });
+    assert.ok(lines.some((l) => l.includes("subswitch serve")), "must hint 'subswitch serve' when not running");
+  });
+
+  it("returns exit code 0 with no color codes when color=false", async () => {
+    const lines: string[] = [];
+    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      color: false,
+    });
+    assert.equal(exitCode, 0);
+    for (const line of lines) {
+      assert.ok(!line.includes("\x1b"), `line should not have ANSI codes: ${line}`);
+    }
   });
 });
