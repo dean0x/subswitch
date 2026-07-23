@@ -1,66 +1,66 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { probeSubroute, probeTlsReachable, type HttpGetResult, type TlsStatus } from "../../src/doctor.js";
+import { probeSubswitch, probeTlsReachable, type HttpGetResult, type TlsStatus } from "../../src/doctor.js";
 
-describe("probeSubroute", () => {
-  it("returns running when the health endpoint responds with the subroute shape", async () => {
+describe("probeSubswitch", () => {
+  it("returns running when the health endpoint responds with the subswitch shape", async () => {
     const httpGet = async (): Promise<HttpGetResult> => ({
       ok: true,
       status: 200,
-      body: JSON.stringify({ name: "subroute", version: "0.1.0" }),
+      body: JSON.stringify({ name: "subswitch", version: "0.1.0" }),
     });
-    const result = await probeSubroute(4141, { httpGet });
+    const result = await probeSubswitch(4141, { httpGet });
     assert.equal(result.kind, "running");
     if (result.kind === "running") {
-      assert.equal(result.name, "subroute");
+      assert.equal(result.name, "subswitch");
       assert.equal(result.version, "0.1.0");
     }
   });
 
   it("returns connection_refused when nothing is listening on the port", async () => {
     const httpGet = async (): Promise<HttpGetResult> => ({ ok: false, connectionRefused: true });
-    const result = await probeSubroute(4141, { httpGet });
+    const result = await probeSubswitch(4141, { httpGet });
     assert.equal(result.kind, "connection_refused");
   });
 
-  it("returns not_subroute when a different service responds with a non-subroute body", async () => {
+  it("returns not_subswitch when a different service responds with a non-subswitch body", async () => {
     const httpGet = async (): Promise<HttpGetResult> => ({
       ok: true,
       status: 200,
       body: JSON.stringify({ name: "nginx", version: "1.0.0" }),
     });
-    const result = await probeSubroute(4141, { httpGet });
-    assert.equal(result.kind, "not_subroute");
+    const result = await probeSubswitch(4141, { httpGet });
+    assert.equal(result.kind, "not_subswitch");
   });
 
-  it("returns not_subroute when the response is non-200", async () => {
+  it("returns not_subswitch when the response is non-200", async () => {
     const httpGet = async (): Promise<HttpGetResult> => ({
       ok: true,
       status: 404,
       body: "{}",
     });
-    const result = await probeSubroute(4141, { httpGet });
-    assert.equal(result.kind, "not_subroute");
+    const result = await probeSubswitch(4141, { httpGet });
+    assert.equal(result.kind, "not_subswitch");
   });
 
-  it("returns not_subroute when the response body is not JSON", async () => {
+  it("returns not_subswitch when the response body is not JSON", async () => {
     const httpGet = async (): Promise<HttpGetResult> => ({
       ok: true,
       status: 200,
       body: "not json at all",
     });
-    const result = await probeSubroute(4141, { httpGet });
-    assert.equal(result.kind, "not_subroute");
+    const result = await probeSubswitch(4141, { httpGet });
+    assert.equal(result.kind, "not_subswitch");
   });
 
-  it("returns not_subroute on non-connection-refused network errors", async () => {
+  it("returns not_subswitch on non-connection-refused network errors", async () => {
     const httpGet = async (): Promise<HttpGetResult> => ({
       ok: false,
       connectionRefused: false,
       message: "timeout",
     });
-    const result = await probeSubroute(4141, { httpGet });
-    assert.equal(result.kind, "not_subroute");
+    const result = await probeSubswitch(4141, { httpGet });
+    assert.equal(result.kind, "not_subswitch");
   });
 
   it("uses the correct URL based on the port argument", async () => {
@@ -69,8 +69,8 @@ describe("probeSubroute", () => {
       capturedUrl = url;
       return { ok: false, connectionRefused: true };
     };
-    await probeSubroute(9999, { httpGet });
-    assert.equal(capturedUrl, "http://127.0.0.1:9999/__subroute/health");
+    await probeSubswitch(9999, { httpGet });
+    assert.equal(capturedUrl, "http://127.0.0.1:9999/__subswitch/health");
   });
 });
 

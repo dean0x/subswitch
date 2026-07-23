@@ -8,9 +8,9 @@ import {
   makeAccessToken,
   makeAuthFileContent,
   sseHandler,
-  startSubroute,
+  startSubswitch,
   startFakeUpstream,
-  type SubrouteInstance,
+  type SubswitchInstance,
   type FakeUpstream,
   type UpstreamHandler,
 } from "./fake-upstreams.js";
@@ -26,7 +26,7 @@ after(async () => {
 });
 
 interface Rig {
-  readonly subroute: SubrouteInstance;
+  readonly subswitch: SubswitchInstance;
   readonly codex: FakeUpstream;
   readonly anthropic: FakeUpstream;
   readonly oauth: FakeUpstream;
@@ -50,20 +50,20 @@ const setupRig = async (codexHandler: UpstreamHandler, options: { authFileConten
       }),
     );
   });
-  const dir = await mkdtemp(join(tmpdir(), "subroute-test-"));
+  const dir = await mkdtemp(join(tmpdir(), "subswitch-test-"));
   const authFilePath = join(dir, "auth.json");
   await writeFile(authFilePath, options.authFileContent ?? makeAuthFileContent(makeAccessToken(FAR_FUTURE_MS)), "utf8");
 
-  const subroute = await startSubroute({
+  const subswitch = await startSubswitch({
     anthropic: { baseUrl: anthropic.url },
     codex: { baseUrl: codex.url, oauthTokenUrl: `${oauth.url}/token`, authFile: authFilePath },
   });
-  cleanups.push(subroute.close, codex.close, anthropic.close, oauth.close);
-  return { subroute, codex, anthropic, oauth, authFilePath };
+  cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
+  return { subswitch, codex, anthropic, oauth, authFilePath };
 };
 
-const postMessages = (subroute: SubrouteInstance, body: string, path = "/v1/messages?beta=true"): Promise<Response> =>
-  fetch(`${subroute.url}${path}`, {
+const postMessages = (subswitch: SubswitchInstance, body: string, path = "/v1/messages?beta=true"): Promise<Response> =>
+  fetch(`${subswitch.url}${path}`, {
     method: "POST",
     headers: {
       authorization: "Bearer sk-ant-oat-CLAUDE-OAUTH",
@@ -83,7 +83,7 @@ describe("codex leg", () => {
   it("translates request and response end-to-end with correct codex headers", async () => {
     const rig = await setupRig(sseHandler(loadSse("tool-call-with-reasoning.sse")));
 
-    const response = await postMessages(rig.subroute, loadRequest("simple-text.json"));
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
     const text = await response.text();
@@ -128,7 +128,7 @@ describe("codex leg", () => {
       messages: [{ role: "user", content: "hi" }],
       output_config: { effort: "low" },
     });
-    const response = await postMessages(rig.subroute, body);
+    const response = await postMessages(rig.subswitch, body);
     assert.equal(response.status, 200);
     await response.text();
 
@@ -143,13 +143,13 @@ describe("codex leg", () => {
       res.end(scripts[index]);
     });
 
-    // Request 1 produces a tool call whose reasoning subroute must cache.
-    const first = await postMessages(rig.subroute, loadRequest("simple-text.json"));
+    // Request 1 produces a tool call whose reasoning subswitch must cache.
+    const first = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     assert.equal(first.status, 200);
     await first.text();
 
     // Request 2 echoes the assistant tool_use + tool_result back, as Claude Code would.
-    const second = await postMessages(rig.subroute, loadRequest("tool-roundtrip.json"));
+    const second = await postMessages(rig.subswitch, loadRequest("tool-roundtrip.json"));
     assert.equal(second.status, 200);
     await second.text();
 
@@ -176,7 +176,7 @@ describe("codex leg", () => {
       res.end(text);
     });
 
-    const response = await postMessages(rig.subroute, loadRequest("simple-text.json"));
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     assert.equal(response.status, 200);
     assert.match(await response.text(), /message_stop/);
 
@@ -195,7 +195,7 @@ describe("codex leg", () => {
       res.end(JSON.stringify({ error: { message: "rate limited" } }));
     });
 
-    const response = await postMessages(rig.subroute, loadRequest("simple-text.json"));
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     assert.equal(response.status, 429);
     assert.equal(response.headers.get("retry-after"), "7");
     const body = (await response.json()) as { error: { type: string } };
@@ -205,7 +205,7 @@ describe("codex leg", () => {
   it("answers count_tokens locally with the chars/4 estimate", async () => {
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
     const body = JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "estimate me" }] });
-    const response = await postMessages(rig.subroute, body, "/v1/messages/count_tokens");
+    const response = await postMessages(rig.subswitch, body, "/v1/messages/count_tokens");
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { input_tokens: Math.ceil(body.length / 4) });
     assert.equal(rig.codex.requests.length, 0);
@@ -214,7 +214,7 @@ describe("codex leg", () => {
   it("routes claude models to anthropic even when the codex leg is configured", async () => {
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
     const response = await postMessages(
-      rig.subroute,
+      rig.subswitch,
       JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
     );
     assert.equal(response.status, 200);
@@ -226,7 +226,7 @@ describe("codex leg", () => {
   it("aggregates the upstream stream for non-streaming clients", async () => {
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
     const response = await postMessages(
-      rig.subroute,
+      rig.subswitch,
       JSON.stringify({ model: "gpt-5.5", max_tokens: 64, messages: [{ role: "user", content: "hi" }] }),
     );
     assert.equal(response.status, 200);
@@ -241,14 +241,14 @@ describe("codex leg", () => {
   it("degrades only the codex leg when the auth file is corrupt", async () => {
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")), { authFileContent: "not json at all" });
 
-    const codexResponse = await postMessages(rig.subroute, loadRequest("simple-text.json"));
+    const codexResponse = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     assert.equal(codexResponse.status, 401);
     const body = (await codexResponse.json()) as { error: { type: string; message: string } };
     assert.equal(body.error.type, "authentication_error");
     assert.match(body.error.message, /codex login/);
 
     const anthropicResponse = await postMessages(
-      rig.subroute,
+      rig.subswitch,
       JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
     );
     assert.equal(anthropicResponse.status, 200);
@@ -257,7 +257,7 @@ describe("codex leg", () => {
 
   it("sets the user-agent header from codex.userAgent config", async () => {
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
-    const response = await postMessages(rig.subroute, loadRequest("simple-text.json"));
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     assert.equal(response.status, 200);
     await response.text();
 
@@ -283,11 +283,11 @@ describe("codex leg", () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ access_token: makeAccessToken(Date.now() + 3_600_000) }));
     });
-    const dir = await mkdtemp(join(tmpdir(), "subroute-test-ua-"));
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-test-ua-"));
     const authFilePath = join(dir, "auth.json");
     await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
 
-    const subroute = await startSubroute({
+    const subswitch = await startSubswitch({
       anthropic: { baseUrl: anthropic.url },
       codex: {
         baseUrl: codex.url,
@@ -296,9 +296,9 @@ describe("codex leg", () => {
         userAgent: "my-custom-agent/1.0",
       },
     });
-    cleanups.push(subroute.close, codex.close, anthropic.close, oauth.close);
+    cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
 
-    const response = await fetch(`${subroute.url}/v1/messages?beta=true`, {
+    const response = await fetch(`${subswitch.url}/v1/messages?beta=true`, {
       method: "POST",
       headers: { authorization: "Bearer sk-ant", "anthropic-beta": "oauth-2025-04-20", "content-type": "application/json" },
       body: loadRequest("simple-text.json"),
@@ -316,9 +316,9 @@ describe("codex leg", () => {
     });
 
     // Send the same request twice — same model + system + first user message → same derived key.
-    const first = await postMessages(rig.subroute, loadRequest("simple-text.json"));
+    const first = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     await first.text();
-    const second = await postMessages(rig.subroute, loadRequest("simple-text.json"));
+    const second = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     await second.text();
 
     const id1 = rig.codex.requests[0]!.headers["session_id"];
@@ -339,7 +339,7 @@ describe("codex leg", () => {
       res.end(text);
     });
 
-    const response = await postMessages(rig.subroute, loadRequest("simple-text.json"));
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     assert.equal(response.status, 200);
     await response.text();
 
@@ -365,9 +365,9 @@ describe("codex leg", () => {
     const req1 = JSON.stringify({ model: "gpt-5.5", stream: true, messages: [{ role: "user", content: "conversation A" }] });
     const req2 = JSON.stringify({ model: "gpt-5.5", stream: true, messages: [{ role: "user", content: "conversation B" }] });
 
-    const r1 = await postMessages(rig.subroute, req1);
+    const r1 = await postMessages(rig.subswitch, req1);
     await r1.text();
-    const r2 = await postMessages(rig.subroute, req2);
+    const r2 = await postMessages(rig.subswitch, req2);
     await r2.text();
 
     const id1 = rig.codex.requests[0]!.headers["session_id"];
@@ -384,7 +384,7 @@ describe("codex leg", () => {
       setTimeout(() => res.destroy(), 30);
     });
 
-    const response = await postMessages(rig.subroute, loadRequest("simple-text.json"));
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     assert.equal(response.status, 200);
     const text = await response.text();
     assert.match(text, /event: message_start/);

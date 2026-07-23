@@ -1,12 +1,12 @@
-# Snyk policy: documented accepted findings for subroute.
-# subroute is a loopback-only development proxy (binds 127.0.0.1, never exposed);
+# Snyk policy: documented accepted findings for subswitch.
+# subswitch is a loopback-only development proxy (binds 127.0.0.1, never exposed);
 # its clients are the developer's own tools on the same machine.
 version: v1.5.0
 ignore:
   'javascript/HttpToHttps':
     - '*':
         reason: >-
-          subroute is a local loopback proxy bound to 127.0.0.1; Claude Code
+          subswitch is a local loopback proxy bound to 127.0.0.1; Claude Code
           requires a plain-HTTP local base URL. Traffic never leaves the
           machine and both upstream legs (api.anthropic.com, chatgpt.com)
           use TLS.

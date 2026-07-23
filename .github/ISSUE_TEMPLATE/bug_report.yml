@@ -6,7 +6,7 @@ body:
     id: area
     attributes:
       label: Area
-      description: Which part of subroute is affected?
+      description: Which part of subswitch is affected?
       options:
         - Routing (which leg a request goes to)
         - Anthropic passthrough
@@ -39,7 +39,7 @@ body:
     attributes:
       label: Steps to reproduce
       placeholder: |
-        1. Start subroute with `npm run serve`
+        1. Start subswitch with `npm run serve`
         2. Give a subagent `model: gpt-5.5`
         3. ...
     validations:
@@ -48,7 +48,7 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Relevant subroute logs
+      label: Relevant subswitch logs
       description: Single-line structured log lines around the failure (they never contain tokens or bodies).
       render: text
     validations:

@@ -64,12 +64,12 @@ export const sseHandler = (sseText: string): UpstreamHandler => (_req, res) => {
   res.end(sseText);
 };
 
-export interface SubrouteInstance {
+export interface SubswitchInstance {
   readonly url: string;
   close(): Promise<void>;
 }
 
-export const startSubroute = async (overrides: Record<string, unknown>): Promise<SubrouteInstance> => {
+export const startSubswitch = async (overrides: Record<string, unknown>): Promise<SubswitchInstance> => {
   const configResult = loadConfig({
     configPath: "inline-test-config.json",
     readFile: () => JSON.stringify({ logLevel: "error", ...overrides }),

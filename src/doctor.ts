@@ -4,10 +4,10 @@ import tls from "node:tls";
 // Discriminated-union result types
 // ---------------------------------------------------------------------------
 
-export type SubrouteStatus =
+export type SubswitchStatus =
   | { readonly kind: "running"; readonly name: string; readonly version: string }
   | { readonly kind: "connection_refused" }
-  | { readonly kind: "not_subroute" };
+  | { readonly kind: "not_subswitch" };
 
 export type TlsStatus =
   | { readonly kind: "reachable" }
@@ -22,7 +22,7 @@ export type HttpGetResult =
   | { readonly ok: false; readonly connectionRefused: true }
   | { readonly ok: false; readonly connectionRefused: false; readonly message: string };
 
-export interface ProbeSubrouteDeps {
+export interface ProbeSubswitchDeps {
   readonly httpGet: (url: string) => Promise<HttpGetResult>;
 }
 
@@ -35,28 +35,28 @@ export interface ProbeTlsDeps {
 // ---------------------------------------------------------------------------
 
 /**
- * Probe whether subroute is listening on `port`.
+ * Probe whether subswitch is listening on `port`.
  *
  * Returns:
- * - "running"            — GET /__subroute/health responded with the subroute health shape
+ * - "running"            — GET /__subswitch/health responded with the subswitch health shape
  * - "connection_refused" — nothing is listening on the port
- * - "not_subroute"          — something else is on the port, or an unexpected response
+ * - "not_subswitch"          — something else is on the port, or an unexpected response
  */
-export const probeSubroute = async (port: number, deps: ProbeSubrouteDeps): Promise<SubrouteStatus> => {
-  const result = await deps.httpGet(`http://127.0.0.1:${port}/__subroute/health`);
+export const probeSubswitch = async (port: number, deps: ProbeSubswitchDeps): Promise<SubswitchStatus> => {
+  const result = await deps.httpGet(`http://127.0.0.1:${port}/__subswitch/health`);
   if (!result.ok) {
     if (result.connectionRefused) return { kind: "connection_refused" };
-    return { kind: "not_subroute" };
+    return { kind: "not_subswitch" };
   }
-  if (result.status !== 200) return { kind: "not_subroute" };
+  if (result.status !== 200) return { kind: "not_subswitch" };
   try {
     const body = JSON.parse(result.body) as { name?: unknown; version?: unknown };
-    if (body.name === "subroute" && typeof body.version === "string") {
+    if (body.name === "subswitch" && typeof body.version === "string") {
       return { kind: "running", name: body.name, version: body.version };
     }
-    return { kind: "not_subroute" };
+    return { kind: "not_subswitch" };
   } catch {
-    return { kind: "not_subroute" };
+    return { kind: "not_subswitch" };
   }
 };
 
@@ -84,7 +84,7 @@ const isConnectionRefused = (e: unknown): boolean => {
   return false;
 };
 
-export const makeLiveHttpGet = (): ProbeSubrouteDeps["httpGet"] => async (url) => {
+export const makeLiveHttpGet = (): ProbeSubswitchDeps["httpGet"] => async (url) => {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(3_000) });
     const body = await res.text();

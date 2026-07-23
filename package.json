@@ -1,9 +1,15 @@
 {
-  "name": "subroute",
+  "name": "subswitch",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Local subscription-routing proxy for Claude Code — route a single subagent to a different model (OpenAI Codex) while every other request stays on Claude. Per-subagent routing, no API keys.",
+  "bin": {
+    "subswitch": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "subswitch.config.example.json"
+  ],
   "keywords": [
     "claude",
     "claude-code",
@@ -14,15 +20,17 @@
     "anthropic",
     "llm",
     "ai",
-    "developer-tools"
+    "developer-tools",
+    "cli",
+    "subswitch"
   ],
-  "homepage": "https://github.com/dean0x/subroute#readme",
+  "homepage": "https://github.com/dean0x/subswitch#readme",
   "bugs": {
-    "url": "https://github.com/dean0x/subroute/issues"
+    "url": "https://github.com/dean0x/subswitch/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dean0x/subroute.git"
+    "url": "git+https://github.com/dean0x/subswitch.git"
   },
   "author": "dean0x",
   "license": "MIT",
@@ -34,7 +42,10 @@
     "doctor": "tsx src/cli.ts doctor",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test \"test/unit/*.test.ts\" \"test/integration/*.test.ts\"",
-    "check": "npm run typecheck && npm run test"
+    "check": "npm run typecheck && npm run test",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run check"
   },
   "dependencies": {
     "zod": "^4.4.3"

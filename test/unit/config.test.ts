@@ -12,7 +12,7 @@ const missingFile = (): never => {
 
 describe("loadConfig", () => {
   it("returns full defaults when the implicit cwd config file is missing", () => {
-    // No configPath, no SUBROUTE_CONFIG env var — implicit cwd path → silently use defaults.
+    // No configPath, no SUBSWITCH_CONFIG env var — implicit cwd path → silently use defaults.
     const result = loadConfig({ readFile: missingFile, env: {} });
     assert.ok(result.ok);
     assert.equal(result.value.config.port, 4141);
@@ -67,7 +67,7 @@ describe("loadConfig", () => {
   });
 
   it("explicit configPath that is missing returns an error", () => {
-    const result = loadConfig({ configPath: "/nope/subroute.config.json", readFile: missingFile });
+    const result = loadConfig({ configPath: "/nope/subswitch.config.json", readFile: missingFile });
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "translate");
     assert.match(result.error.message, /not found/);
@@ -77,58 +77,58 @@ describe("loadConfig", () => {
   // R3: config discovery tests
   // -------------------------------------------------------------------------
 
-  it("SUBROUTE_CONFIG env var takes precedence over implicit cwd default", () => {
+  it("SUBSWITCH_CONFIG env var takes precedence over implicit cwd default", () => {
     let calledWith: string | undefined;
     const result = loadConfig({
       readFile: (path) => {
         calledWith = path;
         return JSON.stringify({ port: 7777 });
       },
-      env: { SUBROUTE_CONFIG: "/custom/subroute.config.json" },
+      env: { SUBSWITCH_CONFIG: "/custom/subswitch.config.json" },
     });
     assert.ok(result.ok);
-    assert.equal(calledWith, "/custom/subroute.config.json");
+    assert.equal(calledWith, "/custom/subswitch.config.json");
     assert.equal(result.value.config.port, 7777);
-    assert.equal(result.value.configPath, "/custom/subroute.config.json");
+    assert.equal(result.value.configPath, "/custom/subswitch.config.json");
     assert.equal(result.value.fileFound, true);
   });
 
-  it("explicit configPath takes precedence over SUBROUTE_CONFIG env var", () => {
+  it("explicit configPath takes precedence over SUBSWITCH_CONFIG env var", () => {
     let calledWith: string | undefined;
     const result = loadConfig({
-      configPath: "/explicit/subroute.config.json",
+      configPath: "/explicit/subswitch.config.json",
       readFile: (path) => {
         calledWith = path;
         return JSON.stringify({ port: 9999 });
       },
-      env: { SUBROUTE_CONFIG: "/env/subroute.config.json" },
+      env: { SUBSWITCH_CONFIG: "/env/subswitch.config.json" },
     });
     assert.ok(result.ok);
-    assert.equal(calledWith, "/explicit/subroute.config.json");
+    assert.equal(calledWith, "/explicit/subswitch.config.json");
     assert.equal(result.value.config.port, 9999);
   });
 
-  it("SUBROUTE_CONFIG pointing at a missing file returns an error", () => {
+  it("SUBSWITCH_CONFIG pointing at a missing file returns an error", () => {
     const result = loadConfig({
       readFile: missingFile,
-      env: { SUBROUTE_CONFIG: "/missing/subroute.config.json" },
+      env: { SUBSWITCH_CONFIG: "/missing/subswitch.config.json" },
     });
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "translate");
     assert.match(result.error.message, /not found/);
   });
 
-  it("expands ~ in SUBROUTE_CONFIG path", () => {
+  it("expands ~ in SUBSWITCH_CONFIG path", () => {
     let calledWith: string | undefined;
     const result = loadConfig({
       readFile: (path) => {
         calledWith = path;
         return JSON.stringify({});
       },
-      env: { SUBROUTE_CONFIG: "~/my-subroute.config.json" },
+      env: { SUBSWITCH_CONFIG: "~/my-subswitch.config.json" },
     });
     assert.ok(result.ok);
-    assert.equal(calledWith, join(homedir(), "my-subroute.config.json"));
+    assert.equal(calledWith, join(homedir(), "my-subswitch.config.json"));
   });
 
   it("reports configPath and fileFound in the success result", () => {
