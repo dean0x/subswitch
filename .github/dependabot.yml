@@ -7,6 +7,12 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # @types/node is pinned to the Node 22 major (minimum supported runtime per engines >=22).
+      # Bumping to a newer major would expose Node 24/26 APIs to tsc, making the type-check
+      # dishonest about the least-supported runtime. See ADR-004.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"

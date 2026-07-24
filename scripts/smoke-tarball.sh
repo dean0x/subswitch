@@ -26,8 +26,11 @@ echo "Smoke: installing ${TARBALL} into ${TMPDIR_INSTALL}"
 cd "${TMPDIR_INSTALL}"
 npm install --save "${TARBALL_ABS}" >/dev/null 2>&1
 
-# doctor exits 0 even when TLS probes fail — CI-safe
-node_modules/.bin/subswitch doctor
+# Verify the packaged binary resolves and prints version; --version always exits 0.
+# (doctor exits non-zero when preflight checks fail — expected in CI where no proxy
+# is running and no codex auth is configured.)
+VERSION_OUT="$(node_modules/.bin/subswitch --version)"
+echo "  subswitch version: ${VERSION_OUT}"
 
 # Start serve on isolated port 4941 to avoid dev-instance clash
 echo '{"port": 4941}' > subswitch.config.json

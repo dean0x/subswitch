@@ -6,6 +6,14 @@ import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { LogLevel } from "./logger.js";
 
+export const DEFAULT_PORT = 4141 as const;
+export const DEFAULT_CODEX_MODELS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+] as const;
+
 const LimitsSchema = z.object({
   maxBodyBytes: z.number().int().positive().default(32 * 1024 * 1024),
   connectTimeoutMs: z.number().int().positive().default(10_000),
@@ -17,7 +25,7 @@ const LimitsSchema = z.object({
 });
 
 const ConfigSchema = z.object({
-  port: z.number().int().min(1).max(65535).default(4141),
+  port: z.number().int().min(1).max(65535).default(DEFAULT_PORT),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
   anthropic: z
     .object({
@@ -29,7 +37,7 @@ const ConfigSchema = z.object({
       baseUrl: z.url().default("https://chatgpt.com/backend-api/codex"),
       oauthTokenUrl: z.url().default("https://auth.openai.com/oauth/token"),
       authFile: z.string().min(1).default("~/.codex/auth.json"),
-      models: z.array(z.string().min(1)).default(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]),
+      models: z.array(z.string().min(1)).default([...DEFAULT_CODEX_MODELS]),
       // default UA format verified from codex-cli 0.144.6 live capture 2026-07-22;
       // machine-telemetry (OS/arch/terminal) intentionally omitted — set codex.userAgent
       // to override (vendor-drift pressure valve).
@@ -98,8 +106,10 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
   let raw: unknown = {};
   let fileFound = false;
 
+  // Step 1: read the file (isolates ENOENT / permission errors from JSON errors).
+  let rawString: string | undefined;
   try {
-    raw = JSON.parse(readFile(resolvedPath));
+    rawString = readFile(resolvedPath);
     fileFound = true;
   } catch (cause) {
     const isEnoent = cause instanceof Error && (cause as NodeJS.ErrnoException).code === "ENOENT";
@@ -110,6 +120,18 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
       return err({ kind: "translate", message: `failed to read config at ${resolvedPath}: ${String(cause)}` });
     }
     // Implicit cwd ENOENT — silently fall back to pure defaults.
+  }
+
+  // Step 2: parse JSON (only when a file was successfully read).
+  if (rawString !== undefined) {
+    try {
+      raw = JSON.parse(rawString);
+    } catch {
+      return err({
+        kind: "translate",
+        message: `malformed JSON in ${resolvedPath} — fix or delete the file`,
+      });
+    }
   }
 
   const parsed = ConfigSchema.safeParse(raw);

@@ -1,3 +1,6 @@
+import { createColors } from "picocolors";
+import { resolveColorEnabled } from "./tty.js";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 /**
@@ -41,21 +44,64 @@ const FIELD_KEYS = [
   "sessionKey",
 ] as const;
 
+const formatTime = (): string => {
+  const d = new Date();
+  const h = d.getHours().toString().padStart(2, "0");
+  const m = d.getMinutes().toString().padStart(2, "0");
+  const s = d.getSeconds().toString().padStart(2, "0");
+  return `${h}:${m}:${s}`;
+};
+
+/**
+ * Create a structured key=value logger.
+ *
+ * @param minLevel - Minimum level to emit.
+ * @param write    - Output sink; defaults to stderr.
+ * @param color    - Apply picocolors to level/event tokens and prepend a timestamp.
+ *                   Defaults to true iff stderr is a TTY and NO_COLOR is unset.
+ *                   Tests pass an explicit write function and let color default to
+ *                   false (tests never run in a TTY), so existing assertions hold.
+ */
 export const createConsoleLogger = (
   minLevel: LogLevel,
   write: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
-): Logger => ({
-  log(level, event, fields) {
-    if (LEVEL_ORDER[level] < LEVEL_ORDER[minLevel]) return;
-    const parts = [`level=${level}`, `event=${event}`];
-    if (fields !== undefined) {
-      for (const key of FIELD_KEYS) {
-        const value = fields[key];
-        if (value !== undefined) parts.push(`${key}=${String(value)}`);
-      }
+  color: boolean = resolveColorEnabled(
+    process.env as Record<string, string | undefined>,
+    process.stderr.isTTY === true,
+  ),
+): Logger => {
+  // createColors(enabled) bypasses picocolors' own TTY detection so that the
+  // `color` parameter is the single source of truth.
+  const pc = createColors(color);
+  const colorLevelStr = (level: LogLevel): string => {
+    switch (level) {
+      case "debug":
+        return `level=${pc.dim(level)}`;
+      case "info":
+        return `level=${pc.cyan(level)}`;
+      case "warn":
+        return `level=${pc.yellow(level)}`;
+      case "error":
+        return `level=${pc.red(level)}`;
     }
-    write(parts.join(" "));
-  },
-});
+  };
+
+  return {
+    log(level, event, fields) {
+      if (LEVEL_ORDER[level] < LEVEL_ORDER[minLevel]) return;
+      const levelStr = colorLevelStr(level);
+      const eventStr = `event=${pc.bold(event)}`;
+      const parts = [levelStr, eventStr];
+      if (fields !== undefined) {
+        for (const key of FIELD_KEYS) {
+          const value = fields[key];
+          if (value !== undefined) parts.push(`${key}=${String(value)}`);
+        }
+      }
+      const ts = color ? `${pc.dim(formatTime())} ` : "";
+      write(`${ts}${parts.join(" ")}`);
+    },
+  };
+};
 
 export const noopLogger: Logger = { log: () => undefined };

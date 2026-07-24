@@ -29,3 +29,16 @@ ignore:
           Integration tests fetch URLs of fake upstream servers the tests
           themselves started on 127.0.0.1; there is no untrusted input.
         expires: 2027-07-21T00:00:00.000Z
+  'javascript/HardcodedNonCryptoSecret/test':
+    - 'test/unit/doctor.test.ts':
+        reason: >-
+          Fake JWT fixture used in readAuthFile mock stub. The token has a
+          literal string "sig" as its signature segment — structurally a JWT
+          but not a real credential; it exists only to verify parsing logic.
+        expires: 2027-07-24T00:00:00.000Z
+    - 'test/unit/logger.test.ts':
+        reason: >-
+          Redaction-boundary test that asserts the logger DROPS unknown fields.
+          The string "should-not-appear" is the value of a field named "secret"
+          and the test asserts it is absent from log output; it is never logged.
+        expires: 2027-07-24T00:00:00.000Z
