@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Model family aliases**: `sol`, `terra`, and `luna` are now valid `model:` values
+  in agent frontmatter. Each alias resolves to the highest-generation canonical id
+  for that family (e.g. `sol` → `gpt-5.6-sol`). Resolution follows four rules in
+  priority order: exact registry id, custom `codex.aliases` override, family alias
+  scoped to the routable set, then undefined (no match → Anthropic leg).
+- **`subswitch models`**: new subcommand that prints the effective model registry,
+  alias resolution table, and which ids are routed to Codex vs. Anthropic under the
+  current config. Useful for confirming alias resolution before running agents.
+- **Agent frontmatter scanner in `doctor`**: `subswitch doctor` now scans
+  `.claude/agents/` (project and global) for agent files whose `model:` value cannot
+  be resolved. Unresolvable models are reported as failures (exit 1); models known to
+  the registry but excluded from `codex.models` are reported as informational notices.
+  Anthropic-tier names (`claude-*`, `sonnet`, `opus`, `haiku`, `inherit`) are skipped.
+- **`codex.aliases`** config key: a free-form map of custom model name overrides
+  (`{ "my-model": "gpt-5.6-sol" }`). Aliases defined here win over family aliases.
+- **Floating `codex.models` default**: `codex.models` is now optional in config.
+  When omitted, all registry ids are routable and the key is not written to config
+  by `subswitch init`. Narrowing (writing an explicit list) is still supported.
+
+### Changed / Behavior
+
+- **`subswitch init` no longer pins `codex.models`** when all registry ids are
+  selected (the default). The key is omitted from the written config, keeping it
+  floating against the registry. The key is written only when the user narrows the
+  selection. Running `init` over an existing config that has a stale `codex.models`
+  pin will delete it if the result matches the full registry default.
+- **`subswitch doctor`** prints the alias resolution table after the `codex.models:`
+  row and nudges the user to remove a stale explicit pin when one is detected.
+
 ## [0.1.0] - 2026-07-24
 
 ### Added

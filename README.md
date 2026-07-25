@@ -7,7 +7,7 @@
 **Route Claude Code subagents to a different model - keep everything else on Claude.**
 
 subswitch is a local subscription-routing proxy for Claude Code. Give a subagent a
-Codex model in its frontmatter (`model: gpt-5.5`) and *that subagent alone* runs
+Codex model in its frontmatter (`model: sol`) and *that subagent alone* runs
 on your **Codex subscription**; your main agent and every other request stay on
 your **claude.ai subscription**, untouched. No API keys — subswitch forwards the
 subscription credential each leg already uses.
@@ -21,8 +21,9 @@ your utility calls, everything moves at once.
 
 subswitch is the first proxy that splits traffic **per subagent, by model name**:
 
-- Requests whose `model` is one of the exact names in your `codex.models` list are
-  translated and sent to the Codex backend.
+- Requests whose `model` resolves to a canonical id in your `codex.models` list
+  (by exact match, family alias, or custom override) are translated and sent to
+  the Codex backend.
 - Everything else — the main agent, background utility calls (token counting,
   context management), all non-matching models — is relayed to Anthropic as
   **verbatim bytes**, credentials and all.
@@ -40,9 +41,9 @@ Claude Code ──► subswitch (127.0.0.1:4141)
                        (verbatim byte relay, claude.ai OAuth untouched)
 ```
 
-Routing is by the request body's `model` field, **exact membership** in
-`codex.models`. Unknown models pass through to Anthropic and fail visibly there;
-non-matching utility traffic is never misrouted.
+Routing is by the request body's `model` field, resolved against `codex.models`
+(by exact id, family alias, or custom alias override). Unresolvable models pass
+through to Anthropic; non-matching utility traffic is never misrouted.
 
 ## Requirements
 
@@ -93,8 +94,8 @@ subswitch doctor     # checks config + codex auth + network (exits non-zero on p
 ```yaml
 ---
 name: gpt-worker
-model: gpt-5.6-sol   # any exact name from codex.models routes to Codex
-effort: low          # optional reasoning effort (see Effort control below)
+model: sol   # family alias — always the latest sol generation
+effort: low  # optional reasoning effort (see Effort control below)
 ---
 ```
 
@@ -214,16 +215,25 @@ The config file is located by the following precedence (highest wins):
 1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
 2. `subswitch.config.json` in the current working directory — silently uses defaults if absent
 
-The routing knob that matters most is **`codex.models`** — the exact model names that
-get sent to Codex (everything else passes through to Anthropic). It defaults to
-`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.5`. Add the exact
-model name to a subagent's `model:` frontmatter to route it; names not in this
-list always go to Anthropic.
+The routing knob that matters most is **`codex.models`** — the set of canonical
+model ids that get sent to Codex (everything else passes through to Anthropic).
+When the key is **omitted** (the recommended default), subswitch routes all models
+in its built-in registry: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
+`gpt-5.5`. Provide an explicit list only when you want to narrow routing to a
+specific subset.
+
+**Family aliases** (`sol`, `terra`, `luna`) let you write a model name that
+auto-tracks the latest generation in that family — `model: sol` always resolves
+to whichever `gpt-5.6-sol` (or future `gpt-5.7-sol`) generation is in the registry,
+without any config change. Exact canonical ids (`gpt-5.6-sol`) are also accepted
+and resolve to themselves. Run `subswitch models` to see the current alias table.
 
 New knobs added in this release:
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `codex.aliases` | `{}` | Custom alias overrides — map a short name to a canonical model id |
+| `codex.models` | _(all registry ids)_ | Narrow routing to a specific subset; omit this key to float with the registry |
 | `reasoningCache.maxEntries` | `4096` | Maximum number of reasoning cache LRU entries |
 | `reasoningCache.maxBytes` | `67108864` (64 MiB) | Maximum total byte footprint of the reasoning cache |
 | `limits.maxUpstreamSockets` | `32` | Maximum sockets in the Anthropic keep-alive connection pool |
