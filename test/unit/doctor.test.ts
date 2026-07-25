@@ -156,6 +156,9 @@ const allPassIO = (lines: string[]) => ({
   }),
   tlsConnect: async (): Promise<TlsStatus> => ({ kind: "reachable" }),
   color: false,
+  // No agent files by default — tests that need agent scan behaviour inject their own.
+  listAgentFiles: async (): Promise<readonly string[]> => [],
+  readTextFile: async (): Promise<string> => "",
 });
 
 const failingProbeIO = (lines: string[]) => ({
@@ -166,6 +169,10 @@ const failingProbeIO = (lines: string[]) => ({
     throw new Error("ENOENT");
   },
 });
+
+// ---------------------------------------------------------------------------
+// Alias table and agent-scan tests
+// ---------------------------------------------------------------------------
 
 describe("runDoctor", () => {
   it("returns exit code 0 when all checks pass", async () => {
@@ -223,5 +230,81 @@ describe("runDoctor", () => {
     const verdictLine = lines.find((l) => l.includes("all checks passed"));
     assert.ok(verdictLine !== undefined, "must include all-pass verdict line");
     assert.ok(verdictLine.includes("\x1b"), "verdict line must contain ANSI escape code when color=true");
+  });
+
+  it("prints the alias table rows (one line per alias)", async () => {
+    const lines: string[] = [];
+    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines));
+    // The alias table should contain lines for sol, terra, luna (derived from registry)
+    const output = lines.join("\n");
+    assert.ok(output.includes("sol"), "alias table must include sol");
+    assert.ok(output.includes("→"), "alias table must include the arrow separator");
+  });
+
+  it("emits a nudge line when codexModelsPinned is true", async () => {
+    const lines: string[] = [];
+    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines), true);
+    const output = lines.join("\n");
+    assert.ok(
+      output.includes("aliases") || output.includes("family"),
+      "must include a nudge about family aliases when codexModelsPinned=true",
+    );
+  });
+
+  it("does not emit a nudge line when codexModelsPinned is false", async () => {
+    const lines: string[] = [];
+    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines), false);
+    const output = lines.join("\n");
+    // The nudge mentions "consider using family aliases" — should be absent when false.
+    assert.ok(
+      !output.includes("consider using family aliases"),
+      "must not emit the alias nudge when codexModelsPinned=false",
+    );
+  });
+});
+
+describe("runDoctor — agent model scan", () => {
+  it("returns exit code 1 when an agent file has an unresolvable model", async () => {
+    const lines: string[] = [];
+    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      listAgentFiles: async () => ["/project/.claude/agents/bad-agent.md"],
+      readTextFile: async () => "---\nmodel: totally-unknown-model\n---\n",
+    });
+    assert.equal(exitCode, 1, "unresolvable agent model should cause exit code 1");
+  });
+
+  it("emits a FAIL row for an unresolvable agent model", async () => {
+    const lines: string[] = [];
+    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      listAgentFiles: async () => ["/project/.claude/agents/bad-agent.md"],
+      readTextFile: async () => "---\nmodel: totally-unknown-model\n---\n",
+    });
+    const output = lines.join("\n");
+    assert.ok(
+      output.includes("totally-unknown-model"),
+      "output must mention the problematic model name",
+    );
+  });
+
+  it("does not increment failures for an Anthropic tier name in agent frontmatter", async () => {
+    const lines: string[] = [];
+    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      listAgentFiles: async () => ["/project/.claude/agents/claude-main.md"],
+      readTextFile: async () => "---\nmodel: sonnet\n---\n",
+    });
+    assert.equal(exitCode, 0, "Anthropic tier names should not cause failures");
+  });
+
+  it("does not fail when the agents directory is absent (listAgentFiles returns empty)", async () => {
+    const lines: string[] = [];
+    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      listAgentFiles: async () => [],
+      readTextFile: async () => "",
+    });
+    assert.equal(exitCode, 0, "absent agents directory should not cause a failure");
   });
 });

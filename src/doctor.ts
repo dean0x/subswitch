@@ -1,7 +1,12 @@
 import tls from "node:tls";
+import { readdir, readFile as fsReadFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { createColors } from "picocolors";
 import type { Config } from "./config.js";
 import { isPlainObject } from "./init.js";
+import { MODEL_REGISTRY, formatModelsReport } from "./models.js";
+import { checkAgentModels } from "./agent-scan.js";
 
 // ---------------------------------------------------------------------------
 // Discriminated-union result types
@@ -144,6 +149,29 @@ export const makeLiveTlsConnect = (): ProbeTlsDeps["tlsConnect"] => (host, port)
     });
   });
 
+/**
+ * List all agent .md files under a directory recursively.
+ * Returns an empty array when the directory is absent — missing dir is not an error. [F53]
+ * Uses readdir with { recursive: true } — stable in Node 22 (ADR-004). [ADR-004]
+ */
+export const makeLiveListAgentFiles = (): DoctorIO["listAgentFiles"] => async (dir) => {
+  try {
+    const entries = await readdir(dir, { recursive: true });
+    return (entries as string[])
+      .filter((e) => e.endsWith(".md"))
+      .map((e) => join(dir, e));
+  } catch {
+    // Missing or unreadable directory → empty list, not an error.
+    return [];
+  }
+};
+
+/**
+ * Read a text file for frontmatter scanning.
+ */
+export const makeLiveReadTextFile = (): DoctorIO["readTextFile"] => async (path) =>
+  fsReadFile(path, "utf8");
+
 // ---------------------------------------------------------------------------
 // High-level doctor runner (injectable for tests)
 // ---------------------------------------------------------------------------
@@ -154,6 +182,10 @@ export interface DoctorIO {
   readonly httpGet: (url: string) => Promise<HttpGetResult>;
   readonly tlsConnect: (host: string, port: number) => Promise<TlsStatus>;
   readonly color: boolean;
+  /** List all .md files under an agent directory. Returns [] when directory absent. */
+  readonly listAgentFiles: (dir: string) => Promise<readonly string[]>;
+  /** Read a file's text content for frontmatter scanning. */
+  readonly readTextFile: (path: string) => Promise<string>;
 }
 
 // Column width for the label portion of each output row. [F24]
@@ -165,12 +197,17 @@ const row = (label: string, value: string): string => `  ${label}`.padEnd(LABEL_
 /**
  * Run all doctor checks and write output to io.write.
  * Returns 0 if all checks passed, 1 if any check failed.
+ *
+ * @param codexModelsPinned - When true, emit an informational nudge encouraging
+ *   family aliases instead of pinned canonical ids. Trailing-defaulted so the
+ *   seven existing runDoctor(...) call sites in doctor.test.ts compile untouched.
  */
 export const runDoctor = async (
   config: Config,
   configPath: string,
   fileFound: boolean,
   io: DoctorIO,
+  codexModelsPinned = false,
 ): Promise<number> => {
   const pc = createColors(io.color);
   const passStr = (text: string): string => pc.green(text);
@@ -186,6 +223,25 @@ export const runDoctor = async (
   io.write(row("anthropic.baseUrl:", config.anthropic.baseUrl));
   io.write(row("codex.baseUrl:", config.codex.baseUrl));
   io.write(row("codex.models:", config.codex.models.join(", ")));
+
+  // Alias table — shows effective alias → canonical mapping for the current config.
+  const routable = new Set(config.codex.models);
+  const aliasLines = formatModelsReport({
+    registry: MODEL_REGISTRY,
+    routable,
+    overrides: config.codex.aliases,
+  });
+  for (const line of aliasLines) {
+    io.write(`    ${line}`);
+  }
+
+  // Alias nudge — informational: suggest floating with aliases instead of pinned ids.
+  if (codexModelsPinned) {
+    io.write(
+      row("aliases:", pc.dim("consider using family aliases (sol, terra, luna) — they auto-track the latest generation")),
+    );
+  }
+
   io.write(row("codex.authFile:", config.codex.authFile));
 
   try {
@@ -246,6 +302,48 @@ export const runDoctor = async (
 
   checkTls("anthropic TLS", anthropicHost, anthropicTls);
   checkTls("codex TLS", codexHost, codexTls);
+
+  // Agent frontmatter scan — check both project and user-level agent directories.
+  // A missing directory resolves to an empty list — never an error. [F53]
+  const projectAgentsDir = join(".", ".claude", "agents");
+  const userAgentsDir = join(homedir(), ".claude", "agents");
+
+  const [projectFiles, userFiles] = await Promise.all([
+    io.listAgentFiles(projectAgentsDir),
+    io.listAgentFiles(userAgentsDir),
+  ]);
+
+  // Read all discovered agent files (cap read errors to per-file; don't abort the scan).
+  const allPaths = [...projectFiles, ...userFiles];
+  const fileTexts = await Promise.all(
+    allPaths.map(async (path) => {
+      try {
+        const text = await io.readTextFile(path);
+        return { path, text };
+      } catch {
+        // Unreadable file → treat as empty (no frontmatter model).
+        return { path, text: "" };
+      }
+    }),
+  );
+
+  const agentFindings = checkAgentModels(fileTexts, routable, config.codex.aliases);
+
+  for (const finding of agentFindings) {
+    if (finding.kind === "unresolvable") {
+      // Unresolvable model → will silently 404 on the Codex leg. This is a failure.
+      failures++;
+      io.write(
+        row("agent model:", failStr(`FAIL`) + ` ${finding.file}: model "${finding.model}" is not a known id or alias`,
+        ),
+      );
+    } else {
+      // Excluded from narrowed codex.models — informational only. [F53]
+      io.write(
+        row("agent model:", pc.dim(`info`) + ` ${finding.file}: model "${finding.model}" resolves to "${finding.canonical}" but is not in codex.models`),
+      );
+    }
+  }
 
   if (failures === 0) {
     io.write(passStr("all checks passed"));

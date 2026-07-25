@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, loadConfig, DEFAULT_PORT } from "./config.js";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
-import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect } from "./doctor.js";
+import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
   runInitInteractive,
   runInitNonInteractive,
@@ -303,7 +303,7 @@ const serve = async (
 // doctor
 // ---------------------------------------------------------------------------
 
-const doctor = async (config: Config, configPath: string, fileFound: boolean): Promise<void> => {
+const doctor = async (config: Config, configPath: string, fileFound: boolean, codexModelsPinned: boolean): Promise<void> => {
   const color = resolveColorEnabled(
     process.env as Record<string, string | undefined>,
     process.stdout.isTTY === true,
@@ -315,7 +315,9 @@ const doctor = async (config: Config, configPath: string, fileFound: boolean): P
     httpGet: makeLiveHttpGet(),
     tlsConnect: makeLiveTlsConnect(),
     color,
-  });
+    listAgentFiles: makeLiveListAgentFiles(),
+    readTextFile: makeLiveReadTextFile(),
+  }, codexModelsPinned);
 };
 
 // ---------------------------------------------------------------------------
@@ -433,8 +435,8 @@ const main = async (): Promise<void> => {
         fail(configResult.error.message);
         return;
       }
-      const { config, configPath, fileFound } = configResult.value;
-      await doctor(config, configPath, fileFound);
+      const { config, configPath, fileFound, codexModelsPinned } = configResult.value;
+      await doctor(config, configPath, fileFound, codexModelsPinned);
       return;
     }
 
