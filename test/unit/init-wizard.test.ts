@@ -433,7 +433,7 @@ describe("runInitInteractive — seeding", () => {
     );
   });
 
-  it("seeds models initialValues from ALL_CODEX_MODELS when no flags and no existing config", async () => {
+  it("seeds models initialValues from DEFAULT_CODEX_MODELS when no flags and no existing config", async () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: String(DEFAULT_PORT),
@@ -446,7 +446,7 @@ describe("runInitInteractive — seeding", () => {
     assert.deepEqual(
       [...(prompts.multiselectCalls[0]?.initialValues ?? [])],
       [...DEFAULT_CODEX_MODELS],
-      "models should be seeded from ALL_CODEX_MODELS when no flags or existing config",
+      "models should be seeded from DEFAULT_CODEX_MODELS when no flags or existing config",
     );
   });
 
