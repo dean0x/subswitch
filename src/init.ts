@@ -396,6 +396,23 @@ export interface InitFlags {
   readonly settingsTarget?: string;
 }
 
+/**
+ * Merge the two model CLI flags (--codex-model repeatable and --codex-models CSV)
+ * into a single deduplicated list.
+ *
+ * Trims whitespace, drops empties, deduplicates preserving first-occurrence order.
+ * Returns an empty array when both flags are absent or resolve to nothing — callers
+ * must distinguish that from "no flags provided" to give the right error or default.
+ */
+export const mergeModelFlags = (flags: Pick<InitFlags, "codexModel" | "codexModels">): string[] => {
+  const merged: string[] = [...(flags.codexModel ?? [])];
+  if (flags.codexModels !== undefined && flags.codexModels !== "") {
+    merged.push(...flags.codexModels.split(",").map((s) => s.trim()).filter((s) => s.length > 0));
+  }
+  const filtered = merged.map((m) => m.trim()).filter((m) => m.length > 0);
+  return [...new Set(filtered)];
+};
+
 export const resolveOptionsFromFlags = (flags: InitFlags): Result<InitOptions, InitError> => {
   // Validate port.
   const rawPort = flags.port ?? String(DEFAULT_PORT);
@@ -428,14 +445,7 @@ export const resolveOptionsFromFlags = (flags: InitFlags): Result<InitOptions, I
     // No model flags provided — default to ALL_CODEX_MODELS.
     resolvedModels = DEFAULT_CODEX_MODELS;
   } else {
-    const merged: string[] = [...(flags.codexModel ?? [])];
-    if (flags.codexModels !== undefined && flags.codexModels !== "") {
-      merged.push(...flags.codexModels.split(",").map((s) => s.trim()).filter((s) => s.length > 0));
-    }
-    const filtered = merged.map((m) => m.trim()).filter((m) => m.length > 0);
-    // Deduplicate, preserving first-occurrence order — the two model flags are
-    // documented as "combined and deduplicated" (README CLI reference). [F16/F17]
-    const deduped = [...new Set(filtered)];
+    const deduped = mergeModelFlags(flags);
     if (deduped.length === 0) {
       // Model flags were given but resolved to nothing (e.g. --codex-models "").
       return err({
@@ -539,10 +549,10 @@ const seedWizard = async (
   let modelsSeed: readonly string[];
   const hasModelFlags = flags.codexModel !== undefined || flags.codexModels !== undefined;
   if (hasModelFlags) {
-    const merged: string[] = [...(flags.codexModel ?? [])];
-    if (flags.codexModels !== undefined && flags.codexModels !== "") {
-      merged.push(...flags.codexModels.split(",").map((s) => s.trim()).filter((s) => s.length > 0));
-    }
+    // mergeModelFlags deduplicates; seedWizard previously did not. This is a
+    // deliberate improvement: duplicate initialValues in a clack multiselect
+    // are a rendering wart. [behavior delta — documented]
+    const merged = mergeModelFlags(flags);
     modelsSeed = merged.length > 0 ? merged : ALL_CODEX_MODELS;
   } else if (existingModels !== undefined) {
     modelsSeed = existingModels;
