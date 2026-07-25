@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
+import { createColors } from "picocolors";
 import { type Config, loadConfig, DEFAULT_PORT } from "./config.js";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect } from "./doctor.js";
@@ -14,6 +15,7 @@ import {
   PortSchema,
   type InitFlags,
 } from "./init.js";
+import { MODEL_REGISTRY, formatModelsReport } from "./models.js";
 import { resolveColorEnabled } from "./tty.js";
 import { SUBSWITCH_VERSION } from "./version.js";
 
@@ -46,6 +48,7 @@ Commands:
   serve     Start the proxy (default command)
   doctor    Check config, codex auth, and network reachability
   init      Interactive setup — writes config + wires Claude Code
+  models    Show effective alias table (registry × config × codex.models)
 
 Flags (global):
   -h, --help       Show this help message
@@ -72,6 +75,7 @@ Examples:
   subswitch init --yes                 # non-interactive with defaults
   subswitch init --dry-run             # preview what would be written
   subswitch doctor                     # check config + auth health
+  subswitch models                     # show alias table (registry × config × codex.models)
 
 Environment:
   NO_COLOR      Disable color output (also respected as standard)
@@ -88,12 +92,14 @@ type CliCommand =
   | { readonly kind: "version" }
   | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly port?: string }
   | { readonly kind: "doctor" }
+  | { readonly kind: "models" }
   | { readonly kind: "init"; readonly yes: boolean; readonly dryRun: boolean; readonly flags: InitFlags };
 
 // Flag sets per command — used for per-command validation (A3.19)
 const GLOBAL_FLAGS = new Set(["help", "version"]);
 const SERVE_FLAGS = new Set(["verbose", "quiet", "port"]);
 const DOCTOR_FLAGS = new Set<string>();
+const MODELS_FLAGS = new Set<string>(); // models takes no flags — any flag is an error
 const INIT_FLAGS = new Set(["yes", "dry-run", "port", "codex-model", "codex-models", "settings-target"]);
 
 /**
@@ -133,7 +139,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     const command = positionals[0] ?? "serve";
 
     // Unknown command
-    if (command !== "serve" && command !== "doctor" && command !== "init") {
+    if (command !== "serve" && command !== "doctor" && command !== "init" && command !== "models") {
       return {
         ok: false,
         error: { message: `unknown command "${command}" — run \`subswitch --help\` for usage` },
@@ -146,6 +152,8 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
       allowedFlags = SERVE_FLAGS;
     } else if (command === "doctor") {
       allowedFlags = DOCTOR_FLAGS;
+    } else if (command === "models") {
+      allowedFlags = MODELS_FLAGS;
     } else {
       allowedFlags = INIT_FLAGS;
     }
@@ -199,8 +207,12 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
       };
     }
 
-    // command === "doctor"
-    return { ok: true, value: { kind: "doctor" } };
+    if (command === "doctor") {
+      return { ok: true, value: { kind: "doctor" } };
+    }
+
+    // command === "models"
+    return { ok: true, value: { kind: "models" } };
   } catch (e) {
     // Translate parseArgs throw to Result err (A3.21)
     if (e instanceof Error) {
@@ -307,6 +319,41 @@ const doctor = async (config: Config, configPath: string, fileFound: boolean): P
 };
 
 // ---------------------------------------------------------------------------
+// models — print effective alias table
+// ---------------------------------------------------------------------------
+
+const models = (config: Config): void => {
+  const color = resolveColorEnabled(
+    process.env as Record<string, string | undefined>,
+    process.stdout.isTTY === true,
+  );
+  const pc = createColors(color);
+
+  const routable = new Set(config.codex.models);
+  const lines = formatModelsReport({
+    registry: MODEL_REGISTRY,
+    routable,
+    overrides: config.codex.aliases,
+  });
+
+  if (lines.length === 0) {
+    out("  (no aliases configured)");
+    return;
+  }
+
+  out("subswitch models");
+  for (const line of lines) {
+    // Colorize the status and source columns while keeping the already-aligned text intact.
+    const colorized = line
+      .replace("enabled", pc.green("enabled"))
+      .replace("disabled", pc.dim("disabled"))
+      .replace("(config)", pc.yellow("(config)"))
+      .replace("(derived)", pc.dim("(derived)"));
+    out(`  ${colorized}`);
+  }
+};
+
+// ---------------------------------------------------------------------------
 // init dispatch (A3.22 — single unified dispatch)
 // ---------------------------------------------------------------------------
 
@@ -388,6 +435,16 @@ const main = async (): Promise<void> => {
       }
       const { config, configPath, fileFound } = configResult.value;
       await doctor(config, configPath, fileFound);
+      return;
+    }
+
+    case "models": {
+      const configResult = loadConfig();
+      if (!configResult.ok) {
+        fail(configResult.error.message);
+        return;
+      }
+      models(configResult.value.config);
       return;
     }
 

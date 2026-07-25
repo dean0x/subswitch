@@ -112,6 +112,7 @@ Commands:
   serve     Start the proxy (default command)
   doctor    Check config, codex auth, and network reachability
   init      Interactive setup — writes config + wires Claude Code
+  models    Show effective alias table (registry × config × codex.models)
 
 Flags (global):
   -h, --help       Show this help message
@@ -138,6 +139,7 @@ Examples:
   subswitch init --yes                 # non-interactive with defaults
   subswitch init --dry-run             # preview what would be written
   subswitch doctor                     # check config + auth health
+  subswitch models                     # show alias table (registry × config × codex.models)
 
 Environment:
   NO_COLOR      Disable color output (also respected as standard)

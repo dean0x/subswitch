@@ -12,7 +12,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, readdir } from "node:fs/promises";
+import { mkdtemp, rm, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -99,6 +99,12 @@ describe("CLI --help", () => {
     const result = await runCli(["--help"]);
     assert.ok(result.stdout.includes("NO_COLOR"), "USAGE should document NO_COLOR");
     assert.ok(result.stdout.includes("FORCE_COLOR"), "USAGE should document FORCE_COLOR");
+  });
+
+  it("--help output lists the models command", async () => {
+    const result = await runCli(["--help"]);
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.stdout.includes("models"), "help output must mention the models command");
   });
 });
 
@@ -252,5 +258,67 @@ describe("CLI init --dry-run", () => {
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// models subcommand
+// ---------------------------------------------------------------------------
+
+describe("CLI models", () => {
+  it("exits 0 and prints both the alias (sol) and its canonical (gpt-5.6-sol)", async () => {
+    const result = await runCli(["models"]);
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.stdout.includes("sol"), "output should include the 'sol' alias");
+    assert.ok(result.stdout.includes("gpt-5.6-sol"), "output should include the canonical 'gpt-5.6-sol'");
+  });
+
+  it("prints the generation for each alias", async () => {
+    const result = await runCli(["models"]);
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.stdout.includes("gen:5.6"), "output should include generation gen:5.6");
+  });
+
+  it("marks disabled models when a config in the cwd narrows codex.models", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "subswitch-models-test-"));
+    try {
+      // Only gpt-5.6-sol is enabled; the other registry aliases should be disabled.
+      await writeFile(
+        join(tmpDir, "subswitch.config.json"),
+        JSON.stringify({ codex: { models: ["gpt-5.6-sol"] } }),
+        "utf8",
+      );
+      const result = await runCli(["models"], { cwd: tmpDir });
+      assert.equal(result.exitCode, 0);
+      assert.ok(result.stdout.includes("disabled"), "output should mark disabled aliases");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("shows a config alias override with the (config) source label", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "subswitch-models-test-"));
+    try {
+      await writeFile(
+        join(tmpDir, "subswitch.config.json"),
+        JSON.stringify({ codex: { aliases: { myalias: "gpt-5.6-sol" } } }),
+        "utf8",
+      );
+      const result = await runCli(["models"], { cwd: tmpDir });
+      assert.equal(result.exitCode, 0);
+      assert.ok(result.stdout.includes("myalias"), "output should include the custom alias name");
+      assert.ok(result.stdout.includes("(config)"), "output should label config overrides with (config)");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("models --verbose exits 1 — models takes no flags", async () => {
+    const result = await runCli(["models", "--verbose"]);
+    assert.equal(result.exitCode, 1);
+    assert.ok(
+      result.stderr.includes("verbose") || result.stderr.includes("subswitch:"),
+      "stderr should mention the misapplied flag or carry a subswitch: prefix",
+    );
   });
 });
