@@ -656,3 +656,47 @@ describe("runInitInteractive — custom model from existing config", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// codexModels omission — all-selected vs narrowed [Phase C un-pinning]
+// ---------------------------------------------------------------------------
+
+describe("runInitInteractive — codexModels in written config", () => {
+  it("omits codex.models from config when all registry ids are selected", async () => {
+    const deps = makeFakeDeps();
+    // Select all four registry ids exactly
+    const prompts = makeScriptedPrompts({
+      textResponse: "4141",
+      multiselectResponse: [...DEFAULT_CODEX_MODELS],
+      selectResponse: "local",
+    });
+
+    const exitCode = await runInitInteractive("/project", deps, {}, prompts);
+
+    assert.equal(exitCode, 0);
+    const configPath = join("/project", "subswitch.config.json");
+    const config = JSON.parse(deps.written[configPath] as string) as { codex?: { models?: unknown } };
+    assert.ok(
+      config.codex === undefined || !("models" in (config.codex as object)),
+      "codex.models must be absent when all registry ids are selected",
+    );
+  });
+
+  it("writes codex.models to config when selection is narrowed", async () => {
+    const deps = makeFakeDeps();
+    const narrowedModels = ["gpt-5.6-sol", "gpt-5.5"];
+    const prompts = makeScriptedPrompts({
+      textResponse: "4141",
+      multiselectResponse: narrowedModels,
+      selectResponse: "local",
+    });
+
+    const exitCode = await runInitInteractive("/project", deps, {}, prompts);
+
+    assert.equal(exitCode, 0);
+    const configPath = join("/project", "subswitch.config.json");
+    const config = JSON.parse(deps.written[configPath] as string) as { codex: { models: string[] } };
+    assert.ok("models" in config.codex, "codex.models must be present when selection is narrowed");
+    assert.deepEqual(config.codex.models, narrowedModels);
+  });
+});

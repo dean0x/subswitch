@@ -156,6 +156,36 @@ describe("planConfigWrite", () => {
     assert.ok(result.ok);
     assert.doesNotThrow(() => JSON.parse(result.value.content));
   });
+
+  it("omits codex.models key when models is undefined", () => {
+    const result = planConfigWrite(null, 4141, undefined, "/project");
+    assert.ok(result.ok);
+    const parsed = JSON.parse(result.value.content) as { port: number; codex?: { models?: unknown } };
+    assert.equal(parsed.port, 4141);
+    // models key must be absent entirely
+    assert.ok(parsed.codex === undefined || !("models" in (parsed.codex as object)), "codex.models must be absent");
+  });
+
+  it("removes a stale pre-existing codex.models key when models is undefined", () => {
+    const existing = JSON.stringify({ port: 4141, codex: { models: ["gpt-5.6-sol"], userAgent: "ua" } });
+    const result = planConfigWrite(existing, 4141, undefined, "/project");
+    assert.ok(result.ok);
+    const parsed = JSON.parse(result.value.content) as { codex: { userAgent: string; models?: unknown } };
+    // models key must be gone
+    assert.ok(!("models" in parsed.codex), "stale codex.models must be removed when models is undefined");
+    // other codex keys must be preserved
+    assert.equal(parsed.codex.userAgent, "ua", "codex.userAgent must be preserved");
+  });
+
+  it("preserves other codex.* keys when models is undefined", () => {
+    const existing = JSON.stringify({ codex: { models: ["gpt-5.5"], baseUrl: "https://example.com", userAgent: "ua" } });
+    const result = planConfigWrite(existing, 4141, undefined, "/project");
+    assert.ok(result.ok);
+    const parsed = JSON.parse(result.value.content) as { codex: Record<string, unknown> };
+    assert.ok(!("models" in parsed.codex), "models must be removed");
+    assert.equal(parsed.codex["baseUrl"], "https://example.com", "baseUrl must be preserved");
+    assert.equal(parsed.codex["userAgent"], "ua", "userAgent must be preserved");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -168,7 +198,8 @@ describe("resolveOptionsFromFlags", () => {
     assert.ok(result.ok);
     assert.equal(result.value.port, 4141);
     assert.equal(result.value.settingsTarget, "local");
-    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
+    // No model flags → codexModels is absent (floats with registry default)
+    assert.equal(result.value.codexModels, undefined);
   });
 
   it("parses a valid --port flag", () => {
@@ -212,10 +243,10 @@ describe("resolveOptionsFromFlags", () => {
 
   // Merged-flag matrix [F16/F17/F35]
 
-  it("no model flags → uses default model list (no model flags = defaults)", () => {
+  it("no model flags → codexModels is undefined (floats with registry default)", () => {
     const result = resolveOptionsFromFlags({});
     assert.ok(result.ok);
-    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
+    assert.equal(result.value.codexModels, undefined);
   });
 
   it("--codex-model (repeatable) sets models", () => {
@@ -417,6 +448,20 @@ describe("executeInit", () => {
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "malformed_json");
     assert.equal(Object.keys(deps.written).length, 0);
+  });
+
+  it("writes config without codex.models when codexModels is undefined", async () => {
+    const deps = makeFakeDeps();
+    const result = await executeInit(
+      { port: 4141, settingsTarget: "local" }, // no codexModels
+      deps,
+      "/project",
+    );
+    assert.ok(result.ok);
+    const configPath = join("/project", "subswitch.config.json");
+    assert.ok(deps.written[configPath] !== undefined, "subswitch.config.json should be written");
+    const config = JSON.parse(deps.written[configPath] as string) as { codex?: { models?: unknown } };
+    assert.ok(config.codex === undefined || !("models" in (config.codex as object)), "codex.models must not be present");
   });
 });
 
@@ -630,5 +675,20 @@ describe("runInitDryRun", () => {
       errLines.some((l) => l.includes("warning") && l.includes("my-custom-model")),
       "should emit warning mentioning the unknown model name to stderr",
     );
+  });
+
+  it("does not emit a warning for a known alias like 'sol'", async () => {
+    const deps = makeFakeDeps();
+    const errLines: string[] = [];
+    const exitCode = await runInitDryRun(
+      { codexModels: "sol" },
+      "/project",
+      deps,
+      () => undefined,
+      (l) => errLines.push(l),
+    );
+
+    assert.equal(exitCode, 0, "exit 0 for a known alias");
+    assert.equal(errLines.length, 0, "no warning for a recognized family alias");
   });
 });

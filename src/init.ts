@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import { DEFAULT_PORT, DEFAULT_CODEX_MODELS } from "./config.js";
+import { makeModelResolver, MODEL_REGISTRY, ALL_MODEL_IDS } from "./models.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -14,7 +15,12 @@ export type SettingsTarget = "local" | "shared";
 
 export interface InitOptions {
   readonly port: number;
-  readonly codexModels: readonly string[];
+  /**
+   * When undefined: omit `codex.models` from the written config (float with the registry default).
+   * When present: write the specified list verbatim.
+   * exactOptionalPropertyTypes is on — never assign `codexModels: undefined`.
+   */
+  readonly codexModels?: readonly string[];
   readonly settingsTarget: SettingsTarget;
 }
 
@@ -255,15 +261,21 @@ export const planSettingsWrite = (
 };
 
 /**
- * Pure: merge port and codex.models into an existing (or absent) subswitch.config.json.
+ * Pure: merge port and optionally codex.models into an existing (or absent) subswitch.config.json.
  * Preserves every other top-level key and every other codex.* key.
+ *
+ * When `models` is undefined: the `codex.models` key is removed — this un-pins a stale
+ * list so the server floats with the registry default. A mere omission is not enough
+ * because planConfigWrite deep-merges, so not writing the key would leave an existing pin.
+ * When `models` is a list: the key is written verbatim.
+ *
  * Fails on malformed JSON or non-object input.
  * No side effects — callers supply the current file content.
  */
 export const planConfigWrite = (
   existingJson: string | null,
   port: number,
-  models: readonly string[],
+  models: readonly string[] | undefined,
   projectDir: string,
 ): Result<ConfigWritePlan, InitError> => {
   const path = join(projectDir, "subswitch.config.json");
@@ -275,16 +287,20 @@ export const planConfigWrite = (
     existing = parseResult.value;
   }
 
-  // Preserve all codex.* keys except models (deep merge).
+  // Preserve all codex.* keys; handle models separately.
   const existingCodex = isPlainObject(existing["codex"]) ? existing["codex"] : {};
+  const codex: Record<string, unknown> = { ...existingCodex };
+  if (models !== undefined) {
+    codex["models"] = [...models];
+  } else {
+    // Delete any stale pin — re-running init must un-pin an existing list.
+    delete codex["models"];
+  }
 
   const merged: Record<string, unknown> = {
     ...existing,
     port,
-    codex: {
-      ...existingCodex,
-      models: [...models],
-    },
+    codex,
   };
 
   return ok({ path, content: `${JSON.stringify(merged, null, 2)}\n` });
@@ -434,30 +450,32 @@ export const resolveOptionsFromFlags = (flags: InitFlags): Result<InitOptions, I
   }
 
   // Merge codex model flags.
-  // Distinguish "no model flags at all → use defaults" from
+  // Distinguish "no model flags at all → omit from config (float with registry default)" from
   // "model flags given but resolve to empty → error" so --codex-models ""
   // is always an error. [F16/F17/F35]
   const hasModelFlags = flags.codexModel !== undefined || flags.codexModels !== undefined;
 
-  let resolvedModels: readonly string[];
   if (!hasModelFlags) {
-    // No model flags provided — default to ALL_CODEX_MODELS.
-    resolvedModels = DEFAULT_CODEX_MODELS;
-  } else {
-    const deduped = mergeModelFlags(flags);
-    if (deduped.length === 0) {
-      // Model flags were given but resolved to nothing (e.g. --codex-models "").
-      return err({
-        kind: "invalid_input",
-        message: `invalid --codex-models "${flags.codexModels ?? ""}": at least one model is required`,
-      });
-    }
-    resolvedModels = deduped;
+    // No model flags provided — omit codexModels so the config floats with the registry.
+    return ok({
+      port: portResult.data,
+      settingsTarget: targetResult.data,
+      // codexModels intentionally absent (exactOptionalPropertyTypes: conditional spread)
+    });
+  }
+
+  const deduped = mergeModelFlags(flags);
+  if (deduped.length === 0) {
+    // Model flags were given but resolved to nothing (e.g. --codex-models "").
+    return err({
+      kind: "invalid_input",
+      message: `invalid --codex-models "${flags.codexModels ?? ""}": at least one model is required`,
+    });
   }
 
   return ok({
     port: portResult.data,
-    codexModels: resolvedModels,
+    codexModels: deduped,
     settingsTarget: targetResult.data,
   });
 };
@@ -688,9 +706,16 @@ export const runInitInteractive = async (
   }
   const settingsTarget = targetParsed.data;
 
+  // When the user selects every registry id, omit codexModels so the config
+  // floats with the registry default and auto-picks up future additions.
+  const allRegistryIds = new Set(ALL_MODEL_IDS);
+  const isAllSelected =
+    selectedModels.length === ALL_MODEL_IDS.length &&
+    selectedModels.every((m) => allRegistryIds.has(m));
+
   const options: InitOptions = {
     port,
-    codexModels: selectedModels,
+    ...(isAllSelected ? {} : { codexModels: selectedModels }),
     settingsTarget,
   };
 
@@ -722,8 +747,8 @@ export const runInitInteractive = async (
       `  2. Run \`subswitch doctor\` to verify config + codex auth health`,
       `  3. Restart any running Claude Code session to pick up ANTHROPIC_BASE_URL`,
       `  4. Route a subagent to Codex by adding to its frontmatter:`,
-      `       model: gpt-5.6-sol   # any of: ${options.codexModels.join(", ")}`,
-      `       effort: low           # optional reasoning effort`,
+      `       model: sol   # alias — always the latest generation`,
+      `       effort: low  # optional reasoning effort`,
     ].join("\n"),
     "Setup complete",
   );
@@ -756,12 +781,13 @@ export const runInitDryRun = async (
   const options = optionsResult.value;
 
   // Forward-compat warning for unknown model names (non-fatal). [F32]
+  // Uses the resolver so aliases (e.g. "sol") are recognized and do not emit a warning.
   // Parity with runInitNonInteractive — both non-interactive paths emit this warning. [self-review P2]
-  const knownDryRunModels: ReadonlyArray<string> = ALL_CODEX_MODELS;
-  for (const model of options.codexModels) {
-    if (!knownDryRunModels.includes(model)) {
+  const warnResolver = makeModelResolver(MODEL_REGISTRY, new Set(ALL_MODEL_IDS), {});
+  for (const model of options.codexModels ?? []) {
+    if (warnResolver(model) === undefined) {
       errWrite(
-        `warning: model "${model}" is not in the known list (${ALL_CODEX_MODELS.join(", ")}) — proceeding anyway`,
+        `warning: model "${model}" is not a recognized model id or alias — run \`subswitch models\` to see the current list`,
       );
     }
   }
@@ -818,11 +844,12 @@ export const runInitNonInteractive = async (
   }
 
   // Forward-compat warning for unknown model names (non-fatal). [F32]
-  const knownModels: ReadonlyArray<string> = ALL_CODEX_MODELS;
-  for (const model of optionsResult.value.codexModels) {
-    if (!knownModels.includes(model)) {
+  // Uses the resolver so aliases (e.g. "sol") are recognized and do not emit a warning.
+  const nonIntWarnResolver = makeModelResolver(MODEL_REGISTRY, new Set(ALL_MODEL_IDS), {});
+  for (const model of optionsResult.value.codexModels ?? []) {
+    if (nonIntWarnResolver(model) === undefined) {
       errWrite(
-        `warning: model "${model}" is not in the known list (${ALL_CODEX_MODELS.join(", ")}) — proceeding anyway`,
+        `warning: model "${model}" is not a recognized model id or alias — run \`subswitch models\` to see the current list`,
       );
     }
   }
@@ -838,8 +865,6 @@ export const runInitNonInteractive = async (
   write(`Written: ${settingsFile}`);
   write(`Next: run \`subswitch serve\` from ${projectDir}`);
   write(`      run \`subswitch doctor\` to verify config + codex auth health`);
-  write(
-    `      add \`model: ${optionsResult.value.codexModels[0] ?? "gpt-5.6-sol"}\` to a subagent's frontmatter to route it`,
-  );
+  write(`      add \`model: sol\` to a subagent's frontmatter to route it (alias — auto-tracks latest generation)`);
   return 0;
 };
