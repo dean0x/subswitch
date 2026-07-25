@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
-import { DEFAULT_PORT, DEFAULT_CODEX_MODELS } from "./config.js";
+import { DEFAULT_PORT } from "./config.js";
 import { makeModelResolver, MODEL_REGISTRY, ALL_MODEL_IDS } from "./models.js";
 
 // ---------------------------------------------------------------------------
@@ -66,9 +66,6 @@ export const resolveInitDispatch = (
   if (yesFlag) return "non-interactive";
   return "refuse";
 };
-
-// ALL_CODEX_MODELS derives from the config constant — no duplicated literals.
-export const ALL_CODEX_MODELS = DEFAULT_CODEX_MODELS;
 
 // ---------------------------------------------------------------------------
 // Prompts seam — injectable for tests (A2.12) [F25/F4/F23]
@@ -566,15 +563,12 @@ const seedWizard = async (
   let modelsSeed: readonly string[];
   const hasModelFlags = flags.codexModel !== undefined || flags.codexModels !== undefined;
   if (hasModelFlags) {
-    // mergeModelFlags deduplicates; seedWizard previously did not. This is a
-    // deliberate improvement: duplicate initialValues in a clack multiselect
-    // are a rendering wart. [behavior delta — documented]
     const merged = mergeModelFlags(flags);
-    modelsSeed = merged.length > 0 ? merged : ALL_CODEX_MODELS;
+    modelsSeed = merged.length > 0 ? merged : ALL_MODEL_IDS;
   } else if (existingModels !== undefined) {
     modelsSeed = existingModels;
   } else {
-    modelsSeed = ALL_CODEX_MODELS;
+    modelsSeed = ALL_MODEL_IDS;
   }
 
   // Settings target: flags → default (no config file source for this one)
@@ -647,21 +641,17 @@ export const runInitInteractive = async (
 
   // --- Codex models ---
   // Build options: all known models first, then any extra models from flags/existing config
-  // that are not in ALL_CODEX_MODELS. This ensures a custom/forward-compat model that is
+  // that are not in the registry. This ensures a custom/forward-compat model that is
   // already in the config appears as a selectable option and can be preselected. [self-review P2]
-  const knownModelSet = new Set<string>(ALL_CODEX_MODELS);
+  const knownModelSet = new Set<string>(ALL_MODEL_IDS);
   const extraModelOptions = modelsSeed.filter((m) => !knownModelSet.has(m));
-  const allModelsForOptions = [...ALL_CODEX_MODELS, ...extraModelOptions];
+  const allModelsForOptions = [...ALL_MODEL_IDS, ...extraModelOptions];
   const extraModelSet = new Set<string>(extraModelOptions);
-  const modelOptions: SelectOption[] = allModelsForOptions.map((m) => ({
-    value: m,
-    label: m,
-    ...(m === "gpt-5.6-sol"
-      ? { hint: "recommended fast model" }
-      : extraModelSet.has(m)
-      ? { hint: "(custom)" }
-      : {}),
-  }));
+  const modelOptions: SelectOption[] = allModelsForOptions.map((m) => {
+    if (m === "gpt-5.6-sol") return { value: m, label: m, hint: "recommended fast model" };
+    if (extraModelSet.has(m)) return { value: m, label: m, hint: "(custom)" };
+    return { value: m, label: m };
+  });
 
   const modelsResult = await prompt<readonly string[]>(
     prompts.multiselect({
@@ -845,9 +835,9 @@ export const runInitNonInteractive = async (
 
   // Forward-compat warning for unknown model names (non-fatal). [F32]
   // Uses the resolver so aliases (e.g. "sol") are recognized and do not emit a warning.
-  const nonIntWarnResolver = makeModelResolver(MODEL_REGISTRY, new Set(ALL_MODEL_IDS), {});
+  const warnResolver = makeModelResolver(MODEL_REGISTRY, new Set(ALL_MODEL_IDS), {});
   for (const model of optionsResult.value.codexModels ?? []) {
-    if (nonIntWarnResolver(model) === undefined) {
+    if (warnResolver(model) === undefined) {
       errWrite(
         `warning: model "${model}" is not a recognized model id or alias — run \`subswitch models\` to see the current list`,
       );

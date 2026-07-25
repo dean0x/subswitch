@@ -1,7 +1,7 @@
 // Agent frontmatter scanner for the doctor preflight check.
 // No external dependencies — a parser for one `model:` line does not warrant one.
 
-import { makeModelResolver, MODEL_REGISTRY, ALL_MODEL_IDS } from "./models.js";
+import { makeModelResolver, MODEL_REGISTRY, ALL_MODEL_IDS, isAnthropicModelName } from "./models.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,8 +28,12 @@ export interface AgentFinding {
 // Frontmatter parser (no YAML dependency)
 // ---------------------------------------------------------------------------
 
-/** Cap reads to match doctor.ts's MAX_BODY_BYTES discipline. [F49] */
-const MAX_SCAN_BYTES = 8 * 1024;
+/**
+ * Cap the scanned prefix, matching doctor.ts's 8 KiB bounded-read discipline. [F49]
+ * Counted in UTF-16 code units (String.slice), which is <= the byte length for any
+ * input, so the effective read stays inside the 8 KiB budget.
+ */
+const MAX_SCAN_CHARS = 8 * 1024;
 /** Line cap prevents pathological files with no closing delimiter. [reliability] */
 const MAX_SCAN_LINES = 200;
 
@@ -38,7 +42,7 @@ const MAX_SCAN_LINES = 200;
  *
  * Rules:
  * - Text must begin with `---` on the first line.
- * - Scan lines until the closing `---` delimiter (cap: MAX_SCAN_LINES / MAX_SCAN_BYTES).
+ * - Scan lines until the closing `---` delimiter (cap: MAX_SCAN_LINES / MAX_SCAN_CHARS).
  * - Match `^model:\s*(.+)$` within the frontmatter only.
  * - `modelPreference:` and other `model`-prefixed keys are NOT matched.
  * - Strip surrounding single/double quotes.
@@ -47,10 +51,15 @@ const MAX_SCAN_LINES = 200;
  * - Returns undefined if the delimiter is absent, the key is absent, or the value is empty.
  */
 export const parseFrontmatterModel = (text: string): string | undefined => {
-  // Cap at MAX_SCAN_BYTES before splitting so pathological inputs don't blow memory.
-  const capped = text.slice(0, MAX_SCAN_BYTES);
+  // Cap at MAX_SCAN_CHARS before splitting so pathological inputs don't blow memory.
+  const capped = text.slice(0, MAX_SCAN_CHARS);
   // Normalise line endings.
   const lines = capped.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+
+  // The cap can land mid-line. Drop that trailing partial line, otherwise a `model:`
+  // straddling the boundary yields a truncated value ("gpt-5.6-s") that doctor then
+  // reports as an unresolvable model — a diagnostic failing on a file that is fine.
+  if (capped.length < text.length) lines.pop();
 
   // First line must be the opening delimiter.
   if (lines[0]?.trimEnd() !== "---") return undefined;
@@ -81,23 +90,6 @@ export const parseFrontmatterModel = (text: string): string | undefined => {
 
   return undefined;
 };
-
-// ---------------------------------------------------------------------------
-// Skip list — valid Claude Code / Anthropic tier names
-// ---------------------------------------------------------------------------
-
-/**
- * Pattern for model names that are valid Claude Code / Anthropic values and
- * should never produce a doctor finding. Without this skip, doctor would
- * erroneously fail on every repo that has non-Codex agent files.
- *
- * - `inherit`: Claude Code's "inherit parent model" sentinel.
- * - `sonnet`, `opus`, `haiku`: Claude tier short-names.
- * - `claude-*`: Any Claude model id (e.g. claude-3-7-sonnet-20250219).
- *
- * Match is case-insensitive to handle casing variations. [PF-006 boundary]
- */
-const ANTHROPIC_SKIP_RE = /^(inherit|sonnet|opus|haiku|claude-)/i;
 
 // ---------------------------------------------------------------------------
 // Model checker
@@ -137,8 +129,9 @@ export const checkAgentModels = (
     const model = parseFrontmatterModel(text);
     if (model === undefined) continue;
 
-    // Skip Anthropic-tier names — they are valid and route to Anthropic, not Codex.
-    if (ANTHROPIC_SKIP_RE.test(model)) continue;
+    // Skip Anthropic-leg names — they are valid and route to Anthropic, not Codex.
+    // Without this skip doctor would fail on every repo that has Claude subagents.
+    if (isAnthropicModelName(model)) continue;
 
     // Check routing first: if it routes successfully, no finding.
     const routed = routeResolver(model);

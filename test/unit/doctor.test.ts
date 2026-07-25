@@ -286,6 +286,10 @@ describe("runDoctor — agent model scan", () => {
       output.includes("totally-unknown-model"),
       "output must mention the problematic model name",
     );
+    // runDoctor lists the project and user agent directories separately; when both
+    // resolve to the same file (doctor run from $HOME) the finding must be reported once.
+    const failRows = lines.filter((l) => l.includes("totally-unknown-model"));
+    assert.equal(failRows.length, 1, "a file discovered under both agent dirs must report once");
   });
 
   it("does not increment failures for an Anthropic tier name in agent frontmatter", async () => {

@@ -210,6 +210,86 @@ describe("normalizeModelList", () => {
     const result = normalizeModelList(["fast"], { "fast": "custom-model" });
     assert.deepEqual([...result], ["custom-model"]);
   });
+
+  it("a real registry id resolves to itself even when an override key shadows it", () => {
+    // Mirrors makeModelResolver rule 1 — a config alias can never hijack a real model id.
+    // Without this, gpt-5.5 would drop out of the routable set entirely and its traffic
+    // would be sent upstream as gpt-5.6-sol.
+    const result = normalizeModelList(["gpt-5.5"], { "gpt-5.5": "gpt-5.6-sol" });
+    assert.deepEqual([...result], ["gpt-5.5"]);
+  });
+
+  it("never drops an entry: output length equals the count of distinct canonicals", () => {
+    const list = ["gpt-5.5", "sol", "terra", "luna", "unknown-a", "unknown-b"];
+    const result = normalizeModelList(list, {});
+    // sol/terra/luna each expand to a distinct canonical; unknowns survive verbatim.
+    assert.equal(result.length, 6, "no entry may be dropped");
+    for (const unknown of ["unknown-a", "unknown-b"]) {
+      assert.ok(result.includes(unknown), `unknown id ${unknown} must survive verbatim`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "A pin pins" — the property that spans normalization AND resolution.
+//
+// A v0.1.0 user pinned the four 5.6-era ids. The registry later gains gpt-5.7-sol.
+// Their `sol` must keep resolving to gpt-5.6-sol — resolving it to a model they
+// never allowed would 404 every existing user on the first registry bump.
+//
+// Both halves are exercised with the SAME synthetic future registry, because the
+// property is a property of the composition, not of either function alone.
+// ---------------------------------------------------------------------------
+
+describe("pin pins — normalizeModelList ∘ makeModelResolver across a registry bump", () => {
+  // Today's registry plus a newly shipped sol generation.
+  const futureRegistry: readonly ModelEntry[] = [
+    { id: "gpt-5.7-sol", family: "sol", gen: [5, 7] },
+    { id: "gpt-5.6-sol", family: "sol", gen: [5, 6] },
+    { id: "gpt-5.6-terra", family: "terra", gen: [5, 6] },
+    { id: "gpt-5.6-luna", family: "luna", gen: [5, 6] },
+    { id: "gpt-5.5", gen: [5, 5] },
+  ];
+
+  const pinnedConfig = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"];
+
+  const resolverFor = (list: readonly string[] | undefined): ((n: string) => string | undefined) => {
+    const routable = normalizeModelList(list, {}, futureRegistry);
+    return makeModelResolver(futureRegistry, new Set(routable), {});
+  };
+
+  it("a pinned config keeps 'sol' on the generation it pinned, not the newly added one", () => {
+    assert.equal(resolverFor(pinnedConfig)("sol"), "gpt-5.6-sol");
+  });
+
+  it("a pinned config still routes every id it pinned", () => {
+    const resolve = resolverFor(pinnedConfig);
+    for (const id of pinnedConfig) {
+      assert.equal(resolve(id), id, `${id} must stay routable after a registry bump`);
+    }
+  });
+
+  it("a pinned config does not silently gain the newly added model", () => {
+    assert.equal(
+      resolverFor(pinnedConfig)("gpt-5.7-sol"),
+      undefined,
+      "a model the user never allowed must fall through to Anthropic",
+    );
+  });
+
+  it("an omitted codex.models floats onto the newly added generation", () => {
+    const resolve = resolverFor(undefined);
+    assert.equal(resolve("sol"), "gpt-5.7-sol", "omitting the key means float with the registry");
+    assert.equal(resolve("gpt-5.6-sol"), "gpt-5.6-sol", "the older id stays routable by exact id");
+  });
+
+  it("a config written with family aliases floats onto the newly added generation", () => {
+    // `models: ["sol", ...]` normalizes through the alias table at load time, so the
+    // pin lands on whatever generation is newest — this is the documented float path.
+    const resolve = resolverFor(["sol", "gpt-5.5"]);
+    assert.equal(resolve("sol"), "gpt-5.7-sol");
+    assert.equal(resolve("gpt-5.6-sol"), undefined, "narrowed away — only the newest sol was allowed");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -244,12 +324,12 @@ describe("formatModelsReport", () => {
   it("marks alias as 'disabled' when canonical is not in routable set", () => {
     const emptyRoutable = new Set<string>([]);
     const result = formatModelsReport({ registry: MODEL_REGISTRY, routable: emptyRoutable, overrides: {} });
-    // With empty routable, all derived aliases are disabled
-    if (result.length > 0) {
-      const firstLine = result[0];
-      if (firstLine !== undefined) {
-        assert.ok(firstLine.includes("disabled"), "all aliases should be disabled with empty routable");
-      }
+    // Assert unconditionally — guarding these behind `if (result.length > 0)` would let
+    // the test pass vacuously if the report ever stopped emitting rows.
+    assert.equal(result.length, 3, "sol, terra and luna each get a row regardless of routability");
+    for (const line of result) {
+      assert.ok(line.includes("disabled"), `every alias must be disabled with an empty routable set: ${line}`);
+      assert.ok(!line.includes("enabled"), `no alias may be enabled with an empty routable set: ${line}`);
     }
   });
 

@@ -246,6 +246,56 @@ describe("loadConfig", () => {
     }
   });
 
+  it("rejects a codex.aliases TARGET matching 'claude-*' — the target would become routable", () => {
+    // The pressure valve adds every alias target to codex.models. A claude-* target would
+    // therefore be matched by decideRoute's exact-membership check and send the entire
+    // main Claude Code thread to the Codex leg.
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ codex: { aliases: { fast: "claude-sonnet-4-5" } } }),
+    });
+    assert.ok(!result.ok, "claude-* alias target must be rejected");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /claude/i);
+  });
+
+  it("rejects a codex.aliases TARGET matching an Anthropic tier word", () => {
+    for (const tierWord of ["sonnet", "opus", "haiku", "inherit"]) {
+      const result = loadConfig({
+        configPath: "x",
+        readFile: () => JSON.stringify({ codex: { aliases: { fast: tierWord } } }),
+      });
+      assert.ok(!result.ok, `should reject tier-word target '${tierWord}'`);
+      assert.equal(result.error.kind, "translate");
+    }
+  });
+
+  it("never makes an Anthropic model name routable through codex.aliases", () => {
+    // Behavioural backstop for the two rejection tests above: whatever the mechanism,
+    // no accepted config may put a claude-* name into the routable set.
+    for (const aliases of [{ fast: "claude-sonnet-4-5" }, { "claude-sonnet-4-5": "gpt-5.6-sol" }]) {
+      const result = loadConfig({ configPath: "x", readFile: () => JSON.stringify({ codex: { aliases } }) });
+      if (result.ok) {
+        assert.ok(
+          !result.value.config.codex.models.some((m) => /^claude-/i.test(m)),
+          `claude-* must never reach codex.models (aliases: ${JSON.stringify(aliases)})`,
+        );
+      }
+    }
+  });
+
+  it("a codex.aliases key that shadows a real registry id does not un-route that id", () => {
+    // Exact ids win on both sides of the pipeline: gpt-5.5 stays routable as itself
+    // rather than being rewritten to the alias target during normalization.
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ codex: { models: ["gpt-5.5"], aliases: { "gpt-5.5": "gpt-5.6-sol" } } }),
+    });
+    assert.ok(result.ok);
+    assert.deepEqual(result.value.config.codex.models, ["gpt-5.5"]);
+  });
+
   it("rejects an empty codex.models array — would silently disable all Codex routing", () => {
     const result = loadConfig({
       configPath: "x",

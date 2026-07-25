@@ -314,7 +314,9 @@ export const runDoctor = async (
   ]);
 
   // Read all discovered agent files (cap read errors to per-file; don't abort the scan).
-  const allPaths = [...projectFiles, ...userFiles];
+  // Deduplicate: the two directories are the same path when doctor runs from $HOME,
+  // which would otherwise report every finding twice and double-count failures.
+  const allPaths = [...new Set([...projectFiles, ...userFiles])];
   const fileTexts = await Promise.all(
     allPaths.map(async (path) => {
       try {

@@ -22,7 +22,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the registry but excluded from `codex.models` are reported as informational notices.
   Anthropic-tier names (`claude-*`, `sonnet`, `opus`, `haiku`, `inherit`) are skipped.
 - **`codex.aliases`** config key: a free-form map of custom model name overrides
-  (`{ "my-model": "gpt-5.6-sol" }`). Aliases defined here win over family aliases.
+  (`{ "my-model": "gpt-5.6-sol" }`). Aliases defined here win over family aliases,
+  but never over an exact model id. Neither the key nor the target may be an
+  Anthropic model name (`claude-*`, `sonnet`, `opus`, `haiku`, `inherit`); such a
+  config is rejected at load because either side would route main-agent traffic to
+  Codex. An empty `codex.models` list is likewise rejected — it would silently
+  disable Codex routing while the ready banner still reported `routing: → Codex`.
 - **Floating `codex.models` default**: `codex.models` is now optional in config.
   When omitted, all registry ids are routable and the key is not written to config
   by `subswitch init`. Narrowing (writing an explicit list) is still supported.
@@ -32,8 +37,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`subswitch init` no longer pins `codex.models`** when all registry ids are
   selected (the default). The key is omitted from the written config, keeping it
   floating against the registry. The key is written only when the user narrows the
-  selection. Running `init` over an existing config that has a stale `codex.models`
-  pin will delete it if the result matches the full registry default.
+  selection. Re-running `init` over a config that carries a stale `codex.models` pin
+  deletes the key outright whenever the run resolves to "no narrowing" — that is,
+  `init --yes` with no model flags, or an interactive run where every registry id is
+  selected. Every other `codex.*` key is preserved.
 - **`subswitch doctor`** prints the alias resolution table after the `codex.models:`
   row and nudges the user to remove a stale explicit pin when one is detected.
 

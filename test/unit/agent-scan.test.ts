@@ -60,6 +60,25 @@ describe("parseFrontmatterModel", () => {
     assert.equal(parseFrontmatterModel(text), undefined);
   });
 
+  it("never returns a partially-truncated value when the cap lands mid-line", () => {
+    // A long `description:` can push `model:` across the 8 KiB boundary. If the trailing
+    // partial line were kept, the parser would return e.g. "gpt-5.6-s" and doctor would
+    // report a healthy agent file as having an unresolvable model.
+    for (let pad = 8 * 1024 - 60; pad < 8 * 1024 + 5; pad++) {
+      const text = `---\ndescription: ${"d".repeat(pad)}\nmodel: gpt-5.6-sol\n---\n`;
+      const parsed = parseFrontmatterModel(text);
+      assert.ok(
+        parsed === undefined || parsed === "gpt-5.6-sol",
+        `pad=${pad} produced a truncated value: ${JSON.stringify(parsed)}`,
+      );
+    }
+  });
+
+  it("still reads a model that sits just inside the cap", () => {
+    const text = `---\ndescription: ${"d".repeat(4000)}\nmodel: gpt-5.6-sol\n---\n`;
+    assert.equal(parseFrontmatterModel(text), "gpt-5.6-sol");
+  });
+
   it("enforces line cap on a frontmatter block with very many keys", () => {
     // 201 keys before model: — exceeds the 200-line cap.
     const manyKeys = Array.from({ length: 201 }, (_, i) => `key${i}: val`).join("\n");
@@ -164,6 +183,19 @@ describe("checkAgentModels", () => {
     ];
     const findings = checkAgentModels(files, fullRoutable, noOverrides);
     assert.equal(findings.length, 0, "claude-* models should be silently skipped");
+  });
+
+  it("produces no finding for Anthropic tier names carrying a variant suffix", () => {
+    // Claude Code accepts `sonnet[1m]`, `opusplan`, etc. Flagging these would make doctor
+    // fail on ordinary repos, so the skip is a prefix match, not an exact word match.
+    for (const model of ["sonnet[1m]", "opusplan", "haiku-3-5", "Claude-Sonnet-4-5"]) {
+      const findings = checkAgentModels(
+        [{ path: "/main.md", text: `---\nmodel: ${model}\n---\n` }],
+        fullRoutable,
+        noOverrides,
+      );
+      assert.equal(findings.length, 0, `${model} should be silently skipped`);
+    }
   });
 
   it("'excluded' finding is not a failure — it is informational only", () => {

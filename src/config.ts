@@ -5,7 +5,7 @@ import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { LogLevel } from "./logger.js";
-import { MODEL_REGISTRY, ALL_MODEL_IDS, normalizeModelList } from "./models.js";
+import { MODEL_REGISTRY, ALL_MODEL_IDS, normalizeModelList, isAnthropicModelName } from "./models.js";
 
 export const DEFAULT_PORT = 4141 as const;
 // Derived from the canonical registry so there is exactly one source of truth.
@@ -41,27 +41,23 @@ const ConfigSchema = z.object({
       userAgent: z.string().min(1).default("codex_cli_rs/0.144.6"),
       // codex.aliases maps user-defined alias names to canonical model ids.
       // Entries override derived family aliases (see src/models.ts makeModelResolver rule 2).
-      // Reject keys that would capture Anthropic traffic — the exact-match routing rule
-      // (ADR-005) is why resolution must happen before decideRoute, and a 'claude-*' or
-      // tier-word alias would silently misroute the main thread to Codex.
+      //
+      // BOTH sides are checked against isAnthropicModelName, because either one silently
+      // misroutes the main thread to Codex under the exact-match routing rule (ADR-005):
+      //  - a 'claude-*' / tier-word KEY resolves inbound Anthropic traffic to a Codex id;
+      //  - a 'claude-*' / tier-word TARGET is added to the routable set by
+      //    normalizeModelList's pressure valve, so decideRoute then matches the raw
+      //    Anthropic model id by exact membership and routes it to Codex.
       aliases: z
         .record(z.string().min(1), z.string().min(1))
-        .refine(
-          (aliases) => {
-            const claudePattern = /^claude-/i;
-            const tierWords = new Set(["sonnet", "opus", "haiku", "inherit"]);
-            for (const key of Object.keys(aliases)) {
-              if (claudePattern.test(key) || tierWords.has(key.toLowerCase())) {
-                return false;
-              }
-            }
-            return true;
-          },
-          {
-            message:
-              "alias keys matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",
-          },
-        )
+        .refine((aliases) => !Object.keys(aliases).some(isAnthropicModelName), {
+          message:
+            "alias keys matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",
+        })
+        .refine((aliases) => !Object.values(aliases).some(isAnthropicModelName), {
+          message:
+            "alias targets matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — the target becomes routable and would silently misroute Anthropic traffic to Codex",
+        })
         .default({}),
       // models: authoritative and narrowing when present; absent = all non-retired registry ids.
       // min(1): an empty list would silently disable all Codex routing while the ready banner

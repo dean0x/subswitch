@@ -228,6 +228,13 @@ to whichever `gpt-5.6-sol` (or future `gpt-5.7-sol`) generation is in the regist
 without any config change. Exact canonical ids (`gpt-5.6-sol`) are also accepted
 and resolve to themselves. Run `subswitch models` to see the current alias table.
 
+An exact model id always wins over an alias, so a `codex.aliases` entry can never
+hijack a real model name. Neither side of a `codex.aliases` entry may be an
+Anthropic model name (`claude-*`, `sonnet`, `opus`, `haiku`, `inherit`) — such a
+config is rejected at load, because either side would route your main agent's
+traffic to Codex. An empty `codex.models` list is rejected for the same reason:
+it would silently disable Codex routing while the ready banner still claimed it.
+
 New knobs added in this release:
 
 | Key | Default | Description |

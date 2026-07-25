@@ -42,6 +42,32 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
 export const ALL_MODEL_IDS: readonly string[] = MODEL_REGISTRY.map((e) => e.id);
 
 // ---------------------------------------------------------------------------
+// Anthropic-leg model names
+// ---------------------------------------------------------------------------
+
+/**
+ * Names Claude Code treats as Anthropic models. Prefix-matched so generation and
+ * variant suffixes are covered too (`sonnet[1m]`, `opusplan`, `claude-3-7-sonnet-…`).
+ *
+ * - `inherit`: Claude Code's "inherit parent model" sentinel.
+ * - `sonnet`, `opus`, `haiku`: Claude tier short-names.
+ * - `claude-`: any Claude model id.
+ */
+const ANTHROPIC_NAME_RE = /^(inherit|sonnet|opus|haiku|claude-)/i;
+
+/**
+ * True when `name` is a model name that belongs on the Anthropic leg.
+ *
+ * Single source of truth for two call sites that must never disagree:
+ * - `config.ts` REJECTS such a name as a `codex.aliases` key or target. A key would
+ *   resolve main-thread traffic onto Codex; a target is added to the routable set by
+ *   `normalizeModelList`'s pressure valve, and `decideRoute`'s exact-membership check
+ *   would then match the raw Anthropic model id and send the main thread to Codex.
+ * - `agent-scan.ts` SKIPS such a name, so doctor never flags a Claude subagent.
+ */
+export const isAnthropicModelName = (name: string): boolean => ANTHROPIC_NAME_RE.test(name);
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
@@ -166,20 +192,26 @@ export const makeModelResolver = (
  *
  * Uses the FULL-REGISTRY alias table (no routable-set scoping) — normalization
  * determines what the routable set IS; the resolver's scoping is separate.
+ *
+ * @param registry Defaults to MODEL_REGISTRY. Injectable so tests can prove the
+ *                 "a pin pins" property against a *future* registry — the property
+ *                 spans normalization and resolution, so both halves must be
+ *                 exercisable with the same synthetic registry.
  */
 export const normalizeModelList = (
   list: readonly string[] | undefined,
   overrides: Record<string, string>,
+  registry: readonly ModelEntry[] = MODEL_REGISTRY,
 ): readonly string[] => {
   const overrideMap = buildOverrideMap(overrides);
 
   // Full-registry family map — no routable scoping here; normalization establishes the routable set
-  const allNonRetired = new Set(MODEL_REGISTRY.filter((e) => e.retired !== true).map((e) => e.id));
-  const derivedFamilyMap = buildFamilyMap(MODEL_REGISTRY, allNonRetired);
+  const nonRetiredIds = registry.filter((e) => e.retired !== true).map((e) => e.id);
+  const derivedFamilyMap = buildFamilyMap(registry, new Set(nonRetiredIds));
 
   if (list === undefined) {
     // All non-retired registry ids in registry order
-    const result = MODEL_REGISTRY.filter((e) => e.retired !== true).map((e) => e.id);
+    const result = [...nonRetiredIds];
     const resultSet = new Set<string>(result);
     // Add override targets not already in registry (pressure valve for forward-compat models)
     for (const target of overrideMap.values()) {
@@ -191,9 +223,14 @@ export const normalizeModelList = (
     return result;
   }
 
-  // List present: normalize through alias table, deduplicate, preserve unknowns verbatim
+  // List present: normalize through alias table, deduplicate, preserve unknowns verbatim.
+  // A real registry id always resolves to itself — mirrors makeModelResolver rule 1, so a
+  // config alias can never hijack a real model id on either side of the pipeline. Without
+  // this, `models: ["gpt-5.5"]` + `aliases: {"gpt-5.5": "gpt-5.6-sol"}` would make gpt-5.5
+  // unroutable and silently send its traffic upstream as gpt-5.6-sol.
+  const registryIds = new Set(registry.map((e) => e.id));
   const resolveEntry = (name: string): string =>
-    overrideMap.get(name) ?? derivedFamilyMap.get(name) ?? name;
+    registryIds.has(name) ? name : (overrideMap.get(name) ?? derivedFamilyMap.get(name) ?? name);
 
   const seen = new Set<string>();
   const result: string[] = [];
