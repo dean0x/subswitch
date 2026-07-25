@@ -311,4 +311,25 @@ describe("runDoctor — agent model scan", () => {
     });
     assert.equal(exitCode, 0, "absent agents directory should not cause a failure");
   });
+
+  it("labels only the first agent finding row with 'agent model:'; subsequent rows use a blank label", async () => {
+    const lines: string[] = [];
+    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      listAgentFiles: async () => [
+        "/project/.claude/agents/bad-agent-1.md",
+        "/project/.claude/agents/bad-agent-2.md",
+      ],
+      readTextFile: async (path): Promise<string> => {
+        if (path.endsWith("bad-agent-1.md")) return "---\nmodel: unknown-model-alpha\n---\n";
+        return "---\nmodel: unknown-model-beta\n---\n";
+      },
+    });
+    const firstRow = lines.find((l) => l.includes("unknown-model-alpha"));
+    const secondRow = lines.find((l) => l.includes("unknown-model-beta"));
+    assert.ok(firstRow !== undefined, "first finding row must appear in output");
+    assert.ok(secondRow !== undefined, "second finding row must appear in output");
+    assert.ok(firstRow.includes("agent model:"), "first finding must carry the 'agent model:' label");
+    assert.ok(!secondRow.includes("agent model:"), "subsequent findings must not repeat the 'agent model:' label");
+  });
 });

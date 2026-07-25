@@ -331,18 +331,22 @@ export const runDoctor = async (
 
   const agentFindings = checkAgentModels(fileTexts, routable, config.codex.aliases);
 
+  // Label the first finding row; blank-label subsequent rows to avoid N identical "agent model:"
+  // labels in the columnar output when multiple agents are misconfigured.
+  let firstAgentFinding = true;
   for (const finding of agentFindings) {
+    const label = firstAgentFinding ? "agent model:" : "";
+    firstAgentFinding = false;
     if (finding.kind === "unresolvable") {
       // Unresolvable model → will silently 404 on the Codex leg. This is a failure.
       failures++;
       io.write(
-        row("agent model:", failStr(`FAIL`) + ` ${finding.file}: model "${finding.model}" is not a known id or alias`,
-        ),
+        row(label, failStr(`FAIL`) + ` ${finding.file}: model "${finding.model}" is not a known id or alias`),
       );
     } else {
       // Excluded from narrowed codex.models — informational only. [F53]
       io.write(
-        row("agent model:", pc.dim(`info`) + ` ${finding.file}: model "${finding.model}" resolves to "${finding.canonical}" but is not in codex.models`),
+        row(label, pc.dim(`info`) + ` ${finding.file}: model "${finding.model}" resolves to "${finding.canonical}" but is not in codex.models`),
       );
     }
   }
