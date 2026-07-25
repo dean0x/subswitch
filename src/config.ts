@@ -63,8 +63,17 @@ const ConfigSchema = z.object({
       // min(1): an empty list would silently disable all Codex routing while the ready banner
       // still prints "routing: → Codex". Reject it explicitly so the user sees a config error.
       // Thunk default keeps Config["codex"]["models"] typed string[] — no consumer type churn.
+      //
+      // Each entry is checked against isAnthropicModelName for the same reason alias keys and
+      // targets are — a claude-* or tier-word entry would become routable under the
+      // exact-membership check (ADR-005) and silently misroute the main Claude Code thread.
       models: z
-        .array(z.string().min(1))
+        .array(
+          z.string().min(1).refine((m) => !isAnthropicModelName(m), {
+            message:
+              "codex.models entries matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",
+          }),
+        )
         .min(1)
         .default(() => [...ALL_MODEL_IDS]),
     })

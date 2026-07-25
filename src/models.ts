@@ -207,15 +207,21 @@ export const normalizeModelList = (
 
   // Full-registry family map — no routable scoping here; normalization establishes the routable set
   const nonRetiredIds = registry.filter((e) => e.retired !== true).map((e) => e.id);
+  // allRegistryIds spans retired AND active — used by the pressure valve to avoid
+  // re-adding a retired id that is already present in the registry (just not in the
+  // routable set). Without this, an alias target equal to a retired id would slip
+  // through the resultSet check (which is built from non-retired ids only).
+  const allRegistryIds = new Set(registry.map((e) => e.id));
   const derivedFamilyMap = buildFamilyMap(registry, new Set(nonRetiredIds));
 
   if (list === undefined) {
     // All non-retired registry ids in registry order
     const result = [...nonRetiredIds];
     const resultSet = new Set<string>(result);
-    // Add override targets not already in registry (pressure valve for forward-compat models)
+    // Add override targets not in the FULL registry (pressure valve for forward-compat models).
+    // Checks allRegistryIds — not just resultSet — so retired registry ids are excluded too.
     for (const target of overrideMap.values()) {
-      if (!resultSet.has(target)) {
+      if (!allRegistryIds.has(target) && !resultSet.has(target)) {
         result.push(target);
         resultSet.add(target); // prevent dup if multiple overrides point to the same non-registry target
       }

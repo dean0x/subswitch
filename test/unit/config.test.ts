@@ -305,6 +305,37 @@ describe("loadConfig", () => {
     assert.equal(result.error.kind, "translate");
   });
 
+  it("rejects a codex.models entry matching 'claude-*' — would silently misroute Anthropic traffic to Codex", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ codex: { models: ["claude-sonnet-4-5"] } }),
+    });
+    assert.ok(!result.ok, "claude-* entry in codex.models must be rejected");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /claude/i);
+  });
+
+  it("rejects codex.models entries matching Anthropic tier words (sonnet, opus, haiku, inherit)", () => {
+    for (const tierWord of ["sonnet", "opus", "haiku", "inherit"]) {
+      const result = loadConfig({
+        configPath: "x",
+        readFile: () => JSON.stringify({ codex: { models: [tierWord] } }),
+      });
+      assert.ok(!result.ok, `should reject tier word '${tierWord}' in codex.models`);
+      assert.equal(result.error.kind, "translate");
+    }
+  });
+
+  it("allows a custom non-Anthropic id like gpt-9-experimental in codex.models (forward-compat)", () => {
+    // Unknown gpt-style ids must pass through verbatim — ADR-005 forward-compat property.
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ codex: { models: ["gpt-9-experimental"] } }),
+    });
+    assert.ok(result.ok, "custom non-Anthropic id must not be rejected");
+    assert.deepEqual(result.value.config.codex.models, ["gpt-9-experimental"]);
+  });
+
   // -------------------------------------------------------------------------
   // codexModelsPinned — presence detection for doctor's nudge (Phase C)
   // -------------------------------------------------------------------------

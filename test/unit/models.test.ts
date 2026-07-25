@@ -183,6 +183,23 @@ describe("normalizeModelList", () => {
     assert.equal(count, 1);
   });
 
+  it("does not add a retired registry id as an alias target when list is absent (pressure valve checks full registry)", () => {
+    // A retired entry must not be re-added by the pressure valve — it was retired for a reason.
+    // The bug was that the valve only checked against non-retired ids, so a retired id
+    // (which is NOT in the non-retired result set) would be re-appended.
+    const registryWithRetired: readonly ModelEntry[] = [
+      { id: "gpt-5.6-sol", family: "sol", gen: [5, 6] },
+      { id: "gpt-4.5-old", gen: [4, 5], retired: true },
+    ];
+    const result = normalizeModelList(
+      undefined,
+      { "legacy": "gpt-4.5-old" },
+      registryWithRetired,
+    );
+    assert.ok(!result.includes("gpt-4.5-old"), "a retired registry id must not be added by the pressure valve");
+    assert.ok(result.includes("gpt-5.6-sol"), "active registry ids must still be present");
+  });
+
   it("expands derived family alias to canonical when list is present", () => {
     const result = normalizeModelList(["sol"], {});
     assert.deepEqual([...result], ["gpt-5.6-sol"]);
