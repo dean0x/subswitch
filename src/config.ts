@@ -5,14 +5,12 @@ import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { LogLevel } from "./logger.js";
+import { MODEL_REGISTRY, ALL_MODEL_IDS, normalizeModelList } from "./models.js";
 
 export const DEFAULT_PORT = 4141 as const;
-export const DEFAULT_CODEX_MODELS = [
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-  "gpt-5.5",
-] as const;
+// Derived from the canonical registry so there is exactly one source of truth.
+// Keep the exported name — src/init.ts:65 and test/unit/init-wizard.test.ts:17 import it.
+export const DEFAULT_CODEX_MODELS = ALL_MODEL_IDS;
 
 const LimitsSchema = z.object({
   maxBodyBytes: z.number().int().positive().default(32 * 1024 * 1024),
@@ -37,11 +35,42 @@ const ConfigSchema = z.object({
       baseUrl: z.url().default("https://chatgpt.com/backend-api/codex"),
       oauthTokenUrl: z.url().default("https://auth.openai.com/oauth/token"),
       authFile: z.string().min(1).default("~/.codex/auth.json"),
-      models: z.array(z.string().min(1)).default([...DEFAULT_CODEX_MODELS]),
       // default UA format verified from codex-cli 0.144.6 live capture 2026-07-22;
       // machine-telemetry (OS/arch/terminal) intentionally omitted — set codex.userAgent
       // to override (vendor-drift pressure valve).
       userAgent: z.string().min(1).default("codex_cli_rs/0.144.6"),
+      // codex.aliases maps user-defined alias names to canonical model ids.
+      // Entries override derived family aliases (see src/models.ts makeModelResolver rule 2).
+      // Reject keys that would capture Anthropic traffic — the exact-match routing rule
+      // (ADR-005) is why resolution must happen before decideRoute, and a 'claude-*' or
+      // tier-word alias would silently misroute the main thread to Codex.
+      aliases: z
+        .record(z.string().min(1), z.string().min(1))
+        .refine(
+          (aliases) => {
+            const claudePattern = /^claude-/i;
+            const tierWords = new Set(["sonnet", "opus", "haiku", "inherit"]);
+            for (const key of Object.keys(aliases)) {
+              if (claudePattern.test(key) || tierWords.has(key.toLowerCase())) {
+                return false;
+              }
+            }
+            return true;
+          },
+          {
+            message:
+              "alias keys matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",
+          },
+        )
+        .default({}),
+      // models: authoritative and narrowing when present; absent = all non-retired registry ids.
+      // min(1): an empty list would silently disable all Codex routing while the ready banner
+      // still prints "routing: → Codex". Reject it explicitly so the user sees a config error.
+      // Thunk default keeps Config["codex"]["models"] typed string[] — no consumer type churn.
+      models: z
+        .array(z.string().min(1))
+        .min(1)
+        .default(() => [...ALL_MODEL_IDS]),
     })
     .prefault({}),
   reasoningCache: z
@@ -72,6 +101,13 @@ export interface LoadConfigResult {
   readonly config: Config;
   readonly configPath: string;
   readonly fileFound: boolean;
+  /**
+   * True when codex.models was explicitly provided in the config file AND it contains
+   * at least one generation-specific id (e.g. "gpt-5.6-sol") whose family has a
+   * floating alias ("sol"). Computed from raw JSON before normalization — only
+   * computable here. Consumed by doctor (Phase C) to nudge toward aliases.
+   */
+  readonly codexModelsPinned: boolean;
 }
 
 /**
@@ -134,6 +170,12 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     }
   }
 
+  // Step 3: extract raw codex.models BEFORE schema parse.
+  // codexModelsPinned is only computable here — after normalization the distinction
+  // between "absent" and "present with defaults" is lost.
+  const rawCodexModels = extractRawCodexModels(raw);
+  const codexModelsPinned = computeCodexModelsPinned(rawCodexModels);
+
   const parsed = ConfigSchema.safeParse(raw);
   if (!parsed.success) {
     return err({
@@ -143,11 +185,55 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
   }
 
   const config = parsed.data;
+
+  // Step 4: normalize codex.models through the alias table.
+  // rawCodexModels is undefined when codex.models was absent → normalizeModelList adds all
+  // non-retired registry ids plus any override targets (pressure valve).
+  // rawCodexModels is present → expands aliases, preserves unknowns verbatim.
+  const normalizedModels = normalizeModelList(rawCodexModels, config.codex.aliases);
+
   return ok({
-    config: { ...config, codex: { ...config.codex, authFile: expandHome(config.codex.authFile) } },
+    config: {
+      ...config,
+      codex: {
+        ...config.codex,
+        authFile: expandHome(config.codex.authFile),
+        models: [...normalizedModels],
+      },
+    },
     configPath: resolvedPath,
     fileFound,
+    codexModelsPinned,
   });
 };
 
 export const logLevelOf = (config: Config): LogLevel => config.logLevel;
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the raw codex.models array from unparsed JSON before schema normalization.
+ * Returns undefined when codex.models is absent from the JSON — this distinguishes
+ * "absent → use all defaults" from "present with values → authoritative and narrowing".
+ */
+const extractRawCodexModels = (raw: unknown): readonly string[] | undefined => {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const rawObj = raw as Record<string, unknown>;
+  const codex = rawObj["codex"];
+  if (typeof codex !== "object" || codex === null || Array.isArray(codex)) return undefined;
+  const codexObj = codex as Record<string, unknown>;
+  const models = codexObj["models"];
+  if (!Array.isArray(models)) return undefined;
+  return (models as unknown[]).filter((m): m is string => typeof m === "string");
+};
+
+/**
+ * True when models were explicitly listed AND at least one entry is a generation-specific
+ * id (e.g. "gpt-5.6-sol") whose family has a floating alias ("sol").
+ * Used by doctor (Phase C) to nudge users toward using family aliases instead of pinning.
+ */
+const computeCodexModelsPinned = (rawModels: readonly string[] | undefined): boolean =>
+  rawModels !== undefined &&
+  rawModels.some((m) => MODEL_REGISTRY.some((e) => e.id === m && e.family !== undefined));

@@ -63,7 +63,6 @@ export const resolveInitDispatch = (
 
 // ALL_CODEX_MODELS derives from the config constant — no duplicated literals.
 export const ALL_CODEX_MODELS = DEFAULT_CODEX_MODELS;
-export type CodexModelName = (typeof ALL_CODEX_MODELS)[number];
 
 // ---------------------------------------------------------------------------
 // Prompts seam — injectable for tests (A2.12) [F25/F4/F23]

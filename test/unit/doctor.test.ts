@@ -123,6 +123,7 @@ const makeTestConfig = (): Config => ({
     authFile: "/home/user/.codex/auth.json",
     models: ["gpt-5.6-sol", "gpt-5.5"],
     userAgent: "codex_cli_rs/0.144.6",
+    aliases: {},
   },
   reasoningCache: { maxEntries: 4096, maxBytes: 64 * 1024 * 1024 },
   limits: {
