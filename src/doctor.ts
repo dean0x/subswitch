@@ -1,7 +1,7 @@
 import tls from "node:tls";
 import { readdir, readFile as fsReadFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
 import type { Config } from "./config.js";
 import { isPlainObject } from "./init.js";
@@ -155,11 +155,16 @@ export const makeLiveTlsConnect = (): ProbeTlsDeps["tlsConnect"] => (host, port)
  * Uses readdir with { recursive: true } — stable in Node 22 (ADR-004). [ADR-004]
  */
 export const makeLiveListAgentFiles = (): DoctorIO["listAgentFiles"] => async (dir) => {
+  // Resolve to absolute here in the factory (not in runDoctor) so that a relative
+  // project dir (".claude/agents") and the absolute user dir ("~/. claude/agents")
+  // produce identical path strings when they point to the same physical location —
+  // enabling Set-based deduplication in runDoctor to fire correctly. [ADR-004]
+  const absDir = pathResolve(dir);
   try {
-    const entries = await readdir(dir, { recursive: true });
+    const entries = await readdir(absDir, { recursive: true });
     return (entries as string[])
       .filter((e) => e.endsWith(".md"))
-      .map((e) => join(dir, e));
+      .map((e) => join(absDir, e));
   } catch {
     // Missing or unreadable directory → empty list, not an error.
     return [];
@@ -316,7 +321,12 @@ export const runDoctor = async (
   // Read all discovered agent files (cap read errors to per-file; don't abort the scan).
   // Deduplicate: the two directories are the same path when doctor runs from $HOME,
   // which would otherwise report every finding twice and double-count failures.
-  const allPaths = [...new Set([...projectFiles, ...userFiles])];
+  // Normalize each returned path to absolute (via pathResolve) before deduplication
+  // so that a relative project path and an absolute user path for the same file
+  // collapse to one entry in the Set — mirrors the factory-level resolution in
+  // makeLiveListAgentFiles and provides belt-and-suspenders protection for any
+  // injected fake that returns a mix of relative and absolute paths.
+  const allPaths = [...new Set([...projectFiles, ...userFiles].map((p) => pathResolve(p)))];
   const fileTexts = await Promise.all(
     allPaths.map(async (path) => {
       try {

@@ -1,5 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { probeSubswitch, probeTlsReachable, runDoctor, type HttpGetResult, type TlsStatus } from "../../src/doctor.js";
 import type { Config } from "../../src/config.js";
 
@@ -235,10 +237,13 @@ describe("runDoctor", () => {
   it("prints the alias table rows (one line per alias)", async () => {
     const lines: string[] = [];
     await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines));
-    // The alias table should contain lines for sol, terra, luna (derived from registry)
-    const output = lines.join("\n");
-    assert.ok(output.includes("sol"), "alias table must include sol");
-    assert.ok(output.includes("→"), "alias table must include the arrow separator");
+    // The alias table renders rows like: "sol  →  gpt-5.6-sol  gen:5.6  enabled  (derived)"
+    // Assert on content only the table can produce — the → separator together with
+    // the specific alias name, its canonical, and the generation column.
+    // "sol" alone is vacuous because makeTestConfig already includes "gpt-5.6-sol"
+    // in codex.models, so the substring matches the models row regardless.
+    const tableLine = lines.find((l) => l.includes("sol") && l.includes("→") && l.includes("gpt-5.6-sol") && l.includes("gen:5.6"));
+    assert.ok(tableLine !== undefined, "alias table must render a row: sol → gpt-5.6-sol gen:5.6 ...");
   });
 
   it("emits a nudge line when codexModelsPinned is true", async () => {
@@ -276,9 +281,21 @@ describe("runDoctor — agent model scan", () => {
 
   it("emits a FAIL row for an unresolvable agent model", async () => {
     const lines: string[] = [];
+    // Directory-aware fake: the project dir arg is relative (".claude/agents")
+    // while the user dir arg is absolute ("~/. claude/agents"). Pre-fix production
+    // code returned raw strings — ".claude/agents/x.md" vs "/home/.../.claude/agents/x.md"
+    // — that the new Set([...]) could not deduplicate, causing every finding to be
+    // reported twice when doctor runs from $HOME. The fake simulates what the fixed
+    // factory (makeLiveListAgentFiles) returns after resolving both dirs to the same
+    // absolute path: both calls yield the identical absolute file path.
+    const agentFile = join(homedir(), ".claude", "agents", "bad-agent.md");
     await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
-      listAgentFiles: async () => ["/project/.claude/agents/bad-agent.md"],
+      listAgentFiles: async (dir: string): Promise<readonly string[]> => {
+        // Both the project dir and the user dir include ".claude/agents" — return
+        // the same absolute path for each to simulate the post-fix deduplicated state.
+        return dir.includes(join(".claude", "agents")) ? [agentFile] : [];
+      },
       readTextFile: async () => "---\nmodel: totally-unknown-model\n---\n",
     });
     const output = lines.join("\n");
@@ -286,8 +303,9 @@ describe("runDoctor — agent model scan", () => {
       output.includes("totally-unknown-model"),
       "output must mention the problematic model name",
     );
-    // runDoctor lists the project and user agent directories separately; when both
-    // resolve to the same file (doctor run from $HOME) the finding must be reported once.
+    // A file discovered under both agent dirs must produce exactly ONE FAIL row.
+    // Pre-fix: the Set received ".claude/agents/x.md" and "/home/.../.claude/agents/x.md"
+    // — two distinct strings for the same file — and reported the finding twice.
     const failRows = lines.filter((l) => l.includes("totally-unknown-model"));
     assert.equal(failRows.length, 1, "a file discovered under both agent dirs must report once");
   });

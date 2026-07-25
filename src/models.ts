@@ -53,6 +53,9 @@ export const ALL_MODEL_IDS: readonly string[] = MODEL_REGISTRY.map((e) => e.id);
  * - `sonnet`, `opus`, `haiku`: Claude tier short-names.
  * - `claude-`: any Claude model id.
  */
+// Intentionally prefix-based (not exact) so variant tier names like `sonnet[1m]`
+// or `opusplan` are also caught. An exact match would let such names slip through
+// config validation and reopen the main-thread→Codex misroute hole.
 const ANTHROPIC_NAME_RE = /^(inherit|sonnet|opus|haiku|claude-)/i;
 
 /**

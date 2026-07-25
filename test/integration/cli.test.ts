@@ -316,9 +316,11 @@ describe("CLI models", () => {
   it("models --verbose exits 1 — models takes no flags", async () => {
     const result = await runCli(["models", "--verbose"]);
     assert.equal(result.exitCode, 1);
+    // The CLI emits: "flag '--verbose' is not valid for 'models' — run `subswitch --help` for usage"
+    // Assert on both the flag name and the command name so the check is falsifiable.
     assert.ok(
-      result.stderr.includes("verbose") || result.stderr.includes("subswitch:"),
-      "stderr should mention the misapplied flag or carry a subswitch: prefix",
+      result.stderr.includes("verbose") && result.stderr.includes("models"),
+      "stderr must name both the misapplied flag ('verbose') and the command ('models')",
     );
   });
 });

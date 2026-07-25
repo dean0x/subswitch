@@ -559,6 +559,24 @@ describe("runInitNonInteractive", () => {
     assert.equal(exitCode, 1);
     assert.ok(errLines.some((l) => l.includes("codex-models")), "should mention codex-models in error");
   });
+
+  it("does not emit a forward-compat warning for --codex-models sol (recognized alias)", async () => {
+    // Suppress precondition warnings (ANTHROPIC_API_KEY env, missing auth file)
+    // so errLines stays clean and we can assert purely on the model-alias warning path.
+    const authFilePath = join(homedir(), ".codex", "auth.json");
+    const deps = makeFakeDeps({ [authFilePath]: '{"token":"x"}' });
+    const errLines: string[] = [];
+    const exitCode = await runInitNonInteractive(
+      { codexModels: "sol" },
+      "/project",
+      deps,
+      () => undefined,
+      (l) => errLines.push(l),
+      {},  // empty env — no ANTHROPIC_API_KEY
+    );
+    assert.equal(exitCode, 0, "exit 0 for a known family alias");
+    assert.equal(errLines.length, 0, "runInitNonInteractive must not emit a warning for a recognized family alias like 'sol'");
+  });
 });
 
 // ---------------------------------------------------------------------------
