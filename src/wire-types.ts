@@ -39,7 +39,9 @@ export type AnthropicRequest = z.infer<typeof AnthropicRequestSchema>;
 export type AnthropicMessage = z.infer<typeof AnthropicMessageSchema>;
 export type AnthropicTool = z.infer<typeof AnthropicToolSchema>;
 
-export const ModelPeekSchema = z.object({ model: z.string() });
+// Length-bound prevents a crafted `model` value from forging a log line via newline injection.
+// 200 chars is generous for any real model id but rejects pathological payloads.
+export const ModelPeekSchema = z.object({ model: z.string().max(200) });
 
 // ---------------------------------------------------------------------------
 // OpenAI Responses API SSE events (outbound from Codex). Discriminated by the

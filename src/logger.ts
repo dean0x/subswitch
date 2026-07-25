@@ -95,7 +95,13 @@ export const createConsoleLogger = (
       if (fields !== undefined) {
         for (const key of FIELD_KEYS) {
           const value = fields[key];
-          if (value !== undefined) parts.push(`${key}=${String(value)}`);
+          if (value !== undefined) {
+            // Strip newlines to prevent log-injection via crafted model strings or other
+            // field values. FIELD_KEYS is a closed allow-list so no token material can
+            // reach this path, but newlines in a model field could still forge a log line.
+            const safe = String(value).replace(/[\r\n]/g, "");
+            parts.push(`${key}=${safe}`);
+          }
         }
       }
       const ts = color ? `${pc.dim(formatTime())} ` : "";

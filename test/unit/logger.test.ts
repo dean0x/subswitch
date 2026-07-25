@@ -122,4 +122,23 @@ describe("createConsoleLogger", () => {
     assert.ok(warnLines[0]?.includes("\x1b"), "warn level should be colored");
     assert.ok(errLines[0]?.includes("\x1b"), "error level should be colored");
   });
+
+  it("strips embedded newlines from field values to prevent log-injection", () => {
+    const lines: string[] = [];
+    const logger = createConsoleLogger("info", (line) => lines.push(line), false);
+    // A crafted model value with embedded newline — without stripping, write() would be
+    // called with a string containing a newline, which in a real logger (e.g. shell output
+    // or file writes) would split into two lines. The mock write() records one call per
+    // invocation, so lines.length === 1 confirms write() was called exactly once.
+    logger.log("info", "request_complete", {
+      model: "x\nlevel=error event=fake",
+      status: 200,
+    });
+    // Exactly one write() call — the newline was stripped so the value is one continuous string.
+    assert.equal(lines.length, 1, "newline in field value must not split into multiple write() calls");
+    // The newline character itself must not be present in the emitted line.
+    assert.ok(!(lines[0] ?? "").includes("\n"), "emitted line must not contain a newline character");
+    // The model field must still appear but with the newline character removed.
+    assert.ok((lines[0] ?? "").includes("model=x"), "model field must still be logged with newline removed");
+  });
 });
