@@ -25,7 +25,10 @@ export interface CodexHandlerDeps {
 }
 
 export interface CodexHandler {
-  handleMessages(req: IncomingMessage, res: ServerResponse, rawBody: Buffer): Promise<void>;
+  /** `canonicalModel` is the resolved canonical id (never an alias) so that
+   *  `deriveConversationKey` and `translateRequest` both see the same stable id.
+   *  Callers resolve once before routing (applies ADR-005). */
+  handleMessages(req: IncomingMessage, res: ServerResponse, rawBody: Buffer, canonicalModel: string): Promise<void>;
   handleCountTokens(req: IncomingMessage, res: ServerResponse, rawBody: Buffer): void;
 }
 
@@ -80,7 +83,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
     "user-agent": config.codex.userAgent,
   });
 
-  const handleMessages = async (_req: IncomingMessage, res: ServerResponse, rawBody: Buffer): Promise<void> => {
+  const handleMessages = async (_req: IncomingMessage, res: ServerResponse, rawBody: Buffer, canonicalModel: string): Promise<void> => {
     let parsedJson: unknown;
     try {
       parsedJson = JSON.parse(rawBody.toString("utf8"));
@@ -93,19 +96,27 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
       respondJson(res, 400, toAnthropicErrorBody("invalid_request_error", "request body is not a valid messages request"));
       return;
     }
+    // Keep the as-requested model name for log sites — users grep for what they typed.
     const model = parsed.data.model;
 
-    // Derive the conversation key from the raw inbound request (not builder output,
+    // Substitute the canonical id so that deriveConversationKey and translateRequest
+    // both see a stable, alias-free model string. When the inbound model is already
+    // canonical this is a no-op spread that preserves Zod passthrough keys. (applies ADR-005)
+    const request = canonicalModel === parsed.data.model
+      ? parsed.data
+      : { ...parsed.data, model: canonicalModel };
+
+    // Derive the conversation key from the canonical request (not builder output,
     // which may be a translated developer-role message for subagents per PF-003).
-    // The key is stable within a conversation (same model + system + first user message)
-    // and v7-shaped for session_id fingerprint parity with the real codex-cli.
-    const conversationKey = deriveConversationKey(parsed.data);
+    // The canonical model in `request` ensures alias and canonical produce the same key,
+    // which is the critical Phase B invariant — same session_id and prompt_cache_key.
+    const conversationKey = deriveConversationKey(request);
     // session_id is stable per conversation; falls back to a random UUID when no
     // user message is present. The same id is reused on the 401-refresh retry
-    // below (sessionId is captured once before the loop).
+    // below (sessionId is captured once before the loop). [applies ADR-003]
     const sessionId = conversationKey ?? newSessionId();
 
-    const translated = translateRequest(parsed.data, cache, conversationKey);
+    const translated = translateRequest(request, cache, conversationKey);
     if (!translated.ok) {
       respondProxyError(res, translated.error);
       return;
@@ -207,7 +218,9 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
       const wantStream = translated.value.stream;
       const parser = createSseParser(config.limits.maxSseEventBytes);
       const translator = createAnthropicSseTranslator({
-        model,
+        // Use the canonical model as the fallback for message_start (options.model)
+        // so clients see the canonical id even when the upstream omits model in response.created.
+        model: request.model,
         logger,
         onReasoningItems: (callId, items) => cache.put(callId, items),
         ...(conversationKey !== undefined ? { conversationKey } : {}),

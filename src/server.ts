@@ -11,6 +11,7 @@ import { CodexAuthManager, createFsAuthFileStore } from "./codex-auth.js";
 import { ReasoningCache } from "./reasoning-cache.js";
 import { createCodexHandler, type CodexHandler } from "./codex-handler.js";
 import { ModelPeekSchema } from "./wire-types.js";
+import { makeModelResolver, MODEL_REGISTRY } from "./models.js";
 import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 
 export interface ServerDeps {
@@ -102,6 +103,15 @@ const peekModel = (body: Buffer): string | undefined => {
 export const createProxyServer = (deps: ServerDeps): Server => {
   const { config, logger } = deps;
 
+  // Build the resolver once — the routable set and config overrides are fixed for the
+  // process lifetime. Resolution must happen before decideRoute so that decideRoute
+  // always receives a canonical id, never a bare alias. (applies ADR-005)
+  const resolveModel = makeModelResolver(
+    MODEL_REGISTRY,
+    new Set(config.codex.models),
+    config.codex.aliases,
+  );
+
   return http.createServer((req, res) => {
     const startedAt = Date.now();
     const path = req.url ?? "/";
@@ -149,8 +159,13 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         return;
       }
 
+      // `model` is the as-requested name — preserved for the request_complete log so
+      // operators can grep for what the client typed (a typo like "sol" not "sool").
+      // `canonical` is the resolved id passed to decideRoute and handleMessages so
+      // both routing and upstream wire-format use the same stable string. (applies ADR-005)
       model = peekModel(body.value);
-      const decision = decideRoute(req.method ?? "POST", path, model, config.codex.models);
+      const canonical = model === undefined ? undefined : (resolveModel(model) ?? model);
+      const decision = decideRoute(req.method ?? "POST", path, canonical, config.codex.models);
       route = decision.kind === "codex" ? `codex:${decision.endpoint}` : "anthropic";
 
       if (decision.kind === "anthropic") {
@@ -161,7 +176,9 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         deps.codex.handleCountTokens(req, res, body.value);
         return;
       }
-      await deps.codex.handleMessages(req, res, body.value);
+      // canonical is always defined here: decideRoute returned codex only because
+      // canonical is a string present in config.codex.models (exact-membership check).
+      await deps.codex.handleMessages(req, res, body.value, canonical!);
     };
 
     dispatch().catch((cause: unknown) => {

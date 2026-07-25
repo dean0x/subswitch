@@ -392,4 +392,181 @@ describe("codex leg", () => {
     assert.match(text, /codex stream interrupted/);
     assert.equal(rig.codex.requests.length, 1, "mid-stream failures must not be retried");
   });
+
+  // ---------------------------------------------------------------------------
+  // Phase B: alias resolution — model string no longer does double duty
+  // ---------------------------------------------------------------------------
+
+  it("sends the canonical model id upstream when a derived family alias is used in the request", async () => {
+    // Default config: no explicit codex.models, so all registry ids are routable.
+    // "sol" is a derived family alias for "gpt-5.6-sol".
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const body = JSON.stringify({ model: "sol", stream: true, messages: [{ role: "user", content: "hi" }] });
+    const response = await postMessages(rig.subswitch, body);
+    assert.equal(response.status, 200);
+    await response.text();
+    const sent = JSON.parse(rig.codex.requests[0]!.body.toString("utf8")) as Record<string, unknown>;
+    assert.equal(sent["model"], "gpt-5.6-sol", "alias must be resolved to canonical before going upstream");
+    assert.equal(rig.anthropic.requests.length, 0, "alias for a codex model must not leak to Anthropic");
+  });
+
+  it("routes a derived family alias to the Codex leg (not Anthropic)", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const body = JSON.stringify({ model: "sol", stream: true, messages: [{ role: "user", content: "hi" }] });
+    const response = await postMessages(rig.subswitch, body);
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.equal(rig.codex.requests.length, 1, "request with alias must reach the Codex upstream");
+    assert.equal(rig.anthropic.requests.length, 0);
+  });
+
+  it("answers count_tokens for a derived alias via the Codex leg (handled locally)", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const body = JSON.stringify({ model: "sol", messages: [{ role: "user", content: "estimate me" }] });
+    const response = await postMessages(rig.subswitch, body, "/v1/messages/count_tokens");
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { input_tokens: Math.ceil(body.length / 4) });
+    assert.equal(rig.anthropic.requests.length, 0, "count_tokens alias must not leak to Anthropic");
+  });
+
+  it("alias and its canonical produce the same session_id and prompt_cache_key", async () => {
+    // This test is the critical invariant of Phase B: canonical threading ensures that
+    // a user sending "sol" and a user sending "gpt-5.6-sol" share a conversation id.
+    const scripts = [loadSse("text-only.sse"), loadSse("text-only.sse")];
+    const rig = await setupRig((_req, res, _body, index) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(scripts[index]);
+    });
+
+    const userMsg = [{ role: "user", content: "same conversation content" }];
+    const reqAlias = JSON.stringify({ model: "sol", stream: true, messages: userMsg });
+    const reqCanonical = JSON.stringify({ model: "gpt-5.6-sol", stream: true, messages: userMsg });
+
+    const r1 = await postMessages(rig.subswitch, reqAlias);
+    await r1.text();
+    const r2 = await postMessages(rig.subswitch, reqCanonical);
+    await r2.text();
+
+    const req1 = rig.codex.requests[0]!;
+    const req2 = rig.codex.requests[1]!;
+
+    const sid1 = req1.headers["session_id"];
+    const sid2 = req2.headers["session_id"];
+    assert.ok(typeof sid1 === "string" && sid1.length > 0, "session_id must be present");
+    assert.equal(sid1, sid2, "alias and canonical must produce the same session_id");
+
+    const body1 = JSON.parse(req1.body.toString("utf8")) as Record<string, unknown>;
+    const body2 = JSON.parse(req2.body.toString("utf8")) as Record<string, unknown>;
+    assert.ok(typeof body1["prompt_cache_key"] === "string", "prompt_cache_key must be present for canonical request");
+    assert.equal(
+      body1["prompt_cache_key"],
+      body2["prompt_cache_key"],
+      "alias and canonical must produce the same prompt_cache_key",
+    );
+  });
+
+  it("message_start falls back to the canonical model id when upstream omits model in response.created", async () => {
+    // When response.created carries no model, options.model (which must be canonical) is the fallback.
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        [
+          'event: response.created',
+          'data: {"type":"response.created","response":{"id":"resp_alias_test","status":"in_progress"}}',
+          '',
+          'event: response.completed',
+          'data: {"type":"response.completed","response":{"id":"resp_alias_test","status":"completed","usage":{"input_tokens":1,"output_tokens":0}}}',
+          '',
+        ].join('\n'),
+      );
+    });
+    const body = JSON.stringify({ model: "sol", stream: true, messages: [{ role: "user", content: "hi" }] });
+    const response = await postMessages(rig.subswitch, body);
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    const startFrame = text.split("\n\n").find((f) => f.includes('"type":"message_start"'));
+    assert.ok(startFrame !== undefined, "message_start frame must be present");
+    const startLine = startFrame.split("\n").find((l) => l.startsWith("data: "));
+    assert.ok(startLine !== undefined);
+    const startData = JSON.parse(startLine.slice(6)) as { message: { model: string } };
+    assert.equal(startData.message.model, "gpt-5.6-sol", "options.model fallback must be the canonical, not the alias");
+  });
+
+  it("a codex.aliases config override routes a non-registry id upstream and proves override precedence", async () => {
+    // Overriding 'sol' to 'gpt-9-sol' (not in registry) verifies:
+    //   1. config override takes precedence over the derived family alias
+    //   2. the override target becomes routable (normalizeModelList pressure-valve)
+    //   3. the upstream receives the exact override target
+    const codex = await startFakeUpstream(sseHandler(loadSse("text-only.sse")));
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
+    });
+    const oauth = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ access_token: makeAccessToken(Date.now() + 3_600_000) }));
+    });
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-test-alias-override-"));
+    const authFilePath = join(dir, "auth.json");
+    await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(FAR_FUTURE_MS)), "utf8");
+
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: anthropic.url },
+      codex: {
+        baseUrl: codex.url,
+        oauthTokenUrl: `${oauth.url}/token`,
+        authFile: authFilePath,
+        aliases: { sol: "gpt-9-sol" },
+      },
+    });
+    cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
+
+    const response = await fetch(`${subswitch.url}/v1/messages?beta=true`, {
+      method: "POST",
+      headers: { authorization: "Bearer sk-ant", "anthropic-beta": "oauth-2025-04-20", "content-type": "application/json" },
+      body: JSON.stringify({ model: "sol", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+    const sent = JSON.parse(codex.requests[0]!.body.toString("utf8")) as Record<string, unknown>;
+    assert.equal(sent["model"], "gpt-9-sol", "config override target must be sent upstream");
+    assert.equal(anthropic.requests.length, 0, "config override must route to Codex, not Anthropic");
+  });
+
+  it("a narrowed codex.models list sends an excluded registry model to Anthropic", async () => {
+    const codex = await startFakeUpstream(sseHandler(loadSse("text-only.sse")));
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
+    });
+    const oauth = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ access_token: makeAccessToken(Date.now() + 3_600_000) }));
+    });
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-test-narrow-"));
+    const authFilePath = join(dir, "auth.json");
+    await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(FAR_FUTURE_MS)), "utf8");
+
+    // Only gpt-5.6-sol is enabled for Codex routing; gpt-5.5 is excluded.
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: anthropic.url },
+      codex: {
+        baseUrl: codex.url,
+        oauthTokenUrl: `${oauth.url}/token`,
+        authFile: authFilePath,
+        models: ["gpt-5.6-sol"],
+      },
+    });
+    cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { authorization: "Bearer sk-ant", "anthropic-beta": "oauth-2025-04-20", "content-type": "application/json" },
+      body: JSON.stringify({ model: "gpt-5.5", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { id: "msg_from_anthropic" });
+    assert.equal(codex.requests.length, 0, "excluded model must not reach the Codex upstream");
+    assert.equal(anthropic.requests.length, 1, "excluded model must be forwarded to Anthropic");
+  });
 });
