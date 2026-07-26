@@ -102,15 +102,13 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   const openBlockIndices = new Set<number>();
   // True when a delta arrived but lookupBlockIndex returned undefined, so its text
   // was dropped: the upstream carried content we cannot place in any block.
-  // sawUnmatchedDelta is response-global: a single dropped delta makes the entire
-  // turn unrecoverable even if other blocks were closed cleanly. This is an
-  // intentional fail-visible trade-off — partial content is harder to reason about
-  // than a clear error.
   let sawUnmatchedDelta = false;
-  // True when at least one delta was successfully placed into a registered block.
-  // Used in flush() to distinguish a recoverable truncation (content was received)
-  // from a completely empty truncated stream (no recoverable content at all).
-  let sawMatchedDelta = false;
+  // Per-block set of indices that received at least one successfully-placed delta.
+  // Used in reconcileOpenBlocks to distinguish between:
+  //   (a) a dropped delta that lands alongside real content (gracefully degraded) vs
+  //   (b) a dropped delta for a turn that produced no other content (unrecoverable).
+  // Also used in flush() to decide whether to reconcile open blocks or emit an error.
+  const blocksWithContent = new Set<number>();
 
   const blockKeys = (itemId: string | undefined, outputIndex: number | undefined): string[] => {
     const keys: string[] = [];
@@ -130,22 +128,29 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   /** Reconcile blocks the upstream left open at a terminal point, so a response that
    *  carried content upstream is never delivered as a healthy-looking empty turn.
    *
-   *  A dropped delta is unrecoverable — its text belongs to no block — so it is
-   *  reported as an error even when every block happens to have been closed;
-   *  otherwise the client would receive an empty text block with HTTP 200.
-   *  Open blocks with no dropped delta are closed with a synthesised stop, which
-   *  lets the aggregator materialise the deltas it did receive.
+   *  A dropped delta is only unrecoverable when NO block received any content.  If at
+   *  least one block received a matched delta, the unknown item's dropped deltas degrade
+   *  gracefully — the real content is returned and the dropped delta is silently ignored
+   *  (matching main-branch behaviour for unknown item types).
+   *
+   *  Open blocks that received at least one delta are closed with a synthesised stop,
+   *  which lets the aggregator materialise the accumulated deltas.  Open blocks that
+   *  received ZERO deltas are intentionally left without a synthesised stop; the
+   *  aggregator will discard them as zero-content blocks rather than appending a
+   *  spurious empty text block.
    *
    *  Returns true when an error frame was emitted, meaning the caller must not
    *  emit the normal terminal frames. */
   const reconcileOpenBlocks = (push: (frameText: string) => void): boolean => {
-    if (sawUnmatchedDelta) {
+    if (sawUnmatchedDelta && blocksWithContent.size === 0) {
       openBlockIndices.clear();
       push(toAnthropicErrorSse("api_error", "codex stream dropped content deltas that matched no content block"));
       return true;
     }
     for (const index of openBlockIndices) {
-      push(frame("content_block_stop", { type: "content_block_stop", index }));
+      if (blocksWithContent.has(index)) {
+        push(frame("content_block_stop", { type: "content_block_stop", index }));
+      }
     }
     openBlockIndices.clear();
     return false;
@@ -259,7 +264,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
             sawUnmatchedDelta = true;
             break;
           }
-          sawMatchedDelta = true;
+          blocksWithContent.add(index);
           this.push(
             frame("content_block_delta", {
               type: "content_block_delta",
@@ -277,7 +282,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
             sawUnmatchedDelta = true;
             break;
           }
-          sawMatchedDelta = true;
+          blocksWithContent.add(index);
           this.push(
             frame("content_block_delta", {
               type: "content_block_delta",
@@ -374,9 +379,9 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
       // response.completed/.incomplete already set `finished` before they return.
       // Guarding on `finished` prevents appending frames after message_stop.
       if (!finished) {
-        if (sawMatchedDelta) {
-          // At least one delta landed before truncation — reconcile open blocks so
-          // the accumulated content is delivered rather than silently discarded.
+        if (blocksWithContent.size > 0) {
+          // At least one block received content before truncation — reconcile open
+          // blocks that have content so the accumulated deltas are delivered.
           reconcileOpenBlocks((frameText) => this.push(frameText));
         } else if (started) {
           // The stream opened (message_start was emitted) but no recoverable content
@@ -468,14 +473,15 @@ export const aggregateFrames = (frames: readonly string[]): Result<AggregateOutc
         } else if (pending.block["type"] === "tool_use") {
           let input: unknown = {};
           try {
-            input = pending.partialJson === "" ? {} : JSON.parse(pending.partialJson);
+            input = pending.partialJson.trim() === "" ? {} : JSON.parse(pending.partialJson);
           } catch {
-            // partialJson is non-empty but unparseable — the JSON was truncated before
-            // the upstream closed the stream. Substituting {} would silently corrupt the
-            // tool arguments (e.g. a write_file call with no path). Return an error so
-            // the client receives 502 rather than acting on invented empty arguments.
-            // Note: partialJson === "" falls through to the {} default above; this catch
-            // is only hit when there is content to parse but it is malformed.
+            // partialJson has non-whitespace content but is unparseable JSON — the JSON
+            // was likely truncated before the upstream closed the stream. Substituting {}
+            // would silently corrupt the tool arguments (e.g. a write_file call with no
+            // path). Return an error so the client receives 502 rather than acting on
+            // invented empty arguments. Note: partialJson === "" and whitespace-only both
+            // fall through to the {} default above; this catch is only hit when there is
+            // actual non-whitespace content to parse but it is malformed JSON.
             return err({ kind: "upstream", message: "codex stream ended with unparseable tool_use arguments" });
           }
           content.push({ type: "tool_use", id: pending.block["id"], name: pending.block["name"], input });
@@ -504,11 +510,15 @@ export const aggregateFrames = (frames: readonly string[]): Result<AggregateOutc
   if (message === undefined) {
     return err({ kind: "upstream", message: "codex stream ended before producing a message" });
   }
-  // Invariant: every content_block_start must be matched by a content_block_stop before
-  // we can assemble a valid response.  The translator's flush() synthesises stops for
-  // recoverable paths; if any blocks remain open here an irrecoverable drop occurred.
-  if (blocks.size > 0) {
-    return err({ kind: "upstream", message: `codex stream ended with ${blocks.size} unclosed content block(s)` });
+  // Every content_block_start must be matched by a content_block_stop before we can
+  // assemble a valid response.  The translator's reconcileOpenBlocks() synthesises stops
+  // for blocks that received at least one delta; blocks that received zero deltas are
+  // intentionally left open (no synthesised stop) so they don't produce spurious empty
+  // content entries.  We honour that contract here: error only on unclosed blocks that
+  // have actual content, and silently discard unclosed blocks with no content.
+  const unclosedWithContent = [...blocks.values()].filter((p) => p.text !== "" || p.partialJson !== "");
+  if (unclosedWithContent.length > 0) {
+    return err({ kind: "upstream", message: `codex stream ended with ${unclosedWithContent.length} unclosed content block(s)` });
   }
   return ok({
     kind: "message",

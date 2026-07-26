@@ -289,6 +289,114 @@ describe("createAnthropicSseTranslator", () => {
     assert.deepEqual(msg["content"], [{ type: "text", text: "real content" }]);
   });
 
+  // W1: a stray unmatched delta from an unknown-type item must not poison a turn that has real content.
+  // Mutation target: reconcileOpenBlocks error condition — change back to `if (sawUnmatchedDelta)`
+  // (drop the `&& blocksWithContent.size === 0` guard) and the test must FAIL.
+  it("W1: stray unmatched delta from an unknown-type item does not poison a turn with real content", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_w1","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      // Real message block — registered, receives a delta, then properly closed.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_real","role":"assistant"}}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"msg_real","output_index":0,"delta":"real content"}',
+      '',
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_real","role":"assistant"}}',
+      '',
+      // Unknown-type item (e.g. web_search_call) — type not handled, never registered.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"web_search_call","id":"ws_1"}}',
+      '',
+      // Stray delta for the unknown item — unmatched (no block registered for ws_1 / oi:1).
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"ws_1","output_index":1,"delta":"dropped"}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"resp_w1","model":"gpt-5.5","status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}',
+      '',
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
+    assert.ok(frameTypes(frames).includes("message_stop"), "must produce message_stop");
+    const result = aggregateFrames(frames);
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    assert.deepEqual(msg["content"], [{ type: "text", text: "real content" }]);
+  });
+
+  // W2: a block that was opened but never received any delta must not produce a spurious empty entry.
+  // Mutation target: remove the `blocksWithContent.has(index)` guard in reconcileOpenBlocks (emit
+  // content_block_stop for ALL open blocks). The test must FAIL because block 1 now gets a stop,
+  // and aggregateFrames appends {type:"text", text:""} to the content.
+  it("W2: no spurious empty block when a second block is opened but never delta'd before EOF", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_w2","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      // Block 0: receives content.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_content","role":"assistant"}}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"msg_content","output_index":0,"delta":"real content"}',
+      '',
+      // Block 1: opened but never delta'd — upstream truncated before producing content for it.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_empty","role":"assistant"}}',
+      '',
+      // EOF with no terminal event (truncation).
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
+    const result = aggregateFrames(frames);
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    // Exactly one content block with the real text; the zero-delta block must be discarded.
+    assert.deepEqual(msg["content"], [{ type: "text", text: "real content" }]);
+  });
+
+  // W6: the output_index (oi:) fallback in lookupBlockIndex must be exercised for DELTA lookup.
+  // Mutation target: delete `if (outputIndex !== undefined) keys.push(\`oi:${outputIndex}\`)` from
+  // blockKeys. The test must FAIL because the delta's item_id="msg_B" has no id: match and the
+  // oi: fallback is the only path to the block — dropping it makes the delta unmatched → error.
+  it("W6: oi: fallback resolves a delta whose item_id differs from the registered id but output_index matches", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_w6","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      // Block registered under id:msg_A and oi:0.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_A","role":"assistant"}}',
+      '',
+      // Delta carries item_id="msg_B" — no id: match. Only oi:0 can resolve this.
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"msg_B","output_index":0,"delta":"found via oi fallback"}',
+      '',
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_A","role":"assistant"}}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"resp_w6","model":"gpt-5.5","status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}',
+      '',
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
+    const result = aggregateFrames(frames);
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    assert.deepEqual(msg["content"], [{ type: "text", text: "found via oi fallback" }]);
+  });
+
   // P1-4 path (d): done.item.id differs from added.item.id but output_index matches — content preserved.
   it("path d: preserves content when output_item.done carries a different id than output_item.added", async () => {
     const { frames } = await translate(loadSse("done-id-mismatch.sse"));
@@ -427,6 +535,25 @@ describe("aggregateFrames", () => {
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "upstream");
     assert.match(result.error.message, /unparseable tool_use/);
+  });
+
+  // W4: whitespace-only partial_json must be treated as equivalent to empty → input:{}, not 502.
+  // Mutation target: change `pending.partialJson.trim() === ""` back to `pending.partialJson === ""`.
+  // The test must FAIL because "  ".trim() !== "" → JSON.parse("  ") throws → returns err.
+  it("W4: whitespace-only partial_json is treated as empty and produces input:{}", () => {
+    const result = aggregateFrames([
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_w4","name":"no_args","input":{}}}\n\n',
+      // Whitespace-only partial_json — not empty string, but no parseable JSON content.
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"  "}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":5,"output_tokens":2}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ]);
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    assert.deepEqual(msg["content"], [{ type: "tool_use", id: "call_w4", name: "no_args", input: {} }]);
   });
 
   // P0-1: a tool_use block whose partialJson is empty string (zero-argument call) must still return input:{}.
