@@ -246,6 +246,34 @@ describe("cache observability logging", () => {
     assert.match(keyLine, /sessionKey=a1b2c3d4/);
     assert.match(keyLine, /sessionKey=[0-9a-f]{8}(\s|$)/);
   });
+
+  it("closes a block left open by a missing output_item.done before the terminal frames", async () => {
+    // response.completed arrives before output_item.done, so the upstream never closes
+    // the block. The synthesised stop must land before message_stop: a streaming client
+    // that receives a content_block_stop after the terminal frame sees a corrupt stream.
+    const { frames } = await translate(loadSse("completed-before-done.sse"));
+    assert.deepEqual(frameTypes(frames), [
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+    ]);
+  });
+
+  it("errors on dropped deltas even when every block was closed", async () => {
+    // The delta's item_id matches no block, so its text is dropped, but output_item.done
+    // still closes the block. Without an error the client would receive HTTP 200 and an
+    // empty text block while the upstream had actually produced content.
+    const { frames } = await translate(loadSse("delta-id-mismatch.sse"));
+    const types = frameTypes(frames);
+    assert.ok(types.includes("error"), `expected an error frame, got ${types.join(",")}`);
+    assert.ok(!types.includes("message_stop"), "terminal frames must not follow the error frame");
+    const result = aggregateFrames(frames);
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "error");
+  });
 });
 
 describe("aggregateFrames", () => {
@@ -278,6 +306,19 @@ describe("aggregateFrames", () => {
 
   it("errors when no message was produced", () => {
     const result = aggregateFrames([]);
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "upstream");
+  });
+
+  it("errors rather than dropping content when a block was never closed", () => {
+    // Safety net: the translator reconciles open blocks before this point, so these
+    // frames should be unreachable in production. Assembling them anyway would return
+    // HTTP 200 with content:[] while the deltas carried text.
+    const result = aggregateFrames([
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"orphaned"}}\n\n',
+    ]);
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "upstream");
   });
