@@ -377,6 +377,70 @@ describe("codex leg", () => {
     assert.notEqual(id1, id2, "distinct conversations must produce distinct session_ids");
   });
 
+  // ---------------------------------------------------------------------------
+  // Unclosed content-block regression tests (paths a, b, c/d).
+  // These run on the NON-STREAMING path so they exercise aggregateFrames.
+  // ---------------------------------------------------------------------------
+
+  it("path a: recovers content when response.completed fires before output_item.done (flush synthesis)", async () => {
+    const rig = await setupRig(sseHandler(loadSse("completed-before-done.sse")));
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    // Must be 200 with non-empty content — never a 200 with empty content.
+    assert.equal(response.status, 200);
+    const message = (await response.json()) as Record<string, unknown>;
+    const content = message["content"] as unknown[];
+    assert.ok(content.length > 0, "content must not be empty after flush synthesis");
+    assert.deepEqual(content, [{ type: "text", text: "Hello" }]);
+  });
+
+  it("path b: recovers content when stream ends with no response.completed (flush synthesis)", async () => {
+    const rig = await setupRig(sseHandler(loadSse("eof-mid-block.sse")));
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    // Must be 200 with non-empty content — the synthesised stop preserves accumulated deltas.
+    assert.equal(response.status, 200);
+    const message = (await response.json()) as Record<string, unknown>;
+    const content = message["content"] as unknown[];
+    assert.ok(content.length > 0, "content must not be empty after flush synthesis");
+    assert.deepEqual(content, [{ type: "text", text: "Partial text" }]);
+  });
+
+  it("path c/d: returns 502 when a block has unmatched deltas (content unrecoverable)", async () => {
+    // done-without-id.sse: output_item.added has neither item.id nor output_index;
+    // all deltas are unmatched; flush() must emit an error frame instead of empty content.
+    const rig = await setupRig(sseHandler(loadSse("done-without-id.sse")));
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    // Must be non-2xx — a 200 with empty content is the data-loss bug we are preventing.
+    assert.ok(!response.ok, `expected non-2xx status, got ${response.status}`);
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "api_error");
+  });
+
+  it("aggregation !ok maps to 502 (no message_start in stream)", async () => {
+    // A stream with only unknown events produces no message_start; aggregateFrames
+    // returns err(...), which the handler must map to 502 api_error.
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end('event: unknown.event\ndata: {"type":"unknown.event"}\n\n');
+    });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "api_error");
+  });
+
   it("shapes mid-stream upstream failures as an SSE error event", async () => {
     const rig = await setupRig((_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });

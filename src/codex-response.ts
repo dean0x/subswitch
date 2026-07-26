@@ -96,6 +96,16 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   let inputTokens = 0;
   let pingTimer: NodeJS.Timeout | undefined;
   let lastActivityMs = 0;
+  // Indices of content_block_start frames whose matching content_block_stop has not yet
+  // been emitted. Populated on content_block_start, cleared on content_block_stop.
+  // flush() synthesises stops for any still-open entries (paths a and b) so the
+  // aggregator never receives an unclosed block.
+  const openBlockIndices = new Set<number>();
+  // Set to true when a delta event arrives but lookupBlockIndex returns undefined
+  // (path c: zero-key block; path d: id mismatch on done).  If deltas were dropped
+  // the block content is unrecoverable; flush() must error rather than synthesise an
+  // empty stop.
+  let sawUnmatchedDelta = false;
 
   const blockKeys = (itemId: string | undefined, outputIndex: number | undefined): string[] => {
     const keys: string[] = [];
@@ -185,6 +195,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
                 content_block: { type: "text", text: "" },
               }),
             );
+            openBlockIndices.add(index);
           } else if (item.type === "function_call") {
             sawFunctionCall = true;
             const index = nextBlockIndex++;
@@ -201,6 +212,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
                 },
               }),
             );
+            openBlockIndices.add(index);
           }
           // reasoning items produce no Anthropic frames; captured at .done.
           break;
@@ -209,7 +221,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const parsed = ResponsesDeltaEventSchema.safeParse(json);
           if (!parsed.success) break;
           const index = lookupBlockIndex(parsed.data.item_id, parsed.data.output_index);
-          if (index === undefined) break;
+          if (index === undefined) { sawUnmatchedDelta = true; break; }
           this.push(
             frame("content_block_delta", {
               type: "content_block_delta",
@@ -223,7 +235,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const parsed = ResponsesDeltaEventSchema.safeParse(json);
           if (!parsed.success) break;
           const index = lookupBlockIndex(parsed.data.item_id, parsed.data.output_index);
-          if (index === undefined) break;
+          if (index === undefined) { sawUnmatchedDelta = true; break; }
           this.push(
             frame("content_block_delta", {
               type: "content_block_delta",
@@ -249,6 +261,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const index = lookupBlockIndex(item.id, parsed.data.output_index);
           if (index !== undefined) {
             this.push(frame("content_block_stop", { type: "content_block_stop", index }));
+            openBlockIndices.delete(index);
           }
           break;
         }
@@ -312,6 +325,27 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
     flush(callback) {
       if (pingTimer !== undefined) clearInterval(pingTimer);
       pingTimer = undefined;
+      if (openBlockIndices.size > 0) {
+        if (sawUnmatchedDelta) {
+          // Deltas were received but could not be matched to a block (path c: zero-key
+          // block, path d: id mismatch on done).  Content was irreversibly lost; emit
+          // an error frame so the aggregator returns a 502 rather than a silent empty-
+          // content 200.
+          this.push(
+            toAnthropicErrorSse(
+              "api_error",
+              `stream ended with ${openBlockIndices.size} unclosed content block(s) and unrecoverable dropped delta(s)`,
+            ),
+          );
+        } else {
+          // Recoverable: blocks are tracked (path a: response.completed arrived before
+          // output_item.done; path b: EOF before response.completed).  Synthesise the
+          // missing content_block_stop frames so the aggregator can assemble full content.
+          for (const index of openBlockIndices) {
+            this.push(frame("content_block_stop", { type: "content_block_stop", index }));
+          }
+        }
+      }
       callback();
     },
   });
@@ -422,6 +456,12 @@ export const aggregateFrames = (frames: readonly string[]): Result<AggregateOutc
 
   if (message === undefined) {
     return err({ kind: "upstream", message: "codex stream ended before producing a message" });
+  }
+  // Invariant: every content_block_start must be matched by a content_block_stop before
+  // we can assemble a valid response.  The translator's flush() synthesises stops for
+  // recoverable paths; if any blocks remain open here an irrecoverable drop occurred.
+  if (blocks.size > 0) {
+    return err({ kind: "upstream", message: `stream ended with ${blocks.size} unclosed content block(s)` });
   }
   return ok({
     kind: "message",
