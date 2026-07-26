@@ -1,20 +1,20 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { codexStatusToAnthropicError, proxyErrorToAnthropic, toAnthropicErrorBody, toAnthropicErrorSse } from "../../src/errors.js";
+import { upstreamStatusToAnthropicError, proxyErrorToAnthropic, toAnthropicErrorBody, toAnthropicErrorSse } from "../../src/errors.js";
 
-describe("codexStatusToAnthropicError", () => {
+describe("upstreamStatusToAnthropicError", () => {
   it("maps the documented statuses", () => {
-    assert.deepEqual(codexStatusToAnthropicError(400), { status: 400, type: "invalid_request_error" });
-    assert.deepEqual(codexStatusToAnthropicError(401), { status: 401, type: "authentication_error" });
-    assert.deepEqual(codexStatusToAnthropicError(403), { status: 403, type: "permission_error" });
-    assert.deepEqual(codexStatusToAnthropicError(429), { status: 429, type: "rate_limit_error" });
-    assert.deepEqual(codexStatusToAnthropicError(500), { status: 500, type: "api_error" });
-    assert.deepEqual(codexStatusToAnthropicError(503), { status: 503, type: "api_error" });
+    assert.deepEqual(upstreamStatusToAnthropicError(400), { status: 400, type: "invalid_request_error" });
+    assert.deepEqual(upstreamStatusToAnthropicError(401), { status: 401, type: "authentication_error" });
+    assert.deepEqual(upstreamStatusToAnthropicError(403), { status: 403, type: "permission_error" });
+    assert.deepEqual(upstreamStatusToAnthropicError(429), { status: 429, type: "rate_limit_error" });
+    assert.deepEqual(upstreamStatusToAnthropicError(500), { status: 500, type: "api_error" });
+    assert.deepEqual(upstreamStatusToAnthropicError(503), { status: 503, type: "api_error" });
   });
 
   it("maps other 4xx to invalid_request and non-errors to 502", () => {
-    assert.deepEqual(codexStatusToAnthropicError(422), { status: 422, type: "invalid_request_error" });
-    assert.deepEqual(codexStatusToAnthropicError(200), { status: 502, type: "api_error" });
+    assert.deepEqual(upstreamStatusToAnthropicError(422), { status: 422, type: "invalid_request_error" });
+    assert.deepEqual(upstreamStatusToAnthropicError(200), { status: 502, type: "api_error" });
   });
 });
 

@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
-import { codexStatusToAnthropicError, proxyErrorToAnthropic, toAnthropicErrorBody, toAnthropicErrorSse, type ProxyError } from "./errors.js";
+import { upstreamStatusToAnthropicError, proxyErrorToAnthropic, toAnthropicErrorBody, toAnthropicErrorSse, type ProxyError } from "./errors.js";
 import type { Config } from "./config.js";
 import type { Logger } from "./logger.js";
 import type { CodexAuthManager, CodexCredentials } from "./codex-auth.js";
@@ -197,7 +197,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
       }
 
       if (!upstream.ok) {
-        const mapped = codexStatusToAnthropicError(upstream.status);
+        const mapped = upstreamStatusToAnthropicError(upstream.status);
         const detail = await readBoundedText(upstream.body, ERROR_BODY_PEEK_BYTES);
         logger.log("warn", "codex_upstream_error", { model, status: upstream.status });
         const retryAfter = upstream.headers.get("retry-after");

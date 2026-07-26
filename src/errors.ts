@@ -19,8 +19,8 @@ export interface AnthropicError {
   readonly type: AnthropicErrorType;
 }
 
-/** Map a Codex upstream HTTP status onto the Anthropic error taxonomy Claude Code understands. */
-export const codexStatusToAnthropicError = (status: number): AnthropicError => {
+/** Map an upstream HTTP status onto the Anthropic error taxonomy Claude Code understands. */
+export const upstreamStatusToAnthropicError = (status: number): AnthropicError => {
   if (status === 400) return { status: 400, type: "invalid_request_error" };
   if (status === 401) return { status: 401, type: "authentication_error" };
   if (status === 403) return { status: 403, type: "permission_error" };
@@ -34,7 +34,7 @@ export const proxyErrorToAnthropic = (error: ProxyError): AnthropicError => {
     case "auth":
       return { status: 401, type: "authentication_error" };
     case "upstream":
-      return codexStatusToAnthropicError(error.status ?? 502);
+      return upstreamStatusToAnthropicError(error.status ?? 502);
     case "translate":
       return { status: 400, type: "invalid_request_error" };
     case "body_too_large":

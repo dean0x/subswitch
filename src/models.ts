@@ -140,16 +140,19 @@ export const ALL_MODEL_IDS: readonly string[] = MODEL_REGISTRY.map((e) => e.id);
 const ANTHROPIC_NAME_RE = /^(inherit|sonnet|opus|haiku|claude-)/i;
 
 /**
- * True when `name` is a model name that belongs on the Anthropic leg.
+ * True when `name` must never be resolvable in the routing table.
+ *
+ * One-way exclusion: a name matching this regex is reserved for the Anthropic leg and
+ * cannot appear as an alias key, alias target, or explicit model id in Codex config.
+ * It is NOT a provider classifier — a model belonging to "sonnet" family could in theory
+ * be hosted on any provider; this guard only says Claude Code's main thread must never
+ * be misrouted to a non-Anthropic handler.
  *
  * Single source of truth for two call sites that must never disagree:
- * - `config.ts` REJECTS such a name as a `codex.aliases` key or target. A key would
- *   resolve main-thread traffic onto Codex; a target is added to the routable set by
- *   `normalizeModelList`'s pressure valve, and `decideRoute`'s exact-membership check
- *   would then match the raw Anthropic model id and send the main thread to Codex.
- * - `agent-scan.ts` SKIPS such a name, so doctor never flags a Claude subagent.
+ * - `config.ts` REJECTS such a name as a `codex.aliases` key or target.
+ * - `agent-scan.ts` SKIPS such a name so doctor never flags a Claude subagent.
  */
-export const isAnthropicModelName = (name: string): boolean => ANTHROPIC_NAME_RE.test(name);
+export const isReservedAnthropicName = (name: string): boolean => ANTHROPIC_NAME_RE.test(name);
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -364,7 +367,7 @@ export const buildRoutingTable = (
   // (e.g. "anthropic.claude-3-5-sonnet-*") would be literally Anthropic names.
   const reservedNameEntries: string[] = [];
   for (const entry of registry) {
-    if (isAnthropicModelName(entry.id) || (entry.family !== undefined && isAnthropicModelName(entry.family))) {
+    if (isReservedAnthropicName(entry.id) || (entry.family !== undefined && isReservedAnthropicName(entry.family))) {
       reservedNameEntries.push(entry.id);
     }
   }
@@ -484,7 +487,7 @@ export const buildRoutingTable = (
       // PF-007: reject if key OR target is a reserved Anthropic name.
       // A key would route main-thread traffic to Codex; a target becomes routable via
       // the alias map, which decideRoute's exact-membership check would then match.
-      if (isAnthropicModelName(key) || isAnthropicModelName(target)) {
+      if (isReservedAnthropicName(key) || isReservedAnthropicName(target)) {
         rejectedAliases.push({ alias: key, target });
         continue;
       }

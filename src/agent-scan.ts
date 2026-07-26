@@ -1,7 +1,7 @@
 // Agent frontmatter scanner for the doctor preflight check.
 // No external dependencies — a parser for one `model:` line does not warrant one.
 
-import { makeModelResolver, MODEL_REGISTRY, ALL_MODEL_IDS, isAnthropicModelName } from "./models.js";
+import { makeModelResolver, MODEL_REGISTRY, ALL_MODEL_IDS, isReservedAnthropicName } from "./models.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -131,7 +131,7 @@ export const checkAgentModels = (
 
     // Skip Anthropic-leg names — they are valid and route to Anthropic, not Codex.
     // Without this skip doctor would fail on every repo that has Claude subagents.
-    if (isAnthropicModelName(model)) continue;
+    if (isReservedAnthropicName(model)) continue;
 
     // Check routing first: if it routes successfully, no finding.
     const routed = routeResolver(model);

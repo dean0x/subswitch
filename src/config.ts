@@ -5,7 +5,7 @@ import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { LogLevel } from "./logger.js";
-import { MODEL_REGISTRY, ALL_MODEL_IDS, normalizeModelList, isAnthropicModelName } from "./models.js";
+import { MODEL_REGISTRY, ALL_MODEL_IDS, normalizeModelList, isReservedAnthropicName } from "./models.js";
 
 export const DEFAULT_PORT = 4141 as const;
 // Derived from the canonical registry so there is exactly one source of truth.
@@ -42,7 +42,7 @@ const ConfigSchema = z.object({
       // codex.aliases maps user-defined alias names to canonical model ids.
       // Entries override derived family aliases (see src/models.ts makeModelResolver rule 2).
       //
-      // BOTH sides are checked against isAnthropicModelName, because either one silently
+      // BOTH sides are checked against isReservedAnthropicName, because either one silently
       // misroutes the main thread to Codex under the exact-match routing rule (ADR-005):
       //  - a 'claude-*' / tier-word KEY resolves inbound Anthropic traffic to a Codex id;
       //  - a 'claude-*' / tier-word TARGET is added to the routable set by
@@ -50,11 +50,11 @@ const ConfigSchema = z.object({
       //    Anthropic model id by exact membership and routes it to Codex.
       aliases: z
         .record(z.string().min(1), z.string().min(1))
-        .refine((aliases) => !Object.keys(aliases).some(isAnthropicModelName), {
+        .refine((aliases) => !Object.keys(aliases).some(isReservedAnthropicName), {
           message:
             "alias keys matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",
         })
-        .refine((aliases) => !Object.values(aliases).some(isAnthropicModelName), {
+        .refine((aliases) => !Object.values(aliases).some(isReservedAnthropicName), {
           message:
             "alias targets matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — the target becomes routable and would silently misroute Anthropic traffic to Codex",
         })
@@ -64,12 +64,12 @@ const ConfigSchema = z.object({
       // still prints "routing: → Codex". Reject it explicitly so the user sees a config error.
       // Thunk default keeps Config["codex"]["models"] typed string[] — no consumer type churn.
       //
-      // Each entry is checked against isAnthropicModelName for the same reason alias keys and
+      // Each entry is checked against isReservedAnthropicName for the same reason alias keys and
       // targets are — a claude-* or tier-word entry would become routable under the
       // exact-membership check (ADR-005) and silently misroute the main Claude Code thread.
       models: z
         .array(
-          z.string().min(1).refine((m) => !isAnthropicModelName(m), {
+          z.string().min(1).refine((m) => !isReservedAnthropicName(m), {
             message:
               "codex.models entries matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",
           }),
