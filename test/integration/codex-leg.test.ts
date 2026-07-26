@@ -392,7 +392,6 @@ describe("codex leg", () => {
     assert.equal(response.status, 200);
     const message = (await response.json()) as Record<string, unknown>;
     const content = message["content"] as unknown[];
-    assert.ok(content.length > 0, "content must not be empty after flush synthesis");
     assert.deepEqual(content, [{ type: "text", text: "Hello" }]);
   });
 
@@ -406,7 +405,6 @@ describe("codex leg", () => {
     assert.equal(response.status, 200);
     const message = (await response.json()) as Record<string, unknown>;
     const content = message["content"] as unknown[];
-    assert.ok(content.length > 0, "content must not be empty after flush synthesis");
     assert.deepEqual(content, [{ type: "text", text: "Partial text" }]);
   });
 
@@ -418,8 +416,7 @@ describe("codex leg", () => {
       rig.subswitch,
       JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
     );
-    // Must be non-2xx — a 200 with empty content is the data-loss bug we are preventing.
-    assert.ok(!response.ok, `expected non-2xx status, got ${response.status}`);
+    // Must be 502 — a 200 with empty content is the data-loss bug we are preventing.
     assert.equal(response.status, 502);
     const body = (await response.json()) as { error: { type: string } };
     assert.equal(body.error.type, "api_error");

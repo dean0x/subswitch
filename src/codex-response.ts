@@ -96,15 +96,12 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   let inputTokens = 0;
   let pingTimer: NodeJS.Timeout | undefined;
   let lastActivityMs = 0;
-  // Indices of content_block_start frames whose matching content_block_stop has not yet
-  // been emitted. Populated on content_block_start, cleared on content_block_stop.
-  // flush() synthesises stops for any still-open entries (paths a and b) so the
-  // aggregator never receives an unclosed block.
+  // Blocks opened but not yet stopped; flush() synthesises stops for still-open
+  // entries (paths a/b) so the aggregator never receives an unclosed block.
   const openBlockIndices = new Set<number>();
-  // Set to true when a delta event arrives but lookupBlockIndex returns undefined
-  // (path c: zero-key block; path d: id mismatch on done).  If deltas were dropped
-  // the block content is unrecoverable; flush() must error rather than synthesise an
-  // empty stop.
+  // True when a delta arrived but lookupBlockIndex returned undefined (path c:
+  // zero-key block; path d: id mismatch on done). Content is unrecoverable;
+  // flush() must error rather than synthesise an empty stop.
   let sawUnmatchedDelta = false;
 
   const blockKeys = (itemId: string | undefined, outputIndex: number | undefined): string[] => {
@@ -221,7 +218,10 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const parsed = ResponsesDeltaEventSchema.safeParse(json);
           if (!parsed.success) break;
           const index = lookupBlockIndex(parsed.data.item_id, parsed.data.output_index);
-          if (index === undefined) { sawUnmatchedDelta = true; break; }
+          if (index === undefined) {
+            sawUnmatchedDelta = true;
+            break;
+          }
           this.push(
             frame("content_block_delta", {
               type: "content_block_delta",
@@ -235,7 +235,10 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const parsed = ResponsesDeltaEventSchema.safeParse(json);
           if (!parsed.success) break;
           const index = lookupBlockIndex(parsed.data.item_id, parsed.data.output_index);
-          if (index === undefined) { sawUnmatchedDelta = true; break; }
+          if (index === undefined) {
+            sawUnmatchedDelta = true;
+            break;
+          }
           this.push(
             frame("content_block_delta", {
               type: "content_block_delta",
@@ -327,10 +330,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
       pingTimer = undefined;
       if (openBlockIndices.size > 0) {
         if (sawUnmatchedDelta) {
-          // Deltas were received but could not be matched to a block (path c: zero-key
-          // block, path d: id mismatch on done).  Content was irreversibly lost; emit
-          // an error frame so the aggregator returns a 502 rather than a silent empty-
-          // content 200.
+          // Paths c/d: deltas were unmatched, content lost — error rather than silent empty 200.
           this.push(
             toAnthropicErrorSse(
               "api_error",
@@ -338,9 +338,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
             ),
           );
         } else {
-          // Recoverable: blocks are tracked (path a: response.completed arrived before
-          // output_item.done; path b: EOF before response.completed).  Synthesise the
-          // missing content_block_stop frames so the aggregator can assemble full content.
+          // Paths a/b: synthesise missing stops so the aggregator can assemble full content.
           for (const index of openBlockIndices) {
             this.push(frame("content_block_stop", { type: "content_block_stop", index }));
           }
