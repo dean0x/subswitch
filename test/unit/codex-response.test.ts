@@ -82,6 +82,35 @@ describe("createSseParser", () => {
       /sse_event_too_large/,
     );
   });
+
+  it("parses correctly when the \\r\\n\\r\\n separator straddles a chunk boundary", async () => {
+    // SSE event body, split so the separator (\r\n\r\n) falls across two chunks.
+    // Before the O(S²/C) fix, scanning always restarted from 0 — this test verifies
+    // that the scanStart offset does not skip any boundary straddling the split point.
+    const event = "event: test\r\ndata: hello\r\n";
+    const sep = "\r\n";
+    const full = event + sep;
+    // Split at index (event.length + 1): first chunk ends with \r\n\r, second starts with \n
+    const splitAt = event.length + 1;
+    const chunks = [Buffer.from(full.slice(0, splitAt)), Buffer.from(full.slice(splitAt))];
+    const events = await parseSse(chunks);
+    assert.equal(events.length, 1, "boundary straddling a chunk boundary must be found");
+    assert.equal(events[0]!.event, "test");
+    assert.equal(events[0]!.data, "hello");
+  });
+
+  it("produces all events when a large event body arrives in many small chunks", async () => {
+    // Regression guard for the O(S²/C) scan pattern: a 64 KB data payload
+    // arriving in 1-byte chunks would previously cause ~2B char comparisons.
+    // This test verifies correctness under that delivery pattern.
+    const payload = "x".repeat(64 * 1024);
+    const sse = `data: ${payload}\n\ndata: second\n\n`;
+    const chunks = [...Buffer.from(sse)].map((b) => Buffer.from([b]));
+    const events = await parseSse(chunks, 128 * 1024);
+    assert.equal(events.length, 2);
+    assert.equal(events[0]!.data, payload);
+    assert.equal(events[1]!.data, "second");
+  });
 });
 
 describe("createAnthropicSseTranslator", () => {

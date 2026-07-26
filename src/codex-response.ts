@@ -42,13 +42,22 @@ export const createSseParser = (maxEventBytes: number): Transform => {
   return new Transform({
     readableObjectMode: true,
     transform(chunk: Buffer, _encoding, callback) {
+      const prevLen = buffer.length;
       buffer += decoder.write(chunk);
-      let boundary = buffer.search(/\r?\n\r?\n/);
+      // Only scan from (prevLen - 3) on the first search: a 4-byte separator
+      // (\r\n\r\n) cannot begin earlier, so any boundary in the already-scanned
+      // prefix was consumed in the previous chunk. This makes the search O(new
+      // bytes) rather than O(total buffer), fixing O(S²/C) complexity for large
+      // streams with infrequent events (e.g. a single 4 MiB reasoning block).
+      const scanStart = Math.max(0, prevLen - 3);
+      let rel = buffer.slice(scanStart).search(/\r?\n\r?\n/);
+      let boundary = rel === -1 ? -1 : scanStart + rel;
       while (boundary !== -1) {
         const raw = buffer.slice(0, boundary);
         buffer = buffer.slice(boundary).replace(/^\r?\n\r?\n/, "");
         const event = parseRawEvent(raw);
         if (event !== undefined) this.push(event);
+        // After consuming an event the buffer is trimmed; search from 0.
         boundary = buffer.search(/\r?\n\r?\n/);
       }
       if (buffer.length > maxEventBytes) {
