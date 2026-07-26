@@ -192,6 +192,120 @@ describe("createAnthropicSseTranslator", () => {
       "message_stop",
     ]);
   });
+
+  // P1-6: these tests belong here (translator behaviour), not in "cache observability".
+  it("closes a block left open by a missing output_item.done before the terminal frames", async () => {
+    // response.completed arrives before output_item.done, so the upstream never closes
+    // the block. The synthesised stop must land before message_stop: a streaming client
+    // that receives a content_block_stop after the terminal frame sees a corrupt stream.
+    const { frames } = await translate(loadSse("completed-before-done.sse"));
+    assert.deepEqual(frameTypes(frames), [
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+    ]);
+  });
+
+  it("errors on dropped deltas even when every block was closed", async () => {
+    // The delta's item_id matches no block, so its text is dropped, but output_item.done
+    // still closes the block. Without an error the client would receive HTTP 200 and an
+    // empty text block while the upstream had actually produced content.
+    const { frames } = await translate(loadSse("delta-id-mismatch.sse"));
+    const types = frameTypes(frames);
+    assert.ok(types.includes("error"), `expected an error frame, got ${types.join(",")}`);
+    assert.ok(!types.includes("message_stop"), "terminal frames must not follow the error frame");
+    const result = aggregateFrames(frames);
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "error");
+  });
+
+  // P0-2 Variant A: block opened, no delta, EOF before terminal event → must be error, not 200.
+  it("emits error when stream ends with an opened block but no deltas and no terminal event", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"r7","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m7","role":"assistant"}}',
+      '',
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(frameTypes(frames).includes("error"), `expected error frame, got: ${frameTypes(frames).join(",")}`);
+    const result = aggregateFrames(frames);
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "error");
+  });
+
+  // P0-2 Variant B: response.created only, EOF before any output block → must be error, not 200.
+  it("emits error when stream ends after response.created with no output blocks and no terminal event", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"r8","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(frameTypes(frames).includes("error"), `expected error frame, got: ${frameTypes(frames).join(",")}`);
+    const result = aggregateFrames(frames);
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "error");
+  });
+
+  // P1-3: duplicate output_item.added with the same item id must not create a second block.
+  it("ignores duplicate output_item.added for the same item id (no spurious empty block)", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_dup","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_dup","role":"assistant"}}',
+      '',
+      // Duplicate announcement — must be ignored.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_dup","role":"assistant"}}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"msg_dup","output_index":0,"delta":"real content"}',
+      '',
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_dup","role":"assistant"}}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"resp_dup","model":"gpt-5.5","status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}',
+      '',
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
+    const result = aggregateFrames(frames);
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    // Exactly one content block with the real text; no spurious empty block.
+    assert.deepEqual(msg["content"], [{ type: "text", text: "real content" }]);
+  });
+
+  // P1-4 path (d): done.item.id differs from added.item.id but output_index matches — content preserved.
+  it("path d: preserves content when output_item.done carries a different id than output_item.added", async () => {
+    const { frames } = await translate(loadSse("done-id-mismatch.sse"));
+    assert.deepEqual(frameTypes(frames), [
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+    ]);
+    const result = aggregateFrames(frames);
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    assert.deepEqual(msg["content"], [{ type: "text", text: "hello world" }]);
+  });
 });
 
 describe("cache observability logging", () => {
@@ -247,33 +361,6 @@ describe("cache observability logging", () => {
     assert.match(keyLine, /sessionKey=[0-9a-f]{8}(\s|$)/);
   });
 
-  it("closes a block left open by a missing output_item.done before the terminal frames", async () => {
-    // response.completed arrives before output_item.done, so the upstream never closes
-    // the block. The synthesised stop must land before message_stop: a streaming client
-    // that receives a content_block_stop after the terminal frame sees a corrupt stream.
-    const { frames } = await translate(loadSse("completed-before-done.sse"));
-    assert.deepEqual(frameTypes(frames), [
-      "message_start",
-      "content_block_start",
-      "content_block_delta",
-      "content_block_stop",
-      "message_delta",
-      "message_stop",
-    ]);
-  });
-
-  it("errors on dropped deltas even when every block was closed", async () => {
-    // The delta's item_id matches no block, so its text is dropped, but output_item.done
-    // still closes the block. Without an error the client would receive HTTP 200 and an
-    // empty text block while the upstream had actually produced content.
-    const { frames } = await translate(loadSse("delta-id-mismatch.sse"));
-    const types = frameTypes(frames);
-    assert.ok(types.includes("error"), `expected an error frame, got ${types.join(",")}`);
-    assert.ok(!types.includes("message_stop"), "terminal frames must not follow the error frame");
-    const result = aggregateFrames(frames);
-    assert.ok(result.ok);
-    assert.equal(result.value.kind, "error");
-  });
 });
 
 describe("aggregateFrames", () => {
@@ -321,5 +408,40 @@ describe("aggregateFrames", () => {
     ]);
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "upstream");
+  });
+
+  // P0-1: tool_use block with non-empty but unparseable partialJson must return err(), not input:{}.
+  it("errors when a tool_use block carries non-empty but unparseable partial_json", () => {
+    // reconcileOpenBlocks synthesises the content_block_stop; aggregateFrames then
+    // encounters truncated JSON.  Substituting {} would let callers act on invented
+    // empty arguments (e.g. execute write_file with no path).
+    const result = aggregateFrames([
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_x","name":"write_file","input":{}}}\n\n',
+      // Truncated JSON — closing quote, brace, and outer brace are all missing.
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\\"path\\\":\\\"/etc/hosts\\\",\\\"content\\\":\\\"DAN"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":5,"output_tokens":3}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ]);
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "upstream");
+    assert.match(result.error.message, /unparseable tool_use/);
+  });
+
+  // P0-1: a tool_use block whose partialJson is empty string (zero-argument call) must still return input:{}.
+  it("preserves input:{} for a tool_use block with an empty partial_json (zero-argument call)", () => {
+    const result = aggregateFrames([
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_y","name":"no_args","input":{}}}\n\n',
+      // No input_json_delta — partialJson stays "".
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":5,"output_tokens":2}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ]);
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    assert.deepEqual(msg["content"], [{ type: "tool_use", id: "call_y", name: "no_args", input: {} }]);
   });
 });

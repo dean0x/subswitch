@@ -102,7 +102,15 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   const openBlockIndices = new Set<number>();
   // True when a delta arrived but lookupBlockIndex returned undefined, so its text
   // was dropped: the upstream carried content we cannot place in any block.
+  // sawUnmatchedDelta is response-global: a single dropped delta makes the entire
+  // turn unrecoverable even if other blocks were closed cleanly. This is an
+  // intentional fail-visible trade-off — partial content is harder to reason about
+  // than a clear error.
   let sawUnmatchedDelta = false;
+  // True when at least one delta was successfully placed into a registered block.
+  // Used in flush() to distinguish a recoverable truncation (content was received)
+  // from a completely empty truncated stream (no recoverable content at all).
+  let sawMatchedDelta = false;
 
   const blockKeys = (itemId: string | undefined, outputIndex: number | undefined): string[] => {
     const keys: string[] = [];
@@ -207,6 +215,9 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const item = parsed.data.item;
           ensureStarted();
           if (item.type === "message") {
+            // Skip a duplicate announcement: upstream sometimes re-sends the same
+            // item id; creating a second block would orphan the first one.
+            if (item.id !== undefined && blockIndexByKey.has(`id:${item.id}`)) break;
             const index = nextBlockIndex++;
             for (const key of blockKeys(item.id, parsed.data.output_index)) blockIndexByKey.set(key, index);
             this.push(
@@ -218,6 +229,8 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
             );
             openBlockIndices.add(index);
           } else if (item.type === "function_call") {
+            // Skip a duplicate announcement (same guard as the message case above).
+            if (item.id !== undefined && blockIndexByKey.has(`id:${item.id}`)) break;
             sawFunctionCall = true;
             const index = nextBlockIndex++;
             for (const key of blockKeys(item.id, parsed.data.output_index)) blockIndexByKey.set(key, index);
@@ -246,6 +259,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
             sawUnmatchedDelta = true;
             break;
           }
+          sawMatchedDelta = true;
           this.push(
             frame("content_block_delta", {
               type: "content_block_delta",
@@ -263,6 +277,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
             sawUnmatchedDelta = true;
             break;
           }
+          sawMatchedDelta = true;
           this.push(
             frame("content_block_delta", {
               type: "content_block_delta",
@@ -356,10 +371,22 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
       if (pingTimer !== undefined) clearInterval(pingTimer);
       pingTimer = undefined;
       // Only reachable when the stream ended without a terminal lifecycle event:
-      // response.completed/.incomplete already reconciled, and an emitted error frame
-      // is itself terminal. Guarding on `finished` keeps flush() from ever appending
-      // a frame after message_stop.
-      if (!finished) reconcileOpenBlocks((frameText) => this.push(frameText));
+      // response.completed/.incomplete already set `finished` before they return.
+      // Guarding on `finished` prevents appending frames after message_stop.
+      if (!finished) {
+        if (sawMatchedDelta) {
+          // At least one delta landed before truncation — reconcile open blocks so
+          // the accumulated content is delivered rather than silently discarded.
+          reconcileOpenBlocks((frameText) => this.push(frameText));
+        } else if (started) {
+          // The stream opened (message_start was emitted) but no recoverable content
+          // arrived and no terminal lifecycle event was received.  This is a truncated
+          // stream — emit an error so the client gets 502 rather than a misleading
+          // 200 with empty or null content.
+          this.push(toAnthropicErrorSse("api_error", "codex stream ended without a terminal event or recoverable content"));
+        }
+        // If !started: aggregateFrames will return err("no message_start") → 502.
+      }
       callback();
     },
   });
@@ -443,7 +470,13 @@ export const aggregateFrames = (frames: readonly string[]): Result<AggregateOutc
           try {
             input = pending.partialJson === "" ? {} : JSON.parse(pending.partialJson);
           } catch {
-            input = {};
+            // partialJson is non-empty but unparseable — the JSON was truncated before
+            // the upstream closed the stream. Substituting {} would silently corrupt the
+            // tool arguments (e.g. a write_file call with no path). Return an error so
+            // the client receives 502 rather than acting on invented empty arguments.
+            // Note: partialJson === "" falls through to the {} default above; this catch
+            // is only hit when there is content to parse but it is malformed.
+            return err({ kind: "upstream", message: "codex stream ended with unparseable tool_use arguments" });
           }
           content.push({ type: "tool_use", id: pending.block["id"], name: pending.block["name"], input });
         }

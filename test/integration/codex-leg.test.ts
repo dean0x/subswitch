@@ -408,7 +408,7 @@ describe("codex leg", () => {
     assert.deepEqual(content, [{ type: "text", text: "Partial text" }]);
   });
 
-  it("path c/d: returns 502 when a block has unmatched deltas (content unrecoverable)", async () => {
+  it("path c: returns 502 when a block has unmatched deltas (content unrecoverable)", async () => {
     // done-without-id.sse: output_item.added has neither item.id nor output_index;
     // all deltas are unmatched; flush() must emit an error frame instead of empty content.
     const rig = await setupRig(sseHandler(loadSse("done-without-id.sse")));
@@ -420,6 +420,112 @@ describe("codex leg", () => {
     assert.equal(response.status, 502);
     const body = (await response.json()) as { error: { type: string } };
     assert.equal(body.error.type, "api_error");
+  });
+
+  // P1-4 path (d): done.item.id differs from added.item.id but output_index matches.
+  // Current behaviour (verified by probing): content is preserved via the output_index
+  // fallback lookup.  This test closes a test gap, not a behaviour gap.
+  it("path d: returns 200 with content when output_item.done carries a different id than added", async () => {
+    const rig = await setupRig(sseHandler(loadSse("done-id-mismatch.sse")));
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 200);
+    const message = (await response.json()) as Record<string, unknown>;
+    assert.deepEqual(message["content"], [{ type: "text", text: "hello world" }]);
+  });
+
+  // P0-1: function_call block with truncated arguments must return 502, not 200 with input:{}.
+  it("returns 502 when a function_call block has truncated (unparseable) arguments", async () => {
+    const truncatedToolArgs = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"r6","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc1","call_id":"call_x","name":"write_file"}}',
+      '',
+      'event: response.function_call_arguments.delta',
+      'data: {"type":"response.function_call_arguments.delta","item_id":"fc1","output_index":0,"delta":"{\\"path\\":\\"/etc/hosts\\",\\"content\\":\\"DAN"}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"r6","model":"gpt-5.5","status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}',
+      '',
+      '',
+    ].join('\n');
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(truncatedToolArgs);
+    });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "api_error");
+  });
+
+  // P0-2 Variant A: block opened, no delta, EOF before terminal event → 502, not 200 with empty content.
+  it("returns 502 when a block is opened but EOF arrives before any delta or terminal event", async () => {
+    const truncatedNoContent = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"r7","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m7","role":"assistant"}}',
+      '',
+      '',
+    ].join('\n');
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(truncatedNoContent);
+    });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "api_error");
+  });
+
+  // P0-2 Variant B: response.created only, no blocks, EOF before terminal event → 502, not 200 with content:[].
+  it("returns 502 when stream ends after response.created with no output blocks and no terminal event", async () => {
+    const truncatedNoBlocks = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"r9","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      '',
+    ].join('\n');
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(truncatedNoBlocks);
+    });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "api_error");
+  });
+
+  // P1-5: mid-stream upstream destroy on the non-streaming path must return 502.
+  it("shapes mid-stream upstream failures as a 502 on the non-streaming path", async () => {
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write('event: response.created\ndata: {"type":"response.created","response":{"id":"resp_x","model":"gpt-5.5"}}\n\n');
+      setTimeout(() => res.destroy(), 30);
+    });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string; message: string } };
+    assert.equal(body.error.type, "api_error");
+    assert.match(body.error.message, /codex stream interrupted/);
   });
 
   it("aggregation !ok maps to 502 (no message_start in stream)", async () => {
