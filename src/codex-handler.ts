@@ -3,7 +3,8 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
-import { upstreamStatusToAnthropicError, proxyErrorToAnthropic, toAnthropicErrorBody, toAnthropicErrorSse, type ProxyError } from "./errors.js";
+import { upstreamStatusToAnthropicError, toAnthropicErrorBody, toAnthropicErrorSse } from "./errors.js";
+import { respondJson, respondProxyError, readBoundedText } from "./provider-transport.js";
 import type { Config } from "./config.js";
 import type { Logger } from "./logger.js";
 import type { CodexAuthManager, CodexCredentials } from "./codex-auth.js";
@@ -22,6 +23,12 @@ export interface CodexHandlerDeps {
   readonly cache: ReasoningCache;
   readonly fetchImpl?: typeof fetch;
   readonly newSessionId?: () => string;
+  /**
+   * Display name used in client-visible error messages (e.g. "codex upstream unreachable").
+   * Defaults to `"codex"`. A second provider passes its own name so failures say
+   * "kimi upstream unreachable" rather than implying the Codex leg failed.
+   */
+  readonly providerName?: string;
 }
 
 export interface CodexHandler {
@@ -32,39 +39,13 @@ export interface CodexHandler {
   handleCountTokens(req: IncomingMessage, res: ServerResponse, rawBody: Buffer): void;
 }
 
-const respondJson = (res: ServerResponse, status: number, body: string, extraHeaders: Record<string, string> = {}): void => {
-  if (res.headersSent) return;
-  res.writeHead(status, { "content-type": "application/json", ...extraHeaders });
-  res.end(body);
-};
-
-const respondProxyError = (res: ServerResponse, error: ProxyError): void => {
-  const mapped = proxyErrorToAnthropic(error);
-  respondJson(res, mapped.status, toAnthropicErrorBody(mapped.type, error.message));
-};
-
-const readBoundedText = async (body: Response["body"], maxBytes: number): Promise<string> => {
-  if (body === null) return "";
-  const reader = body.getReader();
-  const parts: Buffer[] = [];
-  let total = 0;
-  try {
-    while (total < maxBytes) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      parts.push(Buffer.from(value));
-      total += value.byteLength;
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-  return Buffer.concat(parts).toString("utf8").slice(0, maxBytes);
-};
-
 export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
   const { config, logger, auth, cache } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const newSessionId = deps.newSessionId ?? randomUUID;
+  // providerName drives client-visible error strings; defaults to "codex" so
+  // every existing error message is byte-identical and no pinned test assertions change.
+  const providerName = deps.providerName ?? "codex";
   const responsesUrl = `${config.codex.baseUrl.replace(/\/$/, "")}/responses`;
 
   const buildHeaders = (credentials: CodexCredentials, sessionId: string): Record<string, string> => ({
@@ -172,8 +153,8 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
           respondProxyError(
             res,
             controller.signal.aborted
-              ? { kind: "timeout", message: "codex request timed out" }
-              : { kind: "upstream", message: "codex upstream unreachable" },
+              ? { kind: "timeout", message: `${providerName} request timed out` }
+              : { kind: "upstream", message: `${providerName} upstream unreachable` },
           );
           return;
         }
@@ -192,7 +173,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
         break;
       }
       if (upstream === undefined) {
-        respondProxyError(res, { kind: "auth", message: "codex authentication failed after refresh — run `codex login`" });
+        respondProxyError(res, { kind: "auth", message: `${providerName} authentication failed after refresh — run \`${providerName} login\`` });
         return;
       }
 
@@ -204,14 +185,14 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
         respondJson(
           res,
           mapped.status,
-          toAnthropicErrorBody(mapped.type, `codex upstream error (${upstream.status})${detail === "" ? "" : `: ${detail}`}`),
+          toAnthropicErrorBody(mapped.type, `${providerName} upstream error (${upstream.status})${detail === "" ? "" : `: ${detail}`}`),
           retryAfter !== null ? { "retry-after": retryAfter } : {},
         );
         return;
       }
 
       if (upstream.body === null) {
-        respondProxyError(res, { kind: "upstream", message: "codex upstream returned an empty body" });
+        respondProxyError(res, { kind: "upstream", message: `${providerName} upstream returned an empty body` });
         return;
       }
 
@@ -222,6 +203,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
         // so clients see the canonical id even when the upstream omits model in response.created.
         model: request.model,
         logger,
+        providerName,
         onReasoningItems: (callId, items) => cache.put(callId, items),
         ...(conversationKey !== undefined ? { conversationKey } : {}),
         ...(wantStream ? { pingIntervalMs: config.limits.pingIntervalMs } : {}),
@@ -262,7 +244,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
           // Mid-stream failure after message_start: emit an error event, never retry.
           logger.log("warn", "codex_stream_interrupted", { model });
           if (!res.writableEnded && !res.destroyed) {
-            res.write(toAnthropicErrorSse("api_error", "codex stream interrupted"));
+            res.write(toAnthropicErrorSse("api_error", `${providerName} stream interrupted`));
             res.end();
           }
         }
@@ -275,10 +257,10 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
           for await (const chunk of source) frames.push(String(chunk));
         });
       } catch {
-        respondProxyError(res, { kind: "upstream", message: "codex stream interrupted" });
+        respondProxyError(res, { kind: "upstream", message: `${providerName} stream interrupted` });
         return;
       }
-      const aggregated = aggregateFrames(frames);
+      const aggregated = aggregateFrames(frames, providerName);
       if (!aggregated.ok) {
         respondProxyError(res, aggregated.error);
         return;

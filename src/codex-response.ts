@@ -84,6 +84,18 @@ export interface TranslatorOptions {
    *  chars are logged as `sessionKey` at debug level on response.completed so
    *  key stability across turns can be verified without logging the full key. */
   readonly conversationKey?: string;
+  /**
+   * Provider display name used in client-visible fallback error messages.
+   * Defaults to `"codex"` so all existing Codex error messages are byte-identical.
+   */
+  readonly providerName?: string;
+  /**
+   * Fallback message id placed in the `message_start` frame when the upstream
+   * response does not provide one. Defaults to `"msg_codex"` for the Codex leg.
+   * A second provider should pass its own prefix (e.g. `"msg_kimi"`) so clients
+   * see a provider-appropriate id when the upstream omits it.
+   */
+  readonly messageIdFallback?: string;
 }
 
 export const createAnthropicSseTranslator = (options: TranslatorOptions): Transform => {
@@ -111,6 +123,11 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
     }
     return undefined;
   };
+
+  // Resolve provider-specific display values once at construction time (not per-chunk)
+  // so the hot streaming path stays monomorphic. [preserves performance invariant]
+  const providerName = options.providerName ?? "codex";
+  const msgIdFallback = options.messageIdFallback ?? "msg_codex";
 
   const translator = new Transform({
     objectMode: true,
@@ -144,7 +161,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           frame("message_start", {
             type: "message_start",
             message: {
-              id: id ?? "msg_codex",
+              id: id ?? msgIdFallback,
               type: "message",
               role: "assistant",
               model: model ?? options.model,
@@ -291,14 +308,14 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const message =
             parsed.success && typeof parsed.data.response.error?.["message"] === "string"
               ? (parsed.data.response.error["message"] as string)
-              : "codex response failed";
+              : `${providerName} response failed`;
           ensureStarted();
           emitError("api_error", message);
           break;
         }
         case "error": {
           const parsed = ResponsesErrorEventSchema.safeParse(json);
-          const message = parsed.success && parsed.data.message != null ? parsed.data.message : "codex stream error";
+          const message = parsed.success && parsed.data.message != null ? parsed.data.message : `${providerName} stream error`;
           ensureStarted();
           emitError("api_error", message);
           break;
@@ -350,7 +367,7 @@ interface PendingBlock {
   partialJson: string;
 }
 
-export const aggregateFrames = (frames: readonly string[]): Result<AggregateOutcome, ProxyError> => {
+export const aggregateFrames = (frames: readonly string[], providerName = "codex"): Result<AggregateOutcome, ProxyError> => {
   let message: Record<string, unknown> | undefined;
   const blocks = new Map<number, PendingBlock>();
   const content: Record<string, unknown>[] = [];
@@ -412,7 +429,7 @@ export const aggregateFrames = (frames: readonly string[]): Result<AggregateOutc
         return ok({
           kind: "error",
           errorType: (errorBody?.["type"] as AnthropicErrorType | undefined) ?? "api_error",
-          message: (errorBody?.["message"] as string | undefined) ?? "codex upstream error",
+          message: (errorBody?.["message"] as string | undefined) ?? `${providerName} upstream error`,
         });
       }
       default:
@@ -421,7 +438,7 @@ export const aggregateFrames = (frames: readonly string[]): Result<AggregateOutc
   }
 
   if (message === undefined) {
-    return err({ kind: "upstream", message: "codex stream ended before producing a message" });
+    return err({ kind: "upstream", message: `${providerName} stream ended before producing a message` });
   }
   return ok({
     kind: "message",
