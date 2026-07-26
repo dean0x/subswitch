@@ -2,6 +2,7 @@ import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { ReasoningCache } from "./reasoning-cache.js";
 import type { AnthropicRequest, AnthropicMessage } from "./wire-types.js";
+import { buildInstructions } from "./anthropic-parse.js";
 
 /**
  * Warnings are closed codes (never request content) so they can be logged
@@ -236,13 +237,6 @@ const translateEffort = (
     return undefined;
   }
   return effort;
-};
-
-export const buildInstructions = (system: AnthropicRequest["system"]): string | undefined => {
-  if (system === undefined) return undefined;
-  if (typeof system === "string") return system;
-  const text = textOfBlocks(system);
-  return text === "" ? undefined : text;
 };
 
 export const translateRequest = (
