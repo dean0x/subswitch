@@ -6,8 +6,24 @@
 // Types
 // ---------------------------------------------------------------------------
 
+/** Closed tuple of all supported provider identifiers. */
+export const PROVIDER_IDS = ["codex"] as const;
+/**
+ * Discriminator for provider-specific handler dispatch. A closed union ensures
+ * `Record<ProviderId, ProviderHandler>` is a compile-time completeness proof
+ * (added in later phases) — a defaulted or optional discriminator would allow
+ * silent gaps that only surface at runtime.
+ */
+export type ProviderId = (typeof PROVIDER_IDS)[number];
+
 export interface ModelEntry {
   readonly id: string;
+  /**
+   * Provider this model belongs to. Required — not optional, not defaulted.
+   * A closed union against PROVIDER_IDS makes the handler dispatch table a
+   * compile-time completeness proof in later phases.
+   */
+  readonly provider: ProviderId;
   /**
    * Family alias key (e.g. "sol", "terra", "luna"). Omit the key entirely for
    * entries with no family alias (e.g. gpt-5.5).
@@ -32,10 +48,10 @@ export interface ModelEntry {
  * deleting silently unroutes anyone who pinned that id.
  */
 export const MODEL_REGISTRY: readonly ModelEntry[] = [
-  { id: "gpt-5.6-sol", family: "sol", gen: [5, 6] },
-  { id: "gpt-5.6-terra", family: "terra", gen: [5, 6] },
-  { id: "gpt-5.6-luna", family: "luna", gen: [5, 6] },
-  { id: "gpt-5.5", gen: [5, 5] },
+  { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+  { id: "gpt-5.6-terra", provider: "codex", family: "terra", gen: [5, 6] },
+  { id: "gpt-5.6-luna", provider: "codex", family: "luna", gen: [5, 6] },
+  { id: "gpt-5.5", provider: "codex", gen: [5, 5] },
 ];
 
 /** All registry model ids in registry order. Byte-identical to the current DEFAULT_CODEX_MODELS. */

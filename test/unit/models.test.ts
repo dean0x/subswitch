@@ -17,9 +17,9 @@ describe("makeModelResolver — resolution order", () => {
   // Synthetic registry: two sol entries so we can test priority without
   // depending on real generations being in any specific order.
   const reg: readonly ModelEntry[] = [
-    { id: "gpt-5.10-sol", family: "sol", gen: [5, 10] },
-    { id: "gpt-5.6-sol", family: "sol", gen: [5, 6] },
-    { id: "gpt-5.6-terra", family: "terra", gen: [5, 6] },
+    { id: "gpt-5.10-sol", provider: "codex", family: "sol", gen: [5, 10] },
+    { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+    { id: "gpt-5.6-terra", provider: "codex", family: "terra", gen: [5, 6] },
   ];
 
   it("exact id in routable set resolves to itself even when an override tries to shadow it", () => {
@@ -60,8 +60,8 @@ describe("makeModelResolver — resolution order", () => {
 describe("makeModelResolver — alias derivation with synthetic registry", () => {
   it("gen [5,10] beats [5,6] — string compare would get this wrong", () => {
     const reg: readonly ModelEntry[] = [
-      { id: "model-5.6", family: "fam", gen: [5, 6] },
-      { id: "model-5.10", family: "fam", gen: [5, 10] },
+      { id: "model-5.6", provider: "codex", family: "fam", gen: [5, 6] },
+      { id: "model-5.10", provider: "codex", family: "fam", gen: [5, 10] },
     ];
     const routable = new Set(["model-5.6", "model-5.10"]);
     const resolve = makeModelResolver(reg, routable, {});
@@ -70,8 +70,8 @@ describe("makeModelResolver — alias derivation with synthetic registry", () =>
 
   it("[6,0] beats [5,99]", () => {
     const reg: readonly ModelEntry[] = [
-      { id: "model-5.99", family: "fam", gen: [5, 99] },
-      { id: "model-6.0", family: "fam", gen: [6, 0] },
+      { id: "model-5.99", provider: "codex", family: "fam", gen: [5, 99] },
+      { id: "model-6.0", provider: "codex", family: "fam", gen: [6, 0] },
     ];
     const routable = new Set(["model-5.99", "model-6.0"]);
     const resolve = makeModelResolver(reg, routable, {});
@@ -80,8 +80,8 @@ describe("makeModelResolver — alias derivation with synthetic registry", () =>
 
   it("longer tuple wins on equal prefix ([5,6,1] > [5,6])", () => {
     const reg: readonly ModelEntry[] = [
-      { id: "model-5.6", family: "fam", gen: [5, 6] },
-      { id: "model-5.6.1", family: "fam", gen: [5, 6, 1] },
+      { id: "model-5.6", provider: "codex", family: "fam", gen: [5, 6] },
+      { id: "model-5.6.1", provider: "codex", family: "fam", gen: [5, 6, 1] },
     ];
     const routable = new Set(["model-5.6", "model-5.6.1"]);
     const resolve = makeModelResolver(reg, routable, {});
@@ -90,8 +90,8 @@ describe("makeModelResolver — alias derivation with synthetic registry", () =>
 
   it("preview model is excluded from alias derivation but resolves by exact id", () => {
     const reg: readonly ModelEntry[] = [
-      { id: "model-5.6", family: "fam", gen: [5, 6] },
-      { id: "model-5.11-preview", family: "fam", gen: [5, 11], preview: true },
+      { id: "model-5.6", provider: "codex", family: "fam", gen: [5, 6] },
+      { id: "model-5.11-preview", provider: "codex", family: "fam", gen: [5, 11], preview: true },
     ];
     const routable = new Set(["model-5.6", "model-5.11-preview"]);
     const resolve = makeModelResolver(reg, routable, {});
@@ -101,8 +101,8 @@ describe("makeModelResolver — alias derivation with synthetic registry", () =>
 
   it("retired model is excluded from alias derivation but resolves by exact id", () => {
     const reg: readonly ModelEntry[] = [
-      { id: "model-5.6", family: "fam", gen: [5, 6] },
-      { id: "model-5.7-old", family: "fam", gen: [5, 7], retired: true },
+      { id: "model-5.6", provider: "codex", family: "fam", gen: [5, 6] },
+      { id: "model-5.7-old", provider: "codex", family: "fam", gen: [5, 7], retired: true },
     ];
     const routable = new Set(["model-5.6", "model-5.7-old"]);
     const resolve = makeModelResolver(reg, routable, {});
@@ -112,7 +112,7 @@ describe("makeModelResolver — alias derivation with synthetic registry", () =>
 
   it("entry without a family key gets no alias — only exact-id resolution", () => {
     const reg: readonly ModelEntry[] = [
-      { id: "no-family-model", gen: [5, 6] }, // family key intentionally omitted
+      { id: "no-family-model", provider: "codex", gen: [5, 6] }, // family key intentionally omitted
     ];
     const routable = new Set(["no-family-model"]);
     const resolve = makeModelResolver(reg, routable, {});
@@ -122,8 +122,8 @@ describe("makeModelResolver — alias derivation with synthetic registry", () =>
 
   it("first-declared wins on exact gen tie", () => {
     const reg: readonly ModelEntry[] = [
-      { id: "model-a", family: "fam", gen: [5, 6] },
-      { id: "model-b", family: "fam", gen: [5, 6] }, // same gen — model-a was first
+      { id: "model-a", provider: "codex", family: "fam", gen: [5, 6] },
+      { id: "model-b", provider: "codex", family: "fam", gen: [5, 6] }, // same gen — model-a was first
     ];
     const routable = new Set(["model-a", "model-b"]);
     const resolve = makeModelResolver(reg, routable, {});
@@ -138,8 +138,8 @@ describe("makeModelResolver — alias derivation with synthetic registry", () =>
 describe("makeModelResolver — scoping to routable set", () => {
   it("a narrowed routable set pins to the allowed model, not the newest registry entry", () => {
     const reg: readonly ModelEntry[] = [
-      { id: "model-5.6", family: "sol", gen: [5, 6] },
-      { id: "model-5.10", family: "sol", gen: [5, 10] },
+      { id: "model-5.6", provider: "codex", family: "sol", gen: [5, 6] },
+      { id: "model-5.10", provider: "codex", family: "sol", gen: [5, 10] },
     ];
     // v0.1.0 user who pinned only model-5.6 — model-5.10 added later to registry
     const routable = new Set(["model-5.6"]);
@@ -150,7 +150,7 @@ describe("makeModelResolver — scoping to routable set", () => {
 
   it("family alias is undefined when no routable member exists for that family", () => {
     const reg: readonly ModelEntry[] = [
-      { id: "model-sol", family: "sol", gen: [5, 6] },
+      { id: "model-sol", provider: "codex", family: "sol", gen: [5, 6] },
     ];
     const routable = new Set<string>([]); // empty — nothing is routable
     const resolve = makeModelResolver(reg, routable, {});
@@ -188,8 +188,8 @@ describe("normalizeModelList", () => {
     // The bug was that the valve only checked against non-retired ids, so a retired id
     // (which is NOT in the non-retired result set) would be re-appended.
     const registryWithRetired: readonly ModelEntry[] = [
-      { id: "gpt-5.6-sol", family: "sol", gen: [5, 6] },
-      { id: "gpt-4.5-old", gen: [4, 5], retired: true },
+      { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+      { id: "gpt-4.5-old", provider: "codex", gen: [4, 5], retired: true },
     ];
     const result = normalizeModelList(
       undefined,
@@ -261,11 +261,11 @@ describe("normalizeModelList", () => {
 describe("pin pins — normalizeModelList ∘ makeModelResolver across a registry bump", () => {
   // Today's registry plus a newly shipped sol generation.
   const futureRegistry: readonly ModelEntry[] = [
-    { id: "gpt-5.7-sol", family: "sol", gen: [5, 7] },
-    { id: "gpt-5.6-sol", family: "sol", gen: [5, 6] },
-    { id: "gpt-5.6-terra", family: "terra", gen: [5, 6] },
-    { id: "gpt-5.6-luna", family: "luna", gen: [5, 6] },
-    { id: "gpt-5.5", gen: [5, 5] },
+    { id: "gpt-5.7-sol", provider: "codex", family: "sol", gen: [5, 7] },
+    { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+    { id: "gpt-5.6-terra", provider: "codex", family: "terra", gen: [5, 6] },
+    { id: "gpt-5.6-luna", provider: "codex", family: "luna", gen: [5, 6] },
+    { id: "gpt-5.5", provider: "codex", gen: [5, 5] },
   ];
 
   const pinnedConfig = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"];
