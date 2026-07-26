@@ -218,22 +218,27 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
         // res is written manually rather than placed inside pipeline(): on an
         // upstream error, pipeline destroys every stream it owns, which would
         // kill the client connection before the error SSE event can be sent.
+        //
+        // writeFrame races the drain wait against controller.signal so a client
+        // that stops reading without closing cannot hold the connection open past
+        // requestTimeoutMs. Project rule: every resource must have an explicit bound.
         const writeFrame = (frame: string): Promise<void> =>
           new Promise((resolve) => {
             if (res.destroyed || res.write(frame)) {
               resolve();
               return;
             }
-            const onDrain = (): void => {
-              res.off("close", onClose);
-              resolve();
-            };
-            const onClose = (): void => {
+            const cleanup = (): void => {
               res.off("drain", onDrain);
-              resolve();
+              res.off("close", onClose);
+              controller.signal.removeEventListener("abort", onAbort);
             };
+            const onDrain = (): void => { cleanup(); resolve(); };
+            const onClose = (): void => { cleanup(); resolve(); };
+            const onAbort = (): void => { cleanup(); resolve(); };
             res.once("drain", onDrain);
             res.once("close", onClose);
+            controller.signal.addEventListener("abort", onAbort, { once: true });
           });
         try {
           await pipeline(bodyStream, parser, translator, async (source) => {
