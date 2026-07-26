@@ -32,10 +32,21 @@ export interface CodexHandlerDeps {
 }
 
 export interface CodexHandler {
-  /** `canonicalModel` is the resolved canonical id (never an alias) so that
-   *  `deriveConversationKey` and `translateRequest` both see the same stable id.
-   *  Callers resolve once before routing (applies ADR-005). */
-  handleMessages(req: IncomingMessage, res: ServerResponse, rawBody: Buffer, canonicalModel: string): Promise<void>;
+  /**
+   * Handle a /v1/messages request.
+   *
+   * `parsed` is the body already JSON-parsed by the server (JSON.parse is called
+   * exactly once per request — the P4 contract). The handler applies its own schema
+   * to `parsed` without re-parsing `rawBody`.
+   *
+   * `rawBody` is still provided for providers that forward it untouched and for
+   * `estimateTokens` (rawBody.length). Codex currently uses neither in this method.
+   *
+   * `canonicalModel` is the resolved canonical id (never an alias) so that
+   * `deriveConversationKey` and `translateRequest` both see the same stable id.
+   * Callers resolve once before routing (applies ADR-005).
+   */
+  handleMessages(req: IncomingMessage, res: ServerResponse, rawBody: Buffer, parsed: unknown, canonicalModel: string): Promise<void>;
   handleCountTokens(req: IncomingMessage, res: ServerResponse, rawBody: Buffer): void;
 }
 
@@ -64,15 +75,10 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
     "user-agent": config.codex.userAgent,
   });
 
-  const handleMessages = async (_req: IncomingMessage, res: ServerResponse, rawBody: Buffer, canonicalModel: string): Promise<void> => {
-    let parsedJson: unknown;
-    try {
-      parsedJson = JSON.parse(rawBody.toString("utf8"));
-    } catch {
-      respondJson(res, 400, toAnthropicErrorBody("invalid_request_error", "request body is not valid JSON"));
-      return;
-    }
-    const parsed = AnthropicRequestSchema.safeParse(parsedJson);
+  const handleMessages = async (_req: IncomingMessage, res: ServerResponse, _rawBody: Buffer, parsedBody: unknown, canonicalModel: string): Promise<void> => {
+    // parsedBody is pre-parsed by the server (JSON.parse called once at the request level).
+    // The handler must not call JSON.parse again — that would violate the P4 contract.
+    const parsed = AnthropicRequestSchema.safeParse(parsedBody);
     if (!parsed.success) {
       respondJson(res, 400, toAnthropicErrorBody("invalid_request_error", "request body is not a valid messages request"));
       return;
