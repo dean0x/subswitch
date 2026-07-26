@@ -319,14 +319,9 @@ export const runDoctor = async (
   ]);
 
   // Read all discovered agent files (cap read errors to per-file; don't abort the scan).
-  // Deduplicate: the two directories are the same path when doctor runs from $HOME,
-  // which would otherwise report every finding twice and double-count failures.
-  // Normalize each returned path to absolute (via pathResolve) before deduplication
-  // so that a relative project path and an absolute user path for the same file
-  // collapse to one entry in the Set — mirrors the factory-level resolution in
-  // makeLiveListAgentFiles and provides belt-and-suspenders protection for any
-  // injected fake that returns a mix of relative and absolute paths.
-  const allPaths = [...new Set([...projectFiles, ...userFiles].map((p) => pathResolve(p)))];
+  // Deduplication fires because makeLiveListAgentFiles resolves both dirs to absolute
+  // paths in the factory — identical physical locations produce identical path strings.
+  const allPaths = [...new Set([...projectFiles, ...userFiles])];
   const fileTexts = await Promise.all(
     allPaths.map(async (path) => {
       try {

@@ -138,7 +138,31 @@ describe("createConsoleLogger", () => {
     assert.equal(lines.length, 1, "newline in field value must not split into multiple write() calls");
     // The newline character itself must not be present in the emitted line.
     assert.ok(!(lines[0] ?? "").includes("\n"), "emitted line must not contain a newline character");
-    // The model field must still appear but with the newline character removed.
-    assert.ok((lines[0] ?? "").includes("model=x"), "model field must still be logged with newline removed");
+    // After stripping the newline, the value becomes "xlevel=error event=fake" — which
+    // contains whitespace and '=', so it is quoted as "xlevel=error event=fake".
+    // The field appears as: model="xlevel=error event=fake"
+    assert.ok((lines[0] ?? "").includes('model="xlevel=error event=fake"'), "anomalous value must be quoted after newline is stripped");
+  });
+
+  it("prevents field-forgery — values with whitespace or '=' are quoted so injected tokens cannot masquerade as real fields", () => {
+    const lines: string[] = [];
+    const logger = createConsoleLogger("info", (line) => lines.push(line), false);
+    // An attacker crafts a model name that embeds a fake event= token.
+    // Without quoting, a naive whitespace-splitting key=value parser with last-wins
+    // semantics would read event=fake as the event field (overriding event=request_complete).
+    logger.log("info", "request_complete", {
+      model: "x event=fake",
+      status: 200,
+    });
+    const line = lines[0] ?? "";
+    // The anomalous value must be double-quoted so that the embedded token is not parseable
+    // as a top-level field by a logfmt-aware parser.
+    assert.ok(line.includes('model="x event=fake"'), "value with whitespace must be double-quoted to contain the injected token");
+    // The bare string 'event=fake' must not appear as an unquoted top-level token.
+    // Inside the quoted value it is safe; outside it would be parseable as a real field.
+    assert.ok(!line.includes(" event=fake ") && !line.endsWith(" event=fake"),
+      "bare unquoted 'event=fake' must not appear as a top-level token in the log line");
+    // The real event token must remain.
+    assert.ok(line.includes("event=request_complete"), "real event= token must be present");
   });
 });

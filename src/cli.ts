@@ -350,7 +350,8 @@ const models = (config: Config): void => {
       .replace("enabled", pc.green("enabled"))
       .replace("disabled", pc.dim("disabled"))
       .replace("(config)", pc.yellow("(config)"))
-      .replace("(derived)", pc.dim("(derived)"));
+      .replace("(derived)", pc.dim("(derived)"))
+      .replace("(direct)", pc.dim("(direct)"));
     out(`  ${colorized}`);
   }
 };

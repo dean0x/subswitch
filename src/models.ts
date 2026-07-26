@@ -287,7 +287,7 @@ export const formatModelsReport = (input: FormatModelsReportInput): readonly str
     readonly canonical: string;
     readonly gen: string;
     readonly enabled: boolean;
-    readonly source: "derived" | "config";
+    readonly source: "derived" | "config" | "direct";
   };
 
   const rows: Row[] = [];
@@ -309,6 +309,18 @@ export const formatModelsReport = (input: FormatModelsReportInput): readonly str
     rows.push({ alias: family, canonical, gen, enabled: routable.has(canonical), source: "derived" });
   }
 
+  // Direct routable ids — ids that are in the routable set but not covered as the
+  // canonical of any alias row (e.g. gpt-5.5 which has no family, or a user-pinned
+  // id like gpt-9-experimental that has no registry entry).  Append as a trailing
+  // section with an empty alias column so the table shows the complete effective picture.
+  const coveredCanonicals = new Set(rows.map((r) => r.canonical));
+  for (const id of routable) {
+    if (coveredCanonicals.has(id)) continue;
+    const entry = registry.find((e) => e.id === id);
+    const gen = entry !== undefined ? entry.gen.join(".") : "?";
+    rows.push({ alias: "", canonical: id, gen, enabled: true, source: "direct" });
+  }
+
   if (rows.length === 0) return [];
 
   const aliasWidth = Math.max(...rows.map((r) => r.alias.length));
@@ -319,7 +331,7 @@ export const formatModelsReport = (input: FormatModelsReportInput): readonly str
     const canon = r.canonical.padEnd(canonWidth);
     const gen = `gen:${r.gen}`;
     const status = r.enabled ? "enabled" : "disabled";
-    const source = r.source === "derived" ? "(derived)" : "(config)";
+    const source = r.source === "derived" ? "(derived)" : r.source === "config" ? "(config)" : "(direct)";
     return `${alias}  →  ${canon}  ${gen}  ${status}  ${source}`;
   });
 };

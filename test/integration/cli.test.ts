@@ -323,4 +323,35 @@ describe("CLI models", () => {
       "stderr must name both the misapplied flag ('verbose') and the command ('models')",
     );
   });
+
+  it("shows gpt-5.5 as a (direct) row — it is routable by default but has no family alias", async () => {
+    // gpt-5.5 has no family field and therefore never appears as the canonical of an alias
+    // row.  Without a direct row, gpt-5.5 would silently disappear from the output even
+    // though it is routable.
+    const result = await runCli(["models"]);
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.stdout.includes("gpt-5.5"), "output must include gpt-5.5");
+    assert.ok(result.stdout.includes("(direct)"), "gpt-5.5 must appear as a (direct) row");
+  });
+
+  it("shows a non-alias routable id as enabled when a config narrows to only that id", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "subswitch-models-test-"));
+    try {
+      // A non-registry id — no alias row would cover it.  The table must show it as
+      // enabled so the user can confirm their config is effective.
+      await writeFile(
+        join(tmpDir, "subswitch.config.json"),
+        JSON.stringify({ codex: { models: ["gpt-9-experimental"] } }),
+        "utf8",
+      );
+      const result = await runCli(["models"], { cwd: tmpDir });
+      assert.equal(result.exitCode, 0);
+      assert.ok(result.stdout.includes("gpt-9-experimental"), "output must include the non-registry routable id");
+      assert.ok(result.stdout.includes("enabled"), "the non-registry routable id must be marked enabled");
+      // The alias rows for sol/terra/luna still appear but as disabled.
+      assert.ok(result.stdout.includes("disabled"), "derived alias rows must still appear as disabled");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

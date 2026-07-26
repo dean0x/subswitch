@@ -366,6 +366,42 @@ describe("formatModelsReport", () => {
     // Should have at least one "(config)" line for the override
     assert.ok(text.includes("(config)"), "should label override alias as config");
   });
+
+  it("includes a '(direct)' row for a routable id that has no family alias (gpt-5.5)", () => {
+    // gpt-5.5 has no family field — it never appears as the canonical of an alias row.
+    // It must appear as a direct row with an empty alias column so the table is complete.
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, routable: fullRoutable, overrides: {} });
+    const directLine = result.find((l) => l.includes("gpt-5.5") && l.includes("(direct)"));
+    assert.ok(directLine !== undefined, "gpt-5.5 (no family alias) must appear as a (direct) row");
+    assert.ok(directLine.includes("enabled"), "gpt-5.5 direct row must be marked enabled when it is routable");
+  });
+
+  it("includes a '(direct)' row for a non-registry routable id with no alias coverage", () => {
+    // Simulates a config with {"codex":{"models":["gpt-9-experimental"]}}.
+    // The id is unknown to the registry and has no alias — without a direct row the table
+    // shows only disabled alias rows, making it appear as though nothing is enabled.
+    const result = formatModelsReport({
+      registry: MODEL_REGISTRY,
+      routable: new Set(["gpt-9-experimental"]),
+      overrides: {},
+    });
+    const directLine = result.find((l) => l.includes("gpt-9-experimental") && l.includes("(direct)"));
+    assert.ok(directLine !== undefined, "non-registry routable id must appear as a (direct) row");
+    assert.ok(directLine.includes("enabled"), "direct row must be marked enabled");
+    // The alias rows for sol/terra/luna must still appear, now as disabled.
+    assert.ok(result.some((l) => l.includes("sol") && l.includes("disabled")), "sol alias must still appear as disabled");
+  });
+
+  it("does not emit a '(direct)' row for an id that is already the canonical of an alias row", () => {
+    // gpt-5.6-sol is the canonical of the 'sol' derived alias row — no double-listing.
+    const result = formatModelsReport({
+      registry: MODEL_REGISTRY,
+      routable: new Set(["gpt-5.6-sol"]),
+      overrides: {},
+    });
+    const solDirectLines = result.filter((l) => l.includes("gpt-5.6-sol") && l.includes("(direct)"));
+    assert.equal(solDirectLines.length, 0, "gpt-5.6-sol is already the canonical of the sol alias row — no extra (direct) row");
+  });
 });
 
 // ---------------------------------------------------------------------------

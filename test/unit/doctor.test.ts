@@ -1,8 +1,16 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { probeSubswitch, probeTlsReachable, runDoctor, type HttpGetResult, type TlsStatus } from "../../src/doctor.js";
+import { homedir, tmpdir } from "node:os";
+import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
+import {
+  probeSubswitch,
+  probeTlsReachable,
+  runDoctor,
+  makeLiveListAgentFiles,
+  type HttpGetResult,
+  type TlsStatus,
+} from "../../src/doctor.js";
 import type { Config } from "../../src/config.js";
 
 describe("probeSubswitch", () => {
@@ -349,5 +357,64 @@ describe("runDoctor — agent model scan", () => {
     assert.ok(secondRow !== undefined, "second finding row must appear in output");
     assert.ok(firstRow.includes("agent model:"), "first finding must carry the 'agent model:' label");
     assert.ok(!secondRow.includes("agent model:"), "subsequent findings must not repeat the 'agent model:' label");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// makeLiveListAgentFiles — factory-level absolute path resolution (item 1 guard)
+// ---------------------------------------------------------------------------
+//
+// The production fix for the $HOME dedup bug lives in the factory: it calls
+// pathResolve(dir) before building result paths so that a relative project dir
+// (".claude/agents") and an absolute user dir ("~/.claude/agents") produce the
+// same strings when they point to the same physical location, letting the Set in
+// runDoctor collapse them.
+//
+// The DoctorIO injection seam cannot reach this code path, so no fake injected
+// through listAgentFiles can exercise it. This test exercises the real factory
+// against the real filesystem.
+// ---------------------------------------------------------------------------
+
+describe("makeLiveListAgentFiles — absolute path deduplication", () => {
+  it("resolves both a relative and the matching absolute path to the same absolute entry so Set deduplication fires", async () => {
+    // Canonicalize before chdir: on macOS /var is a symlink to /private/var, so
+    // mkdtemp returns /var/folders/... but process.cwd() returns /private/var/folders/...
+    // after chdir.  Resolving the symlink up front ensures both strings match.
+    const tmpDirRaw = await mkdtemp(join(tmpdir(), "croxy-doctor-factory-test-"));
+    const tmpDir = await realpath(tmpDirRaw);
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(tmpDir);
+      // Create .claude/agents/test.md under tmpDir (which is now cwd).
+      await mkdir(join(tmpDir, ".claude", "agents"), { recursive: true });
+      await writeFile(join(tmpDir, ".claude", "agents", "test.md"), "---\nmodel: test\n---\n", "utf8");
+
+      const listAgentFiles = makeLiveListAgentFiles();
+      // Relative path — points at cwd/.claude/agents (cwd === canonical tmpDir)
+      const relPath = join(".", ".claude", "agents");
+      // Absolute path — the same physical directory, now also canonical
+      const absPath = join(tmpDir, ".claude", "agents");
+
+      const relResult = await listAgentFiles(relPath);
+      const absResult = await listAgentFiles(absPath);
+
+      assert.ok(relResult.length > 0, "relative path must return at least one file");
+      assert.ok(absResult.length > 0, "absolute path must return at least one file");
+
+      // Both calls must return identical absolute path strings for the same file.
+      // Pre-fix: relResult contained a relative path, absResult an absolute path —
+      // two distinct strings for the same file — so new Set() never collapsed them
+      // and every finding was reported twice.  Post-fix: both are absolute, the Set
+      // collapses them to one entry.
+      const combined = new Set([...relResult, ...absResult]);
+      assert.equal(
+        combined.size,
+        1,
+        `both relative and absolute paths for the same directory must yield identical absolute paths so the Set collapses them to one entry; got: ${JSON.stringify([...combined])}`,
+      );
+    } finally {
+      process.chdir(originalCwd);
+      await rm(tmpDirRaw, { recursive: true, force: true });
+    }
   });
 });

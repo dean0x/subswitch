@@ -100,7 +100,11 @@ export const createConsoleLogger = (
             // field values. FIELD_KEYS is a closed allow-list so no token material can
             // reach this path, but newlines in a model field could still forge a log line.
             const safe = String(value).replace(/[\r\n]/g, "");
-            parts.push(`${key}=${safe}`);
+            // Quote values that contain whitespace or '=' to prevent field-token forgery.
+            // Normal field values (model ids, route names, status codes) never contain these
+            // characters, so quoting is rare and the log format is unchanged for typical inputs.
+            const formatted = /[\s=]/.test(safe) ? `"${safe}"` : safe;
+            parts.push(`${key}=${formatted}`);
           }
         }
       }
