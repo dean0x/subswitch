@@ -9,27 +9,86 @@ import { decideRoute } from "./router.js";
 import { createAnthropicForwarder, type AnthropicForwarder } from "./anthropic-passthrough.js";
 import { CodexAuthManager, createFsAuthFileStore } from "./codex-auth.js";
 import { ReasoningCache } from "./reasoning-cache.js";
-import { createCodexHandler, type CodexHandler } from "./codex-handler.js";
+import { createCodexHandler } from "./codex-handler.js";
 import { ModelPeekSchema } from "./anthropic-wire-types.js";
-import { makeModelResolver, MODEL_REGISTRY } from "./models.js";
+import {
+  makeModelResolver,
+  buildRoutingTable,
+  resolveModel as resolveModelFromTable,
+  MODEL_REGISTRY,
+  type ModelResolution,
+  type ProviderId,
+} from "./models.js";
 import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
+import type { ProviderHandler } from "./provider-handler.js";
 
 export interface ServerDeps {
   readonly config: Config;
   readonly logger: Logger;
+  /** Privileged default leg — handles everything that is not POST /v1/messages*. */
   readonly forwardAnthropic: AnthropicForwarder;
-  readonly codex: CodexHandler;
+  /**
+   * Provider dispatch table. `Record<ProviderId, …>` — NOT `Partial`, NOT `Map`.
+   * Adding a `ProviderId` without a handler is a compile error: the whole point of
+   * `ProviderId` being a closed union is that the completeness check is structural.
+   */
+  readonly providers: Readonly<Record<ProviderId, ProviderHandler>>;
+  /**
+   * Model resolver built once at startup (applies ADR-005).
+   * "Built once" is structural: the table is closed over in this closure and
+   * cannot be replaced at request time. Production currently routes via the
+   * legacy `makeModelResolver` path inside createProxyServer; this field
+   * exists for testability and is the resolver that Phase E will flip on.
+   */
+  readonly resolve: (name: string) => ModelResolution;
 }
+
+/** The default Codex API host. Used to emit a startup warning when overridden. */
+const DEFAULT_CODEX_HOST = "chatgpt.com";
+
+/**
+ * Create and wire the Codex provider handler.
+ *
+ * Moving ReasoningCache and CodexAuthManager construction here ensures they are
+ * only allocated when a Codex provider is actually wired — not unconditionally
+ * for every process. (applies ADR-002)
+ */
+const createCodexProvider = (config: Config, logger: Logger): ProviderHandler =>
+  createCodexHandler({
+    config,
+    logger,
+    auth: new CodexAuthManager({
+      store: createFsAuthFileStore(config.codex.authFile),
+      oauthTokenUrl: config.codex.oauthTokenUrl,
+      logger,
+    }),
+    cache: new ReasoningCache(config.reasoningCache.maxEntries, config.reasoningCache.maxBytes),
+  });
 
 /** The only wiring site: every production dependency is constructed here. */
 export const buildDeps = (config: Config): ServerDeps => {
   const logger = createConsoleLogger(config.logLevel);
-  const cache = new ReasoningCache(config.reasoningCache.maxEntries, config.reasoningCache.maxBytes);
-  const auth = new CodexAuthManager({
-    store: createFsAuthFileStore(config.codex.authFile),
-    oauthTokenUrl: config.codex.oauthTokenUrl,
-    logger,
-  });
+
+  // Warn when the configured base URL host differs from the expected default.
+  // A refreshable subscription credential pointed at an arbitrary host sends the
+  // OAuth token there — warn at startup so operators notice immediately.
+  // z.url() in the config schema guarantees baseUrl is a valid URL here.
+  try {
+    const configHost = new URL(config.codex.baseUrl).hostname;
+    if (configHost !== DEFAULT_CODEX_HOST) {
+      logger.log("warn", "codex_base_url_override_detected");
+    }
+  } catch {
+    // Unreachable: z.url() already validated the URL during config parsing.
+  }
+
+  // Build the routing table once. The resolver is a pure closure over this table;
+  // "built once at startup" is a structural guarantee, not a comment. (applies ADR-005)
+  const aliasesByProvider: Record<ProviderId, Record<string, string>> = {
+    codex: config.codex.aliases,
+  };
+  const { table } = buildRoutingTable(MODEL_REGISTRY, aliasesByProvider);
+
   return {
     config,
     logger,
@@ -40,7 +99,10 @@ export const buildDeps = (config: Config): ServerDeps => {
       maxUpstreamSockets: config.limits.maxUpstreamSockets,
       logger,
     }),
-    codex: createCodexHandler({ config, logger, auth, cache }),
+    providers: {
+      codex: createCodexProvider(config, logger),
+    },
+    resolve: (name) => resolveModelFromTable(table, name),
   };
 };
 
@@ -91,21 +153,24 @@ const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buff
     req.on("error", () => settle(err({ kind: "client_disconnected", message: "client aborted while sending body" })));
   });
 
-const peekModel = (body: Buffer): string | undefined => {
-  try {
-    const parsed = ModelPeekSchema.safeParse(JSON.parse(body.toString("utf8")));
-    return parsed.success ? parsed.data.model : undefined;
-  } catch {
-    return undefined;
-  }
+/**
+ * Peek the model name from an already-parsed JSON value.
+ *
+ * Separated from the JSON.parse call so the body is parsed exactly once (P4).
+ * Returns undefined when `parsed` is not an object with a string `model` field.
+ */
+const peekModel = (parsed: unknown): string | undefined => {
+  const result = ModelPeekSchema.safeParse(parsed);
+  return result.success ? result.data.model : undefined;
 };
 
 export const createProxyServer = (deps: ServerDeps): Server => {
   const { config, logger } = deps;
 
-  // Build the resolver once — the routable set and config overrides are fixed for the
-  // process lifetime. Resolution must happen before decideRoute so that decideRoute
-  // always receives a canonical id, never a bare alias. (applies ADR-005)
+  // Build the legacy resolver that currently drives production routing.
+  // This is the OLD makeModelResolver path — Phase E replaces it with deps.resolve.
+  // Both live in the same process for this phase so the resolver is built exactly
+  // once here (createProxyServer is called once at startup).
   const resolveModel = makeModelResolver(
     MODEL_REGISTRY,
     new Set(config.codex.models),
@@ -159,11 +224,22 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         return;
       }
 
+      // Parse the body JSON once. The parsed value is passed to the provider handler
+      // so it never needs to call JSON.parse again (P4 contract).
+      // On failure: parsedBody stays null, peekModel returns undefined, and the
+      // request routes to Anthropic where the upstream will return its own error.
+      let parsedBody: unknown = null;
+      try {
+        parsedBody = JSON.parse(body.value.toString("utf8"));
+      } catch {
+        // Invalid JSON: peekModel will return undefined → decideRoute routes to anthropic.
+      }
+
       // `model` is the as-requested name — preserved for the request_complete log so
       // operators can grep for what the client typed (a typo like "sol" not "sool").
       // `canonical` is the resolved id passed to decideRoute and handleMessages so
       // both routing and upstream wire-format use the same stable string. (applies ADR-005)
-      model = peekModel(body.value);
+      model = peekModel(parsedBody);
       const canonical = model === undefined ? undefined : (resolveModel(model) ?? model);
       const decision = decideRoute(req.method ?? "POST", path, canonical, config.codex.models);
       route = decision.kind === "codex" ? `codex:${decision.endpoint}` : "anthropic";
@@ -173,12 +249,18 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         return;
       }
       if (decision.endpoint === "count_tokens") {
-        deps.codex.handleCountTokens(req, res, body.value);
+        deps.providers.codex.handleCountTokens(req, res, body.value);
         return;
       }
-      // canonical is always defined here: decideRoute returned codex only because
-      // canonical is a string present in config.codex.models (exact-membership check).
-      await deps.codex.handleMessages(req, res, body.value, canonical!);
+      // Defensive guard: decideRoute only returns codex:messages when `model` is a
+      // member of config.codex.models (exact-membership check). When model is defined,
+      // `canonical = resolveModel(model) ?? model` is always a string. The guard
+      // documents this invariant and avoids a non-null assertion. (avoids PF-002-style trap)
+      if (canonical === undefined) {
+        deps.forwardAnthropic(req, res, body.value);
+        return;
+      }
+      await deps.providers.codex.handleMessages(req, res, body.value, parsedBody, canonical);
     };
 
     dispatch().catch((cause: unknown) => {
