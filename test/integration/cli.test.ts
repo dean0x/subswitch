@@ -45,7 +45,9 @@ const runCli = async (
   return new Promise<SpawnResult>((resolve, reject) => {
     const proc = spawn(tsxBin, [cliEntry, ...args], {
       cwd,
-      env: { ...env, NO_COLOR: "1" },
+      // NO_COLOR defaults to "1" (colour off) but caller-supplied env wins,
+      // including an explicit NO_COLOR: undefined (i.e. unsetting it).
+      env: { NO_COLOR: "1", ...env },
       // Do NOT pass stdio: "inherit" — we need to capture stdout/stderr
     });
 
