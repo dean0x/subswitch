@@ -3,7 +3,7 @@
 // translator) and by codex-request.ts (which needs it for instruction extraction).
 // No imports from the rest of the repo except the Anthropic wire-type.
 
-import type { AnthropicRequest } from "./wire-types.js";
+import type { AnthropicRequest } from "./anthropic-wire-types.js";
 
 type Block = Record<string, unknown>;
 

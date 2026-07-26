@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { deriveConversationKey } from "../../src/conversation-key.js";
-import { AnthropicRequestSchema } from "../../src/wire-types.js";
+import { AnthropicRequestSchema } from "../../src/anthropic-wire-types.js";
 
 const makeRequest = (overrides: Record<string, unknown>) =>
   AnthropicRequestSchema.parse({

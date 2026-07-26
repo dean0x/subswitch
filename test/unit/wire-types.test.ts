@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ModelPeekSchema } from "../../src/wire-types.js";
+import { ModelPeekSchema } from "../../src/anthropic-wire-types.js";
 
 describe("ModelPeekSchema", () => {
   it("accepts a normal model id", () => {

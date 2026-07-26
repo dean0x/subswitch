@@ -1,7 +1,7 @@
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { ReasoningCache } from "./reasoning-cache.js";
-import type { AnthropicRequest, AnthropicMessage } from "./wire-types.js";
+import type { AnthropicRequest, AnthropicMessage } from "./anthropic-wire-types.js";
 import { buildInstructions } from "./anthropic-parse.js";
 
 /**

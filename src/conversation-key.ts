@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { AnthropicRequest } from "./wire-types.js";
+import type { AnthropicRequest } from "./anthropic-wire-types.js";
 import { buildInstructions } from "./anthropic-parse.js";
 
 // Maximum bytes per hash component. Caps hash cost on pathologically large

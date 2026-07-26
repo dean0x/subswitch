@@ -6,7 +6,7 @@ import { ReasoningCache } from "../../src/reasoning-cache.js";
 const LARGE_BYTES = 64 * 1024 * 1024;
 import { estimateTokens, translateRequest } from "../../src/codex-request.js";
 import { deriveConversationKey } from "../../src/conversation-key.js";
-import { AnthropicRequestSchema, type AnthropicRequest } from "../../src/wire-types.js";
+import { AnthropicRequestSchema, type AnthropicRequest } from "../../src/anthropic-wire-types.js";
 
 const loadFixture = (name: string): AnthropicRequest => {
   const raw = readFileSync(new URL(`../fixtures/request/${name}`, import.meta.url), "utf8");

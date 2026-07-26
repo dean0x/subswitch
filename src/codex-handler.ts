@@ -11,7 +11,7 @@ import type { ReasoningCache } from "./reasoning-cache.js";
 import { estimateTokens, translateRequest } from "./codex-request.js";
 import { deriveConversationKey } from "./conversation-key.js";
 import { aggregateFrames, createAnthropicSseTranslator, createSseParser } from "./codex-response.js";
-import { AnthropicRequestSchema } from "./wire-types.js";
+import { AnthropicRequestSchema } from "./anthropic-wire-types.js";
 
 const ERROR_BODY_PEEK_BYTES = 2048;
 

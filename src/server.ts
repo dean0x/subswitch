@@ -10,7 +10,7 @@ import { createAnthropicForwarder, type AnthropicForwarder } from "./anthropic-p
 import { CodexAuthManager, createFsAuthFileStore } from "./codex-auth.js";
 import { ReasoningCache } from "./reasoning-cache.js";
 import { createCodexHandler, type CodexHandler } from "./codex-handler.js";
-import { ModelPeekSchema } from "./wire-types.js";
+import { ModelPeekSchema } from "./anthropic-wire-types.js";
 import { makeModelResolver, MODEL_REGISTRY } from "./models.js";
 import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 
