@@ -325,12 +325,14 @@ export const formatModelsReport = (input: FormatModelsReportInput): readonly str
 
   const aliasWidth = Math.max(...rows.map((r) => r.alias.length));
   const canonWidth = Math.max(...rows.map((r) => r.canonical.length));
+  const genWidth = Math.max(...rows.map((r) => `gen:${r.gen}`.length));
+  const statusWidth = Math.max(...rows.map((r) => (r.enabled ? "enabled" : "disabled").length));
 
   return rows.map((r) => {
     const alias = r.alias.padEnd(aliasWidth);
     const canon = r.canonical.padEnd(canonWidth);
-    const gen = `gen:${r.gen}`;
-    const status = r.enabled ? "enabled" : "disabled";
+    const gen = `gen:${r.gen}`.padEnd(genWidth);
+    const status = (r.enabled ? "enabled" : "disabled").padEnd(statusWidth);
     const source = r.source === "derived" ? "(derived)" : r.source === "config" ? "(config)" : "(direct)";
     return `${alias}  →  ${canon}  ${gen}  ${status}  ${source}`;
   });
