@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { loadConfig } from "../../src/config.js";
 import { buildDeps, createProxyServer } from "../../src/server.js";
+import type { Logger } from "../../src/logger.js";
 
 export interface RecordedRequest {
   readonly method: string;
@@ -69,13 +70,32 @@ export interface SubswitchInstance {
   close(): Promise<void>;
 }
 
-export const startSubswitch = async (overrides: Record<string, unknown>): Promise<SubswitchInstance> => {
+/**
+ * Start a subswitch proxy for integration testing.
+ *
+ * @param overrides - Config fields merged over `{ logLevel: "error" }`.
+ * @param options.logger - Optional logger spliced over ServerDeps. The default
+ *   deps use `logLevel: "error"` which swallows routing logs; inject a logger
+ *   here to observe `request_complete` and other routing events in tests.
+ *
+ * Usage:
+ *   const captured: Array<{ event: string }> = [];
+ *   const ss = await startSubswitch({ anthropic: { baseUrl: upstream.url } }, {
+ *     logger: { log: (_level, event) => { captured.push({ event }); } },
+ *   });
+ */
+export const startSubswitch = async (
+  overrides: Record<string, unknown>,
+  options: { logger?: Logger } = {},
+): Promise<SubswitchInstance> => {
   const configResult = loadConfig({
     configPath: "inline-test-config.json",
     readFile: () => JSON.stringify({ logLevel: "error", ...overrides }),
   });
   if (!configResult.ok) throw new Error(configResult.error.message);
-  const server = createProxyServer(buildDeps(configResult.value.config));
+  const deps = buildDeps(configResult.value.config);
+  const finalDeps = options.logger !== undefined ? { ...deps, logger: options.logger } : deps;
+  const server = createProxyServer(finalDeps);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {
