@@ -39,6 +39,71 @@ export interface ModelEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Routing table types (Phase B — additive, wired in Phase C/D)
+// ---------------------------------------------------------------------------
+
+/**
+ * A fully-resolved model destination. Carries id + provider so the caller can
+ * dispatch to the right handler and log `route=codex:messages:gpt-5.6-sol`.
+ * family is optional (omitted for entries with no family field).
+ */
+export interface ResolvedModel {
+  readonly id: string;
+  readonly provider: ProviderId;
+  readonly family?: string;
+}
+
+/**
+ * Per-family routing decision.
+ * - unique: exactly one provider claims this family → routable by bare name.
+ * - ambiguous: two or more providers claim it → caller must use a qualified name.
+ */
+export type FamilyResolution =
+  | { readonly kind: "unique"; readonly model: ResolvedModel }
+  | { readonly kind: "ambiguous"; readonly providers: readonly ProviderId[] };
+
+/** Immutable routing table built once at startup by buildRoutingTable. */
+export interface RoutingTable {
+  /** Exact-membership set (ADR-005). Maps canonical id → provider. */
+  readonly byId: ReadonlyMap<string, ProviderId>;
+  /** Per-family resolution (unique claimant or ambiguous). */
+  readonly byFamily: ReadonlyMap<string, FamilyResolution>;
+  /** Qualified lookups: "codex:gpt-5.6-sol" and "codex:sol" both resolve here. */
+  readonly byQualified: ReadonlyMap<string, ResolvedModel>;
+  /** Alias lookups: built with Object.hasOwn guard (prototype-pollution safe). */
+  readonly byAlias: ReadonlyMap<string, ResolvedModel>;
+}
+
+/** Result of buildRoutingTable — table plus diagnostic lists. */
+export interface RoutingTableBuild {
+  readonly table: RoutingTable;
+  /** Aliases rejected because their key or target is a reserved Anthropic name (PF-007). */
+  readonly rejectedAliases: readonly { readonly alias: string; readonly target: string }[];
+  /** Families claimed by more than one provider. */
+  readonly ambiguousFamilies: readonly {
+    readonly family: string;
+    readonly providers: readonly ProviderId[];
+  }[];
+  /** Registry entries whose id or family is a reserved Anthropic name (self-check). */
+  readonly reservedNameEntries: readonly string[];
+}
+
+/**
+ * Resolution outcome returned by resolveModel.
+ *
+ * - resolved: name mapped to a concrete destination.
+ * - ambiguous: family name claimed by multiple providers; caller should error with provider list.
+ * - unresolved: name not found (typo, or known-provider qualified name with bad id/family).
+ * - unknown_qualifier: name looks like provider:id but the prefix is not in PROVIDER_IDS.
+ *   Distinguishable from unresolved so Phase D can emit "unknown provider 'X'" vs "unknown model".
+ */
+export type ModelResolution =
+  | { readonly kind: "resolved"; readonly target: ResolvedModel }
+  | { readonly kind: "ambiguous"; readonly name: string; readonly providers: readonly ProviderId[] }
+  | { readonly kind: "unresolved" }
+  | { readonly kind: "unknown_qualifier"; readonly qualifier: string };
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -269,6 +334,257 @@ export const normalizeModelList = (
   }
 
   return result;
+};
+
+// ---------------------------------------------------------------------------
+// Routing table builder (Phase B)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build an immutable routing table from the registry and per-provider alias maps.
+ *
+ * TOTAL: never throws. Problems are reported as data in the returned build object.
+ * PURE: no I/O, no credential checks, no filesystem, no clock. Deterministic.
+ *
+ * Credential state is deliberately NOT an input. Routing must not depend on whether
+ * a provider is configured — gating on credentials would turn a 401 "run codex login"
+ * into an opaque 404, collapsing two distinguishable failure modes into one.
+ *
+ * @param registry        Model registry (pass MODEL_REGISTRY in production).
+ * @param aliasesByProvider Per-provider alias maps. Required key for every ProviderId
+ *                          so the type system enforces completeness when providers are added.
+ */
+export const buildRoutingTable = (
+  registry: readonly ModelEntry[],
+  aliasesByProvider: Readonly<Record<ProviderId, Readonly<Record<string, string>>>>,
+): RoutingTableBuild => {
+  // --- 1. Registry self-check ---
+  // Any entry whose id or family is a reserved Anthropic name is reported.
+  // The registry has never been validated against this — hypothetical Bedrock ids
+  // (e.g. "anthropic.claude-3-5-sonnet-*") would be literally Anthropic names.
+  const reservedNameEntries: string[] = [];
+  for (const entry of registry) {
+    if (isAnthropicModelName(entry.id) || (entry.family !== undefined && isAnthropicModelName(entry.family))) {
+      reservedNameEntries.push(entry.id);
+    }
+  }
+
+  // --- 2. byId: all registry entries (including retired and preview) ---
+  // Retired entries stay in byId so a pin on a retired id keeps routing and gives a
+  // truthful upstream 404 naming the provider, rather than silently dropping through.
+  const byId = new Map<string, ProviderId>();
+  for (const entry of registry) {
+    if (!byId.has(entry.id)) {
+      byId.set(entry.id, entry.provider);
+    }
+  }
+
+  // --- 3. Per-provider family maps → merged byFamily ---
+  // Build per-provider so a contested family (same name in two providers) is detectable.
+  // Retired and preview entries are excluded — they must not float a bare family name.
+  // First-declared wins on exact gen tie (compareGen === 0).
+  const perProviderFamilyBest = new Map<ProviderId, Map<string, ModelEntry>>();
+
+  for (const entry of registry) {
+    if (entry.family === undefined || entry.preview === true || entry.retired === true) continue;
+    let providerMap = perProviderFamilyBest.get(entry.provider);
+    if (providerMap === undefined) {
+      providerMap = new Map<string, ModelEntry>();
+      perProviderFamilyBest.set(entry.provider, providerMap);
+    }
+    const current = providerMap.get(entry.family);
+    if (current === undefined) {
+      providerMap.set(entry.family, entry);
+    } else if (compareGen(entry.gen, current.gen) > 0) {
+      // Strictly greater: new entry is newer. On tie (0): first-declared stays.
+      providerMap.set(entry.family, entry);
+    }
+  }
+
+  // Merge per-provider maps into global byFamily.
+  // A family claimed by exactly one provider → unique. Multiple providers → ambiguous.
+  const byFamily = new Map<string, FamilyResolution>();
+  const familyProviders = new Map<string, ProviderId[]>(); // tracks claimants for dedup
+
+  for (const [provider, providerMap] of perProviderFamilyBest) {
+    for (const [family, entry] of providerMap) {
+      const claimants = familyProviders.get(family);
+      if (claimants === undefined) {
+        const model: ResolvedModel =
+          entry.family !== undefined
+            ? { id: entry.id, provider: entry.provider, family: entry.family }
+            : { id: entry.id, provider: entry.provider };
+        byFamily.set(family, { kind: "unique", model });
+        familyProviders.set(family, [provider]);
+      } else {
+        // Contest — mark ambiguous
+        const updatedClaimants = [...claimants, provider];
+        familyProviders.set(family, updatedClaimants);
+        byFamily.set(family, { kind: "ambiguous", providers: updatedClaimants });
+      }
+    }
+  }
+
+  // Collect ambiguous families for the build diagnostic.
+  const ambiguousFamilies: { readonly family: string; readonly providers: readonly ProviderId[] }[] = [];
+  for (const [family, resolution] of byFamily) {
+    if (resolution.kind === "ambiguous") {
+      ambiguousFamilies.push({ family, providers: resolution.providers });
+    }
+  }
+
+  // --- 4. byQualified: "provider:id" and "provider:family" lookups ---
+  // Supports rule-3 qualified resolution at request time without re-splitting names.
+  const byQualified = new Map<string, ResolvedModel>();
+
+  // All registry ids as "provider:id"
+  for (const entry of registry) {
+    const qualified = `${entry.provider}:${entry.id}`;
+    if (!byQualified.has(qualified)) {
+      const model: ResolvedModel =
+        entry.family !== undefined
+          ? { id: entry.id, provider: entry.provider, family: entry.family }
+          : { id: entry.id, provider: entry.provider };
+      byQualified.set(qualified, model);
+    }
+  }
+
+  // Per-provider family winners as "provider:family" (unique claimants only)
+  for (const [provider, providerMap] of perProviderFamilyBest) {
+    for (const [family, entry] of providerMap) {
+      const familyResolution = byFamily.get(family);
+      if (familyResolution?.kind !== "unique") continue; // skip ambiguous
+      const qualified = `${provider}:${family}`;
+      if (!byQualified.has(qualified)) {
+        const model: ResolvedModel =
+          entry.family !== undefined
+            ? { id: entry.id, provider: entry.provider, family: entry.family }
+            : { id: entry.id, provider: entry.provider };
+        byQualified.set(qualified, model);
+      }
+    }
+  }
+
+  // --- 5. byAlias: per-provider alias maps with prototype-pollution guard ---
+  // Uses Object.hasOwn on each key — a raw bracket lookup on a JSON-parsed object
+  // returns inherited properties (e.g. obj["constructor"] returns Object).
+  // Alias resolution is exactly ONE hop. "a → b" where b is itself an alias does NOT
+  // chase to b's target. Without this bound, the first person wanting a→b→id writes
+  // an unbounded loop with a cycle risk. (Project rule: every loop has an explicit bound.)
+  const byAlias = new Map<string, ResolvedModel>();
+  const rejectedAliases: { readonly alias: string; readonly target: string }[] = [];
+
+  for (const providerId of PROVIDER_IDS) {
+    const providerAliases = aliasesByProvider[providerId];
+    for (const key of Object.keys(providerAliases)) {
+      if (!Object.hasOwn(providerAliases, key)) continue;
+      const target = providerAliases[key];
+      if (target === undefined) continue;
+
+      // PF-007: reject if key OR target is a reserved Anthropic name.
+      // A key would route main-thread traffic to Codex; a target becomes routable via
+      // the alias map, which decideRoute's exact-membership check would then match.
+      if (isAnthropicModelName(key) || isAnthropicModelName(target)) {
+        rejectedAliases.push({ alias: key, target });
+        continue;
+      }
+
+      if (byAlias.has(key)) continue; // first provider wins on duplicate keys
+
+      // Build ResolvedModel from the target. If the target is a known registry entry,
+      // carry its family. Otherwise assume it belongs to the declaring provider
+      // (forward-compat: unknown ids may land when the registry catches up).
+      const targetEntry = registry.find((e) => e.id === target);
+      const targetProvider = byId.get(target) ?? providerId;
+      const model: ResolvedModel =
+        targetEntry?.family !== undefined
+          ? { id: target, provider: targetProvider, family: targetEntry.family }
+          : { id: target, provider: targetProvider };
+      byAlias.set(key, model);
+    }
+  }
+
+  const table: RoutingTable = {
+    byId,
+    byFamily,
+    byQualified,
+    byAlias,
+  };
+
+  return { table, rejectedAliases, ambiguousFamilies, reservedNameEntries };
+};
+
+// ---------------------------------------------------------------------------
+// Request-time resolver (Phase B)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a model name to a concrete destination using a pre-built routing table.
+ *
+ * This is the ONLY constructor of ModelResolution. Phase D's decideRoute calls this
+ * and never does name-matching itself (ADR-005: resolution strictly before dispatch).
+ *
+ * Resolution order — exactly five rules, in this order:
+ *
+ * 1. Exact id in byId → resolved. Canonical ids ALWAYS win; no alias can hijack one.
+ * 2. Alias in byAlias → resolved (one hop; Map built with Object.hasOwn — pollution safe).
+ * 3. Qualified "provider:id" → resolved only when the prefix is in PROVIDER_IDS.
+ *    An unrecognised prefix returns unknown_qualifier, not unresolved, so callers can
+ *    distinguish "typo in a model name" from "typo in a provider name".
+ * 4. Family lookup → unique claimant: resolved; contested: ambiguous.
+ * 5. Otherwise → unresolved.
+ *
+ * Colon hazard: rule 1 fires before qualified parsing, so a registry id that legitimately
+ * contains a colon (e.g. "llama3:8b") wins without ever reaching rule 3.
+ */
+export const resolveModel = (table: RoutingTable, name: string): ModelResolution => {
+  // Rule 1: exact id — ALWAYS wins (ADR-005)
+  const exactProvider = table.byId.get(name);
+  if (exactProvider !== undefined) {
+    // Look up the full ResolvedModel from byQualified (carries family if present).
+    const qualified = `${exactProvider}:${name}`;
+    const fullModel = table.byQualified.get(qualified);
+    const model: ResolvedModel =
+      fullModel !== undefined ? fullModel : { id: name, provider: exactProvider };
+    return { kind: "resolved", target: model };
+  }
+
+  // Rule 2: alias (Map built with Object.hasOwn — prototype-pollution safe at build time)
+  // Alias resolution is exactly ONE hop: if target is itself an alias we do NOT follow it.
+  const aliasModel = table.byAlias.get(name);
+  if (aliasModel !== undefined) {
+    return { kind: "resolved", target: aliasModel };
+  }
+
+  // Rule 3: qualified "provider:id" or "provider:family"
+  // A split counts as qualified ONLY when the prefix is a member of PROVIDER_IDS.
+  // This prevents "llama3:8b" from being parsed as provider "llama3".
+  const colonIndex = name.indexOf(":");
+  if (colonIndex !== -1) {
+    const prefix = name.slice(0, colonIndex);
+    if ((PROVIDER_IDS as readonly string[]).includes(prefix)) {
+      const qualifiedModel = table.byQualified.get(name);
+      if (qualifiedModel !== undefined) {
+        return { kind: "resolved", target: qualifiedModel };
+      }
+      // Known provider prefix but id/family not found — plain unresolved (not unknown_qualifier)
+      return { kind: "unresolved" };
+    }
+    // Unknown prefix — not a provider name → distinguishable from "model not found" (F5)
+    return { kind: "unknown_qualifier", qualifier: prefix };
+  }
+
+  // Rule 4: family
+  const familyResolution = table.byFamily.get(name);
+  if (familyResolution !== undefined) {
+    if (familyResolution.kind === "unique") {
+      return { kind: "resolved", target: familyResolution.model };
+    }
+    return { kind: "ambiguous", name, providers: familyResolution.providers };
+  }
+
+  // Rule 5: unresolved
+  return { kind: "unresolved" };
 };
 
 // ---------------------------------------------------------------------------
