@@ -2,6 +2,7 @@ import { open, readFile, rename } from "node:fs/promises";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { Logger } from "./logger.js";
+import type { ProviderAuth, ProviderCredential } from "./provider-auth.js";
 import { AuthFileSchema, TokenResponseSchema, type AuthFile, type TokenResponse } from "./wire-types.js";
 
 export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -9,10 +10,36 @@ export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 /** Refresh proactively when the access token expires within this margin. */
 const REFRESH_MARGIN_MS = 120_000;
 
-export interface CodexCredentials {
+/**
+ * What this file parses out of `~/.codex/auth.json` — deliberately NOT exported.
+ *
+ * These two fields are the ChatGPT OAuth pair, not a shape any other provider owes.
+ * The seam this class publishes is `ProviderCredential<"codex">`; this is the private
+ * material that seam is derived from, and keeping it unexported is what stops the
+ * ChatGPT-specific pair from becoming the de facto cross-provider credential type again.
+ */
+interface CodexTokenMaterial {
   readonly accessToken: string;
   readonly accountId: string;
 }
+
+/**
+ * Project the private token material onto the branded credential the handler consumes.
+ *
+ * Called per request rather than cached: `this.cached` holds material, so the
+ * interpolated `Bearer …` string is never given the cache's lifetime.
+ */
+const toCredential = (material: CodexTokenMaterial): ProviderCredential<"codex"> => ({
+  provider: "codex",
+  authHeaders: {
+    authorization: `Bearer ${material.accessToken}`,
+    "chatgpt-account-id": material.accountId,
+  },
+});
+
+const toCredentialResult = (
+  result: Result<CodexTokenMaterial, ProxyError>,
+): Result<ProviderCredential<"codex">, ProxyError> => (result.ok ? ok(toCredential(result.value)) : result);
 
 export interface AuthFileStore {
   read(): Promise<Result<string, ProxyError>>;
@@ -82,19 +109,19 @@ const parseAuthFile = (raw: string): Result<AuthFile, ProxyError> => {
   return ok(parsed.data);
 };
 
-interface FileCredentials {
-  readonly credentials: CodexCredentials;
+interface CachedTokenMaterial {
+  readonly material: CodexTokenMaterial;
   readonly expiresAtMs: number;
 }
 
-const credentialsFrom = (file: AuthFile): Result<FileCredentials, ProxyError> => {
+const materialFrom = (file: AuthFile): Result<CachedTokenMaterial, ProxyError> => {
   const accessToken = file.tokens.access_token;
   const accountId = file.tokens.account_id ?? jwtAccountId(accessToken);
   if (accountId === undefined) {
     return err({ kind: "auth", message: "codex account id not found in auth file or token — run `codex login`" });
   }
   return ok({
-    credentials: { accessToken, accountId },
+    material: { accessToken, accountId },
     expiresAtMs: jwtExpiryMs(accessToken) ?? Number.POSITIVE_INFINITY,
   });
 };
@@ -112,7 +139,12 @@ export interface CodexAuthOptions {
   readonly now?: () => number;
 }
 
-export class CodexAuthManager {
+/**
+ * `implements` is load-bearing, not decorative: it makes the compiler check conformance
+ * here, at the definition, instead of only where the manager is injected. An edit that
+ * broke the branded shape would otherwise surface as a puzzling error in `server.ts`.
+ */
+export class CodexAuthManager implements ProviderAuth<"codex"> {
   /**
    * Codex credentials are subscription OAuth tokens that rotate, so a pre-stream
    * 401 is worth exactly one forced refresh. Read by the handler to size its retry
@@ -126,8 +158,8 @@ export class CodexAuthManager {
   private readonly logger: Logger;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
-  private cached: FileCredentials | undefined;
-  private refreshInflight: Promise<Result<CodexCredentials, ProxyError>> | undefined;
+  private cached: CachedTokenMaterial | undefined;
+  private refreshInflight: Promise<Result<CodexTokenMaterial, ProxyError>> | undefined;
 
   constructor(options: CodexAuthOptions) {
     this.store = options.store;
@@ -137,36 +169,44 @@ export class CodexAuthManager {
     this.now = options.now ?? Date.now;
   }
 
-  async getCredentials(): Promise<Result<CodexCredentials, ProxyError>> {
+  async getCredentials(): Promise<Result<ProviderCredential<"codex">, ProxyError>> {
+    return toCredentialResult(await this.loadMaterial());
+  }
+
+  async forceRefresh(): Promise<Result<ProviderCredential<"codex">, ProxyError>> {
+    this.cached = undefined;
+    return toCredentialResult(await this.refresh());
+  }
+
+  /**
+   * Cached-or-loaded token material. Everything below this line works in material;
+   * only the two public methods above cross the branded seam.
+   */
+  private async loadMaterial(): Promise<Result<CodexTokenMaterial, ProxyError>> {
     if (this.cached !== undefined && this.cached.expiresAtMs - this.now() > REFRESH_MARGIN_MS) {
-      return ok(this.cached.credentials);
+      return ok(this.cached.material);
     }
     const raw = await this.store.read();
     if (!raw.ok) return raw;
     const file = parseAuthFile(raw.value);
     if (!file.ok) return file;
-    const fromFile = credentialsFrom(file.value);
+    const fromFile = materialFrom(file.value);
     if (fromFile.ok && fromFile.value.expiresAtMs - this.now() > REFRESH_MARGIN_MS) {
       this.cached = fromFile.value;
-      return ok(fromFile.value.credentials);
+      return ok(fromFile.value.material);
     }
     return this.refresh();
   }
 
-  async forceRefresh(): Promise<Result<CodexCredentials, ProxyError>> {
-    this.cached = undefined;
-    return this.refresh();
-  }
-
   /** Single-flight: concurrent callers share one refresh cycle. */
-  private refresh(): Promise<Result<CodexCredentials, ProxyError>> {
+  private refresh(): Promise<Result<CodexTokenMaterial, ProxyError>> {
     this.refreshInflight ??= this.doRefresh().finally(() => {
       this.refreshInflight = undefined;
     });
     return this.refreshInflight;
   }
 
-  private async doRefresh(): Promise<Result<CodexCredentials, ProxyError>> {
+  private async doRefresh(): Promise<Result<CodexTokenMaterial, ProxyError>> {
     const initialRead = await this.store.read();
     if (!initialRead.ok) return initialRead;
     const initialFile = parseAuthFile(initialRead.value);
@@ -245,7 +285,7 @@ export class CodexAuthManager {
   private async persistTokens(
     tokens: TokenResponse,
     baselineLastRefresh: string | undefined,
-  ): Promise<Result<CodexCredentials, ProxyError>> {
+  ): Promise<Result<CodexTokenMaterial, ProxyError>> {
     const reread = await this.store.read();
     const rereadFile = reread.ok ? parseAuthFile(reread.value) : reread;
 
@@ -258,10 +298,10 @@ export class CodexAuthManager {
         // Another process refreshed while we were refreshing; its rotated
         // refresh token must not be clobbered. Newer file wins.
         this.logger.log("warn", "codex_auth_file_newer_than_refresh");
-        const fromFile = credentialsFrom(fileNow);
+        const fromFile = materialFrom(fileNow);
         if (fromFile.ok) {
           this.cached = fromFile.value;
-          return ok(fromFile.value.credentials);
+          return ok(fromFile.value.material);
         }
       }
       const merged: AuthFile = {
@@ -278,10 +318,10 @@ export class CodexAuthManager {
       if (!written.ok) {
         this.logger.log("warn", "codex_auth_file_write_failed");
       }
-      const fromMerged = credentialsFrom(merged);
+      const fromMerged = materialFrom(merged);
       if (!fromMerged.ok) return fromMerged;
       this.cached = fromMerged.value;
-      return ok(fromMerged.value.credentials);
+      return ok(fromMerged.value.material);
     }
 
     // File vanished or corrupted mid-refresh: serve the fresh token from memory
@@ -291,12 +331,12 @@ export class CodexAuthManager {
     if (accountId === undefined) {
       return err({ kind: "auth", message: "refreshed codex token has no account id — run `codex login`" });
     }
-    const fresh: FileCredentials = {
-      credentials: { accessToken: tokens.access_token, accountId },
+    const fresh: CachedTokenMaterial = {
+      material: { accessToken: tokens.access_token, accountId },
       expiresAtMs: jwtExpiryMs(tokens.access_token) ?? Number.POSITIVE_INFINITY,
     };
     this.cached = fresh;
-    return ok(fresh.credentials);
+    return ok(fresh.material);
   }
 }
 

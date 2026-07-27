@@ -9,7 +9,7 @@ import type { CodexProviderConfig } from "./config.js";
 import type { Logger } from "./logger.js";
 import { providerEvents } from "./provider-events.js";
 import type { ProviderId } from "./models.js";
-import type { CodexAuthManager, CodexCredentials } from "./codex-auth.js";
+import type { ProviderAuth, ProviderCredential } from "./provider-auth.js";
 import type { ReasoningCache } from "./reasoning-cache.js";
 import { estimateTokens, translateRequest } from "./codex-request.js";
 import { deriveConversationKey } from "./conversation-key.js";
@@ -18,7 +18,13 @@ import { AnthropicRequestSchema } from "./anthropic-wire-types.js";
 
 const ERROR_BODY_PEEK_BYTES = 2048;
 
-export interface CodexHandlerDeps {
+/**
+ * `P` is the provider this handler speaks for, and it is one type parameter rather than
+ * two independent fields on purpose: `providerId` fixes it and `auth` must then match.
+ * A type parameter that constrained only `providerId` would be ceremony; it earns its
+ * place precisely because a second field is checked against it.
+ */
+export interface CodexHandlerDeps<P extends ProviderId> {
   /**
    * This provider's identity. Required, and drawn from the closed `ProviderId` union
    * — deliberately NOT an optional `providerName?: string`.
@@ -30,7 +36,7 @@ export interface CodexHandlerDeps {
    * closed-union means the value is safe to derive log event names from (see
    * `provider-events.ts` — the event token is a log-injection surface).
    */
-  readonly providerId: ProviderId;
+  readonly providerId: P;
   /**
    * This provider's own config slice — NOT the whole `Config`. The handler cannot
    * reach another provider's credentials, base URL, or aliases, and cannot read
@@ -47,7 +53,16 @@ export interface CodexHandlerDeps {
    */
   readonly loginCommand: string;
   readonly logger: Logger;
-  readonly auth: CodexAuthManager;
+  /**
+   * This provider's credential source, branded with this provider's id.
+   *
+   * `auth` and `providerId` share one type parameter, so `P` is inferred from the id
+   * and the credential must agree with it: handing provider X's handler provider Y's
+   * `ProviderAuth` is a compile error at the wiring site, which is where the mistake
+   * gets made. Nothing downstream re-checks — the outbound request cannot be built from
+   * a credential the type system has not already tied to this leg. (applies ADR-002)
+   */
+  readonly auth: ProviderAuth<P>;
   readonly cache: ReasoningCache;
   readonly fetchImpl?: typeof fetch;
   readonly newSessionId?: () => string;
@@ -72,7 +87,7 @@ export interface CodexHandler {
   handleCountTokens(req: IncomingMessage, res: ServerResponse, rawBody: Buffer): void;
 }
 
-export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
+export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<P>): CodexHandler => {
   const { providerId, provider, logger, auth, cache, loginCommand, pingIntervalMs } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const newSessionId = deps.newSessionId ?? randomUUID;
@@ -84,20 +99,22 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
   const streamIdleTimeoutMs = provider.streamIdleTimeoutMs;
   const maxSseEventBytes = provider.maxSseEventBytes;
 
-  const buildHeaders = (credentials: CodexCredentials, sessionId: string): Record<string, string> => ({
-    authorization: `Bearer ${credentials.accessToken}`,
-    "chatgpt-account-id": credentials.accountId,
+  const buildHeaders = (credential: ProviderCredential<P>, sessionId: string): Record<string, string> => ({
     // These constants are verified working against the /responses HTTP API (2026-07-21).
     // The real `codex exec` CLI uses a WebSocket app-server transport for inference,
     // so its REST headers are a different transport and not a valid parity reference.
     // We are adding UA/session stability here, NOT re-doing the working protocol
-    // constants on unverified wrong-transport data. See e2e/README.md.
+    // constants on unverified wrong-transport data. See e2e/README.md. (avoids PF-005)
     "openai-beta": "responses=experimental",
     originator: "codex_cli_rs",
     session_id: sessionId,
     accept: "text/event-stream",
     "content-type": "application/json",
     "user-agent": provider.userAgent,
+    // Auth spread LAST so a transport constant can never silently shadow the credential.
+    // A missing Authorization is a loud 401; a quietly overridden one is the failure mode
+    // worth making structurally impossible.
+    ...credential.authHeaders,
   });
 
   const handleMessages = async (_req: IncomingMessage, res: ServerResponse, _rawBody: Buffer, parsedBody: unknown, canonicalModel: string): Promise<void> => {
@@ -140,12 +157,12 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
       logger.log("info", events.effortApplied, { model, effort: translated.value.effort });
     }
 
-    const credentialsResult = await auth.getCredentials();
-    if (!credentialsResult.ok) {
-      respondProxyError(res, credentialsResult.error);
+    const credentialResult = await auth.getCredentials();
+    if (!credentialResult.ok) {
+      respondProxyError(res, credentialResult.error);
       return;
     }
-    let credentials = credentialsResult.value;
+    let credential = credentialResult.value;
 
     const controller = new AbortController();
     const onClientClose = (): void => {
@@ -178,7 +195,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
         try {
           response = await fetchImpl(responsesUrl, {
             method: "POST",
-            headers: buildHeaders(credentials, sessionId),
+            headers: buildHeaders(credential, sessionId),
             body: JSON.stringify(translated.value.body),
             signal: controller.signal,
           });
@@ -200,7 +217,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
             respondProxyError(res, refreshed.error);
             return;
           }
-          credentials = refreshed.value;
+          credential = refreshed.value;
           continue;
         }
         upstream = response;

@@ -85,7 +85,12 @@ describe("CodexAuthManager", () => {
     const endpoint = fakeTokenEndpoint(() => tokenResponse(accessToken(3_600_000)));
     const result = await manager(store, endpoint).getCredentials();
     assert.ok(result.ok);
-    assert.equal(result.value.accountId, "acct_1234567890");
+    // The manager's public contract is a branded credential carrying auth headers, not
+    // the ChatGPT token pair: the pair stays private to codex-auth.ts. These are the two
+    // headers the Codex leg has always sent, asserted at the boundary that now produces them.
+    assert.equal(result.value.provider, "codex", "the brand must name the provider these headers belong to");
+    assert.deepEqual(Object.keys(result.value.authHeaders).sort(), ["authorization", "chatgpt-account-id"]);
+    assert.equal(result.value.authHeaders["chatgpt-account-id"], "acct_1234567890");
     assert.equal(endpoint.calls.length, 0);
     assert.equal(store.writes.length, 0);
   });
@@ -96,7 +101,7 @@ describe("CodexAuthManager", () => {
     const endpoint = fakeTokenEndpoint(() => tokenResponse(newToken, "refresh-2"));
     const result = await manager(store, endpoint).getCredentials();
     assert.ok(result.ok);
-    assert.equal(result.value.accessToken, newToken);
+    assert.equal(result.value.authHeaders["authorization"], `Bearer ${newToken}`);
     assert.equal(endpoint.calls.length, 1);
     assert.equal(endpoint.calls[0]!.refresh_token, "refresh-1");
 
@@ -125,7 +130,7 @@ describe("CodexAuthManager", () => {
     });
     const result = await manager(store, endpoint).getCredentials();
     assert.ok(result.ok);
-    assert.equal(result.value.accessToken, newToken);
+    assert.equal(result.value.authHeaders["authorization"], `Bearer ${newToken}`);
     assert.deepEqual(
       endpoint.calls.map((call) => call.refresh_token),
       ["refresh-1", "refresh-rotated"],
@@ -168,7 +173,11 @@ describe("CodexAuthManager", () => {
     }));
     const result = await manager(store, endpoint).getCredentials();
     assert.ok(result.ok);
-    assert.equal(result.value.accessToken, cliToken, "credentials should come from the newer file");
+    assert.equal(
+      result.value.authHeaders["authorization"],
+      `Bearer ${cliToken}`,
+      "credentials should come from the newer file",
+    );
     assert.equal(store.writes.length, 0, "the CLI's rotated refresh token must not be clobbered");
   });
 

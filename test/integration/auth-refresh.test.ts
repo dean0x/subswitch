@@ -37,8 +37,9 @@ describe("codex auth refresh against the real filesystem", () => {
 
     const result = await auth.getCredentials();
     assert.ok(result.ok);
-    assert.equal(result.value.accessToken, newToken);
-    assert.equal(result.value.accountId, "acct_integration_1");
+    assert.equal(result.value.provider, "codex");
+    assert.equal(result.value.authHeaders["authorization"], `Bearer ${newToken}`);
+    assert.equal(result.value.authHeaders["chatgpt-account-id"], "acct_integration_1");
     assert.equal(oauth.requests.length, 1);
 
     const oauthBody = JSON.parse(oauth.requests[0]!.body.toString("utf8")) as Record<string, unknown>;

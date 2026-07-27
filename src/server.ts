@@ -10,6 +10,7 @@ import { providerEvents } from "./provider-events.js";
 import { decideRoute } from "./router.js";
 import { createAnthropicForwarder, type AnthropicForwarder } from "./anthropic-passthrough.js";
 import { CodexAuthManager, createFsAuthFileStore } from "./codex-auth.js";
+import type { ProviderAuth } from "./provider-auth.js";
 import { ReasoningCache } from "./reasoning-cache.js";
 import { createCodexHandler } from "./codex-handler.js";
 import { ModelPeekSchema } from "./anthropic-wire-types.js";
@@ -50,29 +51,24 @@ export interface ServerDeps {
  * Moving ReasoningCache and CodexAuthManager construction here ensures they are
  * only allocated when a Codex provider is actually wired — not unconditionally
  * for every process. (applies ADR-002)
- *
- * CROSS-PROVIDER CREDENTIAL HAZARD: `auth` here is concretely typed as
- * `CodexAuthManager`. Before a second provider is wired in `buildDeps`, this
- * factory must accept a branded `ProviderAuth<"codex">` (or equivalent) so that
- * injecting the wrong provider's credential is a compile error, not a runtime
- * subscription-token leak to a third-party host. A branded `ProviderAuth` seam
- * is deliberately owed (the deleted src/provider-auth.ts described the wrong
- * shape — headers-out instead of token-out — so it was removed; the type-level
- * barrier is deferred to the branch that wires a second credential).
  */
 const createCodexProvider = (config: Config, logger: Logger): ProviderHandler => {
   const provider = config.providers.codex;
+  // Annotated rather than inferred: conformance is then checked here as well as at
+  // `implements ProviderAuth<"codex">`, so an edit to CodexAuthManager that broke the
+  // brand fails at the wiring site too — the place a mismatched credential enters.
+  const auth: ProviderAuth<"codex"> = new CodexAuthManager({
+    store: createFsAuthFileStore(provider.authFile),
+    oauthTokenUrl: provider.oauthTokenUrl,
+    logger,
+  });
   return createCodexHandler({
     providerId: "codex",
     provider,
     pingIntervalMs: config.limits.pingIntervalMs,
     loginCommand: providerConfigFor(config, "codex").loginCommand,
     logger,
-    auth: new CodexAuthManager({
-      store: createFsAuthFileStore(provider.authFile),
-      oauthTokenUrl: provider.oauthTokenUrl,
-      logger,
-    }),
+    auth,
     cache: new ReasoningCache(provider.reasoningCache.maxEntries, provider.reasoningCache.maxBytes),
   });
 };
