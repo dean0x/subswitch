@@ -5,7 +5,7 @@ description: "Use when modifying the CLI entry point, init wizard, doctor prefli
 category: architecture
 directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/logger.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts]
 created: 2026-07-23
-updated: 2026-07-27
+updated: 2026-07-28
 ---
 
 # CLI / init command / terminal UX
@@ -76,9 +76,11 @@ Key exports for CLI UX:
 - `buildRoutingTable(registry, aliasesByProvider)` — called in both `buildDeps` (server) and `runDoctor` (CLI).
 - `resolveModel(table, name)` — five-rule resolution returning `ModelResolution`.
 - `isReservedAnthropicName(name)` — prefix-based (not exact); guards alias keys and targets in `buildRoutingTable` and `AliasesSchema` refines in `config.ts`. Also the skip predicate in `agent-scan.ts`.
-- `formatModelsReport(input)` — human-readable alias table: `alias → canonical  provider  gen:X.Y  enabled|disabled  (derived)|(config)|(direct)`. Provider column is new.
-- `buildModelRows(registry, overrides)` — model-centric rows for `--json` output.
-- `buildAliasRows(registry, overrides)` — alias-centric rows used internally by `formatModelsReport`.
+- `formatModelsReport(input)` — human-readable alias table: `alias → canonical  provider  gen:X.Y  enabled|disabled  (derived)|(config)|(direct)`. Takes `{ registry, aliasesByProvider }`.
+- `buildModelRows(registry, aliasesByProvider)` — model-centric rows for `--json` output.
+- `buildAliasRows(registry, aliasesByProvider)` — alias-centric rows used internally by `formatModelsReport`.
+
+All three row-building entry points take the **same per-provider alias record** that `buildRoutingTable` takes — `aliasesByProvider(config)` from `config.ts`. They previously took a flat `Record<string, string>` of just the codex aliases, which is why the display layer had to guess a provider for a target it could not find.
 
 ### src/cli.ts — Dispatcher
 
@@ -96,8 +98,8 @@ Key exports for CLI UX:
 The main switch is exhaustive: the `default` branch assigns to `never` and calls `fail()`.
 
 **`models` subcommand.** Calls `loadConfig()`, then dispatches on `--json`:
-- Without `--json`: calls `formatModelsReport({registry: MODEL_REGISTRY, overrides: config.codex.aliases})` and colorizes the `enabled`/`disabled` and source columns via picocolors.
-- With `--json`: calls `buildModelRows(MODEL_REGISTRY, config.codex.aliases)` and emits a JSON payload including `providers[]`, `models[]`, `schemaVersion`, and metadata. The JSON branch returns BEFORE `resolveColorEnabled` so `FORCE_COLOR` cannot bleed into JSON output.
+- Without `--json`: calls `formatModelsReport({registry: MODEL_REGISTRY, aliasesByProvider: aliasesByProvider(config)})` and colorizes the `enabled`/`disabled` and source columns via picocolors.
+- With `--json`: calls `buildModelRows(MODEL_REGISTRY, aliasesByProvider(config))` and emits a JSON payload including `providers[]`, `models[]`, `schemaVersion`, and metadata. The JSON branch returns BEFORE `resolveColorEnabled` so `FORCE_COLOR` cannot bleed into JSON output. Verified 2026-07-28: two consecutive `models --json` runs are byte-identical, and `FORCE_COLOR=1` adds zero ANSI bytes to `--json` while the table form emits them.
 
 **Per-provider ready banner.** On `serve`, the banner prints one line per `PROVIDER_IDS` entry with model count and host. `providerConfigFor(effectiveConfig, id)` is the single source for per-provider display metadata.
 

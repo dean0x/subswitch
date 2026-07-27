@@ -68,6 +68,12 @@ Credential state is deliberately **not** an input to `buildRoutingTable`: gating
 
 **Numeric gen tuple comparison.** `[5,10] > [5,6]` and `[6,0] > [5,99]` — comparison is numeric element-wise, NOT string comparison. Longer tuple wins on equal prefix (`[5,6,1] > [5,6]`). On exact tie, first-declared registry entry wins (update on `> 0` only, not `>= 0`).
 
+**`selectFamilyWinners` is the ONLY implementation of the family selection rule.** It returns both views in one pass: `byProvider` (the per-provider partition, which `byQualified` needs so `codex:sol` resolves even when `sol` is contested) and `claims` (the collapsed per-family verdict — `unique` with the winning `ModelEntry`, or `contested` with the claimant list). `buildRoutingTable` maps `claims` to `byFamily`; `buildAliasRows`/`buildModelRows` read `flattenUniqueFamilies(claims)`. Neither side derives a winner for itself. A claim carries the winning `ModelEntry`, not its id — handing back an id forces every consumer to re-find the entry and invent a fallback for a miss that cannot happen.
+
+**A contested family produces no derived alias row.** The router returns `ambiguous` for the bare name, so the display must not show a row claiming one provider owns it. Its members still appear as `(direct)` rows. Before this was unified, `buildFamilyMap` flattened across providers and silently arbitrated — a divergence that would have gone live the moment `PROVIDER_IDS` grew.
+
+**`collectAliasDeclarations` is the only reader of the per-provider alias record.** It applies the `Object.hasOwn` guard, the `PROVIDER_IDS`-order-then-key-order iteration, first-provider-wins deduplication, and the PF-007 `reserved` verdict. Deduplication applies only to non-reserved keys — a reserved declaration never binds the name, so a second provider's reserved declaration of the same name is still a distinct rejection. Both the router and the display classify from this one list.
+
 **`preview: true`** entries are excluded from `byFamily` but resolvable by exact id. **`retired: true`** entries are excluded from `byFamily` and from qualified-family lookups, but resolvable by exact id and by `"provider:id"` qualified lookup.
 
 **Canary test.** `test/unit/models.test.ts` asserts that `sol`, `terra`, and `luna` currently resolve to their `gpt-5.6-*` ids. This test is SUPPOSED to fail when a new generation is added to the registry — that is the intentional signal to review which agents' `model:` lines will repoint.
@@ -208,6 +214,10 @@ IncomingMessage (Anthropic wire)
 
 **Omitting contested families from `byQualified`.** A family claimed by two providers must still resolve via `codex:sol`. Skipping contested entries from the qualified map makes the 400 "qualify with provider:name" remediation advice lead directly to unresolved.
 
+**Re-deriving a family winner anywhere outside `selectFamilyWinners`.** Any second loop that walks the registry picking a highest-`gen` entry is a copy of the rule and will drift — that is exactly what `buildFamilyMap` was. Consume `claims` or `flattenUniqueFamilies(claims)`. `test/unit/routing-table.test.ts` D-T1 exists to catch this: it fails the moment the display flattens across providers on its own.
+
+**Falling back to `PROVIDER_IDS[0]` for an unknown provider.** The declaring provider is always in hand — `collectAliasDeclarations` carries it, matching the router's `byId.get(target) ?? provider`. A first-provider assumption is correct only by coincidence while `PROVIDER_IDS.length === 1`, and no test can distinguish the two until a second provider lands.
+
 **Regenerating `test/fixtures/sse-splits.golden.json` to make a parser change pass.** The golden was captured from the parser as it stood *before* the deferred-join rewrite and is the definition of "frame boundaries unchanged". A `createSseParser` change that needs a new golden has changed the one thing the golden exists to forbid. Regenerate it only when the corpus itself grows (`node --import tsx test/tools/gen-sse-splits-golden.ts`), and review every changed frame sequence as a behaviour claim.
 
 **Joining the SSE accumulator outside the boundary branch.** `createSseParser` holds undelivered text as an array of segments and joins only on the chunk that completes an event. Adding a `pending.join("")` on the no-boundary path restores the quadratic `buffer += chunk` behaviour — 38x slower at 8 MiB — while every test stays green. Verified by mutation, not assumed.
@@ -237,7 +247,7 @@ IncomingMessage (Anthropic wire)
 ## Key Files
 
 - `src/server.ts` — Wiring site for resolve→route→send; `buildDeps` calls `buildRoutingTable` once; `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; concurrency gate
-- `src/models.ts` — Pure registry module (no repo imports); `MODEL_REGISTRY`, `PROVIDER_IDS`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `formatModelsReport`, `buildModelRows`, `buildAliasRows`
+- `src/models.ts` — Pure registry module (no repo imports); `MODEL_REGISTRY`, `PROVIDER_IDS`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `formatModelsReport`, `buildModelRows`, `buildAliasRows`. Private and load-bearing: `compareGen` (the numeric comparator), `selectFamilyWinners` (THE family rule, one implementation), `flattenUniqueFamilies`, `collectAliasDeclarations`
 - `src/router.ts` — Pure routing decision; accepts `ModelResolution` (not raw string); zero name matching; exhaustive switch
 - `src/codex-handler.ts` — `handleMessages(req, res, rawBody, parsed, canonicalModel)` entry point; canonical substitution; sessionId before loop; bounded retry
 - `src/provider-transport.ts` — `createFrameWriter` (abort-safe, backpressure-aware); `respondJson`, `respondProxyError`, `readBoundedText`
