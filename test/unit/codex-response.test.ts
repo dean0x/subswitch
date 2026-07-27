@@ -138,6 +138,68 @@ describe("createSseParser", () => {
     assert.equal(events[1]!.data, "two");
   });
 
+  it("keeps a 4-character separator whole when only its final character is new", async () => {
+    // THE CARRY-WIDTH PROOF. The parser carries the last 3 characters of the accumulator
+    // into the next chunk's search. 3 is exact, and this is the case that fixes it: the
+    // accumulator ends with `\r\n\r` and the next chunk opens with `\n`, so exactly one
+    // character of the 4-character separator is new and the other three must be carried.
+    //
+    // At a carry of 2 this does NOT fail loudly — the search string starts `\n\r\n…`, the
+    // regex matches that 3-character separator one index later, and the event still ends up
+    // split. What leaks is a stray `\r` on the tail of the last data line, because `raw` is
+    // cut one character too late. So the discriminating assertion is on `data`, not on
+    // `events.length`; a count-only assertion passes at carry 2 (avoids PF-009).
+    const chunks = ["event: a\r\ndata: 1\r\n\r", "\nevent: b\r\ndata: 2\r\n\r\n"].map((c) => Buffer.from(c));
+    const events = await parseSse(chunks);
+    assert.equal(events.length, 2);
+    assert.equal(events[0]!.data, "1", "a stray \\r here means the separator was matched one character late");
+    assert.equal(events[1]!.data, "2");
+  });
+
+  it("decodes a 4-byte codepoint split at every internal byte offset", async () => {
+    // StringDecoder holds partial code points across chunk boundaries. Decoding each chunk
+    // independently (`chunk.toString("utf8")`) yields replacement characters instead.
+    const sse = 'data: {"t":"\u{1F600}"}\n\ndata: after\n\n';
+    const bytes = Buffer.from(sse);
+    const emojiStart = bytes.indexOf(Buffer.from("\u{1F600}"));
+    assert.equal(bytes.subarray(emojiStart, emojiStart + 4).length, 4, "expected a 4-byte codepoint");
+    for (let split = emojiStart + 1; split < emojiStart + 4; split += 1) {
+      const events = await parseSse([bytes.subarray(0, split), bytes.subarray(split)]);
+      assert.equal(events.length, 2, `split at byte ${split}`);
+      assert.equal(events[0]!.data, '{"t":"\u{1F600}"}', `codepoint corrupted by a split at byte ${split}`);
+      assert.equal(events[1]!.data, "after");
+    }
+  });
+
+  it("bounds the residual by accumulated characters, not by segment count", async () => {
+    // Three 512-character chunks with no separator: 1536 characters across 3 segments.
+    // A bound that tested the segment COUNT would see 3 and never trip. The existing
+    // single-chunk case above cannot tell the two apart, because there the count is 1.
+    const chunk = Buffer.from("x".repeat(512));
+    await assert.rejects(parseSse([chunk, chunk, chunk], 1024), /sse_event_too_large/);
+  });
+
+  it("rejects an oversized event as it accumulates, not after buffering all of it", async () => {
+    // maxEventBytes is a MEMORY bound, so it has to trip while the event is still arriving.
+    // A check moved after the join would still surface `sse_event_too_large` eventually —
+    // at flush, having buffered every byte — which is exactly the control this asserts
+    // against. Counting accepted chunks is what distinguishes the two.
+    const parser = createSseParser(1024);
+    let failure: Error | undefined;
+    parser.on("error", (e: Error) => {
+      failure = e;
+    });
+    let accepted = 0;
+    for (let i = 0; i < 2048; i += 1) {
+      if (failure !== undefined) break;
+      parser.write(Buffer.from("x"));
+      accepted += 1;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(failure?.message, "sse_event_too_large");
+    assert.equal(accepted, 1025, "must reject on the first chunk that pushes the residual past the bound");
+  });
+
   it("produces all events when a large event body arrives in many small chunks", async () => {
     // Regression guard for the O(S²/C) scan pattern: a 64 KB data payload
     // arriving in 1-byte chunks would previously cause ~2B char comparisons.

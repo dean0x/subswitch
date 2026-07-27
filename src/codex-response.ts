@@ -22,9 +22,101 @@ export interface SseEvent {
   readonly data: string;
 }
 
+/**
+ * The SSE separator. Longest match is `\r\n\r\n` — four characters. That 4 is the only
+ * input to the carry width below, so the two must never drift apart.
+ *
+ * Hoisted to module scope deliberately: both literals are non-global, and neither
+ * `String.prototype.search` nor a non-global `replace` carries `lastIndex` state, so a
+ * shared instance behaves identically to a fresh one per call and stops allocating a
+ * regex per chunk.
+ */
+const SEP_RE = /\r?\n\r?\n/;
+const LEADING_SEP_RE = /^\r?\n\r?\n/;
+
+/**
+ * Chars of the accumulator tail carried into the next chunk's search.
+ *
+ * A separator that lies entirely inside the already-scanned prefix was found and consumed
+ * on an earlier chunk. So a newly-completed match must cover at least one new character:
+ * a match of length L starting at absolute index i spans [i, i+L), and touching a new
+ * character requires i + L - 1 >= prevLen, i.e. i >= prevLen - (L - 1). With L at most 4,
+ * the earliest a newly-completed match can begin is prevLen - 3.
+ *
+ * Three is exact, not conservative. At 2 the case "accumulator ends with `\r\n\r`, next
+ * chunk opens with `\n`" is missed as a 4-char match, and the regex instead matches the
+ * 3-char `\n\r\n` one character later — which silently leaves a stray `\r` on the tail of
+ * the emitted event's last data line rather than failing outright.
+ */
+const CARRY_CHARS = 3;
+
+/**
+ * Char count at which the segment array is collapsed back to one string.
+ *
+ * The trigger is geometric: each pass copies `pendingLen` chars and at least doubles the
+ * next threshold, so the copying across one whole event is bounded by 2 x its final length
+ * — linear. A fixed-count trigger ("compact every N segments") would not be; it would
+ * reintroduce O(len^2 / N) and must be rejected.
+ *
+ * What this does NOT do is give the segment count a tight bound, and the comment should not
+ * pretend otherwise. Peak segments still scale with `pendingLen` (compaction roughly halves
+ * the peak, it does not change the order) — and it cannot be otherwise, because compacting
+ * often enough to hold segments under a constant is exactly the quadratic trigger above.
+ * The explicit bound on the array is instead structural: empty segments are never pushed,
+ * so every slot carries at least one char, so `pending.length <= pendingLen <=
+ * maxEventBytes + one chunk`. Compaction's job here is the copy budget, not the slot count.
+ */
+const MIN_COMPACT_CHARS = 64 * 1024;
+
+/**
+ * Bounded SSE parser. Buffer chunks in, `{ event, data }` records out.
+ *
+ * Chunks are held as an array of undelivered segments and joined only on the chunk that
+ * completes an event, rather than concatenated into one string per chunk. The naive form
+ * (`buffer += chunk` then `buffer.slice(...)`) is quadratic in stream length: `+=` builds
+ * a V8 cons-string and the `slice` forces a flatten, so every chunk pays an O(total)
+ * memcpy. See `test/tools/sse-parser.bench.ts`.
+ *
+ * WHY FRAME BOUNDARIES ARE UNCHANGED BY CONSTRUCTION. Let `full` be the string the naive
+ * form would hold. The invariant maintained below is `carry === full.slice(max(0,
+ * pendingLen - CARRY_CHARS))` and `pending.join("") === full`. The naive form searched
+ * `full.slice(scanStart)` with `scanStart = max(0, prevLen - 3)`; here the searched string
+ * is `carry + text`, which is that same substring, and the absolute index is recovered as
+ * `(pendingLen - carry.length) + rel`, where `pendingLen - carry.length` IS `scanStart`.
+ * Same substring searched, same absolute index produced. The one observable difference is
+ * when a string gets allocated. Pinned by `test/unit/sse-split-golden.test.ts` over 66,039
+ * splits captured from the pre-rewrite parser; that golden must never be regenerated to
+ * accommodate a parser change.
+ *
+ * `carry = search.slice(-CARRY_CHARS)` slices UTF-16 code units and can split a surrogate
+ * pair. Harmless: `carry` is only ever concatenated for searching, the separator regex
+ * matches `\r` and `\n` alone (both BMP), and `carry` is never pushed downstream.
+ * `StringDecoder` guarantees `write()` never emits a partial code point, so every segment
+ * in `pending` is well-formed on its own.
+ *
+ * `maxEventBytes` is measured in UTF-16 code units despite the name — that is what the
+ * naive form's `buffer.length` measured, and it is preserved exactly. Changing it to byte
+ * length would move the trip point for multi-byte payloads and is a separate decision. The
+ * check runs per chunk against the undelivered residual, so it bounds live memory rather
+ * than reporting on an overflow already buffered.
+ */
 export const createSseParser = (maxEventBytes: number): Transform => {
   const decoder = new StringDecoder("utf8");
-  let buffer = "";
+  /** Undelivered text segments; `pending.join("")` is the naive form's `buffer`. */
+  const pending: string[] = [];
+  /** Sum of `pending[i].length`, maintained incrementally so no join is needed to read it. */
+  let pendingLen = 0;
+  /** Last `min(CARRY_CHARS, pendingLen)` chars of the joined pending. */
+  let carry = "";
+  let compactAt = MIN_COMPACT_CHARS;
+
+  const resetAccumulator = (residual: string): void => {
+    pending.length = 0;
+    if (residual !== "") pending.push(residual);
+    pendingLen = residual.length;
+    carry = residual.slice(-CARRY_CHARS);
+    compactAt = MIN_COMPACT_CHARS;
+  };
 
   const parseRawEvent = (raw: string): SseEvent | undefined => {
     let eventName: string | undefined;
@@ -44,45 +136,53 @@ export const createSseParser = (maxEventBytes: number): Transform => {
   return new Transform({
     readableObjectMode: true,
     transform(chunk: Buffer, _encoding, callback) {
-      const prevLen = buffer.length;
-      buffer += decoder.write(chunk);
-      // Only scan from (prevLen - 3) on the first search: a 4-byte separator
-      // (\r\n\r\n) cannot begin earlier, so any boundary in the already-scanned
-      // prefix was consumed in the previous chunk. A newly-completed match must
-      // include at least one new byte, so prevLen - (4 - 1) is the earliest it can start.
-      //
-      // This bounds the REGEX work to O(new bytes), but the overall cost is still
-      // quadratic in stream size: `buffer += …` builds a cons-string and `.slice()`
-      // forces V8 to flatten it, an O(total buffer) memcpy per chunk. Measured with
-      // 8 KiB chunks and a single event: 37ms @2MiB, 138ms @4MiB, 557ms @8MiB —
-      // ~3.2x faster than scanning the whole buffer, but the same growth curve.
-      // Going genuinely linear means not accumulating into one string: keep the
-      // chunks in an array plus a 3-char carry tail, search only carry+chunk, and
-      // join on the rare chunk that completes an event (measured 16ms @8MiB).
-      // Deliberately not done here — this parser's frame boundaries are pinned by
-      // exhaustive split tests and a rewrite belongs in its own change.
-      const scanStart = Math.max(0, prevLen - 3);
-      let rel = buffer.slice(scanStart).search(/\r?\n\r?\n/);
-      let boundary = rel === -1 ? -1 : scanStart + rel;
-      while (boundary !== -1) {
-        const raw = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary).replace(/^\r?\n\r?\n/, "");
-        const event = parseRawEvent(raw);
-        if (event !== undefined) this.push(event);
-        // After consuming an event the buffer is trimmed; search from 0.
-        boundary = buffer.search(/\r?\n\r?\n/);
+      const text = decoder.write(chunk);
+      // O(carry + chunk), never O(accumulator) — this is the whole point of the rewrite.
+      const search = carry + text;
+      const rel = search.search(SEP_RE);
+
+      if (rel === -1) {
+        // No boundary: extend the accumulator without materialising it. Empty segments are
+        // dropped (StringDecoder returns "" while it holds a partial code point) so the
+        // segment count cannot grow without `pendingLen` growing with it.
+        if (text !== "") pending.push(text);
+        pendingLen += text.length;
+        carry = search.slice(-CARRY_CHARS);
+        if (pendingLen >= compactAt) {
+          pending.splice(0, pending.length, pending.join(""));
+          compactAt = pendingLen * 2;
+        }
+      } else {
+        // A boundary completes in this chunk, so materialise once and drain every event the
+        // accumulator now holds. `scanStart` below is exactly the naive form's
+        // `max(0, prevLen - 3)`; see the invariant on `createSseParser`.
+        const scanStart = pendingLen - carry.length;
+        let buf = pending.join("") + text;
+        let boundary = scanStart + rel;
+        // Bounded: every iteration removes the raw event plus at least the two characters
+        // of its separator from `buf`, so it runs at most buf.length / 2 times.
+        while (boundary !== -1) {
+          const raw = buf.slice(0, boundary);
+          buf = buf.slice(boundary).replace(LEADING_SEP_RE, "");
+          const event = parseRawEvent(raw);
+          if (event !== undefined) this.push(event);
+          // After consuming an event the accumulator is trimmed; search from 0.
+          boundary = buf.search(SEP_RE);
+        }
+        resetAccumulator(buf);
       }
-      if (buffer.length > maxEventBytes) {
+
+      if (pendingLen > maxEventBytes) {
         callback(new Error("sse_event_too_large"));
         return;
       }
       callback();
     },
     flush(callback) {
-      buffer += decoder.end();
-      const event = parseRawEvent(buffer);
+      const tail = pending.join("") + decoder.end();
+      const event = parseRawEvent(tail);
       if (event !== undefined) this.push(event);
-      buffer = "";
+      resetAccumulator("");
       callback();
     },
   });
