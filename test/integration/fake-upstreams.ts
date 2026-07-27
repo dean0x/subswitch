@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { loadConfig } from "../../src/config.js";
 import { buildDeps, createProxyServer } from "../../src/server.js";
 import type { Logger } from "../../src/logger.js";
+import type { ModelResolution } from "../../src/models.js";
 
 export interface RecordedRequest {
   readonly method: string;
@@ -77,6 +78,9 @@ export interface SubswitchInstance {
  * @param options.logger - Optional logger spliced over ServerDeps. The default
  *   deps use `logLevel: "error"` which swallows routing logs; inject a logger
  *   here to observe `request_complete` and other routing events in tests.
+ * @param options.resolve - Optional resolver override. When provided, replaces the
+ *   registry-built resolver with a synthetic one — used in tests that need to
+ *   simulate ambiguous or unknown-provider scenarios (F7).
  *
  * Usage:
  *   const captured: Array<{ event: string }> = [];
@@ -86,7 +90,7 @@ export interface SubswitchInstance {
  */
 export const startSubswitch = async (
   overrides: Record<string, unknown>,
-  options: { logger?: Logger } = {},
+  options: { logger?: Logger; resolve?: (name: string) => ModelResolution } = {},
 ): Promise<SubswitchInstance> => {
   const configResult = loadConfig({
     configPath: "inline-test-config.json",
@@ -94,7 +98,11 @@ export const startSubswitch = async (
   });
   if (!configResult.ok) throw new Error(configResult.error.message);
   const deps = buildDeps(configResult.value.config);
-  const finalDeps = options.logger !== undefined ? { ...deps, logger: options.logger } : deps;
+  const finalDeps = {
+    ...deps,
+    ...(options.logger !== undefined ? { logger: options.logger } : {}),
+    ...(options.resolve !== undefined ? { resolve: options.resolve } : {}),
+  };
   const server = createProxyServer(finalDeps);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;

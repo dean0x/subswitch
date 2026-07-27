@@ -12,7 +12,6 @@ import { ReasoningCache } from "./reasoning-cache.js";
 import { createCodexHandler } from "./codex-handler.js";
 import { ModelPeekSchema } from "./anthropic-wire-types.js";
 import {
-  makeModelResolver,
   buildRoutingTable,
   resolveModel as resolveModelFromTable,
   MODEL_REGISTRY,
@@ -36,9 +35,8 @@ export interface ServerDeps {
   /**
    * Model resolver built once at startup (applies ADR-005).
    * "Built once" is structural: the table is closed over in this closure and
-   * cannot be replaced at request time. Production currently routes via the
-   * legacy `makeModelResolver` path inside createProxyServer; this field
-   * exists for testability and is the resolver that Phase E will flip on.
+   * cannot be replaced at request time. `buildDeps` calls `buildRoutingTable` once
+   * and closes `resolveModelFromTable` over the result.
    */
   readonly resolve: (name: string) => ModelResolution;
 }
@@ -62,7 +60,7 @@ const createCodexProvider = (config: Config, logger: Logger): ProviderHandler =>
       oauthTokenUrl: config.codex.oauthTokenUrl,
       logger,
     }),
-    cache: new ReasoningCache(config.reasoningCache.maxEntries, config.reasoningCache.maxBytes),
+    cache: new ReasoningCache(config.codex.reasoningCache.maxEntries, config.codex.reasoningCache.maxBytes),
   });
 
 /** The only wiring site: every production dependency is constructed here. */
@@ -94,9 +92,9 @@ export const buildDeps = (config: Config): ServerDeps => {
     logger,
     forwardAnthropic: createAnthropicForwarder({
       baseUrl: config.anthropic.baseUrl,
-      connectTimeoutMs: config.limits.connectTimeoutMs,
-      streamIdleTimeoutMs: config.limits.streamIdleTimeoutMs,
-      maxUpstreamSockets: config.limits.maxUpstreamSockets,
+      connectTimeoutMs: config.anthropic.connectTimeoutMs,
+      streamIdleTimeoutMs: config.anthropic.streamIdleTimeoutMs,
+      maxUpstreamSockets: config.anthropic.maxUpstreamSockets,
       logger,
     }),
     providers: {
@@ -167,16 +165,6 @@ const peekModel = (parsed: unknown): string | undefined => {
 export const createProxyServer = (deps: ServerDeps): Server => {
   const { config, logger } = deps;
 
-  // Build the legacy resolver that currently drives production routing.
-  // This is the OLD makeModelResolver path — Phase E replaces it with deps.resolve.
-  // Both live in the same process for this phase so the resolver is built exactly
-  // once here (createProxyServer is called once at startup).
-  const resolveModel = makeModelResolver(
-    MODEL_REGISTRY,
-    new Set(config.codex.models),
-    config.codex.aliases,
-  );
-
   return http.createServer((req, res) => {
     const startedAt = Date.now();
     const path = req.url ?? "/";
@@ -237,30 +225,70 @@ export const createProxyServer = (deps: ServerDeps): Server => {
 
       // `model` is the as-requested name — preserved for the request_complete log so
       // operators can grep for what the client typed (a typo like "sol" not "sool").
-      // `canonical` is the resolved id passed to decideRoute and handleMessages so
-      // both routing and upstream wire-format use the same stable string. (applies ADR-005)
       model = peekModel(parsedBody);
-      const canonical = model === undefined ? undefined : (resolveModel(model) ?? model);
-      const decision = decideRoute(req.method ?? "POST", path, canonical, config.codex.models);
-      route = decision.kind === "codex" ? `codex:${decision.endpoint}` : "anthropic";
 
-      if (decision.kind === "anthropic") {
-        deps.forwardAnthropic(req, res, body.value);
-        return;
+      // Resolve the model name once before routing (ADR-005: resolution strictly before dispatch).
+      // deps.resolve was built once at startup by buildDeps — structural guarantee.
+      const resolution = model !== undefined ? deps.resolve(model) : { kind: "unresolved" as const };
+      const decision = decideRoute(req.method ?? "POST", path, resolution);
+
+      switch (decision.kind) {
+        case "anthropic":
+          deps.forwardAnthropic(req, res, body.value);
+          return;
+
+        case "provider": {
+          // Fold canonical id into route log field: "codex:messages:gpt-5.6-sol"
+          route = `${decision.provider}:${decision.endpoint}:${decision.model}`;
+          if (decision.endpoint === "count_tokens") {
+            deps.providers[decision.provider].handleCountTokens(req, res, body.value);
+            return;
+          }
+          await deps.providers[decision.provider].handleMessages(
+            req,
+            res,
+            body.value,
+            parsedBody,
+            decision.model,
+          );
+          return;
+        }
+
+        case "ambiguous": {
+          // Two providers claim the same family name. Reject with 400 naming both.
+          route = "ambiguous";
+          logger.log("warn", "ambiguous_model_name", { model: decision.name });
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(
+            toAnthropicErrorBody(
+              "invalid_request_error",
+              `model '${decision.name}' is claimed by multiple providers: ${decision.providers.join(", ")} — qualify with provider:name (e.g. codex:${decision.name})`,
+            ),
+          );
+          return;
+        }
+
+        case "unknown_provider": {
+          // "kimee:k2" — provider prefix not in PROVIDER_IDS. Reject with 400.
+          route = "unknown_provider";
+          logger.log("warn", "unknown_provider_qualifier", { model: decision.qualifier });
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(
+            toAnthropicErrorBody(
+              "invalid_request_error",
+              `unknown provider '${decision.qualifier}' — known providers: codex`,
+            ),
+          );
+          return;
+        }
+
+        default: {
+          // Exhaustive check — compiler enforces that all Route arms are handled.
+          const _exhaustive: never = decision;
+          void _exhaustive;
+          deps.forwardAnthropic(req, res, body.value);
+        }
       }
-      if (decision.endpoint === "count_tokens") {
-        deps.providers.codex.handleCountTokens(req, res, body.value);
-        return;
-      }
-      // Defensive guard: decideRoute only returns codex:messages when `model` is a
-      // member of config.codex.models (exact-membership check). When model is defined,
-      // `canonical = resolveModel(model) ?? model` is always a string. The guard
-      // documents this invariant and avoids a non-null assertion. (avoids PF-002-style trap)
-      if (canonical === undefined) {
-        deps.forwardAnthropic(req, res, body.value);
-        return;
-      }
-      await deps.providers.codex.handleMessages(req, res, body.value, parsedBody, canonical);
     };
 
     dispatch().catch((cause: unknown) => {
