@@ -17,7 +17,7 @@ import {
 
 describe("formatModelsReport", () => {
   it("returns an array of strings", () => {
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, overrides: {} });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
     assert.ok(Array.isArray(result));
     for (const line of result) {
       assert.equal(typeof line, "string");
@@ -25,21 +25,21 @@ describe("formatModelsReport", () => {
   });
 
   it("includes derived family alias names and canonicals in output", () => {
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, overrides: {} });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
     const text = result.join("\n");
     assert.ok(text.includes("sol"), "should mention 'sol' alias");
     assert.ok(text.includes("gpt-5.6-sol"), "should mention 'gpt-5.6-sol' canonical");
   });
 
   it("marks alias as 'enabled' for non-retired models", () => {
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, overrides: {} });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
     const solLine = result.find((l) => l.includes("sol") && l.includes("gpt-5.6-sol"));
     assert.ok(solLine !== undefined, "should have a line covering the sol alias");
     assert.ok(solLine.includes("enabled"), "sol alias should be marked enabled");
   });
 
   it("includes a provider column in every row", () => {
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, overrides: {} });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
     // Every row should contain "codex" since all registry entries are codex-provider.
     for (const line of result) {
       assert.ok(line.includes("codex"), `row must include provider column: ${line}`);
@@ -47,7 +47,7 @@ describe("formatModelsReport", () => {
   });
 
   it("labels derived registry aliases as '(derived)'", () => {
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, overrides: {} });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
     const text = result.join("\n");
     assert.ok(text.includes("(derived)"), "should label registry aliases as derived");
   });
@@ -55,7 +55,7 @@ describe("formatModelsReport", () => {
   it("labels config override aliases as '(config)' and registry aliases as '(derived)'", () => {
     const result = formatModelsReport({
       registry: MODEL_REGISTRY,
-      overrides: { "fast": "gpt-5.6-sol" },
+      aliasesByProvider: { codex: { "fast": "gpt-5.6-sol" } },
     });
     const text = result.join("\n");
     // Should have at least one "(config)" line for the override
@@ -66,7 +66,7 @@ describe("formatModelsReport", () => {
   it("includes a '(direct)' row for gpt-5.5 (no family alias)", () => {
     // gpt-5.5 has no family field — it never appears as the canonical of an alias row.
     // It must appear as a direct row with an empty alias column so the table is complete.
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, overrides: {} });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
     const directLine = result.find((l) => l.includes("gpt-5.5") && l.includes("(direct)"));
     assert.ok(directLine !== undefined, "gpt-5.5 (no family alias) must appear as a (direct) row");
     assert.ok(directLine.includes("enabled"), "gpt-5.5 direct row must be marked enabled");
@@ -74,7 +74,7 @@ describe("formatModelsReport", () => {
 
   it("does not emit a '(direct)' row for an id already covered as a canonical of an alias row", () => {
     // gpt-5.6-sol is the canonical of the 'sol' derived alias row — no double-listing.
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, overrides: {} });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
     const solDirectLines = result.filter((l) => l.includes("gpt-5.6-sol") && l.includes("(direct)"));
     assert.equal(solDirectLines.length, 0, "gpt-5.6-sol is already the canonical of the sol alias row — no extra (direct) row");
   });
@@ -84,7 +84,7 @@ describe("formatModelsReport", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-old", provider: "codex", family: "sol", gen: [5, 0], retired: true },
     ];
-    const result = formatModelsReport({ registry: reg, overrides: {} });
+    const result = formatModelsReport({ registry: reg, aliasesByProvider: { codex: {} } });
     const text = result.join("\n");
     assert.ok(!text.includes("gpt-old"), "retired model must not appear in report");
   });
@@ -98,8 +98,8 @@ describe("buildAliasRows and buildModelRows — parity", () => {
   it("every non-direct AliasTableRow has a matching ModelRow alias entry (and vice versa)", () => {
     // Use a realistic scenario with both derived and config aliases.
     const overrides = { "fast": "gpt-5.6-sol" };
-    const aliasRows = buildAliasRows(MODEL_REGISTRY, overrides);
-    const modelRows = buildModelRows(MODEL_REGISTRY, overrides);
+    const aliasRows = buildAliasRows(MODEL_REGISTRY, { codex: overrides });
+    const modelRows = buildModelRows(MODEL_REGISTRY, { codex: overrides });
 
     // Forward check: every non-direct alias row corresponds to a ModelRow alias entry.
     // (Parity invariant applies only to aliases with registry-present targets.)
@@ -140,7 +140,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
     // A dangling alias target (e.g. future model id) is routed by the router (forward-compat)
     // so the display must agree: enabled=true, not disabled.
     const overrides = { myalias: "gpt-9.9-nonexistent" };
-    const aliasRows = buildAliasRows(MODEL_REGISTRY, overrides);
+    const aliasRows = buildAliasRows(MODEL_REGISTRY, { codex: overrides });
     const danglingRow = aliasRows.find((r) => r.alias === "myalias");
     assert.ok(danglingRow !== undefined, "dangling alias must appear in AliasTableRows");
     assert.equal(danglingRow.canonical, "gpt-9.9-nonexistent");
@@ -177,7 +177,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
   });
 
   it("buildModelRows sets routable=true for non-retired entries", () => {
-    const rows = buildModelRows(MODEL_REGISTRY, {});
+    const rows = buildModelRows(MODEL_REGISTRY, { codex: {} });
     for (const row of rows) {
       if (!row.retired) {
         assert.equal(row.routable, true, `${row.id} must be routable if not retired`);
@@ -190,7 +190,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-old", provider: "codex", gen: [5, 0], retired: true },
     ];
-    const rows = buildModelRows(reg, {});
+    const rows = buildModelRows(reg, { codex: {} });
     const oldRow = rows.find((r) => r.id === "gpt-old");
     assert.ok(oldRow !== undefined);
     assert.equal(oldRow.retired, true);
@@ -202,7 +202,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-preview", provider: "codex", family: "sol", gen: [5, 7], preview: true },
     ];
-    const rows = buildModelRows(reg, {});
+    const rows = buildModelRows(reg, { codex: {} });
     const previewRow = rows.find((r) => r.id === "gpt-preview");
     assert.ok(previewRow !== undefined);
     assert.equal(previewRow.preview, true);
@@ -213,13 +213,13 @@ describe("buildAliasRows and buildModelRows — parity", () => {
     const reg: readonly ModelEntry[] = [
       { id: "gpt-unknown-gen", provider: "codex", gen: [] },
     ];
-    const rows = buildModelRows(reg, {});
+    const rows = buildModelRows(reg, { codex: {} });
     const r = rows[0]!;
     assert.ok(!("gen" in r), "gen must be absent when tuple is empty");
   });
 
   it("buildModelRows omits family field when ModelEntry has no family key", () => {
-    const rows = buildModelRows(MODEL_REGISTRY, {});
+    const rows = buildModelRows(MODEL_REGISTRY, { codex: {} });
     // gpt-5.5 has no family
     const gpt55 = rows.find((r) => r.id === "gpt-5.5");
     assert.ok(gpt55 !== undefined);
@@ -227,7 +227,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
   });
 
   it("buildModelRows includes provider field for all entries", () => {
-    const rows = buildModelRows(MODEL_REGISTRY, {});
+    const rows = buildModelRows(MODEL_REGISTRY, { codex: {} });
     for (const row of rows) {
       assert.equal(row.provider, "codex");
       assert.equal(row.source, "registry");

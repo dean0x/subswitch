@@ -230,14 +230,13 @@ export const runDoctor = async (
     io.write(row(`${id}.baseUrl:`, providerConfigFor(config, id).baseUrl));
   }
 
-  // Build the routing table once for display and agent-scan.
-  const { table, danglingAliases } = buildRoutingTable(MODEL_REGISTRY, aliasesByProvider(config));
+  // Build the routing table once for display and agent-scan. The displayed alias table
+  // reads the same per-provider record, so the two cannot disagree about the input.
+  const aliases = aliasesByProvider(config);
+  const { table, danglingAliases } = buildRoutingTable(MODEL_REGISTRY, aliases);
 
   // Alias table — shows effective alias → canonical mapping for the current config.
-  const aliasLines = formatModelsReport({
-    registry: MODEL_REGISTRY,
-    overrides: config.providers.codex.aliases,
-  });
+  const aliasLines = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: aliases });
   for (const line of aliasLines) {
     io.write(`    ${line}`);
   }

@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
-import { type Config, type LoadConfigResult, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
+import { type Config, type LoadConfigResult, aliasesByProvider, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
@@ -346,7 +346,7 @@ const doctor = async (result: LoadConfigResult): Promise<void> => {
  */
 const modelsJson = (result: LoadConfigResult): void => {
   const { config, configPath, fileFound } = result;
-  const rows = buildModelRows(MODEL_REGISTRY, config.providers.codex.aliases);
+  const rows = buildModelRows(MODEL_REGISTRY, aliasesByProvider(config));
 
   const payload = {
     kind: "models",
@@ -384,7 +384,7 @@ const models = (config: Config): void => {
 
   const lines = formatModelsReport({
     registry: MODEL_REGISTRY,
-    overrides: config.providers.codex.aliases,
+    aliasesByProvider: aliasesByProvider(config),
   });
 
   if (lines.length === 0) {

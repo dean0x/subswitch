@@ -183,48 +183,142 @@ const compareGen = (a: readonly number[], b: readonly number[]): number => {
 };
 
 /**
- * Build a family → canonical-id map scoped to a routable set.
- * Newest (highest gen) non-preview, non-retired entry per family that is IN the
- * routable set wins. First-declared wins on exact gen tie (compareGen === 0).
+ * Global claim on a bare family name, derived from the per-provider partition.
+ *
+ * Carries the winning ModelEntry (not just its id) so consumers read `gen` and
+ * `provider` straight off it. Handing back an id instead forces every consumer to
+ * re-find the entry in the registry and invent a fallback for the miss — and those
+ * fallbacks are unreachable, because a winner is by construction a registry entry.
  */
-const buildFamilyMap = (registry: readonly ModelEntry[], routable: ReadonlySet<string>): Map<string, string> => {
-  const familyBest = new Map<string, ModelEntry>();
+type FamilyClaim =
+  | { readonly kind: "unique"; readonly entry: ModelEntry }
+  | { readonly kind: "contested"; readonly providers: readonly ProviderId[] };
+
+/** Both views of family derivation, produced together by selectFamilyWinners. */
+interface FamilySelection {
+  /**
+   * Per-provider partition: provider → family → winning entry.
+   * byQualified needs this — "codex:sol" must resolve even when "sol" is contested,
+   * because qualifying is precisely the mechanism for disambiguating a contest.
+   */
+  readonly byProvider: ReadonlyMap<ProviderId, ReadonlyMap<string, ModelEntry>>;
+  /** Collapsed view: family → unique winner, or the list of contesting providers. */
+  readonly claims: ReadonlyMap<string, FamilyClaim>;
+}
+
+/**
+ * THE family selection rule. One implementation, no exceptions.
+ *
+ * Per provider, per family: the entry with the highest `gen` wins. Preview and
+ * retired entries never win a family alias (they stay routable by exact id).
+ * First-declared wins on an exact gen tie — the update guard is `> 0`, NEVER
+ * `>= 0`, because `>= 0` silently makes the LAST-declared entry win.
+ *
+ * Returns the per-provider partition AND the collapsed per-family claim, built in
+ * one pass so they cannot disagree. The router and the display layer read the same
+ * two views of this one result; neither re-derives a family winner for itself.
+ * A family claimed by two providers is reported as contested rather than silently
+ * arbitrated — the router refuses to resolve it, so the display must not show it.
+ */
+const selectFamilyWinners = (registry: readonly ModelEntry[]): FamilySelection => {
+  const byProvider = new Map<ProviderId, Map<string, ModelEntry>>();
 
   for (const entry of registry) {
     if (entry.family === undefined || entry.preview === true || entry.retired === true) continue;
-    if (!routable.has(entry.id)) continue;
+
+    let familyBest = byProvider.get(entry.provider);
+    if (familyBest === undefined) {
+      familyBest = new Map<string, ModelEntry>();
+      byProvider.set(entry.provider, familyBest);
+    }
 
     const current = familyBest.get(entry.family);
-    if (current === undefined) {
-      familyBest.set(entry.family, entry);
-    } else if (compareGen(entry.gen, current.gen) > 0) {
+    if (current === undefined || compareGen(entry.gen, current.gen) > 0) {
       // Strictly greater: new entry is newer. Exact tie (0): first-declared stays.
       familyBest.set(entry.family, entry);
     }
   }
 
-  const result = new Map<string, string>();
-  for (const [family, entry] of familyBest.entries()) {
-    result.set(family, entry.id);
+  const claims = new Map<string, FamilyClaim>();
+  for (const [provider, familyBest] of byProvider) {
+    for (const [family, entry] of familyBest) {
+      const existing = claims.get(family);
+      if (existing === undefined) {
+        claims.set(family, { kind: "unique", entry });
+      } else {
+        const providers =
+          existing.kind === "unique" ? [existing.entry.provider, provider] : [...existing.providers, provider];
+        claims.set(family, { kind: "contested", providers });
+      }
+    }
   }
-  return result;
+
+  return { byProvider, claims };
 };
 
 /**
- * Build an override alias Map from the config overrides object.
- * Uses Object.keys + Object.hasOwn to guard against prototype-pollution reads —
- * a raw brackets access on a JSON-parsed object returns inherited properties
- * (e.g. `obj["constructor"]` returns Object) which would silently misroute.
+ * Flat family → winning entry view, keeping ONLY uniquely-claimed families.
+ *
+ * Derived from the claims map rather than recomputed, so "which families are
+ * routable by bare name" has exactly one answer. A contested family is dropped
+ * here for the same reason resolveModel returns `ambiguous` for it: the bare name
+ * does not route, so nothing may display it as though it did.
  */
-const buildOverrideMap = (overrides: Record<string, string>): Map<string, string> => {
-  const map = new Map<string, string>();
-  for (const key of Object.keys(overrides)) {
-    if (Object.hasOwn(overrides, key)) {
-      const val = overrides[key];
-      if (val !== undefined) map.set(key, val);
+const flattenUniqueFamilies = (
+  claims: ReadonlyMap<string, FamilyClaim>,
+): ReadonlyMap<string, ModelEntry> => {
+  const unique = new Map<string, ModelEntry>();
+  for (const [family, claim] of claims) {
+    if (claim.kind === "unique") unique.set(family, claim.entry);
+  }
+  return unique;
+};
+
+/** One effective alias declaration, with its declaring provider and PF-007 verdict. */
+interface AliasDeclaration {
+  readonly alias: string;
+  readonly target: string;
+  /** The provider whose config block declared it — the fallback when the target is unknown. */
+  readonly provider: ProviderId;
+  /** True when the key or the target is a reserved Anthropic name (PF-007). */
+  readonly reserved: boolean;
+}
+
+/**
+ * Effective per-provider alias declarations, in PROVIDER_IDS order then key order.
+ *
+ * Own-property guard (Object.hasOwn) — a raw bracket read on a JSON-parsed object
+ * returns inherited properties (e.g. `obj["constructor"]` returns Object) which would
+ * silently misroute. First provider wins on a duplicate key.
+ *
+ * `reserved` marks PF-007 rejections so the router and the display layer classify
+ * identically. Deduplication applies only to non-reserved keys: a reserved declaration
+ * never binds the name, so a later provider's reserved declaration of the same name is
+ * still a distinct rejection worth reporting.
+ */
+const collectAliasDeclarations = (
+  aliasesByProvider: Readonly<Record<ProviderId, Readonly<Record<string, string>>>>,
+): readonly AliasDeclaration[] => {
+  const declarations: AliasDeclaration[] = [];
+  const bound = new Set<string>();
+
+  for (const provider of PROVIDER_IDS) {
+    const providerAliases = aliasesByProvider[provider];
+    for (const alias of Object.keys(providerAliases)) {
+      if (!Object.hasOwn(providerAliases, alias)) continue;
+      const target = providerAliases[alias];
+      if (target === undefined) continue;
+
+      const reserved = isReservedAnthropicName(alias) || isReservedAnthropicName(target);
+      if (!reserved) {
+        if (bound.has(alias)) continue; // first provider wins on duplicate keys
+        bound.add(alias);
+      }
+      declarations.push({ alias, target, provider, reserved });
     }
   }
-  return map;
+
+  return declarations;
 };
 
 // ---------------------------------------------------------------------------
@@ -270,57 +364,26 @@ export const buildRoutingTable = (
     }
   }
 
-  // --- 3. Per-provider family maps → merged byFamily ---
-  // Build per-provider so a contested family (same name in two providers) is detectable.
-  // Retired and preview entries are excluded — they must not float a bare family name.
-  // First-declared wins on exact gen tie (compareGen === 0).
-  const perProviderFamilyBest = new Map<ProviderId, Map<string, ModelEntry>>();
+  // --- 3. Family derivation (THE rule lives in selectFamilyWinners) ---
+  // The per-provider partition makes a contested family detectable rather than
+  // silently arbitrated; the collapsed claims map is derived from it in the same pass.
+  // The display layer reads these same two views — see buildAliasRows.
+  const { byProvider: perProviderFamilyBest, claims } = selectFamilyWinners(registry);
 
-  for (const entry of registry) {
-    if (entry.family === undefined || entry.preview === true || entry.retired === true) continue;
-    let providerMap = perProviderFamilyBest.get(entry.provider);
-    if (providerMap === undefined) {
-      providerMap = new Map<string, ModelEntry>();
-      perProviderFamilyBest.set(entry.provider, providerMap);
-    }
-    const current = providerMap.get(entry.family);
-    if (current === undefined) {
-      providerMap.set(entry.family, entry);
-    } else if (compareGen(entry.gen, current.gen) > 0) {
-      // Strictly greater: new entry is newer. On tie (0): first-declared stays.
-      providerMap.set(entry.family, entry);
-    }
-  }
-
-  // Merge per-provider maps into global byFamily.
-  // A family claimed by exactly one provider → unique. Multiple providers → ambiguous.
   const byFamily = new Map<string, FamilyResolution>();
-  const familyProviders = new Map<string, ProviderId[]>(); // tracks claimants for dedup
-
-  for (const [provider, providerMap] of perProviderFamilyBest) {
-    for (const [family, entry] of providerMap) {
-      const claimants = familyProviders.get(family);
-      if (claimants === undefined) {
-        const model: ResolvedModel =
-          entry.family !== undefined
-            ? { id: entry.id, provider: entry.provider, family: entry.family }
-            : { id: entry.id, provider: entry.provider };
-        byFamily.set(family, { kind: "unique", model });
-        familyProviders.set(family, [provider]);
-      } else {
-        // Contest — mark ambiguous
-        const updatedClaimants = [...claimants, provider];
-        familyProviders.set(family, updatedClaimants);
-        byFamily.set(family, { kind: "ambiguous", providers: updatedClaimants });
-      }
-    }
-  }
-
-  // Collect ambiguous families for the build diagnostic.
   const ambiguousFamilies: { readonly family: string; readonly providers: readonly ProviderId[] }[] = [];
-  for (const [family, resolution] of byFamily) {
-    if (resolution.kind === "ambiguous") {
-      ambiguousFamilies.push({ family, providers: resolution.providers });
+
+  for (const [family, claim] of claims) {
+    if (claim.kind === "unique") {
+      const { entry } = claim;
+      const model: ResolvedModel =
+        entry.family !== undefined
+          ? { id: entry.id, provider: entry.provider, family: entry.family }
+          : { id: entry.id, provider: entry.provider };
+      byFamily.set(family, { kind: "unique", model });
+    } else {
+      byFamily.set(family, { kind: "ambiguous", providers: claim.providers });
+      ambiguousFamilies.push({ family, providers: claim.providers });
     }
   }
 
@@ -360,9 +423,10 @@ export const buildRoutingTable = (
     }
   }
 
-  // --- 5. byAlias: per-provider alias maps with prototype-pollution guard ---
-  // Uses Object.hasOwn on each key — a raw bracket lookup on a JSON-parsed object
-  // returns inherited properties (e.g. obj["constructor"] returns Object).
+  // --- 5. byAlias: effective alias declarations (prototype-pollution guarded) ---
+  // Iteration order, the own-property guard and the first-provider-wins rule all live in
+  // collectAliasDeclarations — the display layer reads the same list, so the two cannot
+  // disagree about which declarations are effective or which are PF-007 rejections.
   // Alias resolution is exactly ONE hop. "a → b" where b is itself an alias does NOT
   // chase to b's target. Without this bound, the first person wanting a→b→id writes
   // an unbounded loop with a cycle risk. (Project rule: every loop has an explicit bound.)
@@ -370,40 +434,31 @@ export const buildRoutingTable = (
   const rejectedAliases: { readonly alias: string; readonly target: string }[] = [];
   const danglingAliases: { readonly alias: string; readonly target: string; readonly provider: ProviderId }[] = [];
 
-  for (const providerId of PROVIDER_IDS) {
-    const providerAliases = aliasesByProvider[providerId];
-    for (const key of Object.keys(providerAliases)) {
-      if (!Object.hasOwn(providerAliases, key)) continue;
-      const target = providerAliases[key];
-      if (target === undefined) continue;
+  for (const { alias, target, provider, reserved } of collectAliasDeclarations(aliasesByProvider)) {
+    // PF-007: a reserved key would route main-thread traffic to Codex; a reserved target
+    // becomes routable via the alias map, which decideRoute's exact-membership check
+    // would then match.
+    if (reserved) {
+      rejectedAliases.push({ alias, target });
+      continue;
+    }
 
-      // PF-007: reject if key OR target is a reserved Anthropic name.
-      // A key would route main-thread traffic to Codex; a target becomes routable via
-      // the alias map, which decideRoute's exact-membership check would then match.
-      if (isReservedAnthropicName(key) || isReservedAnthropicName(target)) {
-        rejectedAliases.push({ alias: key, target });
-        continue;
-      }
+    // Build ResolvedModel from the target. If the target is a known registry entry,
+    // carry its family. Otherwise assume it belongs to the declaring provider
+    // (forward-compat: unknown ids may land when the registry catches up).
+    const targetEntry = registry.find((e) => e.id === target);
+    const targetProvider = byId.get(target) ?? provider;
+    const model: ResolvedModel =
+      targetEntry?.family !== undefined
+        ? { id: target, provider: targetProvider, family: targetEntry.family }
+        : { id: target, provider: targetProvider };
+    byAlias.set(alias, model);
 
-      if (byAlias.has(key)) continue; // first provider wins on duplicate keys
-
-      // Build ResolvedModel from the target. If the target is a known registry entry,
-      // carry its family. Otherwise assume it belongs to the declaring provider
-      // (forward-compat: unknown ids may land when the registry catches up).
-      const targetEntry = registry.find((e) => e.id === target);
-      const targetProvider = byId.get(target) ?? providerId;
-      const model: ResolvedModel =
-        targetEntry?.family !== undefined
-          ? { id: target, provider: targetProvider, family: targetEntry.family }
-          : { id: target, provider: targetProvider };
-      byAlias.set(key, model);
-
-      // Track dangling aliases (target not in registry).
-      // The router still routes them (forward-compat), but they are invisible to
-      // buildModelRows and buildAliasRows disagrees with the router on enabled state.
-      if (!byId.has(target)) {
-        danglingAliases.push({ alias: key, target, provider: providerId });
-      }
+    // Track dangling aliases (target not in registry).
+    // The router still routes them (forward-compat), but they are invisible to
+    // buildModelRows and buildAliasRows disagrees with the router on enabled state.
+    if (!byId.has(target)) {
+      danglingAliases.push({ alias, target, provider });
     }
   }
 
@@ -545,7 +600,7 @@ export interface AliasTableRow {
 /**
  * Build alias-centric rows for human-readable table display.
  *
- * One row per alias (config overrides first, then derived family aliases), plus
+ * One row per alias (config declarations first, then derived family aliases), plus
  * one "direct" row per non-retired model that has no alias coverage.
  *
  * Invariant with buildModelRows: the alias names in every ModelRow correspond
@@ -553,47 +608,66 @@ export interface AliasTableRow {
  */
 export const buildAliasRows = (
   registry: readonly ModelEntry[],
-  overrides: Record<string, string>,
+  aliasesByProvider: Readonly<Record<ProviderId, Readonly<Record<string, string>>>>,
 ): readonly AliasTableRow[] => {
-  const overrideMap = buildOverrideMap(overrides);
-  const allNonRetired = new Set(registry.filter((e) => e.retired !== true).map((e) => e.id));
-  const familyMap = buildFamilyMap(registry, allNonRetired);
+  // Same rule, same claims, same declaration list the router reads — see buildRoutingTable.
+  const familyWinners = flattenUniqueFamilies(selectFamilyWinners(registry).claims);
 
   const rows: AliasTableRow[] = [];
   const coveredAliases = new Set<string>();
   const coveredCanonicals = new Set<string>();
 
-  // Config override aliases first (they shadow derived aliases of the same name)
-  for (const [alias, canonical] of overrideMap.entries()) {
-    const entry = registry.find((e) => e.id === canonical);
+  // Config alias declarations first (they shadow derived aliases of the same name).
+  for (const declaration of collectAliasDeclarations(aliasesByProvider)) {
+    // PF-007 rejections are dropped by the router, so they must not appear here as
+    // routable rows — that is exactly the display↔routing divergence this module avoids.
+    if (declaration.reserved) continue;
+
+    const { alias, target, provider: declaringProvider } = declaration;
+    const entry = registry.find((e) => e.id === target);
+    // A dangling target has no registry entry, so its generation is genuinely unknown
+    // and its provider is the one that declared it — matching the router's own
+    // forward-compat rule (`byId.get(target) ?? provider`).
     const genStr = entry !== undefined ? entry.gen.join(".") : "?";
-    const provider: ProviderId = entry?.provider ?? PROVIDER_IDS[0];
+    const provider: ProviderId = entry?.provider ?? declaringProvider;
     // Enabled: if the target is in the registry, use its retired flag. If not (dangling),
     // enabled=true because the router still routes it via forward-compat (unknown target
     // is assumed to belong to the declaring provider and is treated as routable).
     const enabled = entry !== undefined ? entry.retired !== true : true;
-    rows.push({ alias, canonical, provider, gen: genStr, enabled, source: "config" });
+    rows.push({ alias, canonical: target, provider, gen: genStr, enabled, source: "config" });
     coveredAliases.add(alias);
-    coveredCanonicals.add(canonical);
+    coveredCanonicals.add(target);
   }
 
-  // Derived family aliases (skip any alias already covered by a config override)
-  for (const [family, canonical] of familyMap.entries()) {
+  // Derived family aliases (skip any alias already covered by a config declaration).
+  // A family winner IS a registry entry, so gen and provider are read straight off it —
+  // there is no "target missing from the registry" case to fall back from.
+  for (const [family, entry] of familyWinners) {
     if (coveredAliases.has(family)) continue;
-    const entry = registry.find((e) => e.id === canonical);
-    const genStr = entry !== undefined ? entry.gen.join(".") : "?";
-    const provider: ProviderId = entry?.provider ?? PROVIDER_IDS[0];
-    rows.push({ alias: family, canonical, provider, gen: genStr, enabled: true, source: "derived" });
+    rows.push({
+      alias: family,
+      canonical: entry.id,
+      provider: entry.provider,
+      gen: entry.gen.join("."),
+      enabled: true,
+      source: "derived",
+    });
     coveredAliases.add(family);
-    coveredCanonicals.add(canonical);
+    coveredCanonicals.add(entry.id);
   }
 
   // Direct rows for non-retired models with no alias coverage
-  for (const id of allNonRetired) {
-    if (coveredCanonicals.has(id)) continue;
-    const entry = registry.find((e) => e.id === id);
-    if (entry === undefined) continue;
-    rows.push({ alias: "", canonical: id, provider: entry.provider, gen: entry.gen.join("."), enabled: true, source: "direct" });
+  for (const entry of registry) {
+    if (entry.retired === true || coveredCanonicals.has(entry.id)) continue;
+    coveredCanonicals.add(entry.id);
+    rows.push({
+      alias: "",
+      canonical: entry.id,
+      provider: entry.provider,
+      gen: entry.gen.join("."),
+      enabled: true,
+      source: "direct",
+    });
   }
 
   return rows;
@@ -602,7 +676,7 @@ export const buildAliasRows = (
 /**
  * Build model-centric rows for JSON output and parity testing.
  *
- * One row per registry entry. Aliases include all config overrides pointing to
+ * One row per registry entry. Aliases include all config declarations pointing to
  * this model (source: "config") and all derived family aliases where this model
  * is the family winner (source: "derived"). Order within aliases: config first.
  *
@@ -611,11 +685,10 @@ export const buildAliasRows = (
  */
 export const buildModelRows = (
   registry: readonly ModelEntry[],
-  overrides: Record<string, string>,
+  aliasesByProvider: Readonly<Record<ProviderId, Readonly<Record<string, string>>>>,
 ): readonly ModelRow[] => {
-  const overrideMap = buildOverrideMap(overrides);
-  const allNonRetired = new Set(registry.filter((e) => e.retired !== true).map((e) => e.id));
-  const familyMap = buildFamilyMap(registry, allNonRetired);
+  // Same rule, same claims, same declaration list the router reads — see buildRoutingTable.
+  const familyWinners = flattenUniqueFamilies(selectFamilyWinners(registry).claims);
 
   // Collect aliases per model id
   const aliasesByModel = new Map<string, AliasEntry[]>();
@@ -623,16 +696,20 @@ export const buildModelRows = (
     aliasesByModel.set(entry.id, []);
   }
 
-  // Config overrides first
-  for (const [alias, targetId] of overrideMap.entries()) {
-    const list = aliasesByModel.get(targetId);
+  // Config alias declarations first. PF-007 rejections are skipped for the same reason
+  // buildAliasRows skips them: the router does not bind them, so nothing may show them.
+  const configAliases = new Set<string>();
+  for (const { alias, target, reserved } of collectAliasDeclarations(aliasesByProvider)) {
+    if (reserved) continue;
+    configAliases.add(alias);
+    const list = aliasesByModel.get(target);
     if (list !== undefined) list.push({ name: alias, source: "config" });
   }
 
-  // Derived family aliases (skip if shadowed by a config override with the same alias name)
-  for (const [family, canonicalId] of familyMap.entries()) {
-    if (overrideMap.has(family)) continue;
-    const list = aliasesByModel.get(canonicalId);
+  // Derived family aliases (skip if shadowed by a config declaration with the same name)
+  for (const [family, entry] of familyWinners) {
+    if (configAliases.has(family)) continue;
+    const list = aliasesByModel.get(entry.id);
     if (list !== undefined) list.push({ name: family, source: "derived" });
   }
 
@@ -656,7 +733,7 @@ export const buildModelRows = (
 /** Input for formatModelsReport. Config-free so cli.ts and doctor.ts can call without circular imports. */
 export interface FormatModelsReportInput {
   readonly registry: readonly ModelEntry[];
-  readonly overrides: Record<string, string>;
+  readonly aliasesByProvider: Readonly<Record<ProviderId, Readonly<Record<string, string>>>>;
 }
 
 /**
@@ -666,7 +743,7 @@ export interface FormatModelsReportInput {
  * Columns: alias → canonical  provider  gen:X.Y  enabled|disabled  (derived)|(config)|(direct)
  */
 export const formatModelsReport = (input: FormatModelsReportInput): readonly string[] => {
-  const rows = buildAliasRows(input.registry, input.overrides);
+  const rows = buildAliasRows(input.registry, input.aliasesByProvider);
   if (rows.length === 0) return [];
 
   const aliasWidth = Math.max(...rows.map((r) => r.alias.length));
