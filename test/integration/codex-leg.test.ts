@@ -19,14 +19,13 @@ import { PROVIDER_IDS } from "../../src/models.js";
 const FAR_FUTURE_MS = Date.now() + 24 * 3600 * 1000;
 
 /**
- * Resolved provider display name for the leg this rig wires.
+ * Provider name rendered in this leg's client-visible messages.
  *
- * `createCodexProvider` (src/server.ts) does not pass `deps.providerName`, so
- * `codex-handler`'s `?? "codex"` default applies and the rendered name equals the
- * provider id. Deriving it from `PROVIDER_IDS` rather than pinning the literal
- * "codex" keeps these assertions honest: they are correct today only because
- * `PROVIDER_IDS.length === 1`, and a literal would silently keep passing against
- * the wrong name the moment this leg starts carrying a real provider name.
+ * The handler names itself from its own `providerId`, so this is the id `buildDeps`
+ * wires. Deriving it from `PROVIDER_IDS` rather than pinning the literal "codex" keeps
+ * these assertions honest: they are correct today only because `PROVIDER_IDS.length === 1`,
+ * and a literal would silently keep passing against the wrong name the moment this rig
+ * wires a different provider.
  */
 const codexProviderName = PROVIDER_IDS[0];
 

@@ -110,6 +110,22 @@ Such a block would otherwise be stripped by the schema and do nothing at all.
   stripped, whitespace/`=` quoted). The closed `FIELD_KEYS` allow-list is untouched;
   this is a different axis. Event names are constrained at compile time to the
   `ProviderId` union, so a config-supplied string cannot become an event name.
+- **Provider credentials are branded with the provider they belong to**: the auth seam
+  is now `ProviderAuth<P>`/`ProviderCredential<P>`, and the handler's `providerId` and
+  `auth` share one type parameter. Wiring one provider's credential into another
+  provider's handler is a compile error at the wiring site rather than a subscription
+  token sent to a third-party host. The seam carries auth headers only — protocol
+  constants stay with the handler that owns the transport. Codex sends the same two
+  headers with the same values as before.
+
+### Fixed
+
+- **A credential that cannot be refreshed is no longer refreshed anyway**: the 401
+  retry guard read `attempt === 0` while the retry budget was `refreshable ? 2 : 1`, so
+  a static-credential provider spent a refresh its budget of one attempt did not allow
+  and the client received a synthesised "authentication failed after refresh" instead of
+  the upstream's own 401. The Codex leg sets `refreshable: true` and is unaffected — its
+  request sequence and error text are unchanged.
 
 ### Known limitations and deferred work
 
@@ -125,10 +141,6 @@ before adding a second production provider:
   wins" derivation** that `buildRoutingTable` also implements — two sources of truth that
   can drift. `buildAliasRows` also falls back to `PROVIDER_IDS[0]` for unknown targets,
   a first-provider assumption that becomes wrong with a second provider.
-- **Branded `ProviderAuth` seam** is owed before a second credential is wired. An earlier
-  `src/provider-auth.ts` was deleted because its headers-out shape contradicted the
-  token-out `CodexCredentials` that `CodexAuthManager` actually returns. A tripwire
-  comment at the `createCodexProvider` wiring site in `src/server.ts` marks the spot.
 - **Kimi provider leg** is a separate branch, gated on a five-question live probe
   requiring a real subscription.
 
