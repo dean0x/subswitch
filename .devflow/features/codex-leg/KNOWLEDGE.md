@@ -5,7 +5,7 @@ description: "Use when modifying Codex request translation, model alias resoluti
 category: domain-knowledge
 directories: [src]
 created: 2026-07-22
-updated: 2026-07-27
+updated: 2026-07-28
 ---
 
 # Codex Translation Leg (gpt-* → /responses)
@@ -208,6 +208,10 @@ IncomingMessage (Anthropic wire)
 
 **Omitting contested families from `byQualified`.** A family claimed by two providers must still resolve via `codex:sol`. Skipping contested entries from the qualified map makes the 400 "qualify with provider:name" remediation advice lead directly to unresolved.
 
+**Regenerating `test/fixtures/sse-splits.golden.json` to make a parser change pass.** The golden was captured from the parser as it stood *before* the deferred-join rewrite and is the definition of "frame boundaries unchanged". A `createSseParser` change that needs a new golden has changed the one thing the golden exists to forbid. Regenerate it only when the corpus itself grows (`node --import tsx test/tools/gen-sse-splits-golden.ts`), and review every changed frame sequence as a behaviour claim.
+
+**Joining the SSE accumulator outside the boundary branch.** `createSseParser` holds undelivered text as an array of segments and joins only on the chunk that completes an event. Adding a `pending.join("")` on the no-boundary path restores the quadratic `buffer += chunk` behaviour — 38x slower at 8 MiB — while every test stays green. Verified by mutation, not assumed.
+
 ## Gotchas
 
 **`stream: true` is always sent, even when the client sets `stream: false`.** subswitch always requests an SSE stream from the backend, then `aggregateFrames` assembles a non-streaming response.
@@ -226,6 +230,10 @@ IncomingMessage (Anthropic wire)
 
 **Zod strips unknown keys.** Before `detectLegacyConfigKeys` existed, a pre-`providers.*` config would parse clean and every setting would silently revert to defaults — aliases vanished, custom baseUrl/authFile reverted, with no error or warning. The gate in `loadConfig` is the only safeguard.
 
+**No test in the suite can catch an SSE-parser performance regression.** The slow path is byte-for-byte correct, so it passes all 66,066 golden split assertions and the whole suite. `node --import tsx test/tools/sse-parser.bench.ts` is the only artifact that distinguishes them — run it after any `createSseParser` edit. Reference at 8 KiB chunks, one oversized event: 4.7 ms / 6.9 ms / 14.7 ms at 2 / 4 / 8 MiB. Roughly 2x per doubling is correct; roughly 4x means the join moved.
+
+**`maxSseEventBytes` counts UTF-16 code units, not bytes, despite the name.** Preserved deliberately through the parser rewrite — changing it to byte length moves the trip point for multi-byte payloads and is a separate decision. The check runs per chunk against the undelivered residual, so it bounds live memory; a version that checks after assembling the event still reports `sse_event_too_large` but is no longer a memory control, and only a test counting chunks accepted before rejection can tell the two apart.
+
 ## Key Files
 
 - `src/server.ts` — Wiring site for resolve→route→send; `buildDeps` calls `buildRoutingTable` once; `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; concurrency gate
@@ -237,7 +245,9 @@ IncomingMessage (Anthropic wire)
 - `src/codex-request.ts` — All request translation logic; `translateRequest`, `translateEffort`
 - `src/anthropic-parse.ts` — `buildInstructions` (moved from `codex-request.ts`); `textOfBlocks`
 - `src/conversation-key.ts` — Deterministic v7-shaped UUID from sha256 of canonical request; imports `buildInstructions` from `anthropic-parse.ts`
-- `src/codex-response.ts` — SSE parser, Anthropic SSE translator state machine, `aggregateFrames`
+- `src/codex-response.ts` — SSE parser (segment array + 3-char carry, joins only on a completing chunk; linear, not quadratic), Anthropic SSE translator state machine, `aggregateFrames`
+- `test/tools/` — Typechecked but outside the `npm test` globs: `sse-parser.bench.ts` (the only guard against an SSE-parser perf regression), `sse-split-corpus.ts`, `gen-sse-splits-golden.ts`
+- `test/fixtures/sse-splits.golden.json` — Frame-boundary pin for `createSseParser`, captured pre-rewrite; 16,269 two-way + 49,770 three-way splits asserted by `test/unit/sse-split-golden.test.ts`
 - `src/config.ts` — `providers.codex.*` schema; `FileConfig`/`Config` split; `resolveConfig`; `detectLegacyConfigKeys`; `AliasesSchema` refines for `isReservedAnthropicName`
 - `src/logger.ts` — Closed `FIELD_KEYS` set; `cachedTokens` and `sessionKey` observability fields; log injection prevention
 - `e2e/capture/codex-recorder.ts` — Dev-only transparent forwarder; excluded from npm test; NEVER commit real captures
