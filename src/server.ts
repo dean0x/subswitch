@@ -66,7 +66,6 @@ const createCodexProvider = (config: Config, logger: Logger): ProviderHandler =>
     providerId: "codex",
     provider,
     pingIntervalMs: config.limits.pingIntervalMs,
-    loginCommand: providerConfigFor(config, "codex").loginCommand,
     logger,
     auth,
     cache: new ReasoningCache(provider.reasoningCache.maxEntries, provider.reasoningCache.maxBytes),

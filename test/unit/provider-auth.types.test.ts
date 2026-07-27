@@ -34,7 +34,6 @@ declare const provider: CodexProviderConfig;
 declare const logger: Logger;
 declare const cache: ReasoningCache;
 declare const pingIntervalMs: number;
-declare const loginCommand: string;
 
 /**
  * THE BARRIER. `providerId` and `auth` share one type parameter, so wiring provider Q's
@@ -53,7 +52,6 @@ const wiringAnotherProvidersCredentialIsACompileError = <P extends ProviderId, Q
     providerId,
     provider,
     pingIntervalMs,
-    loginCommand,
     logger,
     auth: otherProvidersAuth,
     cache,
@@ -63,7 +61,7 @@ void wiringAnotherProvidersCredentialIsACompileError;
 
 /** The matching wiring — the same shape with one provider — must still compile. */
 const wiringOwnCredentialCompiles = <P extends ProviderId>(providerId: P, ownAuth: ProviderAuth<P>): void => {
-  createCodexHandler({ providerId, provider, pingIntervalMs, loginCommand, logger, auth: ownAuth, cache });
+  createCodexHandler({ providerId, provider, pingIntervalMs, logger, auth: ownAuth, cache });
 };
 void wiringOwnCredentialCompiles;
 

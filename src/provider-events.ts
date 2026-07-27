@@ -29,6 +29,11 @@ export interface ProviderEvents<P extends ProviderId> {
   readonly effortApplied: `${P}_effort_applied`;
   /** Upstream returned 401; a credential refresh is being attempted. */
   readonly upstream401Refreshing: `${P}_upstream_401_refreshing`;
+  /**
+   * The bounded auth retry ended without a response — the retry bound and the refresh
+   * guard disagree. A programming error, never an upstream or credential condition.
+   */
+  readonly retryBoundViolated: `${P}_retry_bound_violated`;
   /** Upstream returned a non-2xx status. */
   readonly upstreamError: `${P}_upstream_error`;
   /** The response stream failed after the first frame reached the client. */
@@ -55,6 +60,7 @@ export const providerEvents = <P extends ProviderId>(providerId: P): ProviderEve
   translateWarning: `${providerId}_translate_warning`,
   effortApplied: `${providerId}_effort_applied`,
   upstream401Refreshing: `${providerId}_upstream_401_refreshing`,
+  retryBoundViolated: `${providerId}_retry_bound_violated`,
   upstreamError: `${providerId}_upstream_error`,
   streamInterrupted: `${providerId}_stream_interrupted`,
   sseUnparseableData: `${providerId}_sse_unparseable_data`,

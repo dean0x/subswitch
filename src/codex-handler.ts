@@ -45,13 +45,6 @@ export interface CodexHandlerDeps<P extends ProviderId> {
   readonly provider: CodexProviderConfig;
   /** The one cross-cutting limit this handler reads; everything else comes from `provider`. */
   readonly pingIntervalMs: number;
-  /**
-   * Shell command that obtains this provider's credential, quoted verbatim in the
-   * client-visible auth-failure message. Taken from config rather than synthesised as
-   * `${providerId} login`: a provider whose id is `kimi` may well log in with
-   * `kimi auth login`, and inventing the wrong command is worse than naming none.
-   */
-  readonly loginCommand: string;
   readonly logger: Logger;
   /**
    * This provider's credential source, branded with this provider's id.
@@ -88,7 +81,7 @@ export interface CodexHandler {
 }
 
 export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<P>): CodexHandler => {
-  const { providerId, provider, logger, auth, cache, loginCommand, pingIntervalMs } = deps;
+  const { providerId, provider, logger, auth, cache, pingIntervalMs } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const newSessionId = deps.newSessionId ?? randomUUID;
   // Event names resolved once here, not per request: the hot path does no string work,
@@ -189,7 +182,7 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
       // Bounded retry: the initial attempt, plus one more only if the credential can
       // actually be refreshed. A provider whose credential is static gets a single
       // attempt so its truthful 401 reaches the client instead of a refresh error.
-      const maxAttempts = deps.auth.refreshable ? 2 : 1;
+      const maxAttempts = auth.refreshable ? 2 : 1;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         let response: Response;
         try {
@@ -209,7 +202,11 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
           );
           return;
         }
-        if (response.status === 401 && attempt === 0) {
+        // Refresh only while the budget still has an attempt left to spend it on.
+        // `attempt === 0` here spent a refresh the bound of 1 did not allow, which both
+        // renewed a static provider's credential behind its back and replaced the
+        // upstream's truthful 401 with a synthesised refresh failure.
+        if (response.status === 401 && attempt + 1 < maxAttempts) {
           logger.log("warn", events.upstream401Refreshing, { model });
           await response.body?.cancel().catch(() => undefined);
           const refreshed = await auth.forceRefresh();
@@ -223,8 +220,22 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
         upstream = response;
         break;
       }
+      // INVARIANT, not an error path. Every attempt either returns from this function or
+      // assigns `upstream`, except the one that refreshes — and that one is gated on
+      // `attempt + 1 < maxAttempts`, so it cannot fire on the last permitted attempt.
+      // With `refreshable: boolean`, `maxAttempts` is 1 or 2 and the loop therefore always
+      // leaves through `upstream = response`. Reaching here means the bound and the guard
+      // have drifted apart in a later edit: a programming error, not an upstream or
+      // credential condition, and it must not be dressed up as one.
+      //
+      // Kept as an assertion rather than deleted because `tsc` cannot prove `maxAttempts
+      // >= 1`; deleting the check needs `upstream!`, which converts that same drift into
+      // an opaque TypeError on `.ok`. Reported through the normal response path rather
+      // than thrown — business logic returns, it does not throw — and logged under its own
+      // derived event name so it is greppable and can never be read as a 401.
       if (upstream === undefined) {
-        respondProxyError(res, { kind: "auth", message: `${providerId} authentication failed after refresh — run \`${loginCommand}\`` });
+        logger.log("error", events.retryBoundViolated, { model });
+        respondJson(res, 500, toAnthropicErrorBody("api_error", `${providerId} internal error`));
         return;
       }
 

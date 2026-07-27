@@ -6,7 +6,9 @@ import { createCodexHandler } from "../../src/codex-handler.js";
 import { noopLogger } from "../../src/logger.js";
 import { ReasoningCache } from "../../src/reasoning-cache.js";
 import { CodexAuthManager, type AuthFileStore } from "../../src/codex-auth.js";
-import { loadConfig, providerConfigFor, type Config, type CodexProviderConfig } from "../../src/config.js";
+import type { ProviderAuth, ProviderCredential } from "../../src/provider-auth.js";
+import { ok } from "../../src/result.js";
+import { loadConfig, type Config, type CodexProviderConfig } from "../../src/config.js";
 import type { ProviderId } from "../../src/models.js";
 
 /**
@@ -32,7 +34,6 @@ const codexDepsFrom = (config: Config) => ({
   providerId: "codex" as ProviderId,
   provider: config.providers.codex,
   pingIntervalMs: config.limits.pingIntervalMs,
-  loginCommand: providerConfigFor(config, "codex").loginCommand,
 });
 
 /**
@@ -221,85 +222,123 @@ describe("providerId is threaded into aggregateFrames at the handler call site",
 });
 
 /**
- * The remediation command in the auth-failure message comes from config.
+ * `refreshable` sizes the retry bound, and the bound is what the loop obeys.
  *
- * This is the one client-visible string that is NOT derivable from the provider id.
- * `${providerId} login` happens to be correct for Codex, which is exactly why the
- * synthesised form survived review: with `providerId === "codex"` and
- * `loginCommand === "codex login"` the two are byte-identical, so no Codex-only test
- * can tell them apart. A provider whose id is `kimi` but whose command is
- * `kimi auth login` would be told to run a command that does not exist.
+ * `maxAttempts = auth.refreshable ? 2 : 1` is only a real field if the refresh guard
+ * respects it. It did not: the guard read `attempt === 0`, so a static-credential
+ * provider's 401 on its single permitted attempt still triggered a refresh the budget
+ * of 1 did not allow, fell out of the loop with no response, and rendered a synthesised
+ * "authentication failed after refresh" instead of the upstream's truthful 401.
  *
- * Method: drive the full 401 → refresh → 401 path with a loginCommand that is not
- * `${providerId} login`, and assert the rendered message quotes it verbatim.
+ * Both tests below are asserted on OBSERVABLE traffic — how many requests reached the
+ * upstream, how many times the credential was renewed, and which credential the retry
+ * carried — rather than on the branch taken, so they survive a refactor of the loop.
  */
-describe("auth-failure remediation names the configured login command", () => {
-  /** Upstream that 401s on every attempt, so the retry loop exhausts. */
+describe("the 401 refresh retry obeys the bound `refreshable` sets", () => {
+  /** Upstream that 401s on every attempt, so the retry loop runs to its bound. */
   const always401: typeof fetch = async () => new Response("unauthorized", { status: 401 });
 
+  const STATIC_TOKEN = "Bearer static-token";
+  const REFRESHED_TOKEN = "Bearer refreshed-token";
+
   /**
-   * STATIC-CREDENTIAL AUTH FAKE, cast because `deps.auth` is still the concrete
-   * `CodexAuthManager` (a branded `ProviderAuth<P>` is a separate piece of work).
-   * Only the three members the handler touches are implemented.
+   * Auth fake honestly typed as `ProviderAuth<"codex">` — no cast, because the seam is
+   * now an interface a test can implement rather than a concrete class.
    *
-   * REACHABILITY — why the fake is necessary. The "authentication failed after
-   * refresh" branch is reached only when the retry loop exits with no upstream
-   * response, and with `refreshable: true` that cannot happen: attempt 1's 401 breaks
-   * out of the loop with the response in hand and renders "upstream error (401)"
-   * instead. The branch is reachable today ONLY with `refreshable: false`, because the
-   * loop's `attempt === 0` guard fires a refresh the retry budget of 1 does not allow.
-   *
-   * That guard is a known defect owned by the ProviderAuth work (it should read
-   * `attempt + 1 < maxAttempts`). WHEN IT IS FIXED, this branch becomes structurally
-   * unreachable and these two tests must be revisited along with it — either the branch
-   * goes, or it becomes an invariant assertion. Do not simply delete the tests.
+   * Its behaviour depends on both of its inputs: `refreshable` is varied across the two
+   * tests, and `forceRefresh` hands back a DIFFERENT bearer token from `getCredentials`
+   * so "the retry used the refreshed credential" is observable in the captured headers
+   * rather than assumed.
    */
-  const staticCredentialAuth = (): CodexAuthManager => {
-    const credential = { accessToken: "static-token", accountId: "acct_static" };
-    const fake = {
-      refreshable: false,
-      getCredentials: async () => ({ ok: true as const, value: credential }),
-      forceRefresh: async () => ({ ok: true as const, value: credential }),
+  const countingAuth = (refreshable: boolean): { auth: ProviderAuth<"codex">; refreshes: () => number } => {
+    let refreshes = 0;
+    const credentialWith = (authorization: string): ProviderCredential<"codex"> => ({
+      provider: "codex",
+      authHeaders: { authorization, "chatgpt-account-id": "acct_static" },
+    });
+    return {
+      auth: {
+        refreshable,
+        getCredentials: async () => ok(credentialWith(STATIC_TOKEN)),
+        forceRefresh: async () => {
+          refreshes += 1;
+          return ok(credentialWith(REFRESHED_TOKEN));
+        },
+      },
+      refreshes: () => refreshes,
     };
-    return fake as unknown as CodexAuthManager;
   };
 
-  const runAuthFailure = async (loginCommand: string): Promise<string> => {
+  interface Attempt {
+    readonly authorization: string | undefined;
+  }
+
+  const runAgainstPersistent401 = async (
+    refreshable: boolean,
+  ): Promise<{ attempts: Attempt[]; refreshes: number; status: number; message: string }> => {
     const configResult = loadConfig({
-      configPath: "inline-login-command-test.json",
+      configPath: "inline-retry-bound-test.json",
       readFile: () => JSON.stringify({ logLevel: "error" }),
     });
     assert.ok(configResult.ok, "config load should succeed");
 
+    const attempts: Attempt[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      attempts.push({ authorization: (init?.headers as Record<string, string> | undefined)?.["authorization"] });
+      return always401(input, init);
+    };
+
+    const { auth, refreshes } = countingAuth(refreshable);
     const handler = createCodexHandler({
       ...codexDepsFrom(configResult.value.config),
-      loginCommand,
       logger: noopLogger,
-      auth: staticCredentialAuth(),
+      auth,
       cache: new ReasoningCache(4, 1024),
-      fetchImpl: always401,
+      fetchImpl,
     });
 
     const body = { model: "gpt-5.5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
     const res = new StubResponse();
     const req = new EventEmitter() as unknown as IncomingMessage;
     await handler.handleMessages(req, res as unknown as ServerResponse, Buffer.from(JSON.stringify(body)), body, "gpt-5.5");
-    assert.equal(res.statusCode, 401, `expected the exhausted-retry auth error; body was: ${res.body}`);
-    return (JSON.parse(res.body) as { error: { message: string } }).error.message;
+    return {
+      attempts,
+      refreshes: refreshes(),
+      status: res.statusCode,
+      message: (JSON.parse(res.body) as { error: { type: string; message: string } }).error.message,
+    };
   };
 
-  it("quotes a login command that is not derivable from the provider id", async () => {
-    const message = await runAuthFailure("kimi auth login");
-    assert.match(
-      message,
-      /run `kimi auth login`/,
-      "the remediation must come from config — synthesising `${providerId} login` invents a command that does not exist",
+  it("spends exactly one attempt and never refreshes a credential that cannot be refreshed", async () => {
+    const run = await runAgainstPersistent401(false);
+
+    assert.equal(run.attempts.length, 1, "a budget of 1 attempt must produce exactly 1 upstream request");
+    assert.equal(run.refreshes, 0, "a static credential must never be sent to forceRefresh");
+    assert.equal(run.attempts[0]?.authorization, STATIC_TOKEN);
+    // The upstream's own 401 reaches the client, unedited by a refresh that never happened.
+    assert.equal(run.status, 401);
+    assert.doesNotMatch(
+      run.message,
+      /after refresh/,
+      "a provider that cannot refresh must not be told its refresh failed",
     );
+    assert.doesNotMatch(run.message, /retry bound violated/, "the loop must not exit without a response");
   });
 
-  it("keeps the Codex leg's message byte-identical", async () => {
-    const message = await runAuthFailure("codex login");
-    assert.equal(message, "codex authentication failed after refresh — run `codex login`");
+  it("spends exactly two attempts when the credential can be refreshed, and no more", async () => {
+    const run = await runAgainstPersistent401(true);
+
+    assert.equal(run.attempts.length, 2, "the bound is 2 attempts — one initial, one after a refresh");
+    assert.equal(run.refreshes, 1, "exactly one refresh: the retry is bounded from above, not a loop");
+    assert.equal(run.attempts[0]?.authorization, STATIC_TOKEN);
+    assert.equal(
+      run.attempts[1]?.authorization,
+      REFRESHED_TOKEN,
+      "the retry must carry the refreshed credential, otherwise the refresh bought nothing",
+    );
+    // Second 401 is the upstream's answer, not a synthesised one — unchanged Codex behaviour.
+    assert.equal(run.status, 401);
+    assert.doesNotMatch(run.message, /retry bound violated/, "the loop must not exit without a response");
   });
 });
 
