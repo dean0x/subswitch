@@ -1,18 +1,18 @@
 ---
 feature: cli-ux
 name: CLI / init command / terminal UX
-description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan."
+description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, provider, configuredProviders."
 category: architecture
 directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/logger.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts]
 created: 2026-07-23
-updated: 2026-07-26
+updated: 2026-07-27
 ---
 
 # CLI / init command / terminal UX
 
 ## Overview
 
-This knowledge base covers the full user-facing surface of subswitch: the CLI entry point (`src/cli.ts`), the `init` wizard (`src/init.ts`), the `doctor` preflight command (`src/doctor.ts`), the structured logger (`src/logger.ts`), and the single color-resolution utility (`src/tty.ts`). As of the model-family-aliases feature, `src/models.ts` (pure model registry) and `src/agent-scan.ts` (doctor's frontmatter scanner) are tightly coupled to the CLI surface.
+This knowledge base covers the full user-facing surface of subswitch: the CLI entry point (`src/cli.ts`), the `init` wizard (`src/init.ts`), the `doctor` preflight command (`src/doctor.ts`), the structured logger (`src/logger.ts`), and the single color-resolution utility (`src/tty.ts`). `src/models.ts` (pure model registry) and `src/agent-scan.ts` (doctor's frontmatter scanner) are tightly coupled to the CLI surface.
 
 These files share three cross-cutting contracts that are easy to break silently: the non-interactive safety guarantee in `init`, the closed-field redaction guarantee in `logger`, and the single color-enable source of truth in `tty.ts`.
 
@@ -27,12 +27,13 @@ subswitch [command] [flags]
   serve     (default) — start the MITM proxy
   doctor    — preflight health checks; exits non-zero on any failure
   init      — interactive or non-interactive first-time setup
-  models    — print effective alias table (registry × config × codex.models)
+  models    — show effective alias table (registry × aliases)
+              --json  Output model registry as JSON (no color, no TTY check)
 ```
 
 Global flags (`--help/-h`, `--version/-v`) are handled before subcommand dispatch and always exit 0. `init` is the only subcommand dispatched BEFORE `loadConfig()` — it must not depend on a pre-existing config file. `doctor`, `serve`, and `models` all call `loadConfig()` before dispatching.
 
-**USAGE invariant.** The `USAGE` constant in `src/cli.ts` (including Examples and Environment sections) must stay byte-identical to the CLI reference block in the README. If you update one, update the other. Drift here breaks the "single canonical reference" property.
+**USAGE invariant.** The `USAGE` constant in `src/cli.ts` must stay byte-identical to the CLI reference block in the README. If you update one, update the other.
 
 ## Component Architecture
 
@@ -46,126 +47,138 @@ Global flags (`--help/-h`, `--version/-v`) are handled before subcommand dispatc
 
 Both `logger.ts` and `cli.ts` import this function. `FORCE_COLOR=0` and `FORCE_COLOR=""` are intentionally NOT treated as force-on; they fall through to `NO_COLOR`/`isTTY`. Any code that re-implements this logic in-line is a bug.
 
-### src/config.ts — Constants and config loading
+### src/config.ts — Config load and resolution
 
-`DEFAULT_PORT` (`4141`) and `DEFAULT_CODEX_MODELS` are exported constants. `DEFAULT_CODEX_MODELS = ALL_MODEL_IDS` — derived from the canonical `MODEL_REGISTRY` in `models.ts`; the name is kept for import compatibility. Both the Zod schema defaults and init's planning functions derive from these constants — no duplicated literals.
+`DEFAULT_PORT` (`4141`) is the only model-independent constant exported. The model-list constants (`DEFAULT_CODEX_MODELS`, `ALL_MODEL_IDS`) no longer exist — the routable set now comes from `MODEL_REGISTRY` in `models.ts` (applies ADR-006).
 
-`LoadConfigResult` exposes `codexModelsPinned: boolean` — true when `codex.models` was explicitly present in the raw config AND at least one entry is a generation-specific id (e.g. `gpt-5.6-sol`) whose family has a floating alias. Computed from the raw JSON BEFORE normalization (only computable there) and consumed by doctor's alias nudge.
+**`FileConfig` / `Config` split.** `FileConfigSchema.safeParse` produces a `FileConfig` (on-disk shape). `resolveConfig(file)` is a pure mapping that expands `providers.codex.*` → `config.codex.*` and tilde-expands `authFile`. Consumers use `Config`; only `loadConfig` sees `FileConfig`.
 
-Two new `codex.*` config knobs: `codex.aliases` (record, defaults to `{}`) and `codex.models` (`.min(1)`, thunk default `() => [...ALL_MODEL_IDS]`). The thunk keeps `Config["codex"]["models"]` typed `string[]` so no consumer has type churn. `.min(1)` is intentional — `"models": []` would silently disable all Codex routing while the ready banner still printed `routing: → Codex`.
+**On-disk layout.** All provider settings live under `providers.<id>.*` (e.g. `providers.codex.aliases`, `providers.codex.requestTimeoutMs`). The top-level `codex.*` block from the previous layout is now `providers.codex.*`. A config with a legacy top-level `codex` key, a `codex.models` key, or any of the moved `limits.*` keys is **rejected** at load with per-key move instructions (`detectLegacyConfigKeys`). This prevents the "Zod strips unknown keys → settings silently revert to defaults" failure mode.
 
-`loadConfig` deliberately separates read from parse. Step 1 reads the file (catches `ENOENT` and permission errors). Step 2 parses JSON only when a file was found. A malformed JSON file returns a `Result` error with the message `malformed JSON in <path> — fix or delete the file`. An ENOENT on the implicit cwd path silently falls back to pure defaults; an ENOENT on an explicitly-requested path (via `configPath` option or `SUBSWITCH_CONFIG` env var) is an error.
+**`kind` discriminant.** Zod reads discriminator fields before defaults fire. `kind: z.literal("codex")` in `CodexProviderSchema` cannot carry `.default("codex")`. `ProvidersSchema` uses `z.preprocess` to inject `{ kind: key }` from the record key before parsing each provider block.
 
-`ANTHROPIC_BASE_URL` is always derived from `config.port` as `http://127.0.0.1:{port}`. This coupling is intentional: the Claude Code settings URL and the proxy port cannot drift from each other because they come from the same source.
+**`LoadConfigResult.configuredProviders`** is a `ReadonlySet<ProviderId>` of providers whose block was literally present in the raw config (own-property check only). Zod fills all provider defaults unconditionally, so `Config` alone cannot answer "did the user opt in?" — but doctor's severity rules depend on it (an unconfigured provider stays informational, never fails the exit code, avoids PF-006).
+
+**Three per-provider limits.** Each provider has `requestTimeoutMs`, `streamIdleTimeoutMs`, `maxSseEventBytes`. `connectTimeoutMs` and `maxUpstreamSockets` are Anthropic-leg-only (under `anthropic.*`) because the Codex leg uses global `fetch`.
+
+**Global `limits.*` block.** `maxConcurrentRequests` (default 32) lives here. A single leaked decrement-without-increment permanently degrades the server to 503.
+
+`ANTHROPIC_BASE_URL` is always derived from `config.port` as `http://127.0.0.1:{port}`. Coupling is intentional: the Claude Code settings URL and the proxy port cannot drift from each other because they come from the same source.
 
 ### src/models.ts — Pure model registry (no repo imports)
 
-Deliberately imports nothing from the rest of the repo — `config.ts` imports it, and the edge must stay one-way. See `codex-leg/KNOWLEDGE.md` for the full resolution contract. What matters for CLI UX:
+Deliberately imports nothing from the rest of the repo — `config.ts` imports it, and the edge must stay one-way. See `codex-leg/KNOWLEDGE.md` for the full resolution contract.
 
-- `formatModelsReport(input)` is the output engine for both `subswitch models` and doctor's alias table. Renders rows: `alias → canonical  gen:X.Y  enabled|disabled  (derived)|(config)|(direct)`.
-- `isAnthropicModelName(name)` is prefix-based (not exact) — guards three surfaces in config validation (aliases keys, aliases targets, `codex.models` entries) and the agent-scan skip list. Prefix coverage catches variant tier names like `sonnet[1m]` and `opusplan`.
+Key exports for CLI UX:
+
+- `PROVIDER_IDS = ["codex"] as const` and `ProviderId` — closed union; ensures provider dispatch tables are compile-time complete.
+- `MODEL_REGISTRY` — the routable set source (applies ADR-006).
+- `buildRoutingTable(registry, aliasesByProvider)` — called in both `buildDeps` (server) and `runDoctor` (CLI).
+- `resolveModel(table, name)` — five-rule resolution returning `ModelResolution`.
+- `isReservedAnthropicName(name)` — prefix-based (not exact); guards alias keys and targets in `buildRoutingTable` and `AliasesSchema` refines in `config.ts`. Also the skip predicate in `agent-scan.ts`.
+- `formatModelsReport(input)` — human-readable alias table: `alias → canonical  provider  gen:X.Y  enabled|disabled  (derived)|(config)|(direct)`. Provider column is new.
+- `buildModelRows(registry, overrides)` — model-centric rows for `--json` output.
+- `buildAliasRows(registry, overrides)` — alias-centric rows used internally by `formatModelsReport`.
 
 ### src/cli.ts — Dispatcher
 
-`parseCliArgs` returns a discriminated `CliCommand` union. `parseArgs` runs with `tokens: true` so the raw token stream is available for per-command flag validation after the global parse. Flag sets per command:
+`parseCliArgs` returns a discriminated `CliCommand` union. Flag sets per command:
 
 - `serve`: `verbose`, `quiet`, `port`
 - `doctor`: (none — any flag on `doctor` is an error)
-- `models`: (none — any flag on `models` is an error)
-- `init`: `yes`, `dry-run`, `port`, `codex-model`, `codex-models`, `settings-target`
+- `models`: `json` only
+- `init`: `yes`, `dry-run`, `port`, `settings-target`
 
-`ERR_PARSE_ARGS_UNKNOWN_OPTION` and `ERR_PARSE_ARGS_INVALID_OPTION_VALUE` from `parseArgs` are caught and translated to clean `unknown flag '<flag>'` messages; other `ERR_PARSE_ARGS_*` codes produce `invalid arguments`. Unknown errors re-throw.
+`--codex-model` and `--codex-models` were removed when the `codex.models` config key was deleted (applies ADR-006). The init wizard no longer prompts for model selection.
 
-The main switch is exhaustive: the `default` branch assigns to `never` and calls `fail()`, the TypeScript exhaustiveness guard pattern.
+`ERR_PARSE_ARGS_UNKNOWN_OPTION` and `ERR_PARSE_ARGS_INVALID_OPTION_VALUE` are caught and translated to clean `unknown flag '<flag>'` messages.
 
-`serve --port` uses the same `PortSchema.safeParse` and the same error wording (`port must be an integer between 1 and 65535`) as `init --port`. Both paths import `PortSchema` from `init.ts`.
+The main switch is exhaustive: the `default` branch assigns to `never` and calls `fail()`.
 
-The `models` subcommand calls `loadConfig()`, builds `new Set(config.codex.models)` as the routable set, calls `formatModelsReport({registry: MODEL_REGISTRY, routable, overrides: config.codex.aliases})`, then colorizes the `enabled`/`disabled` and `(derived)`/`(config)`/`(direct)` columns via picocolors. It writes to stdout via `out()`.
+**`models` subcommand.** Calls `loadConfig()`, then dispatches on `--json`:
+- Without `--json`: calls `formatModelsReport({registry: MODEL_REGISTRY, overrides: config.codex.aliases})` and colorizes the `enabled`/`disabled` and source columns via picocolors.
+- With `--json`: calls `buildModelRows(MODEL_REGISTRY, config.codex.aliases)` and emits a JSON payload including `providers[]`, `models[]`, `schemaVersion`, and metadata. The JSON branch returns BEFORE `resolveColorEnabled` so `FORCE_COLOR` cannot bleed into JSON output.
 
-`out()` / `errOut()` write directly to stdout / stderr. They are NOT routed through the structured logger — they are for human-readable one-shot messages (banners, init confirmation lines). Runtime request telemetry goes through the structured logger so it respects `--quiet`, `--verbose`, and the field allow-list.
+**Per-provider ready banner.** On `serve`, the banner prints one line per `PROVIDER_IDS` entry with model count and host. `providerConfigFor(effectiveConfig, id)` is the single source for per-provider display metadata.
+
+`out()` / `errOut()` write directly to stdout / stderr — NOT routed through the structured logger. Use the structured logger for runtime request telemetry so output respects `--quiet`, `--verbose`, and the field allow-list.
 
 ### src/init.ts — Functional-core / imperative-shell
+
+**`InitFlags`** is `{ port?: string; settingsTarget?: string }`. The `--codex-model`/`--codex-models` flags no longer exist; `mergeModelFlags` is gone.
 
 **Pure planning layer (no side effects, unit-testable directly):**
 
 - `resolveInitDispatch(stdinIsTTY, stdoutIsTTY, hasCIEnv, yesFlag)` → `InitDispatchDecision`
-- `mergeModelFlags(flags)` → `string[]` — named export backing both `resolveOptionsFromFlags` and `seedWizard`; trims, drops empties, deduplicates preserving first-occurrence order
-- `resolveOptionsFromFlags(flags: InitFlags)` → `Result<InitOptions, InitError>` — all normalization, dedup, and validation. When no model flags are present, **omits `codexModels` from the result** so the written config floats with the registry default (no list is written). When model flags are given but resolve to empty (e.g. `--codex-models ""`), returns `invalid_input`.
-- `planConfigWrite(existingJson, port, models, projectDir)` → `Result<ConfigWritePlan, InitError>` — deep-merge preserving all existing top-level and `codex.*` keys except `models`. **When `models` is `undefined`, DELETES any pre-existing `codex.models` key** — a mere omission is not enough because deep-merge would leave a stale pin in place; re-running `init` without model flags must fully un-pin an existing user.
-- `planSettingsWrite(existingJson, port, settingsTarget, projectDir)` → `Result<SettingsWritePlan, InitError>` — merges only `env.ANTHROPIC_BASE_URL`; all other keys preserved
-- `collectPreconditionWarnings(env, authFileExists, authFilePath)` → `string[]` — auth path must be computed from `homedir()` by the caller, not `env.HOME` (undefined on Windows)
-- `settingsPathFor(target, projectDir)` — single source of truth for the settings file path
-- `isPlainObject(v)` — plain-object guard re-used by init planning and by `doctor.ts`
-
-`InitFlags` is the raw CLI shape (strings, no normalization). All normalization and deduplication happen inside `mergeModelFlags` → `resolveOptionsFromFlags`. `InitOptions.codexModels` is optional (`exactOptionalPropertyTypes` is on — never write `codexModels: undefined`). Absent means the config is written WITHOUT the `codex.models` key so the proxy auto-tracks registry additions.
+- `resolveOptionsFromFlags(flags)` → `Result<InitOptions, InitError>` — validates port and settings-target only. `InitOptions` is `{ port, settingsTarget }`.
+- `planConfigWrite(existingJson, port, projectDir)` → `Result<ConfigWritePlan, InitError>` — deep-merges only `port`; all other top-level keys are preserved. No model list is ever written.
+- `planSettingsWrite(existingJson, port, settingsTarget, projectDir)` → `Result<SettingsWritePlan, InitError>` — merges only `env.ANTHROPIC_BASE_URL`; all other keys preserved.
+- `collectPreconditionWarnings(env, authFileExists, authFilePath)` — auth path must be computed from `homedir()` by caller, not `env.HOME` (undefined on Windows).
+- `settingsPathFor(target, projectDir)` — single source of truth for the settings file path.
+- `isPlainObject(v)` — re-used by init planning and `doctor.ts`.
 
 **Effectful execution layer:**
+`executeInit(options, deps, projectDir)` returns `Result<readonly [configPath, settingsPath], InitError>`. Write order is config-first: a dangling settings pointer is the harmful partial state. All reads happen before any write; if either plan fails, nothing is written.
 
-`executeInit(options, deps, projectDir)` returns `Result<readonly [configPath, settingsPath], InitError>`. Write order is config-first: a dangling settings pointer (ANTHROPIC_BASE_URL pointing at a port with no config) is the more harmful partial state. All reads happen before any write; if either plan fails, nothing is written.
-
-`InitFsDeps` is the injection seam. Production: `makeRealFsDeps()`. Tests: `makeFakeDeps()` from `test/unit/init-test-helpers.ts`. `makeRealFsDeps().writeFile` uses atomic temp-then-rename: writes to `<path>.tmp.<pid>`, then renames over the target.
+`InitFsDeps` is the injection seam. `makeRealFsDeps().writeFile` uses atomic temp-then-rename.
 
 **Wizard (`runInitInteractive`):**
+Signature: `runInitInteractive(projectDir, deps, env, prompts, flags?)`. The wizard prompts only for **port** and **settings-target** — no model multiselect. `seedWizard` seeds port from flags → existing config → default; settings-target from flags → default. `makeClackPrompts()` lazy-imports `@clack/prompts` via dynamic `import()` and is called only when entering the interactive path.
 
-Signature: `runInitInteractive(projectDir, deps, env, prompts, flags?)`. The `prompts` parameter is an `InitPrompts` interface — the injection seam for tests. The real implementation (`makeClackPrompts()`) lazy-imports `@clack/prompts` via dynamic `import()`. The factory is called in `cli.ts` only when entering the interactive path, so clack is never loaded on `serve`, `doctor`, `models`, `--help`, or `--version` paths.
-
-Seeding precedence: flags → existing `subswitch.config.json` → defaults. Unknown models from flags or the existing config appear as `(custom)` options in the multiselect. Cancel at any prompt returns 1 with zero writes.
-
-**Float behavior in the wizard:** When the user's multiselect covers every current registry id and nothing extra, `codexModels` is omitted from `InitOptions` — the written config floats with the registry and auto-picks new generations without user action.
-
-**Dry-run path:** `init --dry-run` bypasses `resolveInitDispatch`. It prints both plans to stdout and writes nothing, always exits 0 on success, and is allowed without `--yes` in a non-TTY or CI environment — the fail-closed contract only protects writes.
+**Dry-run:** `init --dry-run` bypasses `resolveInitDispatch`. Prints both plans to stdout and writes nothing. Allowed without `--yes` in any environment — the fail-closed contract only protects writes.
 
 ### src/doctor.ts — Preflight gate
 
-`runDoctor` accepts an injected `DoctorIO`. `listAgentFiles` and `readTextFile` are **required** fields (added with the model-family-aliases feature) — they enable the agent frontmatter scan. Color is resolved in `cli.ts` and passed as a boolean so `runDoctor` never touches `process.env`.
+`runDoctor(config, configPath, fileFound, io, configuredProviderIds)`. The fifth parameter is `ReadonlySet<ProviderId>` defaulting to `new Set<ProviderId>()`. The previous `codexModelsPinned: boolean` parameter is gone.
 
-Full signature: `runDoctor(config, configPath, fileFound, io, codexModelsPinned = false)`. The fifth parameter is trailing-defaulted so the seven existing unit test call sites with four arguments compile unchanged. When `codexModelsPinned` is true, doctor emits an informational `aliases:` row nudging the user toward family aliases rather than pinned generation-specific ids.
+**N-provider auth check (PF-006 severity rules):**
+- Provider absent from config file → informational; no `failures++`. A user who never added a `providers.codex` block must not fail the exit code when a second provider ships.
+- Provider present in config file but credential missing or broken → failure. The user opted in, so a broken opt-in is a real problem.
 
-After the config summary rows, doctor renders the effective alias table via `formatModelsReport` (indented under the `codex.models` row).
+Each `checkOneProvider` call returns its output lines rather than writing them, so N concurrent checks cannot interleave — lines are written in `PROVIDER_IDS` order after all complete.
 
-All three network probes (`probeSubswitch`, `probeTlsReachable` for anthropic, `probeTlsReachable` for codex) run via `Promise.all` for speed, but output is written in fixed order after all results are in.
+Doctor runs a per-provider TLS probe alongside the Anthropic TLS probe — all in `Promise.all` for speed, written in deterministic order after all complete.
 
-Doctor scans BOTH `.claude/agents/` (relative to project cwd) AND `~/.claude/agents/` (user-global). Paths are de-duplicated with a `Set` of absolute strings before reading file contents. File texts are passed to `checkAgentModels` from `src/agent-scan.ts`.
+Doctor calls `buildRoutingTable` once at the start of the run. The returned `table` is passed to `checkAgentModels`; the returned `danglingAliases` list drives dangling-alias warnings (each increments `failures`).
 
-`row(label, value)` pads the label to `LABEL_WIDTH` (22) characters — all output is columnar. Config-file missing is informational: logs `(defaults — file not found)` but does NOT increment `failures`. `makeLiveHttpGet` caps body reads at `MAX_BODY_BYTES` (8 KiB). Returns `0` (all checks pass) or `1` (any failure). `cli.ts` assigns the return value to `process.exitCode`.
+**Agent scan:** Doctor scans both `.claude/agents/` (relative to cwd) AND `~/.claude/agents/` (user-global). Paths are deduplicated with a `Set` of absolute strings. File texts are passed to `checkAgentModels(fileTexts, table, configuredProviders)`.
+
+`row(label, value)` pads the label to `LABEL_WIDTH` (22) characters — all output is columnar. Config-file missing is informational. Returns `0` or `1`; `cli.ts` assigns to `process.exitCode`.
 
 ### src/agent-scan.ts — Agent frontmatter scanner
 
-No external dependencies. Imports `isAnthropicModelName` from `models.ts` to skip Claude subagents.
+No external dependencies. Imports `isReservedAnthropicName` from `models.ts` to skip Anthropic-named subagents.
 
-`parseFrontmatterModel(text)` extracts the `model:` value: requires `---` on line 1, scans to closing `---`, capped at 8 KiB / 200 lines, handles CRLF, strips surrounding quotes and trailing `# comment`. `modelPreference:` and similar prefixed keys are NOT matched (regex is `^model:\s*(.+)$`).
+`parseFrontmatterModel(text)` extracts the `model:` value: requires `---` on line 1, scans to closing `---`, capped at 8 KiB / 200 lines, handles CRLF, strips surrounding quotes and trailing `# comment`. `modelPreference:` and similar prefixed keys are NOT matched.
 
-`checkAgentModels(files, routable, overrides)` builds two resolvers — one scoped to the actual routable set (route-resolver) and one scoped to all known ids (full-resolver). For each file:
-- Anthropic-shaped names (`inherit`, `sonnet`, `opus`, `haiku`, `claude-*`) are skipped — **the skip list is required in production code**, not just tests; without it doctor fails on every repo with Claude subagents.
-- Model routes successfully → no finding.
-- Unresolvable by both resolvers → `"unresolvable"` finding (increments `failures`).
-- Resolves but excluded from narrowed `codex.models` → `"excluded"` finding (informational; no `failures++`, matching doctor's own precedent for missing config files).
+`checkAgentModels(files, table, configuredProviders)` calls `resolveModel(table, model)` for each file and maps the result to six finding kinds. Severity travels with each `AgentFinding` struct — never re-derived by the renderer.
+
+| Finding kind | Severity | Trigger |
+|---|---|---|
+| `unresolvable` | fail | `resolveModel` returns `unresolved` |
+| `ambiguous` | fail | `resolveModel` returns `ambiguous` |
+| `unknown_provider` | fail | `resolveModel` returns `unknown_qualifier` |
+| `retired` | info | Resolves to a registry entry marked `retired` |
+| `provider_unconfigured` | info | Resolves ok but provider not in `configuredProviders` |
+| `preview_only` | info | Resolves to a registry entry marked `preview` |
+
+**The Anthropic skip list is required in production code**, not just tests — without it doctor fails on every repo that has Claude subagents.
 
 ### src/logger.ts — Structured key=value logger
 
 Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …` (timestamp only when color is on). `createColors(color)` bypasses picocolors' own TTY detection so the `color` parameter is the single source of truth. Fields are serialized by iterating `FIELD_KEYS` in order — any field NOT in `FIELD_KEYS` is silently dropped (the compliance redaction boundary).
 
-**Log injection prevention:** `\r\n` characters are stripped from all field values before serialization — prevents a crafted model string from forging a second log line. Values containing whitespace or `=` are wrapped in double-quotes — prevents field-token forgery (an injected `event=fake` token cannot masquerade as a real field). Normal values (model ids, route names, status codes) never contain these characters, so quoting is rare and the log format is unchanged for typical inputs.
-
-Both log sites deliberately keep using the as-requested model name (what the user typed and would grep for). The alias-to-canonical mapping is discoverable via `subswitch models`.
+**Log injection prevention:** `\r\n` characters are stripped from all field values; values containing whitespace or `=` are wrapped in double-quotes.
 
 ## Non-interactive Safety Contract
 
-`resolveInitDispatch` is the single gateway. Three outcomes:
+`resolveInitDispatch` is the single gateway. Three outcomes: `"interactive"` (both TTYs, no CI, no `--yes`), `"non-interactive"` (`--yes` set), `"refuse"` (non-TTY or CI without `--yes`). `yesFlag` is checked before `hasCIEnv` — do not add a branch that inspects CI state before checking `yesFlag`.
 
-- `"interactive"` — both stdin and stdout are TTYs, no `CI` env var, no `--yes`. Runs the clack wizard.
-- `"non-interactive"` — `--yes` is set. Runs the flag-driven writer regardless of TTY state or CI.
-- `"refuse"` — non-TTY or CI env detected but `--yes` not provided. Exits 1. No files written.
-
-`yesFlag` is checked before `hasCIEnv` in the decision tree. Do not add a branch that inspects CI state before checking `yesFlag` — that breaks `subswitch init --yes` in CI pipelines.
-
-**Exception:** `--dry-run` bypasses `resolveInitDispatch` entirely. `runInitDryRun` is allowed in any environment because it writes nothing.
+**Exception:** `--dry-run` bypasses `resolveInitDispatch` entirely — it writes nothing.
 
 ## Settings Write: Idempotency and Non-destructive Merge
 
-`planSettingsWrite` only touches `env.ANTHROPIC_BASE_URL`. All other keys are preserved verbatim. `planConfigWrite` only touches `port` and `codex.models`; all other top-level and `codex.*` keys are preserved. Both functions deep-merge, never replace the whole object.
-
-`planConfigWrite` with `models: undefined` DELETES the `codex.models` key from the output — a mere omission would leave a pre-existing pin in place on re-run. No partial writes: both plans complete successfully before `executeInit` writes either file. Config is written before settings (config-first order).
+`planSettingsWrite` only touches `env.ANTHROPIC_BASE_URL`. `planConfigWrite` only touches `port`. Both deep-merge, never replace the whole object. No partial writes: both plans complete before `executeInit` writes either file. Config is written before settings.
 
 ## Exit-code Contract
 
@@ -177,11 +190,12 @@ Both log sites deliberately keep using the as-requested model name (what the use
 | `doctor` | All checks pass | 0 |
 | `doctor` | Any check fails | 1 |
 | `init` | Files written | 0 |
-| `init` | User cancelled / empty select | 1 |
+| `init` | User cancelled | 1 |
 | `init` | Refused (non-TTY, no `--yes`) | 1 |
 | `init --dry-run` | Plans printed | 0 |
 | `init --dry-run` | Bad flags / malformed config | 1 |
 | `models` | Table printed | 0 |
+| `models --json` | JSON emitted | 0 |
 | `--help`, `--version` | Always | 0 |
 
 ## Anti-Patterns
@@ -190,7 +204,7 @@ Both log sites deliberately keep using the as-requested model name (what the use
 
 - **Using picocolors' global default export instead of `createColors(bool)`** — the global export re-detects TTY state itself, making the caller's boolean a no-op.
 
-- **Widening `FIELD_KEYS` in logger.ts without a compliance review** — the closed field list is the redaction boundary. Any new field needs a documented non-reversible form (a count or a truncated prefix, never raw content).
+- **Widening `FIELD_KEYS` in logger.ts without a compliance review** — the closed field list is the redaction boundary. Any new field needs a documented non-reversible form (a count or truncated prefix, never raw content).
 
 - **Calling `out()` / `errOut()` from `serve` for runtime request logs** — these helpers are for startup banners and one-shot messages. Use the structured logger so output respects `--quiet`, `--verbose`, and the field allow-list.
 
@@ -198,9 +212,9 @@ Both log sites deliberately keep using the as-requested model name (what the use
 
 - **Asserting `subswitch doctor` exits 0 in smoke tests** — doctor exits non-zero whenever any check fails. In CI (no proxy running, no codex auth), all live checks fail (applies PF-006).
 
-- **Adding a `cwd` field to `InitFsDeps`** — `InitFsDeps` is intentionally stateless; `projectDir` is passed explicitly to each function. Adding `cwd` would make the test fake stateful.
+- **Adding a `cwd` field to `InitFsDeps`** — `InitFsDeps` is intentionally stateless; `projectDir` is passed explicitly to each function.
 
-- **Duplicating `DEFAULT_PORT` literals** — exported from `config.ts`, single source. `DEFAULT_CODEX_MODELS` is derived from `ALL_MODEL_IDS` in `models.ts` and re-exported from `config.ts` for import compatibility — never re-derive the model list elsewhere.
+- **Duplicating `DEFAULT_PORT` literals** — exported from `config.ts`, single source. Do not re-add `DEFAULT_CODEX_MODELS` or `ALL_MODEL_IDS` — the routable set comes from `MODEL_REGISTRY` (ADR-006).
 
 ## Gotchas
 
@@ -208,41 +222,40 @@ Both log sites deliberately keep using the as-requested model name (what the use
 
 **`FORCE_COLOR=0` and `FORCE_COLOR=""` do not force color.** Both fall through the FORCE_COLOR branch (`forceColor !== undefined && forceColor !== "" && forceColor !== "0"`) and hit the NO_COLOR / isTTY tiers.
 
-**No model flags → `codex.models` omitted from config.** When `--codex-model` and `--codex-models` are both absent, `resolveOptionsFromFlags` returns `InitOptions` without `codexModels`. `planConfigWrite` with `models: undefined` DELETES any pre-existing `codex.models` key — the proxy floats with the registry default and auto-tracks new generations. **`--codex-models ""` is an error** — if model flags are provided but resolve empty, `resolveOptionsFromFlags` returns `invalid_input`.
+**Zod strips unknown keys — a legacy config parses clean and runs on defaults.** `detectLegacyConfigKeys` checks for top-level `codex.*`, `codex.models`, and moved `limits.*` keys and returns a hard error before Zod runs. Without it, a pre-`providers.*` config would silently lose all aliases and custom settings with no diagnostic.
 
-**`makeLiveListAgentFiles` must resolve dirs to absolute paths.** The factory calls `pathResolve(dir)` before scanning. Without this, when running from `$HOME` (where the project `.claude/agents/` relative and user `~/.claude/agents/` absolute happen to be the same directory), identical physical paths produce different strings, the `Set`-based deduplication in `runDoctor` fails silently, and every file is scanned twice — doubling finding counts. A test injecting fakes through `DoctorIO` cannot catch this defect; the regression test must exercise the real factory against the filesystem.
+**`isReservedAnthropicName` guards two places that must never disagree.** `AliasesSchema` refines in `config.ts` reject reserved names at parse time. `buildRoutingTable` rejects them again at table-build time. The agent-scan skip list uses the same predicate. Any new guard surface must import `isReservedAnthropicName` rather than reimplementing it.
+
+**`makeLiveListAgentFiles` must resolve dirs to absolute paths.** The factory calls `pathResolve(dir)` before scanning. Without this, running from `$HOME` causes the project `.claude/agents/` relative path and the user `~/.claude/agents/` absolute path to produce different strings for the same directory, the `Set`-based deduplication in `runDoctor` fails silently, and finding counts double. A test injecting fakes through `DoctorIO` cannot catch this defect.
 
 **`makeClackPrompts()` must only be called on the interactive path.** It triggers a dynamic `import("@clack/prompts")` which loads terminal control sequences. Call it only inside the `if (decision === "interactive")` branch.
 
-**`clack.multiselect` and friends return a Symbol on cancel.** `isCancel` must be checked before treating the return value as `string[]`. The `prompt()` helper inside `runInitInteractive` centralizes this guard.
+**`clack.multiselect` and friends return a Symbol on cancel.** `isCancel` must be checked before treating the return value as a string. The `prompt()` helper inside `runInitInteractive` centralizes this guard.
 
 **`parseArgs` with `strict: true` throws on unknown flags.** The catch block translates `ERR_PARSE_ARGS_*` errors to `Result` errors. Always `return` after `fail()` — code after it still runs unless the caller returns explicitly.
 
-**`init` does not load `subswitch.config.json` at dispatch time.** It is dispatched before `loadConfig()`. Port and model selections come from flags, the wizard, or `seedWizard` (which reads the file independently and silently ignores parse errors).
-
-**Atomic write uses `<path>.tmp.<pid>`.** A crash mid-write may leave a `.tmp.<pid>` file. The cleanup `catch` block attempts `unlink` on the temp file but swallows cleanup errors to avoid masking the original write error.
-
-**`exactOptionalPropertyTypes` conditional spreads in `makeClackPrompts`.** `@clack/prompts` predates `exactOptionalPropertyTypes`. The factory uses `...(field !== undefined ? { field } : {})` spreads at every optional clack option — intentional and locally contained.
+**Doctor unconfigured-provider vs. configured-but-broken severity is decided by `configuredProviders`.** Doctor receives `LoadConfigResult.configuredProviders`, which uses own-property checks to detect which provider blocks were literally present in the raw config. Zod fills all provider defaults unconditionally, so the resolved `Config` alone cannot answer this question.
 
 ## Key Files
 
 - `src/tty.ts` — `resolveColorEnabled(env, isTTY)` — single color-enable source of truth
-- `src/cli.ts` — Binary entry point; `parseCliArgs` → `CliCommand` union; per-command flag sets; exhaustive switch with `never` guard; `models` subcommand dispatcher
-- `src/init.ts` — Pure planning (`resolveInitDispatch`, `planConfigWrite`, `planSettingsWrite`, `mergeModelFlags`, `resolveOptionsFromFlags`, `collectPreconditionWarnings`, `settingsPathFor`, `isPlainObject`); `InitFsDeps` seam; `InitPrompts` seam; `makeClackPrompts()` factory; all three runners
-- `src/doctor.ts` — `runDoctor` preflight gate; `DoctorIO` interface (including required `listAgentFiles` + `readTextFile`); `makeLiveListAgentFiles` (absolute-path resolution required)
-- `src/agent-scan.ts` — `parseFrontmatterModel` (hand-rolled, no YAML dep); `checkAgentModels`; Anthropic skip list load-bearing in production
-- `src/logger.ts` — `createConsoleLogger`; `FIELD_KEYS` compliance allow-list; newline + quote-wrapper log injection prevention; `noopLogger`
-- `src/models.ts` — Pure registry; `MODEL_REGISTRY`, `ALL_MODEL_IDS`, `makeModelResolver`, `normalizeModelList`, `formatModelsReport`, `isAnthropicModelName`
-- `src/config.ts` — `DEFAULT_PORT`, `DEFAULT_CODEX_MODELS`; `LoadConfigResult` with `codexModelsPinned`; `codex.aliases` + `codex.models` schemas with Anthropic-guard refines
+- `src/cli.ts` — Binary entry point; `parseCliArgs` → `CliCommand` union; `models --json` dispatch; per-provider serve banner; exhaustive switch with `never` guard
+- `src/init.ts` — Pure planning (`resolveInitDispatch`, `planConfigWrite`, `planSettingsWrite`, `resolveOptionsFromFlags`, `collectPreconditionWarnings`, `settingsPathFor`, `isPlainObject`); `InitFsDeps` seam; `InitPrompts` seam; wizard prompts only port + settings-target
+- `src/doctor.ts` — `runDoctor` preflight gate; `DoctorIO` interface; N-provider fan-out with `PROVIDER_IDS`; `checkOneProvider`; `makeLiveListAgentFiles` (absolute-path resolution critical)
+- `src/agent-scan.ts` — `parseFrontmatterModel` (hand-rolled, no YAML dep); `checkAgentModels`; six finding kinds; `isReservedAnthropicName` skip list load-bearing in production
+- `src/logger.ts` — `createConsoleLogger`; `FIELD_KEYS` compliance allow-list; log injection prevention; `noopLogger`
+- `src/models.ts` — Pure registry; `MODEL_REGISTRY`, `PROVIDER_IDS`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `formatModelsReport`, `buildModelRows`
+- `src/config.ts` — `DEFAULT_PORT`; `FileConfig`/`Config` split; `resolveConfig`; `LoadConfigResult.configuredProviders`; `detectLegacyConfigKeys`; provider `kind` preprocess injection
 - `test/unit/init-test-helpers.ts` — `makeFakeDeps` shared factory for init unit tests
 - `scripts/smoke-tarball.sh` — Uses `--version` not `doctor` for binary-resolves assertion
 
 ## Related
 
 - PF-006: Doctor exits non-zero without live services; smoke uses `--version` not `doctor`
-- ADR-005: Exact model-membership routing — `isAnthropicModelName` guards prevent Anthropic names entering the routable set, maintaining ADR-005's invariant that `decideRoute` only receives canonical Codex ids
+- ADR-006: `MODEL_REGISTRY` as sole routable set source; `codex.models` config key deleted; pre-restructure config rejected with per-key move instructions
+- ADR-005: Exact model-membership routing — `isReservedAnthropicName` guards prevent Anthropic names entering the routing table, maintaining ADR-005's invariant
 - ADR-004: `@types/node` pinned to Node-22 majors — affects `parseArgs` type signatures and `readdir({recursive:true})` in `makeLiveListAgentFiles`
-- `.devflow/features/codex-leg/KNOWLEDGE.md` — Full model resolution contract (`makeModelResolver`, "a pin pins", numeric gen comparison, canonical threading)
-- `src/models.ts` — `formatModelsReport` drives both `subswitch models` output and doctor's alias table
+- `.devflow/features/codex-leg/KNOWLEDGE.md` — Full model resolution contract (`buildRoutingTable`, five-rule resolution, canonical threading)
+- `src/models.ts` — `formatModelsReport` and `buildModelRows` drive both `subswitch models` output and doctor's alias table
 - `src/config.ts` — `loadConfig()` consumed by `serve`, `doctor`, and `models`; `init` reads it only in `seedWizard` (best-effort, errors silently swallowed)
-- `src/version.js` — Source of `SUBSWITCH_VERSION` used by `--version` and doctor output
+- `src/version.ts` — Source of `SUBSWITCH_VERSION` used by `--version` and doctor output
