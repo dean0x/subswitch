@@ -126,6 +126,19 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   let inputTokens = 0;
   let pingTimer: NodeJS.Timeout | undefined;
   let lastActivityMs = 0;
+  // Blocks opened but not yet stopped. Bounded by the number of output items in
+  // one response; entries are removed on their content_block_stop and the set is
+  // cleared at terminal reconciliation.
+  const openBlockIndices = new Set<number>();
+  // True when a delta arrived but lookupBlockIndex returned undefined, so its text
+  // was dropped: the upstream carried content we cannot place in any block.
+  let sawUnmatchedDelta = false;
+  // Per-block set of indices that received at least one successfully-placed delta.
+  // Used in reconcileOpenBlocks to distinguish between:
+  //   (a) a dropped delta that lands alongside real content (gracefully degraded) vs
+  //   (b) a dropped delta for a turn that produced no other content (unrecoverable).
+  // Also used in flush() to decide whether to reconcile open blocks or emit an error.
+  const blocksWithContent = new Set<number>();
 
   const blockKeys = (itemId: string | undefined, outputIndex: number | undefined): string[] => {
     const keys: string[] = [];
@@ -149,6 +162,37 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   // with providerName "kimi" previously said "kimi stream error" but still emitted
   // id "msg_codex". Codex still resolves to "msg_codex", byte-identical.
   const msgIdFallback = options.messageIdFallback ?? `msg_${providerName}`;
+
+  /** Reconcile blocks the upstream left open at a terminal point, so a response that
+   *  carried content upstream is never delivered as a healthy-looking empty turn.
+   *
+   *  A dropped delta is only unrecoverable when NO block received any content.  If at
+   *  least one block received a matched delta, the unknown item's dropped deltas degrade
+   *  gracefully — the real content is returned and the dropped delta is silently ignored
+   *  (matching main-branch behaviour for unknown item types).
+   *
+   *  Open blocks that received at least one delta are closed with a synthesised stop,
+   *  which lets the aggregator materialise the accumulated deltas.  Open blocks that
+   *  received ZERO deltas are intentionally left without a synthesised stop; the
+   *  aggregator will discard them as zero-content blocks rather than appending a
+   *  spurious empty text block.
+   *
+   *  Returns true when an error frame was emitted, meaning the caller must not
+   *  emit the normal terminal frames. */
+  const reconcileOpenBlocks = (push: (frameText: string) => void): boolean => {
+    if (sawUnmatchedDelta && blocksWithContent.size === 0) {
+      openBlockIndices.clear();
+      push(toAnthropicErrorSse("api_error", "codex stream dropped content deltas that matched no content block"));
+      return true;
+    }
+    for (const index of openBlockIndices) {
+      if (blocksWithContent.has(index)) {
+        push(frame("content_block_stop", { type: "content_block_stop", index }));
+      }
+    }
+    openBlockIndices.clear();
+    return false;
+  };
 
   const translator = new Transform({
     objectMode: true,
@@ -214,6 +258,9 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const item = parsed.data.item;
           ensureStarted();
           if (item.type === "message") {
+            // Skip a duplicate announcement: upstream sometimes re-sends the same
+            // item id; creating a second block would orphan the first one.
+            if (item.id !== undefined && blockIndexByKey.has(`id:${item.id}`)) break;
             const index = nextBlockIndex++;
             for (const key of blockKeys(item.id, parsed.data.output_index)) blockIndexByKey.set(key, index);
             this.push(
@@ -223,7 +270,10 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
                 content_block: { type: "text", text: "" },
               }),
             );
+            openBlockIndices.add(index);
           } else if (item.type === "function_call") {
+            // Skip a duplicate announcement (same guard as the message case above).
+            if (item.id !== undefined && blockIndexByKey.has(`id:${item.id}`)) break;
             sawFunctionCall = true;
             const index = nextBlockIndex++;
             for (const key of blockKeys(item.id, parsed.data.output_index)) blockIndexByKey.set(key, index);
@@ -239,6 +289,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
                 },
               }),
             );
+            openBlockIndices.add(index);
           }
           // reasoning items produce no Anthropic frames; captured at .done.
           break;
@@ -247,7 +298,11 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const parsed = ResponsesDeltaEventSchema.safeParse(json);
           if (!parsed.success) break;
           const index = lookupBlockIndex(parsed.data.item_id, parsed.data.output_index);
-          if (index === undefined) break;
+          if (index === undefined) {
+            sawUnmatchedDelta = true;
+            break;
+          }
+          blocksWithContent.add(index);
           this.push(
             frame("content_block_delta", {
               type: "content_block_delta",
@@ -261,7 +316,11 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const parsed = ResponsesDeltaEventSchema.safeParse(json);
           if (!parsed.success) break;
           const index = lookupBlockIndex(parsed.data.item_id, parsed.data.output_index);
-          if (index === undefined) break;
+          if (index === undefined) {
+            sawUnmatchedDelta = true;
+            break;
+          }
+          blocksWithContent.add(index);
           this.push(
             frame("content_block_delta", {
               type: "content_block_delta",
@@ -287,6 +346,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const index = lookupBlockIndex(item.id, parsed.data.output_index);
           if (index !== undefined) {
             this.push(frame("content_block_stop", { type: "content_block_stop", index }));
+            openBlockIndices.delete(index);
           }
           break;
         }
@@ -296,6 +356,9 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           if (!parsed.success) break;
           ensureStarted(parsed.data.response.id, parsed.data.response.model);
           finished = true;
+          // Close blocks left open by a missing output_item.done here rather than in
+          // flush(), so the client never sees a content_block_stop after message_stop.
+          if (reconcileOpenBlocks((frameText) => this.push(frameText))) break;
           const response = parsed.data.response;
           const hitMaxTokens =
             response.status === "incomplete" && response.incomplete_details?.reason === "max_output_tokens";
@@ -350,6 +413,23 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
     flush(callback) {
       if (pingTimer !== undefined) clearInterval(pingTimer);
       pingTimer = undefined;
+      // Only reachable when the stream ended without a terminal lifecycle event:
+      // response.completed/.incomplete already set `finished` before they return.
+      // Guarding on `finished` prevents appending frames after message_stop.
+      if (!finished) {
+        if (blocksWithContent.size > 0) {
+          // At least one block received content before truncation — reconcile open
+          // blocks that have content so the accumulated deltas are delivered.
+          reconcileOpenBlocks((frameText) => this.push(frameText));
+        } else if (started) {
+          // The stream opened (message_start was emitted) but no recoverable content
+          // arrived and no terminal lifecycle event was received.  This is a truncated
+          // stream — emit an error so the client gets 502 rather than a misleading
+          // 200 with empty or null content.
+          this.push(toAnthropicErrorSse("api_error", "codex stream ended without a terminal event or recoverable content"));
+        }
+        // If !started: aggregateFrames will return err("no message_start") → 502.
+      }
       callback();
     },
   });
@@ -431,9 +511,16 @@ export const aggregateFrames = (frames: readonly string[], providerName = "codex
         } else if (pending.block["type"] === "tool_use") {
           let input: unknown = {};
           try {
-            input = pending.partialJson === "" ? {} : JSON.parse(pending.partialJson);
+            input = pending.partialJson.trim() === "" ? {} : JSON.parse(pending.partialJson);
           } catch {
-            input = {};
+            // partialJson has non-whitespace content but is unparseable JSON — the JSON
+            // was likely truncated before the upstream closed the stream. Substituting {}
+            // would silently corrupt the tool arguments (e.g. a write_file call with no
+            // path). Return an error so the client receives 502 rather than acting on
+            // invented empty arguments. Note: partialJson === "" and whitespace-only both
+            // fall through to the {} default above; this catch is only hit when there is
+            // actual non-whitespace content to parse but it is malformed JSON.
+            return err({ kind: "upstream", message: "codex stream ended with unparseable tool_use arguments" });
           }
           content.push({ type: "tool_use", id: pending.block["id"], name: pending.block["name"], input });
         }
@@ -460,6 +547,16 @@ export const aggregateFrames = (frames: readonly string[], providerName = "codex
 
   if (message === undefined) {
     return err({ kind: "upstream", message: `${providerName} stream ended before producing a message` });
+  }
+  // Every content_block_start must be matched by a content_block_stop before we can
+  // assemble a valid response.  The translator's reconcileOpenBlocks() synthesises stops
+  // for blocks that received at least one delta; blocks that received zero deltas are
+  // intentionally left open (no synthesised stop) so they don't produce spurious empty
+  // content entries.  We honour that contract here: error only on unclosed blocks that
+  // have actual content, and silently discard unclosed blocks with no content.
+  const unclosedWithContent = [...blocks.values()].filter((p) => p.text !== "" || p.partialJson !== "");
+  if (unclosedWithContent.length > 0) {
+    return err({ kind: "upstream", message: `codex stream ended with ${unclosedWithContent.length} unclosed content block(s)` });
   }
   return ok({
     kind: "message",
