@@ -49,7 +49,7 @@ describe("credential leak matrix", () => {
     });
     const subswitch = await startSubswitch({
       anthropic: { baseUrl: anthropic.url },
-      codex: { authFile: authFilePath },
+      providers: { codex: { authFile: authFilePath } },
     });
     cleanups.push(subswitch.close, anthropic.close);
 

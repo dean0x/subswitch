@@ -126,7 +126,12 @@ describe("probeTlsReachable", () => {
 const makeTestConfig = (): Config => ({
   port: 4141,
   logLevel: "info",
-  anthropic: { baseUrl: "https://api.anthropic.com" },
+  anthropic: {
+    baseUrl: "https://api.anthropic.com",
+    connectTimeoutMs: 10_000,
+    streamIdleTimeoutMs: 300_000,
+    maxUpstreamSockets: 32,
+  },
   codex: {
     baseUrl: "https://chatgpt.com/backend-api/codex",
     oauthTokenUrl: "https://auth.openai.com/oauth/token",
@@ -134,16 +139,14 @@ const makeTestConfig = (): Config => ({
     models: ["gpt-5.6-sol", "gpt-5.5"],
     userAgent: "codex_cli_rs/0.144.6",
     aliases: {},
+    reasoningCache: { maxEntries: 4096, maxBytes: 64 * 1024 * 1024 },
+    requestTimeoutMs: 600_000,
+    streamIdleTimeoutMs: 300_000,
+    maxSseEventBytes: 4 * 1024 * 1024,
   },
-  reasoningCache: { maxEntries: 4096, maxBytes: 64 * 1024 * 1024 },
   limits: {
     maxBodyBytes: 32 * 1024 * 1024,
-    connectTimeoutMs: 10_000,
-    streamIdleTimeoutMs: 300_000,
-    requestTimeoutMs: 600_000,
     pingIntervalMs: 15_000,
-    maxSseEventBytes: 4 * 1024 * 1024,
-    maxUpstreamSockets: 32,
   },
 });
 

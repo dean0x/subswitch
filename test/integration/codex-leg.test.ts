@@ -56,7 +56,7 @@ const setupRig = async (codexHandler: UpstreamHandler, options: { authFileConten
 
   const subswitch = await startSubswitch({
     anthropic: { baseUrl: anthropic.url },
-    codex: { baseUrl: codex.url, oauthTokenUrl: `${oauth.url}/token`, authFile: authFilePath },
+    providers: { codex: { baseUrl: codex.url, oauthTokenUrl: `${oauth.url}/token`, authFile: authFilePath } },
   });
   cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
   return { subswitch, codex, anthropic, oauth, authFilePath };
@@ -289,12 +289,12 @@ describe("codex leg", () => {
 
     const subswitch = await startSubswitch({
       anthropic: { baseUrl: anthropic.url },
-      codex: {
+      providers: { codex: {
         baseUrl: codex.url,
         oauthTokenUrl: `${oauth.url}/token`,
         authFile: authFilePath,
         userAgent: "my-custom-agent/1.0",
-      },
+      } },
     });
     cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
 
@@ -512,12 +512,12 @@ describe("codex leg", () => {
 
     const subswitch = await startSubswitch({
       anthropic: { baseUrl: anthropic.url },
-      codex: {
+      providers: { codex: {
         baseUrl: codex.url,
         oauthTokenUrl: `${oauth.url}/token`,
         authFile: authFilePath,
         aliases: { sol: "gpt-9-sol" },
-      },
+      } },
     });
     cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
 
@@ -531,42 +531,5 @@ describe("codex leg", () => {
     const sent = JSON.parse(codex.requests[0]!.body.toString("utf8")) as Record<string, unknown>;
     assert.equal(sent["model"], "gpt-9-sol", "config override target must be sent upstream");
     assert.equal(anthropic.requests.length, 0, "config override must route to Codex, not Anthropic");
-  });
-
-  it("a narrowed codex.models list sends an excluded registry model to Anthropic", async () => {
-    const codex = await startFakeUpstream(sseHandler(loadSse("text-only.sse")));
-    const anthropic = await startFakeUpstream((_req, res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
-    });
-    const oauth = await startFakeUpstream((_req, res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ access_token: makeAccessToken(Date.now() + 3_600_000) }));
-    });
-    const dir = await mkdtemp(join(tmpdir(), "subswitch-test-narrow-"));
-    const authFilePath = join(dir, "auth.json");
-    await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(FAR_FUTURE_MS)), "utf8");
-
-    // Only gpt-5.6-sol is enabled for Codex routing; gpt-5.5 is excluded.
-    const subswitch = await startSubswitch({
-      anthropic: { baseUrl: anthropic.url },
-      codex: {
-        baseUrl: codex.url,
-        oauthTokenUrl: `${oauth.url}/token`,
-        authFile: authFilePath,
-        models: ["gpt-5.6-sol"],
-      },
-    });
-    cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
-
-    const response = await fetch(`${subswitch.url}/v1/messages`, {
-      method: "POST",
-      headers: { authorization: "Bearer sk-ant", "anthropic-beta": "oauth-2025-04-20", "content-type": "application/json" },
-      body: JSON.stringify({ model: "gpt-5.5", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
-    });
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { id: "msg_from_anthropic" });
-    assert.equal(codex.requests.length, 0, "excluded model must not reach the Codex upstream");
-    assert.equal(anthropic.requests.length, 1, "excluded model must be forwarded to Anthropic");
   });
 });

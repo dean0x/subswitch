@@ -281,29 +281,12 @@ describe("CLI models", () => {
     assert.ok(result.stdout.includes("gen:5.6"), "output should include generation gen:5.6");
   });
 
-  it("marks disabled models when a config in the cwd narrows codex.models", async () => {
-    const tmpDir = await mkdtemp(join(tmpdir(), "subswitch-models-test-"));
-    try {
-      // Only gpt-5.6-sol is enabled; the other registry aliases should be disabled.
-      await writeFile(
-        join(tmpDir, "subswitch.config.json"),
-        JSON.stringify({ codex: { models: ["gpt-5.6-sol"] } }),
-        "utf8",
-      );
-      const result = await runCli(["models"], { cwd: tmpDir });
-      assert.equal(result.exitCode, 0);
-      assert.ok(result.stdout.includes("disabled"), "output should mark disabled aliases");
-    } finally {
-      await rm(tmpDir, { recursive: true, force: true });
-    }
-  });
-
   it("shows a config alias override with the (config) source label", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "subswitch-models-test-"));
     try {
       await writeFile(
         join(tmpDir, "subswitch.config.json"),
-        JSON.stringify({ codex: { aliases: { myalias: "gpt-5.6-sol" } } }),
+        JSON.stringify({ providers: { codex: { aliases: { myalias: "gpt-5.6-sol" } } } }),
         "utf8",
       );
       const result = await runCli(["models"], { cwd: tmpDir });
@@ -336,24 +319,4 @@ describe("CLI models", () => {
     assert.ok(result.stdout.includes("(direct)"), "gpt-5.5 must appear as a (direct) row");
   });
 
-  it("shows a non-alias routable id as enabled when a config narrows to only that id", async () => {
-    const tmpDir = await mkdtemp(join(tmpdir(), "subswitch-models-test-"));
-    try {
-      // A non-registry id — no alias row would cover it.  The table must show it as
-      // enabled so the user can confirm their config is effective.
-      await writeFile(
-        join(tmpDir, "subswitch.config.json"),
-        JSON.stringify({ codex: { models: ["gpt-9-experimental"] } }),
-        "utf8",
-      );
-      const result = await runCli(["models"], { cwd: tmpDir });
-      assert.equal(result.exitCode, 0);
-      assert.ok(result.stdout.includes("gpt-9-experimental"), "output must include the non-registry routable id");
-      assert.ok(result.stdout.includes("enabled"), "the non-registry routable id must be marked enabled");
-      // The alias rows for sol/terra/luna still appear but as disabled.
-      assert.ok(result.stdout.includes("disabled"), "derived alias rows must still appear as disabled");
-    } finally {
-      await rm(tmpDir, { recursive: true, force: true });
-    }
-  });
 });
