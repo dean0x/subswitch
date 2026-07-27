@@ -271,10 +271,19 @@ describe("the 401 refresh retry obeys the bound `refreshable` sets", () => {
 
   interface Attempt {
     readonly authorization: string | undefined;
+    readonly sessionId: string | undefined;
+  }
+
+  interface RunOptions {
+    /** Overrides the request body; the default has a user message, so it derives a key. */
+    readonly body?: Record<string, unknown>;
+    /** Overrides the random-session-id source the handler falls back to. */
+    readonly newSessionId?: () => string;
   }
 
   const runAgainstPersistent401 = async (
     refreshable: boolean,
+    options: RunOptions = {},
   ): Promise<{ attempts: Attempt[]; refreshes: number; status: number; message: string }> => {
     const configResult = loadConfig({
       configPath: "inline-retry-bound-test.json",
@@ -284,7 +293,8 @@ describe("the 401 refresh retry obeys the bound `refreshable` sets", () => {
 
     const attempts: Attempt[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {
-      attempts.push({ authorization: (init?.headers as Record<string, string> | undefined)?.["authorization"] });
+      const headers = init?.headers as Record<string, string> | undefined;
+      attempts.push({ authorization: headers?.["authorization"], sessionId: headers?.["session_id"] });
       return always401(input, init);
     };
 
@@ -295,9 +305,10 @@ describe("the 401 refresh retry obeys the bound `refreshable` sets", () => {
       auth,
       cache: new ReasoningCache(4, 1024),
       fetchImpl,
+      ...(options.newSessionId !== undefined ? { newSessionId: options.newSessionId } : {}),
     });
 
-    const body = { model: "gpt-5.5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
+    const body = options.body ?? { model: "gpt-5.5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
     const res = new StubResponse();
     const req = new EventEmitter() as unknown as IncomingMessage;
     await handler.handleMessages(req, res as unknown as ServerResponse, Buffer.from(JSON.stringify(body)), body, "gpt-5.5");
@@ -339,6 +350,39 @@ describe("the 401 refresh retry obeys the bound `refreshable` sets", () => {
     // Second 401 is the upstream's answer, not a synthesised one — unchanged Codex behaviour.
     assert.equal(run.status, 401);
     assert.doesNotMatch(run.message, /retry bound violated/, "the loop must not exit without a response");
+  });
+
+  /**
+   * ADR-003: the session id is derived ONCE, above the retry loop, and both attempts
+   * carry it. Codex runs with `store: false`, so the encrypted reasoning items for a turn
+   * are keyed to the session the request announced; a retry that announced a new session
+   * would orphan them and break the tool-calling round-trip.
+   *
+   * This is the case the existing integration pin CANNOT see. `codex-leg.test.ts`
+   * ("session_id is stable across the 401→refresh→retry path") sends a request WITH a user
+   * message, so `deriveConversationKey` returns a value and `conversationKey ?? newSessionId()`
+   * is deterministic wherever it is evaluated — moving the derivation inside the loop leaves
+   * that test green. Only the no-user-message fallback, where the id comes from a generator
+   * that returns something different every call, distinguishes "derived once" from "derived
+   * per attempt". Verified by mutation: with the derivation moved into the loop, the whole
+   * suite stayed green before this test existed.
+   */
+  it("derives the fallback session id once for the whole request, not once per attempt", async () => {
+    let issued = 0;
+    const run = await runAgainstPersistent401(true, {
+      // No user message ⇒ deriveConversationKey returns undefined ⇒ the fallback is used.
+      body: { model: "gpt-5.5", max_tokens: 10, messages: [{ role: "assistant", content: "prior turn" }] },
+      newSessionId: () => `session-${(issued += 1)}`,
+    });
+
+    assert.equal(run.attempts.length, 2, "the rig must actually retry, or the assertion below is vacuous");
+    assert.equal(run.attempts[0]?.sessionId, "session-1");
+    assert.equal(
+      run.attempts[1]?.sessionId,
+      "session-1",
+      "the retry must announce the same session as the first attempt (applies ADR-003)",
+    );
+    assert.equal(issued, 1, "a second generated id means the derivation moved inside the retry loop");
   });
 });
 

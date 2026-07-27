@@ -8,10 +8,25 @@
  * `test/**\/*.ts`. Everything lives in functions that are never called.
  *
  * `@ts-expect-error` fails in BOTH directions: it errors if the line below it compiles
- * (the brand stopped being load-bearing) and the line itself errors if the annotation is
- * removed. Dropping the `provider` field from `ProviderCredential` — the mutation this
- * file exists to catch — erases `P` from the type's structure, makes every mismatch below
- * legal, and turns each directive into an unused-directive error.
+ * (the guarantee was lost) and the line itself errors if the annotation is removed.
+ *
+ * TWO MECHANISMS, MEASURED SEPARATELY — do not conflate them. Dropping the `provider`
+ * field from `ProviderCredential` was applied as a mutation, and the result was more
+ * precise than expected:
+ *
+ *   1. `CodexHandlerDeps<P>` sharing one type parameter between `providerId` and `auth`
+ *      is what fails the WIRING SITE. That diagnostic survives the brand's removal —
+ *      inference still fixes the parameter from one field and rejects the other.
+ *   2. The `provider: P` field is what keeps `ProviderCredential`/`ProviderAuth` VALUES
+ *      from being interchangeable anywhere else — passed to a helper, stored in a table,
+ *      returned from a factory — where no shared parameter is doing the work. Without it,
+ *      `P` is structurally absent and the two cases in
+ *      `credentialsAreNotInterchangeable` below go green (their directives go unused,
+ *      which fails typecheck — that is the mutation's red).
+ *
+ * Both are needed and both are pinned here: case 1 by
+ * `wiringAnotherProvidersCredentialIsACompileError`, case 2 by
+ * `credentialsAreNotInterchangeable`.
  *
  * WHY THE MISMATCH IS EXPRESSED WITH TWO TYPE PARAMETERS rather than two concrete ids.
  * `PROVIDER_IDS` has one member, so `ProviderId` and `"codex"` are the *same* type today
@@ -65,9 +80,13 @@ const wiringOwnCredentialCompiles = <P extends ProviderId>(providerId: P, ownAut
 };
 void wiringOwnCredentialCompiles;
 
+/**
+ * THE BRAND, isolated from the handler. These are the cases that go green — and so fail
+ * typecheck on an unused directive — the moment `ProviderCredential` stops carrying `P`
+ * as a real field. They cover every place a credential travels by value rather than
+ * through `CodexHandlerDeps<P>`'s shared type parameter.
+ */
 const credentialsAreNotInterchangeable = <P extends ProviderId, Q extends ProviderId>(): void => {
-  declare2<ProviderAuth<Q>>();
-
   // @ts-expect-error the seam itself, independent of the handler: one provider's auth is
   // not another's, even though `refreshable` and `authHeaders` are structurally identical.
   const swappedAuth: ProviderAuth<P> = declare2<ProviderAuth<Q>>();
