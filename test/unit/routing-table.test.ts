@@ -920,10 +920,24 @@ describe("D-T1 — the router and the display never disagree about a family", ()
   });
 });
 
-describe("D-T4 — an alias row's provider comes from the declaration, not from PROVIDER_IDS[0]", () => {
-  it("D-T4a: a dangling alias target renders with the declaring provider", () => {
-    // Regression: nothing asserted this row's provider before, so the
-    // first-provider assumption it used to carry was entirely uncovered.
+describe("D-T4 — an alias row's provider comes from the target when known, else from the declaration", () => {
+  it("D-T4a: a dangling alias target renders with the declaring provider [NOT discriminating — see comment]", () => {
+    // Regression: nothing asserted this row's provider before, so the field was
+    // entirely uncovered — poisoning it with a sentinel used to leave the suite green.
+    // This test closes that: the row's provider is now asserted at all.
+    //
+    // WHAT IT DOES NOT SHOW, stated here because it is easy to misread from the name:
+    // it cannot distinguish `?? declaringProvider` from `?? PROVIDER_IDS[0]`. With
+    // PROVIDER_IDS = ["codex"] the declaring provider IS PROVIDER_IDS[0] for every
+    // declaration that can exist, so both sides of this comparison derive from the same
+    // single id. Verified, not assumed: reverting the source to `?? PROVIDER_IDS[0]`
+    // leaves the entire suite green. Treat that green as a permanent hole until a
+    // second provider ships, not as coverage.
+    //
+    // The rule is still the right one — an out-of-tree probe with PROVIDER_IDS patched
+    // to ["codex","kimi"] shows the old code attributing a kimi-declared alias to codex.
+    // When a second id lands, promote that probe here as D-T4c and this becomes
+    // discriminating for free. D-T4b below covers the half that IS testable today.
     const rows = buildAliasRows(MODEL_REGISTRY, { codex: { myalias: "gpt-9.9-nonexistent" } });
     const dangling = rows.find((r) => r.alias === "myalias");
     assert.ok(dangling !== undefined, "dangling alias must appear as a row");

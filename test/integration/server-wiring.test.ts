@@ -10,7 +10,6 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { loadConfig } from "../../src/config.js";
 import { buildDeps } from "../../src/server.js";
-import { PROVIDER_IDS } from "../../src/models.js";
 
 /** Run `fn` with stderr captured, returning every line it wrote. */
 const captureStderr = (fn: () => void): string[] => {
@@ -62,14 +61,22 @@ describe("buildDeps — per-provider base-URL override warning", () => {
     );
   });
 
-  it("compares each provider against its own default host, not one shared constant", () => {
-    // With PROVIDER_IDS = ["codex"] this cannot yet be observed behaviourally — a
-    // single shared constant and a per-provider defaultHost produce identical output.
-    // What IS checkable now is that the check is driven by the provider list rather
-    // than by a hardcoded single provider, so adding an id extends the check for free.
+  it("emits one warning per misconfigured provider", () => {
+    // KNOWN HOLE, stated rather than dressed up. The property this file would like to
+    // pin — that buildDeps compares each provider against ITS OWN defaultHost rather
+    // than one shared constant — is NOT observable while PROVIDER_IDS is ["codex"]:
+    // a shared constant and a per-provider defaultHost produce byte-identical output,
+    // so no assertion here can separate them. An earlier version of this test opened
+    // with `assert.ok(PROVIDER_IDS.length >= 1)`, which is constant-true — it read as
+    // coverage of that property while proving nothing. It is gone.
+    //
+    // What this test does assert is real but narrow: the warning count tracks the
+    // number of misconfigured providers rather than firing unconditionally.
+    // The per-provider axis becomes falsifiable the moment a second id exists — at
+    // that point, configure one provider on a foreign host and the other on its own,
+    // and assert exactly one warning naming the right id.
     // (The per-provider value itself lives on ProviderRuntimeConfig, where the
-    // Record<ProviderId, …> makes omitting one a compile error.)
-    assert.ok(PROVIDER_IDS.length >= 1);
+    // Record<ProviderId, …> makes omitting one a compile error — that much IS enforced.)
     const lines = buildWithCodexBaseUrl("https://evil.example/backend-api/codex");
     const warnings = lines.filter((line) => line.includes("base_url_override_detected"));
     assert.equal(warnings.length, 1, "exactly one provider is misconfigured, so exactly one warning");
