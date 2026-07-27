@@ -9,6 +9,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   MODEL_REGISTRY,
+  buildAliasRows,
   PROVIDER_IDS,
   buildRoutingTable,
   resolveModel,
@@ -764,5 +765,184 @@ describe("PROVIDER_IDS coverage sanity", () => {
       (PROVIDER_IDS as readonly string[]).includes("codex"),
       "codex must be in PROVIDER_IDS",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Item D — the family selection rule has exactly ONE implementation.
+//
+// Every test below asserts on BOTH the router path (resolveModel) and the
+// display path (buildAliasRows). Before the dedupe those were two loops with
+// two copies of the rule, so a fixture could satisfy one and not the other;
+// one fixture covering both is the point of the change, not a convenience.
+// ---------------------------------------------------------------------------
+
+/** The canonical id the router resolves a bare family name to. */
+const routerWinner = (registry: readonly ModelEntry[], family: string): string | undefined => {
+  const resolution = resolveModel(buildTable(registry).table, family);
+  return resolution.kind === "resolved" ? resolution.target.id : undefined;
+};
+
+/** The canonical id the displayed derived row names for a bare family name. */
+const displayWinner = (registry: readonly ModelEntry[], family: string): string | undefined =>
+  buildAliasRows(registry, NO_ALIASES).find((r) => r.alias === family && r.source === "derived")?.canonical;
+
+describe("D-T3 — generation comparison is numeric and element-wise, not string", () => {
+  // Each rule gets its own fixture. A suite that only covers single-digit
+  // components passes under a string comparator, which is why [5,10] is here.
+  const winnerOf = (registry: readonly ModelEntry[]): { router: string | undefined; display: string | undefined } => ({
+    router: routerWinner(registry, "sol"),
+    display: displayWinner(registry, "sol"),
+  });
+
+  it("D-T3a: [5,10] beats [5,6] — THE discriminating case (string compare reads '5.10' < '5.6')", () => {
+    const reg = [
+      entry("gpt-5.6-sol", { family: "sol", gen: [5, 6] }),
+      entry("gpt-5.10-sol", { family: "sol", gen: [5, 10] }),
+    ];
+    assert.deepEqual(winnerOf(reg), { router: "gpt-5.10-sol", display: "gpt-5.10-sol" });
+  });
+
+  it("D-T3b: [6,0] beats [5,99] — the leading element decides", () => {
+    const reg = [
+      entry("gpt-5.99-sol", { family: "sol", gen: [5, 99] }),
+      entry("gpt-6.0-sol", { family: "sol", gen: [6, 0] }),
+    ];
+    assert.deepEqual(winnerOf(reg), { router: "gpt-6.0-sol", display: "gpt-6.0-sol" });
+  });
+
+  it("D-T3c: [5,6,1] beats [5,6] — longer tuple wins on an equal prefix", () => {
+    const reg = [
+      entry("gpt-5.6-sol", { family: "sol", gen: [5, 6] }),
+      entry("gpt-5.6.1-sol", { family: "sol", gen: [5, 6, 1] }),
+    ];
+    assert.deepEqual(winnerOf(reg), { router: "gpt-5.6.1-sol", display: "gpt-5.6.1-sol" });
+  });
+
+  it("D-T3d: [5] loses to [5,1] — a missing element reads as 0, it does not win by being shorter", () => {
+    // Declared first, so first-declared-wins would hand it the family if the
+    // comparison were not actually consulted.
+    const reg = [
+      entry("gpt-5-sol", { family: "sol", gen: [5] }),
+      entry("gpt-5.1-sol", { family: "sol", gen: [5, 1] }),
+    ];
+    assert.deepEqual(winnerOf(reg), { router: "gpt-5.1-sol", display: "gpt-5.1-sol" });
+  });
+});
+
+describe("D-T2 — first-declared wins an exact generation tie", () => {
+  it("D-T2: identical gen [5,6], neither preview nor retired — the FIRST declared entry wins", () => {
+    // The update guard is `> 0`. Flipping it to `>= 0` makes the last-declared
+    // entry win and turns registry order into a silent repointing hazard.
+    // One fixture, both paths: there is only one implementation to catch now.
+    const reg = [
+      entry("gpt-5.6-sol-first", { family: "sol", gen: [5, 6] }),
+      entry("gpt-5.6-sol-second", { family: "sol", gen: [5, 6] }),
+    ];
+    assert.equal(routerWinner(reg, "sol"), "gpt-5.6-sol-first", "router must keep the first-declared entry");
+    assert.equal(displayWinner(reg, "sol"), "gpt-5.6-sol-first", "display must keep the first-declared entry");
+  });
+});
+
+describe("D-T1 — the router and the display never disagree about a family", () => {
+  /** Deterministic PRNG (mulberry32) — a fixed seed keeps failures reproducible. */
+  const mulberry32 = (seed: number): (() => number) => {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  };
+
+  it("D-T1: over 200 random registries, a family is resolved by both or shown by neither", () => {
+    // Two providers so contested families actually occur — under a single
+    // provider this property is trivially true and proves nothing.
+    const families = ["sol", "terra", "luna", "nova"];
+    const providers = ["codex", "kimi"];
+    const rand = mulberry32(0x5eed);
+    const ITERATIONS = 200; // explicit bound
+
+    for (let iteration = 0; iteration < ITERATIONS; iteration++) {
+      const size = 1 + Math.floor(rand() * 8);
+      const registry: ModelEntry[] = [];
+      for (let i = 0; i < size; i++) {
+        registry.push(
+          foreignEntry(`m${String(iteration)}-${String(i)}`, providers[Math.floor(rand() * providers.length)] ?? "codex", {
+            family: families[Math.floor(rand() * families.length)] ?? "sol",
+            gen: [5, Math.floor(rand() * 12)],
+            ...(rand() < 0.15 ? { preview: true } : {}),
+            ...(rand() < 0.15 ? { retired: true } : {}),
+          }),
+        );
+      }
+
+      const { table } = buildTable(registry);
+      const rows = buildAliasRows(registry, NO_ALIASES);
+
+      for (const entryOf of registry) {
+        const family = entryOf.family;
+        if (family === undefined) continue;
+        const resolution = resolveModel(table, family);
+        const derived = rows.find((r) => r.alias === family && r.source === "derived");
+        const where = `iteration ${String(iteration)}, family "${family}"`;
+
+        if (resolution.kind === "resolved") {
+          assert.ok(derived !== undefined, `${where}: router resolves it but no derived row was emitted`);
+          assert.equal(derived.canonical, resolution.target.id, `${where}: router and display name different winners`);
+          assert.equal(derived.provider, resolution.target.provider, `${where}: router and display name different providers`);
+        } else if (resolution.kind === "ambiguous") {
+          assert.equal(derived, undefined, `${where}: router refuses to resolve it but display emitted a derived row anyway`);
+        }
+      }
+    }
+  });
+
+  it("D-T1b: a contested family shows no derived row, and its members still show as (direct)", () => {
+    // The truthful display for a name the router will not resolve: no alias row
+    // claiming one provider owns it, but the models themselves are still listed.
+    const reg = [
+      entry("codex-pro", { family: "pro", gen: [5, 6] }),
+      foreignEntry("kimi-pro", "kimi", { family: "pro", gen: [5, 6] }),
+    ];
+    const resolution = resolveModel(buildTable(reg).table, "pro");
+    assert.equal(resolution.kind, "ambiguous", "two providers claiming 'pro' must be ambiguous");
+
+    const rows = buildAliasRows(reg, NO_ALIASES);
+    assert.equal(rows.filter((r) => r.alias === "pro").length, 0, "a contested family must not produce an alias row");
+    assert.deepEqual(
+      rows.filter((r) => r.source === "direct").map((r) => r.canonical).sort(),
+      ["codex-pro", "kimi-pro"],
+      "both contested members must still appear as direct rows",
+    );
+  });
+});
+
+describe("D-T4 — an alias row's provider comes from the declaration, not from PROVIDER_IDS[0]", () => {
+  it("D-T4a: a dangling alias target renders with the declaring provider", () => {
+    // Regression: nothing asserted this row's provider before, so the
+    // first-provider assumption it used to carry was entirely uncovered.
+    const rows = buildAliasRows(MODEL_REGISTRY, { codex: { myalias: "gpt-9.9-nonexistent" } });
+    const dangling = rows.find((r) => r.alias === "myalias");
+    assert.ok(dangling !== undefined, "dangling alias must appear as a row");
+    assert.equal(dangling.provider, "codex", "a dangling target belongs to the provider that declared the alias");
+  });
+
+  it("D-T4b: a resolvable alias target renders with the TARGET's provider, not the declaring one", () => {
+    // The discriminating half that is testable while PROVIDER_IDS is ["codex"]:
+    // the target's own provider must win over the declaring provider, matching
+    // the router's `byId.get(target) ?? provider`.
+    const reg = [foreignEntry("kimi-k2", "kimi", { gen: [2, 0] })];
+    const rows = buildAliasRows(reg, { codex: { k2: "kimi-k2" } });
+    const aliasRow = rows.find((r) => r.alias === "k2");
+    assert.ok(aliasRow !== undefined, "alias row must exist");
+    assert.equal(aliasRow.provider, "kimi", "the target's provider must win over the declaring provider");
+
+    // The router agrees — same rule, same answer.
+    const resolution = resolveModel(buildRoutingTable(reg, { codex: { k2: "kimi-k2" } }).table, "k2");
+    assert.equal(resolution.kind, "resolved");
+    assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.provider, "kimi");
   });
 });
