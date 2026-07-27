@@ -48,7 +48,7 @@ Commands:
   serve     Start the proxy (default command)
   doctor    Check config, codex auth, and network reachability
   init      Interactive setup — writes config + wires Claude Code
-  models    Show effective alias table (registry × config × codex.models)
+  models    Show effective alias table (registry × aliases)
 
 Flags (global):
   -h, --help       Show this help message
@@ -63,8 +63,6 @@ Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
       --dry-run              Show what would be written; writes nothing
       --port <n>             Proxy port (default: ${DEFAULT_PORT})
-      --codex-model <name>   Include this Codex model (repeatable)
-      --codex-models <csv>   Comma-separated list of Codex models
       --settings-target <t>  "local" (.claude/settings.local.json, default)
                              or "shared" (.claude/settings.json)
 
@@ -75,7 +73,7 @@ Examples:
   subswitch init --yes                 # non-interactive with defaults
   subswitch init --dry-run             # preview what would be written
   subswitch doctor                     # check config + auth health
-  subswitch models                     # show alias table (registry × config × codex.models)
+  subswitch models                     # show alias table (registry × aliases)
 
 Environment:
   NO_COLOR      Disable color output (also respected as standard)
@@ -100,7 +98,7 @@ const GLOBAL_FLAGS = new Set(["help", "version"]);
 const SERVE_FLAGS = new Set(["verbose", "quiet", "port"]);
 const DOCTOR_FLAGS = new Set<string>();
 const MODELS_FLAGS = new Set<string>(); // models takes no flags — any flag is an error
-const INIT_FLAGS = new Set(["yes", "dry-run", "port", "codex-model", "codex-models", "settings-target"]);
+const INIT_FLAGS = new Set(["yes", "dry-run", "port", "settings-target"]);
 
 /**
  * Pure: parse process.argv slice into a typed CliCommand.
@@ -121,8 +119,6 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
         yes:               { type: "boolean", short: "y" },
         "dry-run":         { type: "boolean" },
         port:              { type: "string" },
-        "codex-models":    { type: "string" },
-        "codex-model":     { type: "string", multiple: true },
         "settings-target": { type: "string" },
       },
       allowPositionals: true,
@@ -183,10 +179,6 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
           dryRun: values["dry-run"] === true,
           flags: {
             ...(typeof values.port === "string" ? { port: values.port } : {}),
-            ...(Array.isArray(values["codex-model"])
-              ? { codexModel: values["codex-model"] }
-              : {}),
-            ...(typeof values["codex-models"] === "string" ? { codexModels: values["codex-models"] } : {}),
             ...(typeof values["settings-target"] === "string"
               ? { settingsTarget: values["settings-target"] }
               : {}),
@@ -284,9 +276,8 @@ const serve = async (
   deps.logger.log("info", "listening", { path: `http://127.0.0.1:${effectiveConfig.port}` });
 
   // Human-readable ready banner (one-shot startup moment, safe to use a distinct format).
-  const modelsStr = effectiveConfig.codex.models.join(", ");
   errOut(`\nsubswitch ready — http://127.0.0.1:${effectiveConfig.port}`);
-  errOut(`  routing: ${modelsStr} → Codex`);
+  errOut(`  routing: ${effectiveConfig.codex.models.join(", ")} → Codex`);
   errOut(`  run \`subswitch doctor\` to verify setup\n`);
 
   const shutdown = (): void => {
@@ -303,12 +294,15 @@ const serve = async (
 // doctor
 // ---------------------------------------------------------------------------
 
-const doctor = async (config: Config, configPath: string, fileFound: boolean, codexModelsPinned: boolean): Promise<void> => {
+const doctor = async (config: Config, configPath: string, fileFound: boolean): Promise<void> => {
   const color = resolveColorEnabled(
     process.env as Record<string, string | undefined>,
     process.stdout.isTTY === true,
   );
 
+  // codexModelsPinned is no longer computed from config (codex.models is now a derived
+  // registry field, not user-configurable). Pass false — Phase F will update doctor.ts
+  // to remove this parameter entirely.
   process.exitCode = await runDoctor(config, configPath, fileFound, {
     write: out,
     readAuthFile: (path) => readFile(path, "utf8"),
@@ -317,7 +311,7 @@ const doctor = async (config: Config, configPath: string, fileFound: boolean, co
     color,
     listAgentFiles: makeLiveListAgentFiles(),
     readTextFile: makeLiveReadTextFile(),
-  }, codexModelsPinned);
+  }, false);
 };
 
 // ---------------------------------------------------------------------------
@@ -436,8 +430,8 @@ const main = async (): Promise<void> => {
         fail(configResult.error.message);
         return;
       }
-      const { config, configPath, fileFound, codexModelsPinned } = configResult.value;
-      await doctor(config, configPath, fileFound, codexModelsPinned);
+      const { config, configPath, fileFound } = configResult.value;
+      await doctor(config, configPath, fileFound);
       return;
     }
 
