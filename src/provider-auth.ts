@@ -29,12 +29,8 @@ import type { Result } from "./result.js";
  * - *Only* the auth headers, because the rest of what goes on a `/responses` request is
  *   transport, not credential: `openai-beta`, `originator`, `session_id`, `accept`,
  *   `content-type` are live-verified protocol constants that must not be re-derived
- *   (avoids PF-005), and `user-agent` comes from config as a vendor-drift valve. The
- *   deleted first attempt at this file put all of that behind `headers`, which would
- *   have moved the protocol into the auth manager. It also declared headers while
- *   `CodexAuthManager` returned a token, so nothing in `src/` ever produced the type it
- *   described. Both halves are fixed here: the scope is narrowed to auth, and
- *   `CodexAuthManager` now actually returns this.
+ *   (avoids PF-005), and `user-agent` comes from config as a vendor-drift valve. Widening
+ *   this seam to carry all of them would move the protocol into the auth manager.
  *
  * One further payoff: everything secret sits under one key, so there is a single
  * redaction boundary to audit and `test/integration/credential-leak.test.ts` asserts

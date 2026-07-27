@@ -183,6 +183,20 @@ const compareGen = (a: readonly number[], b: readonly number[]): number => {
 };
 
 /**
+ * Registry entry → routing destination.
+ *
+ * `family` is spread conditionally rather than assigned: exactOptionalPropertyTypes is
+ * on, so an entry with no family must omit the key entirely rather than set it to
+ * `undefined`. Every ResolvedModel built from an entry goes through here so that rule
+ * is stated once.
+ */
+const toResolvedModel = (entry: ModelEntry): ResolvedModel => ({
+  id: entry.id,
+  provider: entry.provider,
+  ...(entry.family !== undefined ? { family: entry.family } : {}),
+});
+
+/**
  * Global claim on a bare family name, derived from the per-provider partition.
  *
  * Carries the winning ModelEntry (not just its id) so consumers read `gen` and
@@ -375,12 +389,7 @@ export const buildRoutingTable = (
 
   for (const [family, claim] of claims) {
     if (claim.kind === "unique") {
-      const { entry } = claim;
-      const model: ResolvedModel =
-        entry.family !== undefined
-          ? { id: entry.id, provider: entry.provider, family: entry.family }
-          : { id: entry.id, provider: entry.provider };
-      byFamily.set(family, { kind: "unique", model });
+      byFamily.set(family, { kind: "unique", model: toResolvedModel(claim.entry) });
     } else {
       byFamily.set(family, { kind: "ambiguous", providers: claim.providers });
       ambiguousFamilies.push({ family, providers: claim.providers });
@@ -395,11 +404,7 @@ export const buildRoutingTable = (
   for (const entry of registry) {
     const qualified = `${entry.provider}:${entry.id}`;
     if (!byQualified.has(qualified)) {
-      const model: ResolvedModel =
-        entry.family !== undefined
-          ? { id: entry.id, provider: entry.provider, family: entry.family }
-          : { id: entry.id, provider: entry.provider };
-      byQualified.set(qualified, model);
+      byQualified.set(qualified, toResolvedModel(entry));
     }
   }
 
@@ -414,11 +419,7 @@ export const buildRoutingTable = (
     for (const [family, entry] of providerMap) {
       const qualified = `${provider}:${family}`;
       if (!byQualified.has(qualified)) {
-        const model: ResolvedModel =
-          entry.family !== undefined
-            ? { id: entry.id, provider: entry.provider, family: entry.family }
-            : { id: entry.id, provider: entry.provider };
-        byQualified.set(qualified, model);
+        byQualified.set(qualified, toResolvedModel(entry));
       }
     }
   }

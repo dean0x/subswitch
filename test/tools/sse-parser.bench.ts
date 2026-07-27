@@ -1,7 +1,7 @@
 /**
  * SSE parser throughput benchmark — not part of `npm test`.
  *
- * Run: `node --import tsx test/bench/sse-parser.bench.ts`
+ * Run: `node --import tsx test/tools/sse-parser.bench.ts`
  *
  * Measures the cost of feeding ONE oversized SSE event through `createSseParser`
  * in 8 KiB chunks. A single event is the adversarial shape for an accumulate-then-
@@ -17,7 +17,7 @@
  * This file lives under `test/` so `tsc --noEmit` typechecks it, but outside
  * `test/unit` and `test/integration` so the `npm test` globs do not pick it up.
  */
-import { createSseParser, type SseEvent } from "../../src/codex-response.js";
+import { createSseParser } from "../../src/codex-response.js";
 
 const MIB = 1024 * 1024;
 const CHUNK_BYTES = 8 * 1024;
@@ -47,9 +47,9 @@ const driveOnce = (chunks: readonly Buffer[]): { readonly ms: number; readonly e
   const parser = createSseParser(MAX_EVENT_BYTES);
   let events = 0;
   const drain = (): void => {
+    // Events are counted, never inspected — the benchmark measures parser work only.
     // Bounded by the number of events the parser has produced, which is finite.
-    for (let read: unknown = parser.read(); read !== null; read = parser.read()) {
-      void (read as SseEvent);
+    for (let event: unknown = parser.read(); event !== null; event = parser.read()) {
       events += 1;
     }
   };

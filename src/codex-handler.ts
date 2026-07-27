@@ -27,14 +27,13 @@ const ERROR_BODY_PEEK_BYTES = 2048;
 export interface CodexHandlerDeps<P extends ProviderId> {
   /**
    * This provider's identity. Required, and drawn from the closed `ProviderId` union
-   * — deliberately NOT an optional `providerName?: string`.
+   * — deliberately NOT an optional `providerName?: string` carrying a `"codex"` default.
    *
-   * The optional-with-a-default form is precisely why the previous parameterization
-   * was inert: no caller ever had to think about it, so every path resolved to the
-   * `?? "codex"` default and nothing downstream was ever exercised with a real second
-   * value. Required means a second provider physically cannot forget to pass one, and
-   * closed-union means the value is safe to derive log event names from (see
-   * `provider-events.ts` — the event token is a log-injection surface).
+   * An optional-with-a-default form parameterizes nothing: no caller has to think about
+   * it, so every path resolves to the default and nothing downstream is ever exercised
+   * with a real second value. Required means a second provider physically cannot forget
+   * to pass one, and closed-union means the value is safe to derive log event names from
+   * (see `provider-events.ts` — the event token is a log-injection surface).
    */
   readonly providerId: P;
   /**
@@ -88,9 +87,6 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
   // and there is exactly one place to audit that every name comes from `providerId`.
   const events = providerEvents(providerId);
   const responsesUrl = `${provider.baseUrl.replace(/\/$/, "")}/responses`;
-  const requestTimeoutMs = provider.requestTimeoutMs;
-  const streamIdleTimeoutMs = provider.streamIdleTimeoutMs;
-  const maxSseEventBytes = provider.maxSseEventBytes;
 
   const buildHeaders = (credential: ProviderCredential<P>, sessionId: string): Record<string, string> => ({
     // These constants are verified working against the /responses HTTP API (2026-07-21).
@@ -162,13 +158,13 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
       if (!res.writableFinished) controller.abort();
     };
     res.on("close", onClientClose);
-    const totalTimer = setTimeout(() => controller.abort(), requestTimeoutMs);
+    const totalTimer = setTimeout(() => controller.abort(), provider.requestTimeoutMs);
     totalTimer.unref();
 
     let idleTimer: NodeJS.Timeout | undefined;
     const resetIdle = (): void => {
       if (idleTimer !== undefined) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => controller.abort(), streamIdleTimeoutMs);
+      idleTimer = setTimeout(() => controller.abort(), provider.streamIdleTimeoutMs);
       idleTimer.unref();
     };
     const cleanup = (): void => {
@@ -203,9 +199,9 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
           return;
         }
         // Refresh only while the budget still has an attempt left to spend it on.
-        // `attempt === 0` here spent a refresh the bound of 1 did not allow, which both
-        // renewed a static provider's credential behind its back and replaced the
-        // upstream's truthful 401 with a synthesised refresh failure.
+        // Refreshing on the last permitted attempt would renew a static provider's
+        // credential behind its back and replace the upstream's truthful 401 with a
+        // synthesised refresh failure.
         if (response.status === 401 && attempt + 1 < maxAttempts) {
           logger.log("warn", events.upstream401Refreshing, { model });
           await response.body?.cancel().catch(() => undefined);
@@ -259,7 +255,7 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
       }
 
       const wantStream = translated.value.stream;
-      const parser = createSseParser(maxSseEventBytes);
+      const parser = createSseParser(provider.maxSseEventBytes);
       const translator = createAnthropicSseTranslator({
         // Use the canonical model as the fallback for message_start (options.model)
         // so clients see the canonical id even when the upstream omits model in response.created.
