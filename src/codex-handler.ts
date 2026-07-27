@@ -147,8 +147,11 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
 
     try {
       let upstream: Response | undefined;
-      // Bounded retry: exactly one forced refresh on a pre-stream 401.
-      for (let attempt = 0; attempt < 2; attempt++) {
+      // Bounded retry: the initial attempt, plus one more only if the credential can
+      // actually be refreshed. A provider whose credential is static gets a single
+      // attempt so its truthful 401 reaches the client instead of a refresh error.
+      const maxAttempts = deps.auth.refreshable ? 2 : 1;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         let response: Response;
         try {
           response = await fetchImpl(responsesUrl, {
@@ -237,14 +240,24 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
               resolve();
               return;
             }
-            const cleanup = (): void => {
+            // The signal may ALREADY be aborted by the time we get here (the total or
+            // idle timer can fire while an earlier frame was draining). addEventListener
+            // on an aborted signal never dispatches, so registering the abort listener
+            // first would wait forever: the request's cleanup() never runs and its
+            // concurrency slot is leaked for the lifetime of the process.
+            // Checked after res.write so a frame already handed to the socket still goes out.
+            if (controller.signal.aborted) {
+              resolve();
+              return;
+            }
+            const detach = (): void => {
               res.off("drain", onDrain);
               res.off("close", onClose);
               controller.signal.removeEventListener("abort", onAbort);
             };
-            const onDrain = (): void => { cleanup(); resolve(); };
-            const onClose = (): void => { cleanup(); resolve(); };
-            const onAbort = (): void => { cleanup(); resolve(); };
+            const onDrain = (): void => { detach(); resolve(); };
+            const onClose = (): void => { detach(); resolve(); };
+            const onAbort = (): void => { detach(); resolve(); };
             res.once("drain", onDrain);
             res.once("close", onClose);
             controller.signal.addEventListener("abort", onAbort, { once: true });

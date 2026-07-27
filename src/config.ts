@@ -5,7 +5,7 @@ import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { LogLevel } from "./logger.js";
-import { isReservedAnthropicName } from "./models.js";
+import { isReservedAnthropicName, PROVIDER_IDS, type ProviderId } from "./models.js";
 
 export const DEFAULT_PORT = 4141 as const;
 
@@ -142,6 +142,49 @@ export interface Config {
 export type Limits = Config["limits"];
 
 // ---------------------------------------------------------------------------
+// Per-provider config accessor
+// ---------------------------------------------------------------------------
+
+/** The provider-neutral slice of config that doctor, health, and the CLI banner need. */
+export interface ProviderRuntimeConfig {
+  /** Human-facing name for CLI and JSON output (e.g. "Codex"). */
+  readonly displayName: string;
+  /** Tilde-expanded credential file path. */
+  readonly authFile: string;
+  /** Provider API base URL. */
+  readonly baseUrl: string;
+  /** Shell command that obtains this provider's credential, quoted in doctor remediation. */
+  readonly loginCommand: string;
+}
+
+/**
+ * Total map from ProviderId to its config slice.
+ *
+ * A Record over the closed ProviderId union — NOT a switch with a default arm.
+ * Adding a ProviderId without adding an accessor here is a compile error, and
+ * there is no unreachable fallback returning empty-string sentinels that callers
+ * then have to guard against.
+ */
+const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) => ProviderRuntimeConfig>> = {
+  codex: (config) => ({
+    displayName: "Codex",
+    authFile: config.codex.authFile,
+    baseUrl: config.codex.baseUrl,
+    loginCommand: "codex login",
+  }),
+};
+
+/**
+ * Resolve the config slice for one provider.
+ *
+ * Single source of truth for "where does provider X keep its credentials and
+ * base URL" — doctor, the health endpoint, the serve banner, and `models --json`
+ * all read through here so they cannot drift apart.
+ */
+export const providerConfigFor = (config: Config, id: ProviderId): ProviderRuntimeConfig =>
+  PROVIDER_CONFIG_ACCESSORS[id](config);
+
+// ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 
@@ -151,6 +194,67 @@ export type Limits = Config["limits"];
  */
 export const expandHome = (path: string): string =>
   path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+
+// ---------------------------------------------------------------------------
+// Legacy shape detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Keys that moved when the config was restructured to `providers.<id>.*`,
+ * mapped to their new location. Zod's default object behaviour STRIPS unknown
+ * keys, so without this check a pre-restructure config parses successfully and
+ * every setting in it is silently discarded — custom aliases vanish, custom
+ * baseUrl/authFile/userAgent revert to defaults, and nothing is reported.
+ *
+ * Silent reversion is the worst failure mode available here, so a legacy key is
+ * a hard error naming its replacement rather than a warning.
+ */
+const LEGACY_KEY_MOVES: readonly (readonly [path: string, replacement: string])[] = [
+  ["codex", "providers.codex"],
+  ["reasoningCache", "providers.codex.reasoningCache"],
+  ["limits.connectTimeoutMs", "anthropic.connectTimeoutMs"],
+  ["limits.maxUpstreamSockets", "anthropic.maxUpstreamSockets"],
+  ["limits.streamIdleTimeoutMs", "anthropic.streamIdleTimeoutMs and/or providers.codex.streamIdleTimeoutMs"],
+  ["limits.requestTimeoutMs", "providers.codex.requestTimeoutMs"],
+  ["limits.maxSseEventBytes", "providers.codex.maxSseEventBytes"],
+];
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Read a dotted path using own-property checks only (prototype-pollution safe). */
+const hasOwnPath = (root: Record<string, unknown>, path: string): boolean => {
+  let node: unknown = root;
+  for (const segment of path.split(".")) {
+    if (!isPlainObject(node) || !Object.hasOwn(node, segment)) return false;
+    node = node[segment];
+  }
+  return true;
+};
+
+/**
+ * Detect keys from the pre-`providers.*` config layout.
+ *
+ * Pure: no I/O. Returns the legacy paths present, in declaration order, each
+ * paired with its replacement. Empty array means the config has no legacy keys.
+ */
+export const detectLegacyConfigKeys = (
+  raw: unknown,
+): readonly { readonly path: string; readonly replacement: string }[] => {
+  if (!isPlainObject(raw)) return [];
+  const found: { readonly path: string; readonly replacement: string }[] = [];
+  for (const [path, replacement] of LEGACY_KEY_MOVES) {
+    if (hasOwnPath(raw, path)) found.push({ path, replacement });
+  }
+  // `codex.models` was deleted outright — the routable set now comes from the registry.
+  if (hasOwnPath(raw, "codex.models")) {
+    found.push({
+      path: "codex.models",
+      replacement: "(removed — routing now follows the built-in model registry; use providers.codex.aliases for custom names)",
+    });
+  }
+  return found;
+};
 
 // ---------------------------------------------------------------------------
 // resolveConfig — FileConfig → Config transformation
@@ -202,7 +306,32 @@ export interface LoadConfigResult {
   readonly config: Config;
   readonly configPath: string;
   readonly fileFound: boolean;
+  /**
+   * Providers the user explicitly opted into by writing a `providers.<id>` block.
+   *
+   * Zod fills every provider's defaults, so the resolved `Config` cannot answer
+   * "did the user ask for this provider?" — but doctor's severity rules depend on
+   * it. A provider the user never configured must stay informational rather than
+   * failing the exit code. (avoids PF-006)
+   */
+  readonly configuredProviders: ReadonlySet<ProviderId>;
 }
+
+/**
+ * Which `providers.<id>` blocks are literally present in the raw config object.
+ * Own-property checks only — a JSON-parsed object's inherited keys must never
+ * count as user intent.
+ */
+const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
+  const found = new Set<ProviderId>();
+  if (!isPlainObject(raw)) return found;
+  const providers = Object.hasOwn(raw, "providers") ? raw["providers"] : undefined;
+  if (!isPlainObject(providers)) return found;
+  for (const id of PROVIDER_IDS) {
+    if (Object.hasOwn(providers, id)) found.add(id);
+  }
+  return found;
+};
 
 /**
  * Load subswitch.config.json (all fields optional) merged over defaults.
@@ -264,7 +393,20 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     }
   }
 
-  // Step 3: validate against FileConfigSchema and resolve to runtime Config.
+  // Step 3: reject the pre-`providers.*` layout before parsing. Zod strips unknown
+  // keys, so a legacy config would otherwise parse clean and silently run on defaults.
+  const legacy = detectLegacyConfigKeys(raw);
+  if (legacy.length > 0) {
+    return err({
+      kind: "translate",
+      message:
+        `outdated config layout in ${resolvedPath} — ` +
+        legacy.map((l) => `move \`${l.path}\` to \`${l.replacement}\``).join("; ") +
+        `. Edit the file to match subswitch.config.example.json, or delete it to run on defaults.`,
+    });
+  }
+
+  // Step 4: validate against FileConfigSchema and resolve to runtime Config.
   const parsed = FileConfigSchema.safeParse(raw);
   if (!parsed.success) {
     return err({
@@ -277,6 +419,7 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     config: resolveConfig(parsed.data),
     configPath: resolvedPath,
     fileFound,
+    configuredProviders: detectConfiguredProviders(raw),
   });
 };
 

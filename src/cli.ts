@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
-import { access } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
-import { type Config, type LoadConfigResult, loadConfig, DEFAULT_PORT } from "./config.js";
+import { type Config, type LoadConfigResult, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
@@ -283,8 +282,13 @@ const serve = async (
   errOut(`\nsubswitch ready — http://127.0.0.1:${effectiveConfig.port}`);
   for (const id of PROVIDER_IDS) {
     const modelCount = MODEL_REGISTRY.filter((e) => e.provider === id && e.retired !== true).length;
-    const providerBaseUrl = id === "codex" ? effectiveConfig.codex.baseUrl : "";
-    const host = providerBaseUrl !== "" ? (() => { try { return new URL(providerBaseUrl).hostname; } catch { return providerBaseUrl; } })() : "";
+    const { baseUrl } = providerConfigFor(effectiveConfig, id);
+    let host: string;
+    try {
+      host = new URL(baseUrl).hostname;
+    } catch {
+      host = baseUrl;
+    }
     const hostSuffix = host !== "" ? `  → ${host}` : "";
     errOut(`  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${hostSuffix}`);
   }
@@ -304,21 +308,28 @@ const serve = async (
 // doctor
 // ---------------------------------------------------------------------------
 
-const doctor = async (config: Config, configPath: string, fileFound: boolean): Promise<void> => {
+const doctor = async (result: LoadConfigResult): Promise<void> => {
   const color = resolveColorEnabled(
     process.env as Record<string, string | undefined>,
     process.stdout.isTTY === true,
   );
 
-  process.exitCode = await runDoctor(config, configPath, fileFound, {
-    write: out,
-    readAuthFile: (path) => readFile(path, "utf8"),
-    httpGet: makeLiveHttpGet(),
-    tlsConnect: makeLiveTlsConnect(),
-    color,
-    listAgentFiles: makeLiveListAgentFiles(),
-    readTextFile: makeLiveReadTextFile(),
-  });
+  process.exitCode = await runDoctor(
+    result.config,
+    result.configPath,
+    result.fileFound,
+    {
+      write: out,
+      readAuthFile: (path) => readFile(path, "utf8"),
+      httpGet: makeLiveHttpGet(),
+      tlsConnect: makeLiveTlsConnect(),
+      color,
+      listAgentFiles: makeLiveListAgentFiles(),
+      readTextFile: makeLiveReadTextFile(),
+    },
+    // Only providers the user wrote into the config file can fail the exit code. (avoids PF-006)
+    result.configuredProviders,
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -333,20 +344,9 @@ const doctor = async (config: Config, configPath: string, fileFound: boolean): P
  *
  * Never writes credentials, tokens, PII, or secrets. [compliance]
  */
-const modelsJson = async (result: LoadConfigResult): Promise<void> => {
+const modelsJson = (result: LoadConfigResult): void => {
   const { config, configPath, fileFound } = result;
   const rows = buildModelRows(MODEL_REGISTRY, config.codex.aliases);
-
-  let configFileFound = fileFound;
-  if (!fileFound) {
-    // Double-check: access() for explicit confirmation (avoids race with loadConfig).
-    try {
-      await access(configPath);
-      configFileFound = true;
-    } catch {
-      configFileFound = false;
-    }
-  }
 
   const payload = {
     kind: "models",
@@ -355,12 +355,20 @@ const modelsJson = async (result: LoadConfigResult): Promise<void> => {
     name: SUBSWITCH_NAME,
     fallbackProvider: "anthropic",
     configPath,
-    configFileFound,
-    providers: PROVIDER_IDS.map((id) => ({
-      id,
-      displayName: id === "codex" ? "Codex" : id,
-      routing: "registry",
-    })),
+    // Reported straight from the load that produced `models`, so the flag always
+    // describes the config those rows were actually built from.
+    configFileFound: fileFound,
+    providers: [
+      // Anthropic is a real routing destination — everything unresolved falls through
+      // to it — so it belongs in `providers` even though it contributes no model rows.
+      // A consumer enumerating destinations must not have to special-case it.
+      { id: "anthropic", displayName: "Anthropic", routing: "passthrough" },
+      ...PROVIDER_IDS.map((id) => ({
+        id,
+        displayName: providerConfigFor(config, id).displayName,
+        routing: "registry",
+      })),
+    ],
     models: rows,
   };
 
@@ -429,7 +437,7 @@ const runInit = async (command: Extract<CliCommand, { kind: "init" }>): Promise<
     // refuse: non-TTY / CI without --yes — fail closed, no files written [F18]
     fail(
       "no interactive terminal detected. Re-run with --yes to accept defaults " +
-        "(optionally with --port / --settings-target / --codex-models), or run in an interactive shell.",
+        "(optionally with --port / --settings-target), or run in an interactive shell.",
     );
   }
 };
@@ -477,8 +485,7 @@ const main = async (): Promise<void> => {
         fail(configResult.error.message);
         return;
       }
-      const { config, configPath, fileFound } = configResult.value;
-      await doctor(config, configPath, fileFound);
+      await doctor(configResult.value);
       return;
     }
 
@@ -490,7 +497,7 @@ const main = async (): Promise<void> => {
       }
       // JSON branch returns before resolveColorEnabled — FORCE_COLOR cannot bleed into JSON. [7b]
       if (command.json) {
-        await modelsJson(configResult.value);
+        modelsJson(configResult.value);
         return;
       }
       models(configResult.value.config);
@@ -504,4 +511,8 @@ const main = async (): Promise<void> => {
   }
 };
 
-void main();
+// Any escaped rejection must still produce the clean `subswitch: <message>` contract
+// on stderr rather than a raw Node stack trace.
+void main().catch((cause: unknown) => {
+  fail(cause instanceof Error ? cause.message : String(cause));
+});

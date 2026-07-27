@@ -2,26 +2,30 @@
   "port": 4141,
   "logLevel": "info",
   "anthropic": {
-    "baseUrl": "https://api.anthropic.com"
+    "baseUrl": "https://api.anthropic.com",
+    "connectTimeoutMs": 10000,
+    "streamIdleTimeoutMs": 300000,
+    "maxUpstreamSockets": 32
   },
-  "codex": {
-    "baseUrl": "https://chatgpt.com/backend-api/codex",
-    "oauthTokenUrl": "https://auth.openai.com/oauth/token",
-    "authFile": "~/.codex/auth.json",
-    "aliases": {},
-    "userAgent": "codex_cli_rs/0.144.6"
-  },
-  "reasoningCache": {
-    "maxEntries": 4096,
-    "maxBytes": 67108864
+  "providers": {
+    "codex": {
+      "baseUrl": "https://chatgpt.com/backend-api/codex",
+      "oauthTokenUrl": "https://auth.openai.com/oauth/token",
+      "authFile": "~/.codex/auth.json",
+      "userAgent": "codex_cli_rs/0.144.6",
+      "aliases": {},
+      "reasoningCache": {
+        "maxEntries": 4096,
+        "maxBytes": 67108864
+      },
+      "requestTimeoutMs": 600000,
+      "streamIdleTimeoutMs": 300000,
+      "maxSseEventBytes": 4194304
+    }
   },
   "limits": {
     "maxBodyBytes": 33554432,
-    "connectTimeoutMs": 10000,
-    "streamIdleTimeoutMs": 300000,
-    "requestTimeoutMs": 600000,
     "pingIntervalMs": 15000,
-    "maxSseEventBytes": 4194304,
-    "maxUpstreamSockets": 32
+    "maxConcurrentRequests": 32
   }
 }

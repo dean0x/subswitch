@@ -3,7 +3,7 @@ import { readdir, readFile as fsReadFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
-import type { Config } from "./config.js";
+import { providerConfigFor, type Config } from "./config.js";
 import { isPlainObject } from "./init.js";
 import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
 import { checkAgentModels } from "./agent-scan.js";
@@ -200,31 +200,19 @@ const LABEL_WIDTH = 22;
 const row = (label: string, value: string): string => `  ${label}`.padEnd(LABEL_WIDTH) + value;
 
 /**
- * Return the auth-file path and base URL for the given provider.
- * Exhaustive switch over ProviderId — adding a provider without updating here
- * is a compile error (the never guard fires). [TypeScript: exhaustive switch]
- */
-const getProviderConfig = (config: Config, id: ProviderId): { authFile: string; baseUrl: string } => {
-  switch (id) {
-    case "codex":
-      return { authFile: config.codex.authFile, baseUrl: config.codex.baseUrl };
-    default: {
-      const _exhaustive: never = id;
-      void _exhaustive;
-      return { authFile: "", baseUrl: "" };
-    }
-  }
-};
-
-/**
  * Run all doctor checks and write output to io.write.
- * Returns 0 if all checks passed, 1 if any check failed.
+ * Returns 0 if all checks passed, 1 if any check failed. (applies PF-006)
+ *
+ * @param configuredProviderIds Providers the user explicitly opted into. Defaults to
+ *   the empty set, i.e. treat every provider as unconfigured — the conservative choice,
+ *   because a provider the user never asked for must never fail their exit code.
  */
 export const runDoctor = async (
   config: Config,
   configPath: string,
   fileFound: boolean,
   io: DoctorIO,
+  configuredProviderIds: ReadonlySet<ProviderId> = new Set<ProviderId>(),
 ): Promise<number> => {
   const pc = createColors(io.color);
   const passStr = (text: string): string => pc.green(text);
@@ -252,15 +240,27 @@ export const runDoctor = async (
     io.write(`    ${line}`);
   }
 
-  // N-provider auth check: check each provider deterministically.
-  // ENOENT = unconfigured = informational (PF-006); other errors = failure.
-  const configuredProviders = new Set<string>();
+  // N-provider auth check.
+  //
+  // PF-006 severity rules:
+  //  - provider absent from the config file  → informational, never a failure. A
+  //    Codex-only user must not start failing the moment a second provider ships
+  //    in the registry.
+  //  - provider present in the config file but its credential is missing or broken
+  //    → failure. The user opted in, so a broken opt-in is a real problem.
+  //
+  // Each check RETURNS its output instead of writing it, so N concurrent checks
+  // cannot interleave — rows are written afterwards in PROVIDER_IDS order.
+  interface ProviderCheck {
+    readonly lines: readonly string[];
+    readonly failed: boolean;
+    readonly configured: boolean;
+  }
 
-  const checkOneProvider = async (id: ProviderId): Promise<void> => {
-    const { authFile, baseUrl: _baseUrl } = getProviderConfig(config, id);
-    if (authFile === "") return; // safety: should not happen
-
-    io.write(row(`${id}.authFile:`, authFile));
+  const checkOneProvider = async (id: ProviderId): Promise<ProviderCheck> => {
+    const { authFile, loginCommand } = providerConfigFor(config, id);
+    const optedIn = configuredProviderIds.has(id);
+    const lines: string[] = [row(`${id}.authFile:`, authFile)];
 
     try {
       const raw = await io.readAuthFile(authFile);
@@ -268,43 +268,75 @@ export const runDoctor = async (
       const { inspectAuthFile } = await import("./codex-auth.js");
       const inspection = inspectAuthFile(raw);
       if (!inspection.ok) {
-        failures++;
-        io.write(row(`${id} auth:`, failStr(`INVALID (${inspection.error.message})`)));
-      } else {
-        const info = inspection.value;
-        configuredProviders.add(id);
-        io.write(row(`${id} auth mode:`, passStr(info.authMode)));
-        io.write(row(`${id} account:`, info.accountIdSuffix));
-        io.write(row("token expires:", info.accessTokenExpiresAt ?? "(no exp claim)"));
-        io.write(row("last refresh:", info.lastRefresh ?? "(unknown)"));
+        // A credential file that exists but does not parse is broken regardless of
+        // whether the provider block is in the config — the user clearly has one.
+        lines.push(row(`${id} auth:`, failStr(`INVALID (${inspection.error.message})`)));
+        return { lines, failed: true, configured: false };
       }
+      const info = inspection.value;
+      lines.push(row(`${id} auth mode:`, passStr(info.authMode)));
+      lines.push(row(`${id} account:`, info.accountIdSuffix));
+      lines.push(row("token expires:", info.accessTokenExpiresAt ?? "(no exp claim)"));
+      lines.push(row("last refresh:", info.lastRefresh ?? "(unknown)"));
+      return { lines, failed: false, configured: true };
     } catch (e) {
       const isEnoent =
         (e instanceof Error && (e as NodeJS.ErrnoException).code === "ENOENT") ||
         (e instanceof Error && e.message.includes("ENOENT"));
-      if (isEnoent) {
-        // Unconfigured provider — informational only (PF-006). Does NOT increment failures.
-        io.write(row(`${id} auth:`, pc.dim(`unconfigured`) + ` (run \`codex login\` to enable ${id} routing)`));
-      } else {
-        // Configured but unreadable — this is a failure.
-        failures++;
-        io.write(row(`${id} auth:`, failStr("UNAVAILABLE") + ` (cannot read auth file — run \`codex login\`)`));
-        io.write(`  note: the Anthropic leg works without ${id} auth; only configured ${id} models are affected`);
+
+      if (!optedIn) {
+        // Not configured by the user — informational whatever the error. (avoids PF-006)
+        lines.push(
+          row(`${id} auth:`, pc.dim("unconfigured") + ` (run \`${loginCommand}\` to enable ${id} routing)`),
+        );
+        return { lines, failed: false, configured: false };
       }
+
+      // Explicitly configured but the credential is unusable — a real failure.
+      const detail = isEnoent ? "no auth file" : "cannot read auth file";
+      lines.push(row(`${id} auth:`, failStr("UNAVAILABLE") + ` (${detail} — run \`${loginCommand}\`)`));
+      lines.push(`  note: the Anthropic leg works without ${id} auth; only ${id} models are affected`);
+      return { lines, failed: true, configured: false };
     }
   };
 
-  // Run subswitch probe, anthropic TLS, and per-provider checks concurrently.
-  // Results are written in deterministic order after all complete. [F28/F5]
+  // Run subswitch probe, anthropic TLS, per-provider TLS, and per-provider auth
+  // checks concurrently. Results are written in deterministic order after all
+  // complete — no check writes from inside its own closure. [F28/F5]
   const anthropicHost = new URL(config.anthropic.baseUrl).hostname;
 
-  const providerChecks = PROVIDER_IDS.map((id) => checkOneProvider(id));
+  // Resolve provider hosts up front so the probes can all be issued in parallel.
+  // Only URL parsing is guarded here; a probe rejection must never be swallowed.
+  const providerHosts = PROVIDER_IDS.map((id) => {
+    const { baseUrl } = providerConfigFor(config, id);
+    try {
+      return { id, host: new URL(baseUrl).hostname };
+    } catch {
+      // Unreachable: z.url() validated the URL at config parse time.
+      return { id, host: "" };
+    }
+  });
 
-  const [subswitchStatus, anthropicTls] = await Promise.all([
+  const [subswitchStatus, anthropicTls, providerResults, providerTls] = await Promise.all([
     probeSubswitch(config.port, { httpGet: io.httpGet }),
     probeTlsReachable(anthropicHost, { tlsConnect: io.tlsConnect }),
-    ...providerChecks,
+    Promise.all(PROVIDER_IDS.map((id) => checkOneProvider(id))),
+    Promise.all(
+      providerHosts.map(async ({ host }) =>
+        host === "" ? undefined : probeTlsReachable(host, { tlsConnect: io.tlsConnect }),
+      ),
+    ),
   ]);
+
+  // Fold provider auth results in PROVIDER_IDS order (deterministic).
+  const configuredProviders = new Set<string>();
+  for (const [i, id] of PROVIDER_IDS.entries()) {
+    const result = providerResults[i];
+    if (result === undefined) continue;
+    for (const line of result.lines) io.write(line);
+    if (result.failed) failures++;
+    if (result.configured) configuredProviders.add(id);
+  }
 
   // Write subswitch probe result
   switch (subswitchStatus.kind) {
@@ -333,17 +365,11 @@ export const runDoctor = async (
 
   checkTls("anthropic TLS", anthropicHost, anthropicTls);
 
-  // Per-provider TLS checks (deterministic order via PROVIDER_IDS).
-  for (const id of PROVIDER_IDS) {
-    const { baseUrl } = getProviderConfig(config, id);
-    if (baseUrl === "") continue;
-    try {
-      const provHost = new URL(baseUrl).hostname;
-      const status = await probeTlsReachable(provHost, { tlsConnect: io.tlsConnect });
-      checkTls(`${id} TLS`, provHost, status);
-    } catch {
-      // Unreachable: z.url() validated the URL at config parse time.
-    }
+  // Per-provider TLS results (probed in parallel above; written in PROVIDER_IDS order).
+  for (const [i, { id, host }] of providerHosts.entries()) {
+    const status = providerTls[i];
+    if (host === "" || status === undefined) continue;
+    checkTls(`${id} TLS`, host, status);
   }
 
   // Agent frontmatter scan — check both project and user-level agent directories.

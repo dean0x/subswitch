@@ -10,8 +10,10 @@ import {
   makeLiveListAgentFiles,
   type HttpGetResult,
   type TlsStatus,
+  type DoctorIO,
 } from "../../src/doctor.js";
 import type { Config } from "../../src/config.js";
+import { PROVIDER_IDS, type ProviderId } from "../../src/models.js";
 
 describe("probeSubswitch", () => {
   it("returns running when the health endpoint responds with the subswitch shape", async () => {
@@ -281,17 +283,77 @@ describe("runDoctor", () => {
     assert.ok(output.includes("unconfigured"), "ENOENT auth must emit an 'unconfigured' informational message (PF-006)");
   });
 
-  it("increments failures when provider auth file exists but is unreadable (non-ENOENT)", async () => {
+  const unreadableAuthIO = (lines: string[]): DoctorIO => ({
+    ...allPassIO(lines),
+    readAuthFile: async (): Promise<string> => {
+      const err = new Error("EACCES: permission denied") as Error & { code: string };
+      err.code = "EACCES";
+      throw err;
+    },
+  });
+
+  // PF-006: severity depends on whether the user opted into the provider, not on
+  // whether the registry happens to contain it.
+  it("increments failures when an EXPLICITLY CONFIGURED provider's auth file is unreadable", async () => {
     const lines: string[] = [];
-    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
-      ...allPassIO(lines),
-      readAuthFile: async (): Promise<string> => {
-        const err = new Error("EACCES: permission denied") as Error & { code: string };
-        err.code = "EACCES";
-        throw err;
-      },
-    });
-    assert.equal(exitCode, 1, "non-ENOENT auth error must cause failure");
+    const exitCode = await runDoctor(
+      makeTestConfig(),
+      "/path/subswitch.config.json",
+      true,
+      unreadableAuthIO(lines),
+      new Set<ProviderId>(["codex"]),
+    );
+    assert.equal(exitCode, 1, "a provider the user configured with a broken credential must fail");
+    assert.ok(lines.join("\n").includes("UNAVAILABLE"), "must emit an UNAVAILABLE row");
+  });
+
+  it("does NOT increment failures when an UNCONFIGURED provider's auth file is unreadable", async () => {
+    const lines: string[] = [];
+    const exitCode = await runDoctor(
+      makeTestConfig(),
+      "/path/subswitch.config.json",
+      true,
+      unreadableAuthIO(lines),
+      new Set<ProviderId>(),
+    );
+    // A Codex-only user must not start failing the moment a second provider ships in
+    // the registry and its default auth path happens to be unreadable. (avoids PF-006)
+    assert.equal(exitCode, 0, "a provider the user never configured must stay informational");
+    const output = lines.join("\n");
+    assert.ok(!output.includes("FAIL"), "unconfigured provider must not produce a FAIL row");
+    assert.ok(output.includes("unconfigured"), "unconfigured provider must emit an informational row");
+  });
+
+  it("fails on an auth file that exists but does not parse, regardless of opt-in", async () => {
+    const lines: string[] = [];
+    const exitCode = await runDoctor(
+      makeTestConfig(),
+      "/path/subswitch.config.json",
+      true,
+      { ...allPassIO(lines), readAuthFile: async (): Promise<string> => "not json at all" },
+      new Set<ProviderId>(),
+    );
+    // A credential file that is present but corrupt is always a real problem —
+    // the user clearly has one, whatever the config file says.
+    assert.equal(exitCode, 1, "a corrupt auth file must fail even when the provider is not in config");
+  });
+
+  it("writes provider rows in PROVIDER_IDS order regardless of I/O completion order", async () => {
+    const lines: string[] = [];
+    await runDoctor(
+      makeTestConfig(),
+      "/path/subswitch.config.json",
+      true,
+      allPassIO(lines),
+      new Set<ProviderId>(PROVIDER_IDS),
+    );
+    // Each provider's rows must be contiguous: no interleaving from concurrent checks.
+    const output = lines.join("\n");
+    for (const id of PROVIDER_IDS) {
+      const authFileIdx = output.indexOf(`${id}.authFile:`);
+      const modeIdx = output.indexOf(`${id} auth mode:`);
+      assert.ok(authFileIdx >= 0 && modeIdx > authFileIdx, `${id} rows must be present and ordered`);
+    }
   });
 });
 

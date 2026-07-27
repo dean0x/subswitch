@@ -4,7 +4,7 @@ import type { IncomingMessage, Server } from "node:http";
 import { toAnthropicErrorBody } from "./errors.js";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
-import type { Config } from "./config.js";
+import { providerConfigFor, type Config } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
 import { decideRoute } from "./router.js";
 import { createAnthropicForwarder, type AnthropicForwarder } from "./anthropic-passthrough.js";
@@ -141,8 +141,8 @@ const buildHealthBody = (config: Config): string =>
     providers: PROVIDER_IDS.map((id) => {
       // Each provider has its auth file in config — check presence without reading content.
       // existsSync is sync and acceptable here (health endpoint, not hot path).
-      const authFile = id === "codex" ? config.codex.authFile : "";
-      const configured = authFile !== "" && existsSync(authFile);
+      const { authFile } = providerConfigFor(config, id);
+      const configured = existsSync(authFile);
       const modelCount = MODEL_REGISTRY.filter((e) => e.provider === id && e.retired !== true).length;
       return { id, configured, modelCount };
     }),
@@ -307,7 +307,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           res.end(
             toAnthropicErrorBody(
               "invalid_request_error",
-              `unknown provider '${decision.qualifier}' — known providers: codex`,
+              `unknown provider '${decision.qualifier}' — known providers: ${PROVIDER_IDS.join(", ")}`,
             ),
           );
           return;

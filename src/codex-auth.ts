@@ -113,6 +113,14 @@ export interface CodexAuthOptions {
 }
 
 export class CodexAuthManager {
+  /**
+   * Codex credentials are subscription OAuth tokens that rotate, so a pre-stream
+   * 401 is worth exactly one forced refresh. Read by the handler to size its retry
+   * bound; a static-key provider would set this false and get a single attempt.
+   * (applies ADR-002)
+   */
+  readonly refreshable = true;
+
   private readonly store: AuthFileStore;
   private readonly oauthTokenUrl: string;
   private readonly logger: Logger;
