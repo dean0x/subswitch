@@ -52,6 +52,15 @@ const DEFAULT_CODEX_HOST = "chatgpt.com";
  * Moving ReasoningCache and CodexAuthManager construction here ensures they are
  * only allocated when a Codex provider is actually wired — not unconditionally
  * for every process. (applies ADR-002)
+ *
+ * CROSS-PROVIDER CREDENTIAL HAZARD: `auth` here is concretely typed as
+ * `CodexAuthManager`. Before a second provider is wired in `buildDeps`, this
+ * factory must accept a branded `ProviderAuth<"codex">` (or equivalent) so that
+ * injecting the wrong provider's credential is a compile error, not a runtime
+ * subscription-token leak to a third-party host. A branded `ProviderAuth` seam
+ * is deliberately owed (the deleted src/provider-auth.ts described the wrong
+ * shape — headers-out instead of token-out — so it was removed; the type-level
+ * barrier is deferred to the branch that wires a second credential).
  */
 const createCodexProvider = (config: Config, logger: Logger): ProviderHandler =>
   createCodexHandler({
@@ -87,7 +96,7 @@ export const buildDeps = (config: Config): ServerDeps => {
   const aliasesByProvider: Record<ProviderId, Record<string, string>> = {
     codex: config.codex.aliases,
   };
-  const { table, rejectedAliases, ambiguousFamilies, reservedNameEntries } = buildRoutingTable(
+  const { table, rejectedAliases, danglingAliases, ambiguousFamilies, reservedNameEntries } = buildRoutingTable(
     MODEL_REGISTRY,
     aliasesByProvider,
   );
@@ -97,6 +106,9 @@ export const buildDeps = (config: Config): ServerDeps => {
   // wrote simply does not work, with nothing anywhere saying why.
   for (const { alias, target } of rejectedAliases) {
     logger.log("warn", "alias_rejected", { model: `${alias} -> ${target}` });
+  }
+  for (const { alias, target } of danglingAliases) {
+    logger.log("warn", "alias_dangling_target", { model: `${alias} -> ${target} (target not in registry; forward-compat routing active)` });
   }
   for (const { family, providers } of ambiguousFamilies) {
     logger.log("warn", "ambiguous_family", { model: `${family} (${providers.join(", ")})` });

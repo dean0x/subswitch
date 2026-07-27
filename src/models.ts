@@ -79,6 +79,12 @@ export interface RoutingTableBuild {
   readonly table: RoutingTable;
   /** Aliases rejected because their key or target is a reserved Anthropic name (PF-007). */
   readonly rejectedAliases: readonly { readonly alias: string; readonly target: string }[];
+  /**
+   * Aliases whose target is NOT in the registry (forward-compat: the router still routes them,
+   * but the target won't appear in model rows and is invisible to diagnostics without this list).
+   * Doctor surfaces these as a warning so the user knows the alias may resolve to nothing useful.
+   */
+  readonly danglingAliases: readonly { readonly alias: string; readonly target: string; readonly provider: ProviderId }[];
   /** Families claimed by more than one provider. */
   readonly ambiguousFamilies: readonly {
     readonly family: string;
@@ -334,11 +340,15 @@ export const buildRoutingTable = (
     }
   }
 
-  // Per-provider family winners as "provider:family" (unique claimants only)
+  // Per-provider family winners as "provider:family" (ALL families — contested and unique alike).
+  //
+  // A qualified name explicitly states its provider, so a contested family is not ambiguous
+  // in this context: "codex:pro" unambiguously means the codex provider's pro-family winner.
+  // Skipping contested families here inverts the feature — qualifying is precisely the
+  // mechanism for disambiguating a contested family, and omitting these entries means the
+  // 400 "qualify with provider:name (e.g. codex:sol)" advice leads straight to unresolved.
   for (const [provider, providerMap] of perProviderFamilyBest) {
     for (const [family, entry] of providerMap) {
-      const familyResolution = byFamily.get(family);
-      if (familyResolution?.kind !== "unique") continue; // skip ambiguous
       const qualified = `${provider}:${family}`;
       if (!byQualified.has(qualified)) {
         const model: ResolvedModel =
@@ -358,6 +368,7 @@ export const buildRoutingTable = (
   // an unbounded loop with a cycle risk. (Project rule: every loop has an explicit bound.)
   const byAlias = new Map<string, ResolvedModel>();
   const rejectedAliases: { readonly alias: string; readonly target: string }[] = [];
+  const danglingAliases: { readonly alias: string; readonly target: string; readonly provider: ProviderId }[] = [];
 
   for (const providerId of PROVIDER_IDS) {
     const providerAliases = aliasesByProvider[providerId];
@@ -386,6 +397,13 @@ export const buildRoutingTable = (
           ? { id: target, provider: targetProvider, family: targetEntry.family }
           : { id: target, provider: targetProvider };
       byAlias.set(key, model);
+
+      // Track dangling aliases (target not in registry).
+      // The router still routes them (forward-compat), but they are invisible to
+      // buildModelRows and buildAliasRows disagrees with the router on enabled state.
+      if (!byId.has(target)) {
+        danglingAliases.push({ alias: key, target, provider: providerId });
+      }
     }
   }
 
@@ -396,7 +414,7 @@ export const buildRoutingTable = (
     byAlias,
   };
 
-  return { table, rejectedAliases, ambiguousFamilies, reservedNameEntries };
+  return { table, rejectedAliases, danglingAliases, ambiguousFamilies, reservedNameEntries };
 };
 
 // ---------------------------------------------------------------------------
@@ -513,7 +531,11 @@ export interface AliasTableRow {
   readonly alias: string;
   readonly canonical: string;
   readonly provider: ProviderId;
-  /** Display generation string: "5.6", "5.5", or "?" if unknown. */
+  /**
+   * Display generation string: dot-joined gen tuple (e.g. "5.6", "5.5"),
+   * `""` when the gen tuple is empty, or `"?"` when the canonical is absent
+   * from the registry (dangling alias target).
+   */
   readonly gen: string;
   /** True for non-retired models. */
   readonly enabled: boolean;
@@ -546,7 +568,11 @@ export const buildAliasRows = (
     const entry = registry.find((e) => e.id === canonical);
     const genStr = entry !== undefined ? entry.gen.join(".") : "?";
     const provider: ProviderId = entry?.provider ?? PROVIDER_IDS[0];
-    rows.push({ alias, canonical, provider, gen: genStr, enabled: allNonRetired.has(canonical), source: "config" });
+    // Enabled: if the target is in the registry, use its retired flag. If not (dangling),
+    // enabled=true because the router still routes it via forward-compat (unknown target
+    // is assumed to belong to the declaring provider and is treated as routable).
+    const enabled = entry !== undefined ? entry.retired !== true : true;
+    rows.push({ alias, canonical, provider, gen: genStr, enabled, source: "config" });
     coveredAliases.add(alias);
     coveredCanonicals.add(canonical);
   }

@@ -49,6 +49,25 @@ const AliasesSchema = z
 
 const CodexProviderSchema = z
   .object({
+    /**
+     * Discriminant for provider-type dispatch in resolveConfig.
+     *
+     * Zod reads discriminator fields before defaults fire, so `kind` cannot carry
+     * `.default('codex')` — it must be injected by the caller before parsing.
+     * `ProvidersSchema` injects it from the record key via `z.preprocess`.
+     *
+     * UNENFORCED SITES (must be updated manually when adding a provider):
+     *   - `ProvidersSchema` key (the `codex:` property below) — compile-time gap
+     *   - `Config.codex` field and `resolveConfig` mapping — compile-time gap
+     * Only `PROVIDER_CONFIG_ACCESSORS`, `aliasesByProvider`, and `ServerDeps.providers`
+     * enforce completeness today (Record<ProviderId, …>).
+     *
+     * NOTE: `Config` still carries `config.codex.*` at the top level (not
+     * `config.providers.codex.*`). Moving it cascades into five hardcoded
+     * `config.codex.*` reads in codex-handler.ts plus all call sites. That
+     * generalization is deliberately deferred to the branch adding a second provider.
+     */
+    kind: z.literal("codex"),
     baseUrl: z.url().default("https://chatgpt.com/backend-api/codex"),
     oauthTokenUrl: z.url().default("https://auth.openai.com/oauth/token"),
     authFile: z.string().min(1).default(DEFAULT_CODEX_AUTH_FILE),
@@ -71,12 +90,33 @@ const CodexProviderSchema = z
     streamIdleTimeoutMs: z.number().int().positive().default(300_000),
     /** Maximum bytes per individual SSE event from the Codex upstream. */
     maxSseEventBytes: z.number().int().positive().default(4 * 1024 * 1024),
-  })
-  .prefault({});
+  });
+
+/**
+ * Discriminated union of all provider file-config variants.
+ *
+ * Extend this union when adding a new provider. `kind` is the discriminant.
+ * `resolveConfig` should switch exhaustively on it so TypeScript catches missing cases.
+ */
+export type ProviderFileConfig = z.infer<typeof CodexProviderSchema>;
+
+/**
+ * Inject `kind` from the record key before Zod parses each provider block.
+ * Zod reads the discriminant before defaults fire, so `kind` cannot carry `.default()`.
+ * Uses an inline plain-object check to avoid a forward-reference to isPlainObject.
+ */
+const injectKind = (raw: unknown, key: string): unknown => {
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw) && !Object.hasOwn(raw as Record<string, unknown>, "kind")) {
+    return { kind: key, ...(raw as Record<string, unknown>) };
+  }
+  return raw;
+};
 
 const ProvidersSchema = z
   .object({
-    codex: CodexProviderSchema,
+    // UNENFORCED SITE: adding a provider requires adding a key here and in Config + resolveConfig.
+    // The three compile-enforced sites are PROVIDER_CONFIG_ACCESSORS, aliasesByProvider, ServerDeps.providers.
+    codex: z.preprocess((raw) => injectKind(raw, "codex"), CodexProviderSchema).prefault({ kind: "codex" }),
   })
   .prefault({});
 

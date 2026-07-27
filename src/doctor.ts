@@ -229,7 +229,7 @@ export const runDoctor = async (
   io.write(row("codex.baseUrl:", config.codex.baseUrl));
 
   // Build the routing table once for display and agent-scan.
-  const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: config.codex.aliases });
+  const { table, danglingAliases } = buildRoutingTable(MODEL_REGISTRY, { codex: config.codex.aliases });
 
   // Alias table — shows effective alias → canonical mapping for the current config.
   const aliasLines = formatModelsReport({
@@ -238,6 +238,15 @@ export const runDoctor = async (
   });
   for (const line of aliasLines) {
     io.write(`    ${line}`);
+  }
+
+  // Dangling alias warnings: targets that are not in the registry.
+  // The router still routes them (forward-compat), but the target won't appear in
+  // model rows and is invisible to tools that enumerate the registry. Warn so the
+  // user can detect a typo before it silently misroutes to an unknown model id.
+  for (const { alias, target } of danglingAliases) {
+    failures++;
+    io.write(row("alias warning:", failStr(`"${alias}" → "${target}" — target not in registry (typo? or future model)`)));
   }
 
   // N-provider auth check.
