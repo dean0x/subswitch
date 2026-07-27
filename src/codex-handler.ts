@@ -57,10 +57,10 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
   // providerName drives client-visible error strings; defaults to "codex" so
   // every existing error message is byte-identical and no pinned test assertions change.
   const providerName = deps.providerName ?? "codex";
-  const responsesUrl = `${config.codex.baseUrl.replace(/\/$/, "")}/responses`;
-  const requestTimeoutMs = config.codex.requestTimeoutMs;
-  const streamIdleTimeoutMs = config.codex.streamIdleTimeoutMs;
-  const maxSseEventBytes = config.codex.maxSseEventBytes;
+  const responsesUrl = `${config.providers.codex.baseUrl.replace(/\/$/, "")}/responses`;
+  const requestTimeoutMs = config.providers.codex.requestTimeoutMs;
+  const streamIdleTimeoutMs = config.providers.codex.streamIdleTimeoutMs;
+  const maxSseEventBytes = config.providers.codex.maxSseEventBytes;
 
   const buildHeaders = (credentials: CodexCredentials, sessionId: string): Record<string, string> => ({
     authorization: `Bearer ${credentials.accessToken}`,
@@ -75,7 +75,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
     session_id: sessionId,
     accept: "text/event-stream",
     "content-type": "application/json",
-    "user-agent": config.codex.userAgent,
+    "user-agent": config.providers.codex.userAgent,
   });
 
   const handleMessages = async (_req: IncomingMessage, res: ServerResponse, _rawBody: Buffer, parsedBody: unknown, canonicalModel: string): Promise<void> => {

@@ -4,7 +4,7 @@ import type { IncomingMessage, Server } from "node:http";
 import { toAnthropicErrorBody } from "./errors.js";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
-import { providerConfigFor, type Config } from "./config.js";
+import { aliasesByProvider, providerConfigFor, type Config } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
 import { decideRoute } from "./router.js";
 import { createAnthropicForwarder, type AnthropicForwarder } from "./anthropic-passthrough.js";
@@ -67,11 +67,14 @@ const createCodexProvider = (config: Config, logger: Logger): ProviderHandler =>
     config,
     logger,
     auth: new CodexAuthManager({
-      store: createFsAuthFileStore(config.codex.authFile),
-      oauthTokenUrl: config.codex.oauthTokenUrl,
+      store: createFsAuthFileStore(config.providers.codex.authFile),
+      oauthTokenUrl: config.providers.codex.oauthTokenUrl,
       logger,
     }),
-    cache: new ReasoningCache(config.codex.reasoningCache.maxEntries, config.codex.reasoningCache.maxBytes),
+    cache: new ReasoningCache(
+      config.providers.codex.reasoningCache.maxEntries,
+      config.providers.codex.reasoningCache.maxBytes,
+    ),
   });
 
 /** The only wiring site: every production dependency is constructed here. */
@@ -83,7 +86,7 @@ export const buildDeps = (config: Config): ServerDeps => {
   // OAuth token there — warn at startup so operators notice immediately.
   // z.url() in the config schema guarantees baseUrl is a valid URL here.
   try {
-    const configHost = new URL(config.codex.baseUrl).hostname;
+    const configHost = new URL(config.providers.codex.baseUrl).hostname;
     if (configHost !== DEFAULT_CODEX_HOST) {
       logger.log("warn", "codex_base_url_override_detected");
     }
@@ -93,12 +96,9 @@ export const buildDeps = (config: Config): ServerDeps => {
 
   // Build the routing table once. The resolver is a pure closure over this table;
   // "built once at startup" is a structural guarantee, not a comment. (applies ADR-005)
-  const aliasesByProvider: Record<ProviderId, Record<string, string>> = {
-    codex: config.codex.aliases,
-  };
   const { table, rejectedAliases, danglingAliases, ambiguousFamilies, reservedNameEntries } = buildRoutingTable(
     MODEL_REGISTRY,
-    aliasesByProvider,
+    aliasesByProvider(config),
   );
 
   // buildRoutingTable is total and reports problems as data rather than throwing —

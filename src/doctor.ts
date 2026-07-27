@@ -3,7 +3,7 @@ import { readdir, readFile as fsReadFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
-import { providerConfigFor, type Config } from "./config.js";
+import { aliasesByProvider, providerConfigFor, type Config } from "./config.js";
 import { isPlainObject } from "./init.js";
 import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
 import { checkAgentModels } from "./agent-scan.js";
@@ -226,15 +226,17 @@ export const runDoctor = async (
   io.write(row("port:", String(config.port)));
   io.write(row("logLevel:", config.logLevel));
   io.write(row("anthropic.baseUrl:", config.anthropic.baseUrl));
-  io.write(row("codex.baseUrl:", config.codex.baseUrl));
+  for (const id of PROVIDER_IDS) {
+    io.write(row(`${id}.baseUrl:`, providerConfigFor(config, id).baseUrl));
+  }
 
   // Build the routing table once for display and agent-scan.
-  const { table, danglingAliases } = buildRoutingTable(MODEL_REGISTRY, { codex: config.codex.aliases });
+  const { table, danglingAliases } = buildRoutingTable(MODEL_REGISTRY, aliasesByProvider(config));
 
   // Alias table — shows effective alias → canonical mapping for the current config.
   const aliasLines = formatModelsReport({
     registry: MODEL_REGISTRY,
-    overrides: config.codex.aliases,
+    overrides: config.providers.codex.aliases,
   });
   for (const line of aliasLines) {
     io.write(`    ${line}`);

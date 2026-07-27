@@ -134,16 +134,18 @@ const makeTestConfig = (): Config => ({
     streamIdleTimeoutMs: 300_000,
     maxUpstreamSockets: 32,
   },
-  codex: {
-    baseUrl: "https://chatgpt.com/backend-api/codex",
-    oauthTokenUrl: "https://auth.openai.com/oauth/token",
-    authFile: "/home/user/.codex/auth.json",
-    userAgent: "codex_cli_rs/0.144.6",
-    aliases: {},
-    reasoningCache: { maxEntries: 4096, maxBytes: 64 * 1024 * 1024 },
-    requestTimeoutMs: 600_000,
-    streamIdleTimeoutMs: 300_000,
-    maxSseEventBytes: 4 * 1024 * 1024,
+  providers: {
+    codex: {
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      oauthTokenUrl: "https://auth.openai.com/oauth/token",
+      authFile: "/home/user/.codex/auth.json",
+      userAgent: "codex_cli_rs/0.144.6",
+      aliases: {},
+      reasoningCache: { maxEntries: 4096, maxBytes: 64 * 1024 * 1024 },
+      requestTimeoutMs: 600_000,
+      streamIdleTimeoutMs: 300_000,
+      maxSseEventBytes: 4 * 1024 * 1024,
+    },
   },
   limits: {
     maxBodyBytes: 32 * 1024 * 1024,

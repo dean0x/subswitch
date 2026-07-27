@@ -190,7 +190,7 @@ describe("routing — unknown provider qualifier (F6g)", () => {
 // ---------------------------------------------------------------------------
 // P2: routing table built once (structural guarantee via Proxy ownKeys trap)
 //
-// Approach: inject a Proxy for config.codex.aliases with an ownKeys trap that
+// Approach: inject a Proxy for config.providers.codex.aliases with an ownKeys trap that
 // counts invocations. buildRoutingTable calls Object.keys(aliases) exactly once.
 // After buildDeps returns, ≥2 requests are driven through the production resolver.
 // The trap count must not increase beyond what was observed after buildDeps —
@@ -229,7 +229,7 @@ describe("routing — table built once via ownKeys trap (P2)", () => {
     const authFilePath = join(dir, "auth.json");
     await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
 
-    // Build config normally, then inject a Proxy for codex.aliases.
+    // Build config normally, then inject a Proxy for providers.codex.aliases.
     const configResult = loadConfig({
       configPath: "inline-test-config.json",
       readFile: () =>
@@ -256,7 +256,10 @@ describe("routing — table built once via ownKeys trap (P2)", () => {
     });
 
     // buildDeps calls buildRoutingTable which calls Object.keys(aliases) once.
-    const modifiedConfig = { ...config, codex: { ...config.codex, aliases: aliasesProxy } };
+    const modifiedConfig = {
+      ...config,
+      providers: { ...config.providers, codex: { ...config.providers.codex, aliases: aliasesProxy } },
+    };
     const deps = buildDeps(modifiedConfig);
     const server = createProxyServer(deps);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

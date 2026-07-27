@@ -346,7 +346,7 @@ const doctor = async (result: LoadConfigResult): Promise<void> => {
  */
 const modelsJson = (result: LoadConfigResult): void => {
   const { config, configPath, fileFound } = result;
-  const rows = buildModelRows(MODEL_REGISTRY, config.codex.aliases);
+  const rows = buildModelRows(MODEL_REGISTRY, config.providers.codex.aliases);
 
   const payload = {
     kind: "models",
@@ -384,7 +384,7 @@ const models = (config: Config): void => {
 
   const lines = formatModelsReport({
     registry: MODEL_REGISTRY,
-    overrides: config.codex.aliases,
+    overrides: config.providers.codex.aliases,
   });
 
   if (lines.length === 0) {

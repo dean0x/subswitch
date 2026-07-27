@@ -2,7 +2,13 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, detectLegacyConfigKeys } from "../../src/config.js";
+import {
+  loadConfig,
+  detectLegacyConfigKeys,
+  detectUnknownProviderKeys,
+  aliasesByProvider,
+} from "../../src/config.js";
+import { PROVIDER_IDS } from "../../src/models.js";
 
 const missingFile = (): never => {
   const error = new Error("ENOENT") as Error & { code: string };
@@ -21,14 +27,14 @@ describe("loadConfig", () => {
     assert.equal(result.value.config.anthropic.connectTimeoutMs, 10_000);
     assert.equal(result.value.config.anthropic.streamIdleTimeoutMs, 300_000);
     assert.equal(result.value.config.anthropic.maxUpstreamSockets, 32);
-    assert.equal(result.value.config.codex.baseUrl, "https://chatgpt.com/backend-api/codex");
-    assert.equal(result.value.config.codex.oauthTokenUrl, "https://auth.openai.com/oauth/token");
-    assert.equal(result.value.config.codex.authFile, join(homedir(), ".codex/auth.json"));
-    assert.equal(result.value.config.codex.reasoningCache.maxEntries, 4096);
-    assert.equal(result.value.config.codex.reasoningCache.maxBytes, 64 * 1024 * 1024);
-    assert.equal(result.value.config.codex.requestTimeoutMs, 600_000);
-    assert.equal(result.value.config.codex.streamIdleTimeoutMs, 300_000);
-    assert.equal(result.value.config.codex.maxSseEventBytes, 4 * 1024 * 1024);
+    assert.equal(result.value.config.providers.codex.baseUrl, "https://chatgpt.com/backend-api/codex");
+    assert.equal(result.value.config.providers.codex.oauthTokenUrl, "https://auth.openai.com/oauth/token");
+    assert.equal(result.value.config.providers.codex.authFile, join(homedir(), ".codex/auth.json"));
+    assert.equal(result.value.config.providers.codex.reasoningCache.maxEntries, 4096);
+    assert.equal(result.value.config.providers.codex.reasoningCache.maxBytes, 64 * 1024 * 1024);
+    assert.equal(result.value.config.providers.codex.requestTimeoutMs, 600_000);
+    assert.equal(result.value.config.providers.codex.streamIdleTimeoutMs, 300_000);
+    assert.equal(result.value.config.providers.codex.maxSseEventBytes, 4 * 1024 * 1024);
     assert.equal(result.value.config.limits.maxBodyBytes, 32 * 1024 * 1024);
     assert.equal(result.value.config.limits.pingIntervalMs, 15_000);
     assert.equal(result.value.config.limits.maxConcurrentRequests, 32);
@@ -46,13 +52,13 @@ describe("loadConfig", () => {
     assert.equal(result.value.fileFound, true);
   });
 
-  it("providers.codex.baseUrl override is reflected in config.codex.baseUrl", () => {
+  it("providers.codex.baseUrl override is reflected in config.providers.codex.baseUrl", () => {
     const result = loadConfig({
       configPath: "x",
       readFile: () => JSON.stringify({ providers: { codex: { baseUrl: "https://example.com/api" } } }),
     });
     assert.ok(result.ok);
-    assert.equal(result.value.config.codex.baseUrl, "https://example.com/api");
+    assert.equal(result.value.config.providers.codex.baseUrl, "https://example.com/api");
   });
 
   it("expands ~ in the auth file path", () => {
@@ -61,7 +67,7 @@ describe("loadConfig", () => {
       readFile: () => JSON.stringify({ providers: { codex: { authFile: "~/custom/auth.json" } } }),
     });
     assert.ok(result.ok);
-    assert.equal(result.value.config.codex.authFile, join(homedir(), "custom/auth.json"));
+    assert.equal(result.value.config.providers.codex.authFile, join(homedir(), "custom/auth.json"));
   });
 
   it("rejects invalid config values", () => {
@@ -172,22 +178,22 @@ describe("loadConfig", () => {
   // Alias validation (providers.codex.aliases)
   // -------------------------------------------------------------------------
 
-  it("codex.aliases defaults to empty object when absent", () => {
+  it("providers.codex.aliases defaults to empty object when absent", () => {
     const result = loadConfig({ readFile: missingFile, env: {} });
     assert.ok(result.ok);
-    assert.deepEqual(result.value.config.codex.aliases, {});
+    assert.deepEqual(result.value.config.providers.codex.aliases, {});
   });
 
-  it("config.codex.aliases is stored verbatim after validation", () => {
+  it("config.providers.codex.aliases is stored verbatim after validation", () => {
     const result = loadConfig({
       configPath: "x",
       readFile: () => JSON.stringify({ providers: { codex: { aliases: { "fast": "gpt-5.6-sol" } } } }),
     });
     assert.ok(result.ok);
-    assert.deepEqual(result.value.config.codex.aliases, { "fast": "gpt-5.6-sol" });
+    assert.deepEqual(result.value.config.providers.codex.aliases, { "fast": "gpt-5.6-sol" });
   });
 
-  it("rejects codex.aliases with a key matching 'claude-*' — would misroute Anthropic traffic", () => {
+  it("rejects providers.codex.aliases with a key matching 'claude-*' — would misroute Anthropic traffic", () => {
     const result = loadConfig({
       configPath: "x",
       readFile: () => JSON.stringify({ providers: { codex: { aliases: { "claude-sonnet-4-5": "gpt-5.6-sol" } } } }),
@@ -197,7 +203,7 @@ describe("loadConfig", () => {
     assert.match(result.error.message, /claude/i);
   });
 
-  it("rejects codex.aliases with a key matching an Anthropic tier word (sonnet, opus, haiku, inherit)", () => {
+  it("rejects providers.codex.aliases with a key matching an Anthropic tier word (sonnet, opus, haiku, inherit)", () => {
     for (const tierWord of ["sonnet", "opus", "haiku", "inherit"]) {
       const result = loadConfig({
         configPath: "x",
@@ -208,7 +214,7 @@ describe("loadConfig", () => {
     }
   });
 
-  it("rejects a codex.aliases TARGET matching 'claude-*' — the target would become routable", () => {
+  it("rejects a providers.codex.aliases TARGET matching 'claude-*' — the target would become routable", () => {
     const result = loadConfig({
       configPath: "x",
       readFile: () => JSON.stringify({ providers: { codex: { aliases: { fast: "claude-sonnet-4-5" } } } }),
@@ -218,7 +224,7 @@ describe("loadConfig", () => {
     assert.match(result.error.message, /claude/i);
   });
 
-  it("rejects a codex.aliases TARGET matching an Anthropic tier word", () => {
+  it("rejects a providers.codex.aliases TARGET matching an Anthropic tier word", () => {
     for (const tierWord of ["sonnet", "opus", "haiku", "inherit"]) {
       const result = loadConfig({
         configPath: "x",
@@ -260,8 +266,67 @@ describe("loadConfig", () => {
       readFile: () => JSON.stringify({ providers: { codex: { baseUrl: "https://chatgpt.com/backend-api/codex" } } }),
     });
     assert.ok(result.ok);
-    // Accessing codex.* still works through the Config interface
-    assert.equal(result.value.config.codex.baseUrl, "https://chatgpt.com/backend-api/codex");
+    // `kind` drives parse-time discrimination only — it must not survive into the
+    // resolved slice, where the `providers` record key already selects the provider.
+    assert.equal(result.value.config.providers.codex.baseUrl, "https://chatgpt.com/backend-api/codex");
+    assert.ok(
+      !Object.hasOwn(result.value.config.providers.codex, "kind"),
+      "the parse-time discriminant must not leak into the resolved Config",
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // resolveConfig field mapping — every provider field reaches the resolved slice
+  // -------------------------------------------------------------------------
+
+  it("carries every providers.codex field through resolveConfig — a dropped field would be silent", () => {
+    // Each value is a sentinel distinct from its schema default, so a resolver that
+    // omits the field falls back to the default and this assertion fails. Without
+    // this, dropping e.g. `userAgent` from PROVIDER_RESOLVERS.codex changes nothing
+    // any test observes.
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({
+          providers: {
+            codex: {
+              baseUrl: "https://sentinel.example/api",
+              oauthTokenUrl: "https://sentinel.example/oauth/token",
+              authFile: "~/sentinel/auth.json",
+              userAgent: "sentinel-ua/9.9",
+              aliases: { sentinel: "gpt-5.6-sol" },
+              reasoningCache: { maxEntries: 7, maxBytes: 8 },
+              requestTimeoutMs: 111,
+              streamIdleTimeoutMs: 222,
+              maxSseEventBytes: 333,
+            },
+          },
+        }),
+    });
+    assert.ok(result.ok);
+    assert.deepEqual(result.value.config.providers.codex, {
+      baseUrl: "https://sentinel.example/api",
+      oauthTokenUrl: "https://sentinel.example/oauth/token",
+      // The one transformed field: expandHome runs in the resolver, not the schema.
+      authFile: join(homedir(), "sentinel/auth.json"),
+      userAgent: "sentinel-ua/9.9",
+      aliases: { sentinel: "gpt-5.6-sol" },
+      reasoningCache: { maxEntries: 7, maxBytes: 8 },
+      requestTimeoutMs: 111,
+      streamIdleTimeoutMs: 222,
+      maxSseEventBytes: 333,
+    });
+  });
+
+  it("aliasesByProvider exposes one alias record per ProviderId", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ providers: { codex: { aliases: { fast: "gpt-5.6-sol" } } } }),
+    });
+    assert.ok(result.ok);
+    const byProvider = aliasesByProvider(result.value.config);
+    assert.deepEqual(Object.keys(byProvider).sort(), [...PROVIDER_IDS].sort());
+    assert.deepEqual(byProvider.codex, { fast: "gpt-5.6-sol" });
   });
 });
 
@@ -350,6 +415,19 @@ describe("detectLegacyConfigKeys", () => {
     assert.ok(result.error.message.includes("codex"), "error must name the detected key");
   });
 
+  it("names both the detected key and where it moved, so the error is actionable", () => {
+    // The value of the pre-parse scan is not just "reject" — it is telling the
+    // operator where their setting went. A scan that errored without the mapping
+    // would leave them with a config that is rejected and no way to fix it.
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ limits: { requestTimeoutMs: 120_000 } }),
+    });
+    assert.ok(!result.ok);
+    assert.match(result.error.message, /`limits\.requestTimeoutMs`/);
+    assert.match(result.error.message, /`providers\.codex\.requestTimeoutMs`/);
+  });
+
   it("MUTATION CHECK: removing detectLegacyConfigKeys call would silently drop all settings", () => {
     // Zod strips unknown keys by default. Without detectLegacyConfigKeys, a pre-restructure
     // config { codex: { aliases: { fast: "gpt-5.6-sol" } } } would parse to defaults —
@@ -361,5 +439,73 @@ describe("detectLegacyConfigKeys", () => {
     });
     // Must fail — not silently succeed with empty aliases
     assert.ok(!result.ok, "pre-restructure config must be rejected, not silently stripped to defaults");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectUnknownProviderKeys — the other half of the PF-010 pre-parse scan
+//
+// `ProvidersSchema` is a z.object, so a block under an id that is not a ProviderId
+// is STRIPPED: the config parses clean and the block does nothing. Same silent
+// failure mode as the pre-`providers.*` layout, same remedy — scan the raw object
+// before parsing, because a stripping schema can never report what it discarded.
+// ---------------------------------------------------------------------------
+
+describe("detectUnknownProviderKeys", () => {
+  it("returns empty array when every providers.<id> key is a ProviderId", () => {
+    assert.deepEqual(detectUnknownProviderKeys({ providers: { codex: { baseUrl: "https://x.example" } } }), []);
+  });
+
+  it("returns empty array when there is no providers block at all", () => {
+    assert.deepEqual(detectUnknownProviderKeys({ port: 4141 }), []);
+    assert.deepEqual(detectUnknownProviderKeys({}), []);
+  });
+
+  it("returns empty array for non-object input and a non-object providers value", () => {
+    assert.deepEqual(detectUnknownProviderKeys(null), []);
+    assert.deepEqual(detectUnknownProviderKeys("string"), []);
+    assert.deepEqual(detectUnknownProviderKeys([1, 2, 3]), []);
+    assert.deepEqual(detectUnknownProviderKeys({ providers: "codex" }), []);
+  });
+
+  it("detects a misspelled provider id", () => {
+    assert.deepEqual(detectUnknownProviderKeys({ providers: { codexx: { baseUrl: "https://x.example" } } }), ["codexx"]);
+  });
+
+  it("reports unknown keys alongside known ones, in file order", () => {
+    assert.deepEqual(
+      detectUnknownProviderKeys({ providers: { kimi: {}, codex: {}, openai: {} } }),
+      ["kimi", "openai"],
+    );
+  });
+
+  it("ignores inherited properties — a polluted prototype must not forge a match", () => {
+    const providers = Object.create({ evil: { baseUrl: "https://attacker.example" } }) as Record<string, unknown>;
+    providers["codex"] = {};
+    assert.deepEqual(detectUnknownProviderKeys({ providers }), []);
+  });
+
+  it("loadConfig rejects a misspelled provider block instead of silently ignoring it", () => {
+    // Without the scan this config loads successfully and every setting under
+    // `providers.codexx` is discarded by Zod — the operator sees a configured-looking
+    // file and a proxy running on defaults, with nothing anywhere saying why.
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codexx: { baseUrl: "https://typo.example/api", userAgent: "typo/1.0" } } }),
+    });
+    assert.ok(!result.ok, "a provider block under an unknown id must be rejected, not stripped");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /providers\.codexx/, "error must name the offending key");
+    assert.match(result.error.message, /codex/, "error must list the known provider ids");
+  });
+
+  it("loadConfig still accepts a config whose only provider block is a known id", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ providers: { codex: { userAgent: "ok/1.0" } } }),
+    });
+    assert.ok(result.ok, "the negative check must not reject a valid config");
+    assert.equal(result.value.config.providers.codex.userAgent, "ok/1.0");
   });
 });

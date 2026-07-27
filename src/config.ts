@@ -56,16 +56,8 @@ const CodexProviderSchema = z
      * `.default('codex')` — it must be injected by the caller before parsing.
      * `ProvidersSchema` injects it from the record key via `z.preprocess`.
      *
-     * UNENFORCED SITES (must be updated manually when adding a provider):
-     *   - `ProvidersSchema` key (the `codex:` property below) — compile-time gap
-     *   - `Config.codex` field and `resolveConfig` mapping — compile-time gap
-     * Only `PROVIDER_CONFIG_ACCESSORS`, `aliasesByProvider`, and `ServerDeps.providers`
-     * enforce completeness today (Record<ProviderId, …>).
-     *
-     * NOTE: `Config` still carries `config.codex.*` at the top level (not
-     * `config.providers.codex.*`). Moving it cascades into five hardcoded
-     * `config.codex.*` reads in codex-handler.ts plus all call sites. That
-     * generalization is deliberately deferred to the branch adding a second provider.
+     * It does not survive into the resolved `Config`: there it is redundant with
+     * the `providers` record key that already selects the slice.
      */
     kind: z.literal("codex"),
     baseUrl: z.url().default("https://chatgpt.com/backend-api/codex"),
@@ -93,14 +85,6 @@ const CodexProviderSchema = z
   });
 
 /**
- * Discriminated union of all provider file-config variants.
- *
- * Extend this union when adding a new provider. `kind` is the discriminant.
- * `resolveConfig` should switch exhaustively on it so TypeScript catches missing cases.
- */
-export type ProviderFileConfig = z.infer<typeof CodexProviderSchema>;
-
-/**
  * Inject `kind` from the record key before Zod parses each provider block.
  * Zod reads the discriminant before defaults fire, so `kind` cannot carry `.default()`.
  * Uses an inline plain-object check to avoid a forward-reference to isPlainObject.
@@ -112,13 +96,19 @@ const injectKind = (raw: unknown, key: string): unknown => {
   return raw;
 };
 
-const ProvidersSchema = z
-  .object({
-    // UNENFORCED SITE: adding a provider requires adding a key here and in Config + resolveConfig.
-    // The three compile-enforced sites are PROVIDER_CONFIG_ACCESSORS, aliasesByProvider, ServerDeps.providers.
-    codex: z.preprocess((raw) => injectKind(raw, "codex"), CodexProviderSchema).prefault({ kind: "codex" }),
-  })
-  .prefault({});
+/**
+ * Per-provider file schemas, keyed by ProviderId.
+ *
+ * `satisfies` against a mapped type over the closed union checks an object literal
+ * in BOTH directions: a missing ProviderId key fails the constraint, and a key that
+ * is not a ProviderId is an excess property. Adding a provider id without adding a
+ * schema — or adding a schema under a misspelled id — is a compile error here.
+ */
+const PROVIDER_SCHEMAS = {
+  codex: z.preprocess((raw) => injectKind(raw, "codex"), CodexProviderSchema).prefault({ kind: "codex" }),
+} satisfies { readonly [K in ProviderId]: z.ZodType };
+
+const ProvidersSchema = z.object(PROVIDER_SCHEMAS).prefault({});
 
 const LimitsSchema = z
   .object({
@@ -142,39 +132,72 @@ const FileConfigSchema = z.object({
 /** Raw on-disk config shape — what FileConfigSchema.safeParse() produces. */
 export type FileConfig = z.infer<typeof FileConfigSchema>;
 
+/** Raw on-disk shape of a single `providers.<id>` block, for any ProviderId. */
+export type ProviderFileConfig = FileConfig["providers"][ProviderId];
+
 // ---------------------------------------------------------------------------
 // Resolved Config interface (runtime shape)
 // ---------------------------------------------------------------------------
 
 /**
+ * The Codex provider's resolved settings — the whole slice a Codex handler needs
+ * and nothing more.
+ *
+ * Provider slices are heterogeneous by design: `oauthTokenUrl` is a detail of the
+ * ChatGPT OAuth flow and must not be forced onto a provider that authenticates
+ * with a static key or not at all.
+ */
+export interface CodexProviderConfig {
+  readonly baseUrl: string;
+  readonly oauthTokenUrl: string;
+  /** Tilde-expanded at resolveConfig time. */
+  readonly authFile: string;
+  readonly userAgent: string;
+  readonly aliases: Readonly<Record<string, string>>;
+  readonly reasoningCache: {
+    readonly maxEntries: number;
+    readonly maxBytes: number;
+  };
+  readonly requestTimeoutMs: number;
+  readonly streamIdleTimeoutMs: number;
+  readonly maxSseEventBytes: number;
+}
+
+/** Provider id → that provider's resolved slice type. One entry per ProviderId. */
+interface ProviderConfigShape {
+  readonly codex: CodexProviderConfig;
+}
+
+/**
+ * Resolved per-provider config, keyed by the closed ProviderId union.
+ *
+ * Mapped over ProviderId rather than written out, so adding an id to PROVIDER_IDS
+ * without giving it a ProviderConfigShape entry is a compile error here, at
+ * PROVIDER_SCHEMAS, at PROVIDER_RESOLVERS, and at resolveConfig.
+ */
+export type ProviderConfigs = { readonly [K in ProviderId]: ProviderConfigShape[K] };
+
+/**
  * Resolved runtime config. Hand-written (NOT z.infer) so:
  *  - authFile is always tilde-expanded (resolveConfig applies expandHome).
+ *  - the parse-time `kind` discriminant does not leak into the runtime shape.
  */
 export interface Config {
   readonly port: number;
   readonly logLevel: LogLevel;
+  /**
+   * The privileged default leg, not a peer provider: it has no model list, no auth
+   * config of its own (the client's credential is forwarded verbatim, applies ADR-002),
+   * there is exactly one, and it is always present. Folding it into `providers` for
+   * symmetry would give it fields it does not have.
+   */
   readonly anthropic: {
     readonly baseUrl: string;
     readonly connectTimeoutMs: number;
     readonly streamIdleTimeoutMs: number;
     readonly maxUpstreamSockets: number;
   };
-  /** Codex provider settings. */
-  readonly codex: {
-    readonly baseUrl: string;
-    readonly oauthTokenUrl: string;
-    /** Tilde-expanded at resolveConfig time. */
-    readonly authFile: string;
-    readonly userAgent: string;
-    readonly aliases: Readonly<Record<string, string>>;
-    readonly reasoningCache: {
-      readonly maxEntries: number;
-      readonly maxBytes: number;
-    };
-    readonly requestTimeoutMs: number;
-    readonly streamIdleTimeoutMs: number;
-    readonly maxSseEventBytes: number;
-  };
+  readonly providers: ProviderConfigs;
   readonly limits: {
     readonly maxBodyBytes: number;
     readonly pingIntervalMs: number;
@@ -211,8 +234,8 @@ export interface ProviderRuntimeConfig {
 const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) => ProviderRuntimeConfig>> = {
   codex: (config) => ({
     displayName: "Codex",
-    authFile: config.codex.authFile,
-    baseUrl: config.codex.baseUrl,
+    authFile: config.providers.codex.authFile,
+    baseUrl: config.providers.codex.baseUrl,
     loginCommand: "codex login",
   }),
 };
@@ -226,6 +249,20 @@ const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) =>
  */
 export const providerConfigFor = (config: Config, id: ProviderId): ProviderRuntimeConfig =>
   PROVIDER_CONFIG_ACCESSORS[id](config);
+
+/**
+ * Per-provider alias records, keyed by ProviderId — the shape buildRoutingTable and
+ * the models/doctor row builders consume.
+ *
+ * The single place that answers "which providers contribute aliases, and from where".
+ * The routing table and the displayed alias table must agree on that answer, so they
+ * read the same function rather than each assembling the record at their call site.
+ */
+export const aliasesByProvider = (
+  config: Config,
+): Readonly<Record<ProviderId, Readonly<Record<string, string>>>> => ({
+  codex: config.providers.codex.aliases,
+});
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -299,38 +336,78 @@ export const detectLegacyConfigKeys = (
   return found;
 };
 
+/**
+ * `providers.<id>` blocks whose id is not a ProviderId, in config-file key order.
+ *
+ * `ProvidersSchema` is a `z.object`, so it STRIPS a block written under an unknown
+ * id: a typo (`providers.codexx`) or a block for a provider this build does not ship
+ * parses clean and does absolutely nothing. That is the same silent-reversion failure
+ * mode as the pre-`providers.*` layout — the operator's file looks configured and the
+ * proxy ignores it — and a stripping schema can never report what it discarded, so the
+ * check has to run on the RAW object before parsing. (avoids PF-010)
+ *
+ * Pure: no I/O. Own-property reads only, so a polluted prototype can neither forge a
+ * match nor mask one.
+ */
+export const detectUnknownProviderKeys = (raw: unknown): readonly string[] => {
+  if (!isPlainObject(raw)) return [];
+  const providers = Object.hasOwn(raw, "providers") ? raw["providers"] : undefined;
+  if (!isPlainObject(providers)) return [];
+  const known = new Set<string>(PROVIDER_IDS);
+  return Object.keys(providers).filter((key) => !known.has(key));
+};
+
 // ---------------------------------------------------------------------------
 // resolveConfig — FileConfig → Config transformation
 // ---------------------------------------------------------------------------
+
+/**
+ * File slice → resolved slice, one resolver per ProviderId.
+ *
+ * A Record over the closed union: a new ProviderId with no resolver is a compile
+ * error, and the per-key signature correlates each file slice with its own resolved
+ * slice, so a resolver cannot be wired to the wrong provider's shape.
+ *
+ * Each resolver builds its slice field-by-field rather than by spread, so
+ * exactOptionalPropertyTypes stays honest and `Config` stays hand-written: a field
+ * added to the schema but not to the resolver fails to compile instead of silently
+ * riding along untransformed.
+ */
+const PROVIDER_RESOLVERS: {
+  readonly [K in ProviderId]: (file: FileConfig["providers"][K]) => ProviderConfigShape[K];
+} = {
+  codex: (file) => ({
+    baseUrl: file.baseUrl,
+    oauthTokenUrl: file.oauthTokenUrl,
+    authFile: expandHome(file.authFile),
+    userAgent: file.userAgent,
+    aliases: file.aliases,
+    reasoningCache: file.reasoningCache,
+    requestTimeoutMs: file.requestTimeoutMs,
+    streamIdleTimeoutMs: file.streamIdleTimeoutMs,
+    maxSseEventBytes: file.maxSseEventBytes,
+  }),
+};
 
 /**
  * Transform a parsed FileConfig into the runtime Config.
  *
  * Pure: no I/O. All effectful operations (file reads, env access) happen in loadConfig.
  *
- * Maps providers.codex.* → codex.*.
+ * Providers are constructed per key rather than by iterating PROVIDER_IDS: a loop
+ * cannot preserve the key→slice-type correlation without a cast, and the cast is
+ * exactly the completeness check PROVIDER_RESOLVERS exists to provide.
  * Expands tilde in authFile.
  */
-export const resolveConfig = (file: FileConfig): Config => {
-  const codex = file.providers.codex;
-  return {
-    port: file.port,
-    logLevel: file.logLevel,
-    anthropic: file.anthropic,
-    codex: {
-      baseUrl: codex.baseUrl,
-      oauthTokenUrl: codex.oauthTokenUrl,
-      authFile: expandHome(codex.authFile),
-      userAgent: codex.userAgent,
-      aliases: codex.aliases,
-      reasoningCache: codex.reasoningCache,
-      requestTimeoutMs: codex.requestTimeoutMs,
-      streamIdleTimeoutMs: codex.streamIdleTimeoutMs,
-      maxSseEventBytes: codex.maxSseEventBytes,
-    },
-    limits: file.limits,
-  };
-};
+export const resolveConfig = (file: FileConfig): Config => ({
+  port: file.port,
+  logLevel: file.logLevel,
+  anthropic: file.anthropic,
+  providers: {
+    codex: PROVIDER_RESOLVERS.codex(file.providers.codex),
+  },
+  limits: file.limits,
+});
 
 // ---------------------------------------------------------------------------
 // loadConfig — discovers, reads, parses, and resolves the config file
@@ -446,6 +523,20 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
         `outdated config layout in ${resolvedPath} — ` +
         legacy.map((l) => `move \`${l.path}\` to \`${l.replacement}\``).join("; ") +
         `. Edit the file to match subswitch.config.example.json, or delete it to run on defaults.`,
+    });
+  }
+
+  // Step 3b: reject provider blocks written under an unknown id. Same reason as
+  // step 3 — z.object strips them, so the block would silently do nothing.
+  const unknownProviders = detectUnknownProviderKeys(raw);
+  if (unknownProviders.length > 0) {
+    return err({
+      kind: "translate",
+      message:
+        `unknown provider block(s) in ${resolvedPath}: ` +
+        unknownProviders.map((key) => `\`providers.${key}\``).join(", ") +
+        `. Known providers: ${PROVIDER_IDS.join(", ")}. ` +
+        `An unrecognised provider block is ignored entirely, so leaving it in place would silently change nothing.`,
     });
   }
 
