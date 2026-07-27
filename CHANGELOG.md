@@ -131,6 +131,35 @@ Such a block would otherwise be stripped by the schema and do nothing at all.
 
 ### Fixed
 
+- **A Codex stream that ended with content blocks still open returned HTTP 200 with
+  empty content, silently discarding text the upstream had produced.** The
+  non-streaming aggregator materialises a content block only when it sees that block's
+  `content_block_stop`, and the translator emitted `content_block_stop` only from
+  `response.output_item.done`. Any stream that ended without a matching done event —
+  `response.completed` with items still open, an item id or `output_index` that resolved
+  to no block, or a mid-stream truncation, abort, or idle timeout after `message_start` —
+  therefore produced a **200 whose `content` was empty**, with no error anywhere. The
+  streaming path was unaffected and showed the correct text, which is why no streaming
+  unit test and no streaming e2e could see it.
+  The translator now reconciles blocks the upstream left open at the terminal event, and
+  the same turn returns a **502 carrying an error frame** when its content cannot be
+  recovered at all. Specifically:
+  - Open blocks that received at least one delta are closed with a synthesised
+    `content_block_stop`, emitted **in band, before `message_delta`/`message_stop`** — a
+    streaming client that receives a `content_block_stop` after the terminal frame sees a
+    corrupt stream. Open blocks that received zero deltas are discarded rather than
+    appended as a spurious empty text block.
+  - A delta that matched no block is a dropped delta. When no block received any content,
+    the turn is unrecoverable and now yields an error frame instead of an empty 200; when
+    other blocks did receive content, it degrades gracefully and the real content is
+    returned.
+  - A stream that opened but produced no recoverable content and no terminal lifecycle
+    event now yields an error frame rather than a 200 with empty or null content.
+  - A tool-use block whose accumulated arguments are non-empty but unparseable now returns
+    502 instead of a 200 with `input: {}` — the client no longer acts on invented empty
+    arguments. A genuinely empty argument string still yields `input: {}`, which is
+    correct for a zero-argument call.
+  (avoids PF-008)
 - **A credential that cannot be refreshed is no longer refreshed anyway**: the 401
   retry guard read `attempt === 0` while the retry budget was `refreshable ? 2 : 1`, so
   a static-credential provider spent a refresh its budget of one attempt did not allow
