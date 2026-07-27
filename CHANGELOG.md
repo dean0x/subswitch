@@ -108,8 +108,10 @@ Such a block would otherwise be stripped by the schema and do nothing at all.
   byte-identical — `codex_effort_applied` and friends are unchanged.
 - **Log event tokens are sanitized** the same way field values already were (newlines
   stripped, whitespace/`=` quoted). The closed `FIELD_KEYS` allow-list is untouched;
-  this is a different axis. Event names are constrained at compile time to the
-  `ProviderId` union, so a config-supplied string cannot become an event name.
+  this is a different axis. Every event name is a compile-time string literal, so a
+  config-supplied or request-supplied string cannot become an event name. Note the
+  narrower claim: the provider-scoped names are derived from the `ProviderId` union,
+  but six auth event names are not — see known limitations below.
 - **Provider credentials are branded with the provider they belong to**: the auth seam
   is now `ProviderAuth<P>`/`ProviderCredential<P>`, and the handler's `providerId` and
   `auth` share one type parameter. Wiring one provider's credential into another
@@ -188,6 +190,29 @@ before adding a second production provider:
   out-of-tree probe, but no in-suite test can distinguish them until a second id ships.
   The tests that touch these axes say so at the assertion site; do not read their green
   as coverage.
+- **Six auth log event names are hardcoded `codex_*` literals outside the
+  `ProviderEvents` table.** `src/codex-auth.ts` emits `codex_token_refreshed`,
+  `codex_refresh_token_rotated_externally`, `codex_token_refresh_failed`,
+  `codex_auth_file_newer_than_refresh`, `codex_auth_file_write_failed`, and
+  `codex_auth_file_unreadable_after_refresh` directly, rather than through
+  `providerEvents(providerId)` like the eleven provider-scoped names. They are still
+  compile-time string literals, so the log-injection control is intact — nothing
+  config-supplied or request-supplied can become an event name — but they are not
+  derived from the `ProviderId` union. A second provider's auth manager would either
+  emit `codex_*` events for its own credential or need its own hardcoded copies.
+  Moving them into the table is deliberately deferred: it renames operator-visible
+  log events and needs a decision, not a drive-by edit.
+- **The Codex leg's outgoing request-header order changed.** `buildHeaders` spreads
+  `credential.authHeaders` last so a transport constant can never silently shadow the
+  credential — a quietly overridden `authorization` is a far worse failure than a loud
+  401, and the spread order makes it structurally impossible. The trade is that
+  `authorization` and `chatgpt-account-id` moved from the front of the outgoing header
+  list to the back. Header names and values are unchanged, and HTTP treats the relative
+  order of distinct field names as insignificant — but this leg deliberately
+  impersonates `codex_cli_rs` to a Cloudflare-fronted endpoint, and request-header order
+  is a known client-fingerprinting axis (see PF-005). The new order has not been verified
+  against the live backend. If it ever proves to matter, restore the order by building
+  the header object explicitly — never by moving the auth spread earlier.
 - **Kimi provider leg** is a separate branch, gated on a five-question live probe
   requiring a real subscription.
 

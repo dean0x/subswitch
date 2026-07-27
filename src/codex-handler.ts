@@ -103,6 +103,15 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
     // Auth spread LAST so a transport constant can never silently shadow the credential.
     // A missing Authorization is a loud 401; a quietly overridden one is the failure mode
     // worth making structurally impossible.
+    //
+    // This is a trade, not a free win: spreading last also moves `authorization` and
+    // `chatgpt-account-id` from the front of the outgoing header list to the back. Names
+    // and values are unchanged, and HTTP treats the relative order of distinct field
+    // names as insignificant — but this leg deliberately impersonates codex_cli_rs to a
+    // Cloudflare-fronted endpoint, and request-header order is a known client-
+    // fingerprinting axis (see PF-005). The new order is UNVERIFIED against the live
+    // backend. If it ever proves to matter, restore the order by naming every header
+    // explicitly — never by moving this spread earlier, which reopens the shadowing hole.
     ...credential.authHeaders,
   });
 

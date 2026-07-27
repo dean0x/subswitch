@@ -109,8 +109,12 @@ export const createConsoleLogger = (
       // FIELD_KEYS — the closed allow-list bounds which fields may be logged and says
       // nothing about the event token — and it is interpolated into the same line, so
       // an unsanitised event name forges records exactly as an unsanitised value would.
-      // Every event name in the tree is a compile-time literal derived from the closed
-      // ProviderId union, which is the primary control; this is defence in depth.
+      // Every event name in the tree is a compile-time string literal — no config value
+      // and no request value can become one — which is the primary control; this is
+      // defence in depth. The guarantee is "literal", not "table-derived": the eleven
+      // provider-scoped names come from providerEvents(providerId) and so are keyed to
+      // the closed ProviderId union, but six auth events in codex-auth.ts are hardcoded
+      // `codex_*` literals outside that table. Still uninjectable, still not derived.
       const eventStr = `event=${pc.bold(renderToken(event))}`;
       const parts = [levelStr, eventStr];
       if (fields !== undefined) {
