@@ -117,6 +117,17 @@ Such a block would otherwise be stripped by the schema and do nothing at all.
   token sent to a third-party host. The seam carries auth headers only — protocol
   constants stay with the handler that owns the transport. Codex sends the same two
   headers with the same values as before.
+- **The SSE parser is linear in stream length**: undelivered text is held as an array of
+  segments and joined only on the chunk that completes an event, instead of being
+  concatenated into one string per chunk. Frame boundaries are unchanged by construction
+  and pinned by a golden captured from the previous parser — 16,269 two-way and 49,770
+  three-way splits, every one asserted to reproduce the same frame sequence. 8 MiB in
+  8 KiB chunks went from 570 ms to 15 ms. No correctness test can see this change in
+  either direction, so `test/tools/sse-parser.bench.ts` is the artifact that guards it.
+- **Family derivation has exactly one implementation**: `selectFamilyWinners` returns the
+  per-provider partition and the collapsed per-family verdict in one pass, and the router
+  and the display both read it. Previously each side derived "newest non-preview,
+  non-retired wins" for itself.
 
 ### Fixed
 
@@ -132,15 +143,22 @@ Such a block would otherwise be stripped by the schema and do nothing at all.
 These items are deliberately deferred — they are real constraints that should be fixed
 before adding a second production provider:
 
-- **SSE parser boundary scan is effectively quadratic in pathological cases**: the scan
-  offset bounds the regex to O(new bytes), but `buffer.slice()` allocates per chunk and
-  forces V8 to flatten the cons-string. Measured 37 / 138 / 557 ms at 2 / 4 / 8 MiB.
-  Frame boundaries are correct (11,864/11,864 splits verified identical to base). Fix
-  deferred — not on the critical path for current payload sizes.
-- **`buildModelRows` and `buildAliasRows` duplicate the "newest non-preview non-retired
-  wins" derivation** that `buildRoutingTable` also implements — two sources of truth that
-  can drift. `buildAliasRows` also falls back to `PROVIDER_IDS[0]` for unknown targets,
-  a first-provider assumption that becomes wrong with a second provider.
+- **An expired Codex credential produces a 401 with no remediation text.** The client
+  sees `codex upstream error (401): <detail>` and is not told to run `codex login`.
+  Nothing regressed — the message that was meant to carry that advice
+  (`authentication failed after refresh`) had been unreachable in production, and
+  removing it is what made the gap visible. `subswitch doctor` still names the command.
+  Adding remediation to the 401 path is a one-line change, deliberately not made here
+  because it alters a client-visible Codex string; it needs an owner and a decision.
+- **An upstream error body is forwarded to the client verbatim** (first 2 KB). If a
+  provider's backend ever echoed the bearer token in an error body, the proxy would
+  relay it. No evidence the Codex backend does this, and the proxy binds `127.0.0.1`
+  only — but the control is upstream behaviour rather than anything enforced here.
+- **`PROVIDER_IDS[0]`-vs-declaring-provider and per-provider default-host checks are
+  unfalsifiable with one provider id.** Both are correct by inspection and by an
+  out-of-tree probe, but no in-suite test can distinguish them until a second id ships.
+  The tests that touch these axes say so at the assertion site; do not read their green
+  as coverage.
 - **Kimi provider leg** is a separate branch, gated on a five-question live probe
   requiring a real subscription.
 
