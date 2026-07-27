@@ -267,4 +267,4 @@ WebSocket, not HTTP POST).
   suffix, token expiry). Never prints token material.
 - Codex requests failing 401 after a refresh → run `codex login`, then retry.
 - `claude-*` traffic must never appear with `route=codex:*` in the logs;
-  if it does, check `codex.models` in subswitch.config.json.
+  if it does, check the model registry (`subswitch models`) and your `providers.codex.aliases` config.

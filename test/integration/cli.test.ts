@@ -388,8 +388,8 @@ describe("CLI models --json", () => {
     assert.ok(parsed.models.length > 0, "models array must be non-empty");
   });
 
-  // A19: each model entry has the required structural fields
-  it("A19 — each model entry has id, provider, routable, preview, retired, source", async () => {
+  // structural: each model entry has the required fields
+  it("each model entry has id, provider, routable, preview, retired, source", async () => {
     const result = await runCli(["models", "--json"]);
     const parsed = JSON.parse(result.stdout) as { models: Record<string, unknown>[] };
     for (const model of parsed.models) {
@@ -402,8 +402,8 @@ describe("CLI models --json", () => {
     }
   });
 
-  // A20: providers array has an entry for "codex"
-  it("A20 — providers array includes a codex entry", async () => {
+  // structural: providers array includes codex
+  it("providers array includes a codex entry", async () => {
     const result = await runCli(["models", "--json"]);
     const parsed = JSON.parse(result.stdout) as { providers: Array<{ id: string }> };
     assert.ok(Array.isArray(parsed.providers), "providers must be an array");
@@ -413,15 +413,15 @@ describe("CLI models --json", () => {
     );
   });
 
-  // A21: fallbackProvider is "anthropic"
-  it("A21 — JSON.fallbackProvider === 'anthropic'", async () => {
+  // structural: fallbackProvider is "anthropic"
+  it("JSON.fallbackProvider === 'anthropic'", async () => {
     const result = await runCli(["models", "--json"]);
     const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
     assert.equal(parsed["fallbackProvider"], "anthropic");
   });
 
-  // A22: gpt-5.6-sol appears in models array with gen: [5, 6]
-  it("A22 — gpt-5.6-sol appears in models with gen: [5, 6] (tuple, not string)", async () => {
+  // structural: gpt-5.6-sol appears in models array with gen: [5, 6]
+  it("gpt-5.6-sol appears in models with gen: [5, 6] (tuple, not string)", async () => {
     const result = await runCli(["models", "--json"]);
     const parsed = JSON.parse(result.stdout) as { models: Array<{ id: string; gen?: number[] }> };
     const solModel = parsed.models.find((m) => m.id === "gpt-5.6-sol");
@@ -430,9 +430,9 @@ describe("CLI models --json", () => {
     assert.deepEqual(solModel.gen, [5, 6], "gen for gpt-5.6-sol must be [5, 6]");
   });
 
-  // P5 (FORCE_COLOR negative control): JSON branch returns before resolveColorEnabled.
+  // ANSI bleed prevention: JSON branch returns before resolveColorEnabled.
   // With FORCE_COLOR=1, human-readable `models` stdout has ANSI; `models --json` stdout must NOT.
-  it("P5 — FORCE_COLOR=1 does NOT bleed ANSI codes into JSON output (structural: JSON branch exits early)", async () => {
+  it("FORCE_COLOR=1 does NOT bleed ANSI codes into JSON output (structural: JSON branch exits early)", async () => {
     // Force color on for the non-JSON branch (FORCE_COLOR beats NO_COLOR).
     // Passing NO_COLOR: undefined unsets it so FORCE_COLOR dominates.
     const forcedEnv = { ...process.env, FORCE_COLOR: "1", NO_COLOR: undefined };
@@ -454,6 +454,91 @@ describe("CLI models --json", () => {
 
     // And the JSON must still be valid.
     assert.doesNotThrow(() => JSON.parse(jsonResult.stdout), "JSON output must remain valid with FORCE_COLOR=1");
+  });
+
+  // A19: anthropic appears in providers with routing='passthrough' and contributes no model rows.
+  // Anthropic is the fallback pass-through destination — it belongs in providers even though
+  // the model registry has no anthropic-provider entries.
+  it("A19 — anthropic appears in providers with routing='passthrough' and contributes no model rows", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as {
+      providers: Array<{ id: string; routing: string }>;
+      models: Array<{ provider: string }>;
+    };
+    const anthropicProv = parsed.providers.find((p) => p.id === "anthropic");
+    assert.ok(anthropicProv !== undefined, "providers must include 'anthropic' entry");
+    assert.equal(anthropicProv.routing, "passthrough", "anthropic provider must have routing='passthrough'");
+    assert.ok(
+      parsed.models.every((m) => m.provider !== "anthropic"),
+      "no model row must claim provider='anthropic' (anthropic contributes no registry rows)",
+    );
+  });
+
+  // A20: when config fails (legacy layout), stdout is exactly "" — no partial JSON,
+  // no error text written to stdout. All diagnostics go to stderr.
+  it("A20 — stdout is exactly empty when config fails to load", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "subswitch-a20-test-"));
+    try {
+      // Legacy top-level 'codex' key is rejected by detectLegacyConfigKeys.
+      await writeFile(
+        join(tmpDir, "subswitch.config.json"),
+        JSON.stringify({ codex: { baseUrl: "https://chatgpt.com/backend-api/codex" } }),
+        "utf8",
+      );
+      const result = await runCli(["models", "--json"], { cwd: tmpDir });
+      assert.notEqual(result.exitCode, 0, "exit code must be non-zero on config failure");
+      assert.equal(result.stdout, "", "stdout must be exactly empty on config failure");
+      assert.ok(result.stderr.length > 0, "error message must be written to stderr");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // A21: alias names are unique across all models in the JSON output.
+  // The routing table build rejects duplicate alias names — this test verifies that
+  // invariant is preserved end-to-end in the models --json output.
+  it("A21 — alias names are unique across all model entries", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as {
+      models: Array<{ aliases?: Array<{ name: string }> }>;
+    };
+    const seenNames = new Set<string>();
+    for (const model of parsed.models) {
+      for (const alias of model.aliases ?? []) {
+        assert.ok(
+          !seenNames.has(alias.name),
+          `duplicate alias name '${alias.name}' in models --json output`,
+        );
+        seenNames.add(alias.name);
+      }
+    }
+  });
+
+  // A22: two consecutive runs produce byte-identical stdout.
+  // The models command must be deterministic — same registry, same config, same output.
+  it("A22 — two consecutive runs produce byte-identical stdout", async () => {
+    const run1 = await runCli(["models", "--json"]);
+    const run2 = await runCli(["models", "--json"]);
+    assert.equal(run1.exitCode, 0, "first run must exit 0");
+    assert.equal(run2.exitCode, 0, "second run must exit 0");
+    assert.equal(run1.stdout, run2.stdout, "models --json stdout must be deterministic across runs");
+  });
+
+  // P5: models --json requires no network and no auth file — it reads only the config.
+  // Verified by running in an empty directory (no config, no auth file) and confirming
+  // the command exits 0 with valid JSON (pure registry + defaults).
+  it("P5 — models --json exits 0 and produces valid JSON without auth file and without network", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "subswitch-p5-test-"));
+    try {
+      // No subswitch.config.json, no auth file — pure defaults from embedded registry.
+      const result = await runCli(["models", "--json"], { cwd: tmpDir });
+      assert.equal(result.exitCode, 0, "models --json must exit 0 (no network or auth required)");
+      assert.doesNotThrow(() => JSON.parse(result.stdout), "output must be valid JSON");
+      const parsed = JSON.parse(result.stdout) as { kind: string };
+      assert.equal(parsed.kind, "models", "JSON kind must be 'models'");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("models --json output does not contain aliases when there are no config overrides", async () => {
