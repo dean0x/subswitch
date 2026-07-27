@@ -182,7 +182,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   const reconcileOpenBlocks = (push: (frameText: string) => void): boolean => {
     if (sawUnmatchedDelta && blocksWithContent.size === 0) {
       openBlockIndices.clear();
-      push(toAnthropicErrorSse("api_error", "codex stream dropped content deltas that matched no content block"));
+      push(toAnthropicErrorSse("api_error", `${providerName} stream dropped content deltas that matched no content block`));
       return true;
     }
     for (const index of openBlockIndices) {
@@ -426,7 +426,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           // arrived and no terminal lifecycle event was received.  This is a truncated
           // stream — emit an error so the client gets 502 rather than a misleading
           // 200 with empty or null content.
-          this.push(toAnthropicErrorSse("api_error", "codex stream ended without a terminal event or recoverable content"));
+          this.push(toAnthropicErrorSse("api_error", `${providerName} stream ended without a terminal event or recoverable content`));
         }
         // If !started: aggregateFrames will return err("no message_start") → 502.
       }
@@ -520,7 +520,7 @@ export const aggregateFrames = (frames: readonly string[], providerName = "codex
             // invented empty arguments. Note: partialJson === "" and whitespace-only both
             // fall through to the {} default above; this catch is only hit when there is
             // actual non-whitespace content to parse but it is malformed JSON.
-            return err({ kind: "upstream", message: "codex stream ended with unparseable tool_use arguments" });
+            return err({ kind: "upstream", message: `${providerName} stream ended with unparseable tool_use arguments` });
           }
           content.push({ type: "tool_use", id: pending.block["id"], name: pending.block["name"], input });
         }
@@ -556,7 +556,7 @@ export const aggregateFrames = (frames: readonly string[], providerName = "codex
   // have actual content, and silently discard unclosed blocks with no content.
   const unclosedWithContent = [...blocks.values()].filter((p) => p.text !== "" || p.partialJson !== "");
   if (unclosedWithContent.length > 0) {
-    return err({ kind: "upstream", message: `codex stream ended with ${unclosedWithContent.length} unclosed content block(s)` });
+    return err({ kind: "upstream", message: `${providerName} stream ended with ${unclosedWithContent.length} unclosed content block(s)` });
   }
   return ok({
     kind: "message",
