@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../../src/config.js";
-import { ALL_MODEL_IDS } from "../../src/models.js";
+import { MODEL_REGISTRY } from "../../src/models.js";
 
 const missingFile = (): never => {
   const error = new Error("ENOENT") as Error & { code: string };
@@ -19,35 +19,50 @@ describe("loadConfig", () => {
     assert.equal(result.value.config.port, 4141);
     assert.equal(result.value.config.logLevel, "info");
     assert.equal(result.value.config.anthropic.baseUrl, "https://api.anthropic.com");
+    assert.equal(result.value.config.anthropic.connectTimeoutMs, 10_000);
+    assert.equal(result.value.config.anthropic.streamIdleTimeoutMs, 300_000);
+    assert.equal(result.value.config.anthropic.maxUpstreamSockets, 32);
     assert.equal(result.value.config.codex.baseUrl, "https://chatgpt.com/backend-api/codex");
     assert.equal(result.value.config.codex.oauthTokenUrl, "https://auth.openai.com/oauth/token");
     assert.equal(result.value.config.codex.authFile, join(homedir(), ".codex/auth.json"));
-    // Derive from the canonical registry — re-hardcoding recreates the exact maintenance tax this feature removes.
-    assert.deepEqual(result.value.config.codex.models, [...ALL_MODEL_IDS]);
-    assert.equal(result.value.config.reasoningCache.maxEntries, 4096);
-    assert.equal(result.value.config.reasoningCache.maxBytes, 64 * 1024 * 1024);
+    assert.equal(result.value.config.codex.reasoningCache.maxEntries, 4096);
+    assert.equal(result.value.config.codex.reasoningCache.maxBytes, 64 * 1024 * 1024);
+    assert.equal(result.value.config.codex.requestTimeoutMs, 600_000);
+    assert.equal(result.value.config.codex.streamIdleTimeoutMs, 300_000);
+    assert.equal(result.value.config.codex.maxSseEventBytes, 4 * 1024 * 1024);
     assert.equal(result.value.config.limits.maxBodyBytes, 32 * 1024 * 1024);
-    assert.equal(result.value.config.limits.connectTimeoutMs, 10_000);
-    assert.equal(result.value.config.limits.streamIdleTimeoutMs, 300_000);
-    assert.equal(result.value.config.limits.requestTimeoutMs, 600_000);
     assert.equal(result.value.config.limits.pingIntervalMs, 15_000);
     assert.equal(result.value.fileFound, false);
+    // codex.models is derived from MODEL_REGISTRY (all non-retired ids) — not user-configurable.
+    const expectedModels = MODEL_REGISTRY.filter((e) => e.retired !== true).map((e) => e.id);
+    assert.deepEqual([...result.value.config.codex.models], expectedModels);
   });
 
   it("merges partial overrides over defaults", () => {
     const result = loadConfig({
       configPath: "x",
-      readFile: () => JSON.stringify({ port: 5555, codex: { models: ["gpt-5.5"] } }),
+      readFile: () => JSON.stringify({ port: 5555 }),
     });
     assert.ok(result.ok);
     assert.equal(result.value.config.port, 5555);
-    assert.deepEqual(result.value.config.codex.models, ["gpt-5.5"]);
     assert.equal(result.value.config.anthropic.baseUrl, "https://api.anthropic.com");
     assert.equal(result.value.fileFound, true);
   });
 
+  it("providers.codex.baseUrl override is reflected in config.codex.baseUrl", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ providers: { codex: { baseUrl: "https://example.com/api" } } }),
+    });
+    assert.ok(result.ok);
+    assert.equal(result.value.config.codex.baseUrl, "https://example.com/api");
+  });
+
   it("expands ~ in the auth file path", () => {
-    const result = loadConfig({ configPath: "x", readFile: () => JSON.stringify({ codex: { authFile: "~/custom/auth.json" } }) });
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ providers: { codex: { authFile: "~/custom/auth.json" } } }),
+    });
     assert.ok(result.ok);
     assert.equal(result.value.config.codex.authFile, join(homedir(), "custom/auth.json"));
   });
@@ -157,7 +172,7 @@ describe("loadConfig", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Alias and model normalization (new in this phase)
+  // Alias validation (providers.codex.aliases)
   // -------------------------------------------------------------------------
 
   it("codex.aliases defaults to empty object when absent", () => {
@@ -166,60 +181,10 @@ describe("loadConfig", () => {
     assert.deepEqual(result.value.config.codex.aliases, {});
   });
 
-  it("normalizes derived family alias in codex.models to its canonical id", () => {
-    // "sol" → "gpt-5.6-sol" via derived family alias
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ codex: { models: ["sol"] } }),
-    });
-    assert.ok(result.ok);
-    assert.deepEqual(result.value.config.codex.models, ["gpt-5.6-sol"]);
-  });
-
-  it("an explicit codex.models list is authoritative and narrowing", () => {
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ codex: { models: ["gpt-5.5"] } }),
-    });
-    assert.ok(result.ok);
-    assert.deepEqual(result.value.config.codex.models, ["gpt-5.5"]);
-  });
-
-  it("an unknown model id in codex.models passes through verbatim (forward-compat)", () => {
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ codex: { models: ["custom-forward-compat-model"] } }),
-    });
-    assert.ok(result.ok);
-    assert.deepEqual(result.value.config.codex.models, ["custom-forward-compat-model"]);
-  });
-
-  it("codex.aliases overrides the derived family alias during normalization", () => {
-    // "sol" would normally expand to "gpt-5.6-sol" but the override redirects it
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ codex: { models: ["sol"], aliases: { "sol": "gpt-5.6-terra" } } }),
-    });
-    assert.ok(result.ok);
-    assert.deepEqual(result.value.config.codex.models, ["gpt-5.6-terra"]);
-  });
-
-  it("an override target outside the registry is included in the routable set when codex.models is absent", () => {
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ codex: { aliases: { "fast": "custom-forward-compat-model" } } }),
-    });
-    assert.ok(result.ok);
-    assert.ok(
-      result.value.config.codex.models.includes("custom-forward-compat-model"),
-      "pressure valve: override target must be routable when models is absent",
-    );
-  });
-
   it("config.codex.aliases is stored verbatim after validation", () => {
     const result = loadConfig({
       configPath: "x",
-      readFile: () => JSON.stringify({ codex: { aliases: { "fast": "gpt-5.6-sol" } } }),
+      readFile: () => JSON.stringify({ providers: { codex: { aliases: { "fast": "gpt-5.6-sol" } } } }),
     });
     assert.ok(result.ok);
     assert.deepEqual(result.value.config.codex.aliases, { "fast": "gpt-5.6-sol" });
@@ -228,7 +193,7 @@ describe("loadConfig", () => {
   it("rejects codex.aliases with a key matching 'claude-*' — would misroute Anthropic traffic", () => {
     const result = loadConfig({
       configPath: "x",
-      readFile: () => JSON.stringify({ codex: { aliases: { "claude-sonnet-4-5": "gpt-5.6-sol" } } }),
+      readFile: () => JSON.stringify({ providers: { codex: { aliases: { "claude-sonnet-4-5": "gpt-5.6-sol" } } } }),
     });
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "translate");
@@ -239,7 +204,7 @@ describe("loadConfig", () => {
     for (const tierWord of ["sonnet", "opus", "haiku", "inherit"]) {
       const result = loadConfig({
         configPath: "x",
-        readFile: () => JSON.stringify({ codex: { aliases: { [tierWord]: "gpt-5.6-sol" } } }),
+        readFile: () => JSON.stringify({ providers: { codex: { aliases: { [tierWord]: "gpt-5.6-sol" } } } }),
       });
       assert.ok(!result.ok, `should reject tier word '${tierWord}'`);
       assert.equal(result.error.kind, "translate");
@@ -247,12 +212,9 @@ describe("loadConfig", () => {
   });
 
   it("rejects a codex.aliases TARGET matching 'claude-*' — the target would become routable", () => {
-    // The pressure valve adds every alias target to codex.models. A claude-* target would
-    // therefore be matched by decideRoute's exact-membership check and send the entire
-    // main Claude Code thread to the Codex leg.
     const result = loadConfig({
       configPath: "x",
-      readFile: () => JSON.stringify({ codex: { aliases: { fast: "claude-sonnet-4-5" } } }),
+      readFile: () => JSON.stringify({ providers: { codex: { aliases: { fast: "claude-sonnet-4-5" } } } }),
     });
     assert.ok(!result.ok, "claude-* alias target must be rejected");
     assert.equal(result.error.kind, "translate");
@@ -263,116 +225,26 @@ describe("loadConfig", () => {
     for (const tierWord of ["sonnet", "opus", "haiku", "inherit"]) {
       const result = loadConfig({
         configPath: "x",
-        readFile: () => JSON.stringify({ codex: { aliases: { fast: tierWord } } }),
+        readFile: () => JSON.stringify({ providers: { codex: { aliases: { fast: tierWord } } } }),
       });
       assert.ok(!result.ok, `should reject tier-word target '${tierWord}'`);
       assert.equal(result.error.kind, "translate");
     }
   });
 
-  it("never makes an Anthropic model name routable through codex.aliases", () => {
-    // Behavioural backstop for the two rejection tests above: whatever the mechanism,
-    // no accepted config may put a claude-* name into the routable set.
-    for (const aliases of [{ fast: "claude-sonnet-4-5" }, { "claude-sonnet-4-5": "gpt-5.6-sol" }]) {
-      const result = loadConfig({ configPath: "x", readFile: () => JSON.stringify({ codex: { aliases } }) });
-      if (result.ok) {
-        assert.ok(
-          !result.value.config.codex.models.some((m) => /^claude-/i.test(m)),
-          `claude-* must never reach codex.models (aliases: ${JSON.stringify(aliases)})`,
-        );
-      }
-    }
-  });
-
-  it("a codex.aliases key that shadows a real registry id does not un-route that id", () => {
-    // Exact ids win on both sides of the pipeline: gpt-5.5 stays routable as itself
-    // rather than being rewritten to the alias target during normalization.
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () =>
-        JSON.stringify({ codex: { models: ["gpt-5.5"], aliases: { "gpt-5.5": "gpt-5.6-sol" } } }),
-    });
-    assert.ok(result.ok);
-    assert.deepEqual(result.value.config.codex.models, ["gpt-5.5"]);
-  });
-
-  it("rejects an empty codex.models array — would silently disable all Codex routing", () => {
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ codex: { models: [] } }),
-    });
-    assert.ok(!result.ok);
-    assert.equal(result.error.kind, "translate");
-  });
-
-  it("rejects a codex.models entry matching 'claude-*' — would silently misroute Anthropic traffic to Codex", () => {
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ codex: { models: ["claude-sonnet-4-5"] } }),
-    });
-    assert.ok(!result.ok, "claude-* entry in codex.models must be rejected");
-    assert.equal(result.error.kind, "translate");
-    assert.match(result.error.message, /claude/i);
-  });
-
-  it("rejects codex.models entries matching Anthropic tier words (sonnet, opus, haiku, inherit)", () => {
-    for (const tierWord of ["sonnet", "opus", "haiku", "inherit"]) {
-      const result = loadConfig({
-        configPath: "x",
-        readFile: () => JSON.stringify({ codex: { models: [tierWord] } }),
-      });
-      assert.ok(!result.ok, `should reject tier word '${tierWord}' in codex.models`);
-      assert.equal(result.error.kind, "translate");
-    }
-  });
-
-  it("allows a custom non-Anthropic id like gpt-9-experimental in codex.models (forward-compat)", () => {
-    // Unknown gpt-style ids must pass through verbatim — ADR-005 forward-compat property.
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ codex: { models: ["gpt-9-experimental"] } }),
-    });
-    assert.ok(result.ok, "custom non-Anthropic id must not be rejected");
-    assert.deepEqual(result.value.config.codex.models, ["gpt-9-experimental"]);
-  });
-
   // -------------------------------------------------------------------------
-  // codexModelsPinned — presence detection for doctor's nudge (Phase C)
+  // codex.models — now derived from registry, not user-configurable
   // -------------------------------------------------------------------------
 
-  it("codexModelsPinned is false when codex.models is not explicitly set", () => {
+  it("codex.models is derived from MODEL_REGISTRY (not user-configurable)", () => {
+    // Even if the raw config contains a legacy codex.models field, it is ignored.
+    // codex.models is always the full set of non-retired registry ids.
     const result = loadConfig({ readFile: missingFile, env: {} });
     assert.ok(result.ok);
-    assert.equal(result.value.codexModelsPinned, false);
-  });
-
-  it("codexModelsPinned is true when models explicitly lists a generation-specific id with a family alias", () => {
-    // gpt-5.6-sol has family "sol" — explicitly listing it means the config is pinned
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ codex: { models: ["gpt-5.6-sol", "gpt-5.5"] } }),
-    });
-    assert.ok(result.ok);
-    assert.equal(result.value.codexModelsPinned, true);
-  });
-
-  it("codexModelsPinned is false when models only contains ids without family aliases", () => {
-    // gpt-5.5 has no family — not a pinned generation-specific id
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ codex: { models: ["gpt-5.5"] } }),
-    });
-    assert.ok(result.ok);
-    assert.equal(result.value.codexModelsPinned, false);
-  });
-
-  it("codexModelsPinned is false when models only contains unknown/alias ids", () => {
-    // "sol" is an alias name, not a generation-specific id
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ codex: { models: ["sol"] } }),
-    });
-    assert.ok(result.ok);
-    assert.equal(result.value.codexModelsPinned, false);
+    const expected = MODEL_REGISTRY.filter((e) => e.retired !== true).map((e) => e.id);
+    assert.deepEqual([...result.value.config.codex.models], expected);
+    // Verify the registry contains known ids
+    assert.ok(result.value.config.codex.models.includes("gpt-5.6-sol"));
+    assert.ok(result.value.config.codex.models.includes("gpt-5.5"));
   });
 });

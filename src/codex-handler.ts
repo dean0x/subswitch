@@ -58,6 +58,9 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
   // every existing error message is byte-identical and no pinned test assertions change.
   const providerName = deps.providerName ?? "codex";
   const responsesUrl = `${config.codex.baseUrl.replace(/\/$/, "")}/responses`;
+  const requestTimeoutMs = config.codex.requestTimeoutMs;
+  const streamIdleTimeoutMs = config.codex.streamIdleTimeoutMs;
+  const maxSseEventBytes = config.codex.maxSseEventBytes;
 
   const buildHeaders = (credentials: CodexCredentials, sessionId: string): Record<string, string> => ({
     authorization: `Bearer ${credentials.accessToken}`,
@@ -127,13 +130,13 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
       if (!res.writableFinished) controller.abort();
     };
     res.on("close", onClientClose);
-    const totalTimer = setTimeout(() => controller.abort(), config.limits.requestTimeoutMs);
+    const totalTimer = setTimeout(() => controller.abort(), requestTimeoutMs);
     totalTimer.unref();
 
     let idleTimer: NodeJS.Timeout | undefined;
     const resetIdle = (): void => {
       if (idleTimer !== undefined) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => controller.abort(), config.limits.streamIdleTimeoutMs);
+      idleTimer = setTimeout(() => controller.abort(), streamIdleTimeoutMs);
       idleTimer.unref();
     };
     const cleanup = (): void => {
@@ -203,7 +206,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
       }
 
       const wantStream = translated.value.stream;
-      const parser = createSseParser(config.limits.maxSseEventBytes);
+      const parser = createSseParser(maxSseEventBytes);
       const translator = createAnthropicSseTranslator({
         // Use the canonical model as the fallback for message_start (options.model)
         // so clients see the canonical id even when the upstream omits model in response.created.

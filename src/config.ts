@@ -5,93 +5,205 @@ import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { LogLevel } from "./logger.js";
-import { MODEL_REGISTRY, ALL_MODEL_IDS, normalizeModelList, isReservedAnthropicName } from "./models.js";
+import { MODEL_REGISTRY, isReservedAnthropicName } from "./models.js";
 
 export const DEFAULT_PORT = 4141 as const;
-// Derived from the canonical registry so there is exactly one source of truth.
-// Keep the exported name — src/init.ts:65 and test/unit/init-wizard.test.ts:17 import it.
-export const DEFAULT_CODEX_MODELS = ALL_MODEL_IDS;
 
-const LimitsSchema = z.object({
-  maxBodyBytes: z.number().int().positive().default(32 * 1024 * 1024),
-  connectTimeoutMs: z.number().int().positive().default(10_000),
-  streamIdleTimeoutMs: z.number().int().positive().default(300_000),
-  requestTimeoutMs: z.number().int().positive().default(600_000),
-  pingIntervalMs: z.number().int().positive().default(15_000),
-  maxSseEventBytes: z.number().int().positive().default(4 * 1024 * 1024),
-  maxUpstreamSockets: z.number().int().positive().default(32),
-});
+/**
+ * Default Codex auth file path (tilde-unexpanded).
+ * Exported so callers derive the path via expandHome() rather than
+ * hardcoding join(homedir(), ".codex", "auth.json") independently.
+ */
+export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
 
-const ConfigSchema = z.object({
+// ---------------------------------------------------------------------------
+// Sub-schemas (FileConfig layer)
+// ---------------------------------------------------------------------------
+
+const AnthropicSchema = z
+  .object({
+    baseUrl: z.url().default("https://api.anthropic.com"),
+    /** Connection timeout for all upstream requests to the Anthropic leg. */
+    connectTimeoutMs: z.number().int().positive().default(10_000),
+    /** Stream idle timeout for the Anthropic passthrough. */
+    streamIdleTimeoutMs: z.number().int().positive().default(300_000),
+    /** Maximum sockets in the keep-alive pool for the Anthropic passthrough. */
+    maxUpstreamSockets: z.number().int().positive().default(32),
+  })
+  .prefault({});
+
+const AliasesSchema = z
+  .record(z.string().min(1), z.string().min(1))
+  .refine((aliases) => !Object.keys(aliases).some(isReservedAnthropicName), {
+    message:
+      "alias keys matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",
+  })
+  .refine((aliases) => !Object.values(aliases).some(isReservedAnthropicName), {
+    message:
+      "alias targets matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — the target becomes routable and would silently misroute Anthropic traffic to Codex",
+  })
+  .default({});
+
+const CodexProviderSchema = z
+  .object({
+    baseUrl: z.url().default("https://chatgpt.com/backend-api/codex"),
+    oauthTokenUrl: z.url().default("https://auth.openai.com/oauth/token"),
+    authFile: z.string().min(1).default(DEFAULT_CODEX_AUTH_FILE),
+    // default UA format verified from codex-cli 0.144.6 live capture 2026-07-22;
+    // machine-telemetry (OS/arch/terminal) intentionally omitted — set providers.codex.userAgent
+    // to override (vendor-drift pressure valve).
+    userAgent: z.string().min(1).default("codex_cli_rs/0.144.6"),
+    // codex.aliases maps user-defined alias names to canonical model ids.
+    // Both sides are checked against isReservedAnthropicName (PF-007).
+    aliases: AliasesSchema,
+    reasoningCache: z
+      .object({
+        maxEntries: z.number().int().positive().default(4096),
+        maxBytes: z.number().int().positive().default(64 * 1024 * 1024),
+      })
+      .prefault({}),
+    /** Per-Codex-request total time limit. */
+    requestTimeoutMs: z.number().int().positive().default(600_000),
+    /** Codex stream idle timeout — resets on each SSE data chunk. */
+    streamIdleTimeoutMs: z.number().int().positive().default(300_000),
+    /** Maximum bytes per individual SSE event from the Codex upstream. */
+    maxSseEventBytes: z.number().int().positive().default(4 * 1024 * 1024),
+  })
+  .prefault({});
+
+const ProvidersSchema = z
+  .object({
+    codex: CodexProviderSchema,
+  })
+  .prefault({});
+
+const LimitsSchema = z
+  .object({
+    /** Maximum request body bytes buffered before the Codex routing decision. */
+    maxBodyBytes: z.number().int().positive().default(32 * 1024 * 1024),
+    /** Interval between SSE ping frames sent to clients during long Codex streams. */
+    pingIntervalMs: z.number().int().positive().default(15_000),
+  })
+  .prefault({});
+
+const FileConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).default(DEFAULT_PORT),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
-  anthropic: z
-    .object({
-      baseUrl: z.url().default("https://api.anthropic.com"),
-    })
-    .prefault({}),
-  codex: z
-    .object({
-      baseUrl: z.url().default("https://chatgpt.com/backend-api/codex"),
-      oauthTokenUrl: z.url().default("https://auth.openai.com/oauth/token"),
-      authFile: z.string().min(1).default("~/.codex/auth.json"),
-      // default UA format verified from codex-cli 0.144.6 live capture 2026-07-22;
-      // machine-telemetry (OS/arch/terminal) intentionally omitted — set codex.userAgent
-      // to override (vendor-drift pressure valve).
-      userAgent: z.string().min(1).default("codex_cli_rs/0.144.6"),
-      // codex.aliases maps user-defined alias names to canonical model ids.
-      // Entries override derived family aliases (see src/models.ts makeModelResolver rule 2).
-      //
-      // BOTH sides are checked against isReservedAnthropicName, because either one silently
-      // misroutes the main thread to Codex under the exact-match routing rule (ADR-005):
-      //  - a 'claude-*' / tier-word KEY resolves inbound Anthropic traffic to a Codex id;
-      //  - a 'claude-*' / tier-word TARGET is added to the routable set by
-      //    normalizeModelList's pressure valve, so decideRoute then matches the raw
-      //    Anthropic model id by exact membership and routes it to Codex.
-      aliases: z
-        .record(z.string().min(1), z.string().min(1))
-        .refine((aliases) => !Object.keys(aliases).some(isReservedAnthropicName), {
-          message:
-            "alias keys matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",
-        })
-        .refine((aliases) => !Object.values(aliases).some(isReservedAnthropicName), {
-          message:
-            "alias targets matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — the target becomes routable and would silently misroute Anthropic traffic to Codex",
-        })
-        .default({}),
-      // models: authoritative and narrowing when present; absent = all non-retired registry ids.
-      // min(1): an empty list would silently disable all Codex routing while the ready banner
-      // still prints "routing: → Codex". Reject it explicitly so the user sees a config error.
-      // Thunk default keeps Config["codex"]["models"] typed string[] — no consumer type churn.
-      //
-      // Each entry is checked against isReservedAnthropicName for the same reason alias keys and
-      // targets are — a claude-* or tier-word entry would become routable under the
-      // exact-membership check (ADR-005) and silently misroute the main Claude Code thread.
-      models: z
-        .array(
-          z.string().min(1).refine((m) => !isReservedAnthropicName(m), {
-            message:
-              "codex.models entries matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",
-          }),
-        )
-        .min(1)
-        .default(() => [...ALL_MODEL_IDS]),
-    })
-    .prefault({}),
-  reasoningCache: z
-    .object({
-      maxEntries: z.number().int().positive().default(4096),
-      maxBytes: z.number().int().positive().default(64 * 1024 * 1024),
-    })
-    .prefault({}),
-  limits: LimitsSchema.prefault({}),
+  anthropic: AnthropicSchema,
+  providers: ProvidersSchema,
+  limits: LimitsSchema,
 });
 
-export type Config = z.infer<typeof ConfigSchema>;
-export type Limits = z.infer<typeof LimitsSchema>;
+/** Raw on-disk config shape — what FileConfigSchema.safeParse() produces. */
+export type FileConfig = z.infer<typeof FileConfigSchema>;
 
-const expandHome = (path: string): string =>
+// ---------------------------------------------------------------------------
+// Resolved Config interface (runtime shape)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolved runtime config. Hand-written (NOT z.infer) so:
+ *  - doctor.ts can read config.codex.* without being modified (Phase E constraint).
+ *  - authFile is always tilde-expanded (resolveConfig applies expandHome).
+ *  - codex.models is always derived from MODEL_REGISTRY (not user-configurable).
+ *
+ * Coders note: when Phase F removes config.codex.models and updates doctor.ts,
+ * the codex.models field can be removed here. For now it is a derived field that
+ * keeps doctor running.
+ */
+export interface Config {
+  readonly port: number;
+  readonly logLevel: LogLevel;
+  readonly anthropic: {
+    readonly baseUrl: string;
+    readonly connectTimeoutMs: number;
+    readonly streamIdleTimeoutMs: number;
+    readonly maxUpstreamSockets: number;
+  };
+  /**
+   * Codex provider settings. Doctor reads these fields directly — do not remove
+   * or rename without updating src/doctor.ts (Phase F task).
+   */
+  readonly codex: {
+    readonly baseUrl: string;
+    readonly oauthTokenUrl: string;
+    /** Tilde-expanded at resolveConfig time. */
+    readonly authFile: string;
+    readonly userAgent: string;
+    readonly aliases: Readonly<Record<string, string>>;
+    /**
+     * All non-retired Codex model ids in registry order.
+     * Derived from MODEL_REGISTRY — never from user config.
+     * Doctor displays this as the routable set. Phase F will update doctor.ts
+     * to read from the routing table instead and this field will be removed.
+     */
+    readonly models: readonly string[];
+    readonly reasoningCache: {
+      readonly maxEntries: number;
+      readonly maxBytes: number;
+    };
+    readonly requestTimeoutMs: number;
+    readonly streamIdleTimeoutMs: number;
+    readonly maxSseEventBytes: number;
+  };
+  readonly limits: {
+    readonly maxBodyBytes: number;
+    readonly pingIntervalMs: number;
+  };
+}
+
+export type Limits = Config["limits"];
+
+// ---------------------------------------------------------------------------
+// Path helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Expand a leading `~` or `~/` to the user's home directory.
+ * Exported for use in init.ts (collectPreconditionWarnings auth path).
+ */
+export const expandHome = (path: string): string =>
   path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+
+// ---------------------------------------------------------------------------
+// resolveConfig — FileConfig → Config transformation
+// ---------------------------------------------------------------------------
+
+/**
+ * Transform a parsed FileConfig into the runtime Config.
+ *
+ * Pure: no I/O. All effectful operations (file reads, env access) happen in loadConfig.
+ *
+ * Maps providers.codex.* → codex.* for doctor.ts compatibility.
+ * Expands tilde in authFile.
+ * Derives codex.models from MODEL_REGISTRY (routing is now registry-based).
+ */
+export const resolveConfig = (file: FileConfig): Config => {
+  const codex = file.providers.codex;
+  return {
+    port: file.port,
+    logLevel: file.logLevel,
+    anthropic: file.anthropic,
+    codex: {
+      baseUrl: codex.baseUrl,
+      oauthTokenUrl: codex.oauthTokenUrl,
+      authFile: expandHome(codex.authFile),
+      userAgent: codex.userAgent,
+      aliases: codex.aliases,
+      // Derived from registry — not configurable. Routing is registry-based (ADR-005).
+      models: MODEL_REGISTRY.filter((e) => e.retired !== true).map((e) => e.id),
+      reasoningCache: codex.reasoningCache,
+      requestTimeoutMs: codex.requestTimeoutMs,
+      streamIdleTimeoutMs: codex.streamIdleTimeoutMs,
+      maxSseEventBytes: codex.maxSseEventBytes,
+    },
+    limits: file.limits,
+  };
+};
+
+// ---------------------------------------------------------------------------
+// loadConfig — discovers, reads, parses, and resolves the config file
+// ---------------------------------------------------------------------------
 
 export interface LoadConfigOptions {
   /** Explicit config file path. Takes precedence over SUBSWITCH_CONFIG and the implicit cwd default. */
@@ -106,13 +218,6 @@ export interface LoadConfigResult {
   readonly config: Config;
   readonly configPath: string;
   readonly fileFound: boolean;
-  /**
-   * True when codex.models was explicitly provided in the config file AND it contains
-   * at least one generation-specific id (e.g. "gpt-5.6-sol") whose family has a
-   * floating alias ("sol"). Computed from raw JSON before normalization — only
-   * computable here. Consumed by doctor (Phase C) to nudge toward aliases.
-   */
-  readonly codexModelsPinned: boolean;
 }
 
 /**
@@ -175,13 +280,8 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     }
   }
 
-  // Step 3: extract raw codex.models BEFORE schema parse.
-  // codexModelsPinned is only computable here — after normalization the distinction
-  // between "absent" and "present with defaults" is lost.
-  const rawCodexModels = extractRawCodexModels(raw);
-  const codexModelsPinned = computeCodexModelsPinned(rawCodexModels);
-
-  const parsed = ConfigSchema.safeParse(raw);
+  // Step 3: validate against FileConfigSchema and resolve to runtime Config.
+  const parsed = FileConfigSchema.safeParse(raw);
   if (!parsed.success) {
     return err({
       kind: "translate",
@@ -189,56 +289,11 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     });
   }
 
-  const config = parsed.data;
-
-  // Step 4: normalize codex.models through the alias table.
-  // rawCodexModels is undefined when codex.models was absent → normalizeModelList adds all
-  // non-retired registry ids plus any override targets (pressure valve).
-  // rawCodexModels is present → expands aliases, preserves unknowns verbatim.
-  const normalizedModels = normalizeModelList(rawCodexModels, config.codex.aliases);
-
   return ok({
-    config: {
-      ...config,
-      codex: {
-        ...config.codex,
-        authFile: expandHome(config.codex.authFile),
-        models: [...normalizedModels],
-      },
-    },
+    config: resolveConfig(parsed.data),
     configPath: resolvedPath,
     fileFound,
-    codexModelsPinned,
   });
 };
 
 export const logLevelOf = (config: Config): LogLevel => config.logLevel;
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Extract the raw codex.models array from unparsed JSON before schema normalization.
- * Returns undefined when codex.models is absent from the JSON — this distinguishes
- * "absent → use all defaults" from "present with values → authoritative and narrowing".
- */
-const extractRawCodexModels = (raw: unknown): readonly string[] | undefined => {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
-  const rawObj = raw as Record<string, unknown>;
-  const codex = rawObj["codex"];
-  if (typeof codex !== "object" || codex === null || Array.isArray(codex)) return undefined;
-  const codexObj = codex as Record<string, unknown>;
-  const models = codexObj["models"];
-  if (!Array.isArray(models)) return undefined;
-  return (models as unknown[]).filter((m): m is string => typeof m === "string");
-};
-
-/**
- * True when models were explicitly listed AND at least one entry is a generation-specific
- * id (e.g. "gpt-5.6-sol") whose family has a floating alias ("sol").
- * Used by doctor (Phase C) to nudge users toward using family aliases instead of pinning.
- */
-const computeCodexModelsPinned = (rawModels: readonly string[] | undefined): boolean =>
-  rawModels !== undefined &&
-  rawModels.some((m) => MODEL_REGISTRY.some((e) => e.id === m && e.family !== undefined));
