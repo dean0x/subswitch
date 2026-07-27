@@ -14,8 +14,21 @@ import {
   type FakeUpstream,
   type UpstreamHandler,
 } from "./fake-upstreams.js";
+import { PROVIDER_IDS } from "../../src/models.js";
 
 const FAR_FUTURE_MS = Date.now() + 24 * 3600 * 1000;
+
+/**
+ * Resolved provider display name for the leg this rig wires.
+ *
+ * `createCodexProvider` (src/server.ts) does not pass `deps.providerName`, so
+ * `codex-handler`'s `?? "codex"` default applies and the rendered name equals the
+ * provider id. Deriving it from `PROVIDER_IDS` rather than pinning the literal
+ * "codex" keeps these assertions honest: they are correct today only because
+ * `PROVIDER_IDS.length === 1`, and a literal would silently keep passing against
+ * the wrong name the moment this leg starts carrying a real provider name.
+ */
+const codexProviderName = PROVIDER_IDS[0];
 
 const loadSse = (name: string): string => readFileSync(new URL(`../fixtures/response/${name}`, import.meta.url), "utf8");
 const loadRequest = (name: string): string => readFileSync(new URL(`../fixtures/request/${name}`, import.meta.url), "utf8");
@@ -563,7 +576,7 @@ describe("codex leg", () => {
     assert.equal(response.status, 502);
     const body = (await response.json()) as { error: { type: string; message: string } };
     assert.equal(body.error.type, "api_error");
-    assert.match(body.error.message, /codex stream interrupted/);
+    assert.equal(body.error.message, `${codexProviderName} stream interrupted`);
   });
 
   it("aggregation !ok maps to 502 (no message_start in stream)", async () => {
@@ -594,7 +607,10 @@ describe("codex leg", () => {
     const text = await response.text();
     assert.match(text, /event: message_start/);
     assert.match(text, /event: error/);
-    assert.match(text, /codex stream interrupted/);
+    assert.ok(
+      text.includes(`${codexProviderName} stream interrupted`),
+      `error frame must name the resolved provider; got: ${text}`,
+    );
     assert.equal(rig.codex.requests.length, 1, "mid-stream failures must not be retried");
   });
 

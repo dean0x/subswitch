@@ -26,7 +26,7 @@ interface TranslateRun {
   readonly reasoningPuts: { callId: string; items: readonly unknown[] }[];
 }
 
-const translate = async (sse: string): Promise<TranslateRun> => {
+const translate = async (sse: string, options: { readonly providerName?: string } = {}): Promise<TranslateRun> => {
   const frames: string[] = [];
   const reasoningPuts: TranslateRun["reasoningPuts"] = [];
   await pipeline(
@@ -36,6 +36,9 @@ const translate = async (sse: string): Promise<TranslateRun> => {
       model: "gpt-5.5",
       logger: noopLogger,
       onReasoningItems: (callId, items) => reasoningPuts.push({ callId, items }),
+      // Omitted (not passed as undefined) when absent so the translator's own
+      // `?? "codex"` default is what the default-provider tests exercise.
+      ...(options.providerName !== undefined ? { providerName: options.providerName } : {}),
     }),
     async (source) => {
       for await (const frame of source) frames.push(String(frame));
@@ -48,6 +51,13 @@ const frameTypes = (frames: readonly string[]): string[] =>
   frames.map((frame) => (JSON.parse(frame.split("\n")[1]!.slice(6)) as { type: string }).type);
 
 const frameData = (frame: string): Record<string, unknown> => JSON.parse(frame.split("\n")[1]!.slice(6));
+
+/** Client-visible message carried by the stream's error frame, or undefined if there is none. */
+const errorFrameMessage = (frames: readonly string[]): string | undefined => {
+  const errorFrame = frames.find((f) => frameData(f)["type"] === "error");
+  if (errorFrame === undefined) return undefined;
+  return (frameData(errorFrame)["error"] as Record<string, unknown>)["message"] as string;
+};
 
 describe("createSseParser", () => {
   it("parses events split across arbitrary chunk boundaries", async () => {
@@ -84,19 +94,34 @@ describe("createSseParser", () => {
   });
 
   it("parses correctly when the \\r\\n\\r\\n separator straddles a chunk boundary", async () => {
-    // SSE event body, split so the separator (\r\n\r\n) falls across two chunks.
+    // SSE events split so the FIRST separator (\r\n\r\n) falls across two chunks.
     // Before the O(S²/C) fix, scanning always restarted from 0 — this test verifies
     // that the scanStart offset does not skip any boundary straddling the split point.
-    const event = "event: test\r\ndata: hello\r\n";
-    const sep = "\r\n";
-    const full = event + sep;
-    // Split at index (event.length + 1): first chunk ends with \r\n\r, second starts with \n
-    const splitAt = event.length + 1;
+    // Three bytes of slack (prevLen - 3) is exactly what a 4-byte separator needs to
+    // be found when it begins in the previous chunk; remove the slack and it is missed.
+    //
+    // The SECOND event is load-bearing, not decoration. With a single event, flush()
+    // re-parses the whole leftover buffer at EOF and recovers it even when the scan
+    // never found the boundary at all — so a one-event fixture passes against a parser
+    // whose boundary search is entirely broken. With two events, a missed boundary
+    // makes flush() fold both into one record (eventName overwritten, data lines
+    // concatenated), and the count assertion fires.
+    const first = "event: first\r\ndata: one\r\n";
+    const second = "event: second\r\ndata: two\r\n";
+    const full = `${first}\r\n${second}\r\n`;
+    // Split one byte into the first separator: chunk 1 ends with \r\n\r, chunk 2 starts with \n.
+    const splitAt = first.length + 1;
     const chunks = [Buffer.from(full.slice(0, splitAt)), Buffer.from(full.slice(splitAt))];
     const events = await parseSse(chunks);
-    assert.equal(events.length, 1, "boundary straddling a chunk boundary must be found");
-    assert.equal(events[0]!.event, "test");
-    assert.equal(events[0]!.data, "hello");
+    assert.equal(
+      events.length,
+      2,
+      "the straddled boundary must be found by the scan — one event here means flush() folded both together",
+    );
+    assert.equal(events[0]!.event, "first");
+    assert.equal(events[0]!.data, "one");
+    assert.equal(events[1]!.event, "second");
+    assert.equal(events[1]!.data, "two");
   });
 
   it("produces all events when a large event body arrives in many small chunks", async () => {
@@ -599,5 +624,118 @@ describe("aggregateFrames", () => {
     assert.equal(result.value.kind, "message");
     const msg = result.value.kind === "message" ? result.value.message : {};
     assert.deepEqual(msg["content"], [{ type: "tool_use", id: "call_y", name: "no_args", input: {} }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider-name parameterization.
+//
+// Four client-visible fallback messages on this leg name the provider they came
+// from. Each is pinned TWICE against the same input: once under the default —
+// which must stay byte-identical "codex …" — and once under a non-default name.
+//
+// The pair is what makes the assertions falsifiable in both directions:
+//   - re-hardcoding "codex" into a message body fails ONLY the non-default case;
+//   - moving the hardcode into the `?? "codex"` / `providerName = "codex"`
+//     DEFAULT fails ONLY the default case.
+// A single-sided test would pass under one of those two regressions.
+//
+// Assertions are on the fully rendered message, not on the interpolation.
+// ---------------------------------------------------------------------------
+
+describe("provider-name parameterization", () => {
+  // (2) flush() — stream opened, block announced, but EOF arrived with no delta
+  // and no terminal lifecycle event.
+  const truncatedNoContentSse = [
+    "event: response.created",
+    'data: {"type":"response.created","response":{"id":"r_pn","model":"gpt-5.5","status":"in_progress"}}',
+    "",
+    "event: response.output_item.added",
+    'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m_pn","role":"assistant"}}',
+    "",
+    "",
+  ].join("\n");
+
+  // (3) aggregateFrames — tool_use block whose partial_json is non-empty but truncated.
+  const unparseableToolUseFrames = [
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_pn","name":"write_file","input":{}}}\n\n',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"/etc/hosts\\",\\"content\\":\\"DAN"}}\n\n',
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+  ];
+
+  // (4) aggregateFrames — one block carrying text that never received its stop.
+  const unclosedBlockFrames = [
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"orphaned"}}\n\n',
+  ];
+
+  // --- (1) reconcileOpenBlocks: every delta dropped, no block ever got content ---
+
+  it("names the default provider when all content deltas matched no block", async () => {
+    const { frames } = await translate(loadSse("delta-id-mismatch.sse"));
+    assert.equal(
+      errorFrameMessage(frames),
+      "codex stream dropped content deltas that matched no content block",
+      "the Codex leg's rendered message must stay byte-identical",
+    );
+  });
+
+  it("names a non-default provider when all content deltas matched no block", async () => {
+    const { frames } = await translate(loadSse("delta-id-mismatch.sse"), { providerName: "kimi" });
+    assert.equal(errorFrameMessage(frames), "kimi stream dropped content deltas that matched no content block");
+  });
+
+  // --- (2) flush(): truncated stream with no recoverable content ---
+
+  it("names the default provider when the stream ends with no terminal event or content", async () => {
+    const { frames } = await translate(truncatedNoContentSse);
+    assert.equal(
+      errorFrameMessage(frames),
+      "codex stream ended without a terminal event or recoverable content",
+      "the Codex leg's rendered message must stay byte-identical",
+    );
+  });
+
+  it("names a non-default provider when the stream ends with no terminal event or content", async () => {
+    const { frames } = await translate(truncatedNoContentSse, { providerName: "kimi" });
+    assert.equal(errorFrameMessage(frames), "kimi stream ended without a terminal event or recoverable content");
+  });
+
+  // --- (3) aggregateFrames: unparseable tool_use arguments ---
+
+  it("names the default provider when tool_use arguments are unparseable", () => {
+    const result = aggregateFrames(unparseableToolUseFrames);
+    assert.ok(!result.ok);
+    assert.equal(
+      result.error.message,
+      "codex stream ended with unparseable tool_use arguments",
+      "the Codex leg's rendered message must stay byte-identical",
+    );
+  });
+
+  it("names a non-default provider when tool_use arguments are unparseable", () => {
+    const result = aggregateFrames(unparseableToolUseFrames, "kimi");
+    assert.ok(!result.ok);
+    assert.equal(result.error.message, "kimi stream ended with unparseable tool_use arguments");
+  });
+
+  // --- (4) aggregateFrames: unclosed content blocks that carry content ---
+
+  it("names the default provider when a content block carrying text was never closed", () => {
+    const result = aggregateFrames(unclosedBlockFrames);
+    assert.ok(!result.ok);
+    assert.equal(
+      result.error.message,
+      "codex stream ended with 1 unclosed content block(s)",
+      "the Codex leg's rendered message must stay byte-identical",
+    );
+  });
+
+  it("names a non-default provider when a content block carrying text was never closed", () => {
+    const result = aggregateFrames(unclosedBlockFrames, "kimi");
+    assert.ok(!result.ok);
+    assert.equal(result.error.message, "kimi stream ended with 1 unclosed content block(s)");
   });
 });
