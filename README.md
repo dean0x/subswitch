@@ -21,9 +21,9 @@ your utility calls, everything moves at once.
 
 subswitch is the first proxy that splits traffic **per subagent, by model name**:
 
-- Requests whose `model` resolves to a canonical id in your `codex.models` list
-  (by exact match, family alias, or custom override) are translated and sent to
-  the Codex backend.
+- Requests whose `model` resolves to a canonical id in the built-in model
+  registry (by exact match, family alias, or custom alias) are translated and
+  sent to the Codex backend.
 - Everything else — the main agent, background utility calls (token counting,
   context management), all non-matching models — is relayed to Anthropic as
   **verbatim bytes**, credentials and all.
@@ -34,16 +34,16 @@ without giving up either subscription and without touching an API key.
 
 ```
 Claude Code ──► subswitch (127.0.0.1:4141)
-                  ├─ model ∈ codex.models ──► chatgpt.com Codex backend
+                  ├─ model ∈ registry ─────► chatgpt.com Codex backend
                   │    (Anthropic Messages ⇄ OpenAI Responses translation,
                   │     ~/.codex/auth.json OAuth, reasoning round-trip cache)
                   └─ everything else ──────► api.anthropic.com
                        (verbatim byte relay, claude.ai OAuth untouched)
 ```
 
-Routing is by the request body's `model` field, resolved against `codex.models`
-(by exact id, family alias, or custom alias override). Unresolvable models pass
-through to Anthropic; non-matching utility traffic is never misrouted.
+Routing is by the request body's `model` field, resolved against the built-in
+model registry (by exact id, family alias, or custom alias). Unresolvable models
+pass through to Anthropic; non-matching utility traffic is never misrouted.
 
 ## Requirements
 
@@ -113,7 +113,8 @@ Commands:
   serve     Start the proxy (default command)
   doctor    Check config, codex auth, and network reachability
   init      Interactive setup — writes config + wires Claude Code
-  models    Show effective alias table (registry × config × codex.models)
+  models    Show effective alias table (registry × aliases)
+            --json   Output model registry as JSON (no color, no TTY check)
 
 Flags (global):
   -h, --help       Show this help message
@@ -128,8 +129,6 @@ Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
       --dry-run              Show what would be written; writes nothing
       --port <n>             Proxy port (default: 4141)
-      --codex-model <name>   Include this Codex model (repeatable)
-      --codex-models <csv>   Comma-separated list of Codex models
       --settings-target <t>  "local" (.claude/settings.local.json, default)
                              or "shared" (.claude/settings.json)
 
@@ -140,7 +139,7 @@ Examples:
   subswitch init --yes                 # non-interactive with defaults
   subswitch init --dry-run             # preview what would be written
   subswitch doctor                     # check config + auth health
-  subswitch models                     # show alias table (registry × config × codex.models)
+  subswitch models                     # show alias table (registry × aliases)
 
 Environment:
   NO_COLOR      Disable color output (also respected as standard)
@@ -162,8 +161,6 @@ Environment:
 | unknown command or flag | always | 1 |
 
 `doctor` exits 1 whenever any preflight check fails — use it as a gate in scripts. `init` without `--yes` refuses to write anything when stdin is not a TTY (e.g. in CI) and exits 1 immediately with no filesystem side effects.
-
-**Model flag merging** (`--codex-model` and `--codex-models`): the two flags are additive — use `--codex-model` multiple times to add individual models and/or `--codex-models` to pass a comma-separated list; the results are combined and deduplicated. When `--yes` or the wizard confirms, the merged set becomes `codex.models` in the written config.
 
 ### Advanced: manual setup
 
@@ -215,12 +212,11 @@ The config file is located by the following precedence (highest wins):
 1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
 2. `subswitch.config.json` in the current working directory — silently uses defaults if absent
 
-The routing knob that matters most is **`codex.models`** — the set of canonical
-model ids that get sent to Codex (everything else passes through to Anthropic).
-When the key is **omitted** (the recommended default), subswitch routes all models
-in its built-in registry: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
-`gpt-5.5`. Provide an explicit list only when you want to narrow routing to a
-specific subset.
+The routable set is the **built-in model registry** — `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.5`. It is not configurable: routing
+follows the registry so a new model becomes available on upgrade with no config
+edit, and everything outside it passes through to Anthropic. Run
+`subswitch models --json` for the machine-readable registry.
 
 **Family aliases** (`sol`, `terra`, `luna`) let you write a model name that
 auto-tracks the latest generation in that family — `model: sol` always resolves
@@ -228,22 +224,19 @@ to whichever `gpt-5.6-sol` (or future `gpt-5.7-sol`) generation is in the regist
 without any config change. Exact canonical ids (`gpt-5.6-sol`) are also accepted
 and resolve to themselves. Run `subswitch models` to see the current alias table.
 
-An exact model id always wins over an alias, so a `codex.aliases` entry can never
-hijack a real model name. Neither side of a `codex.aliases` entry may be an
+An exact model id always wins over an alias, so a `providers.codex.aliases` entry
+can never hijack a real model name. Neither side of an alias entry may be an
 Anthropic model name (`claude-*`, `sonnet`, `opus`, `haiku`, `inherit`) — such a
-config is rejected at load, because either side would route your main agent's
-traffic to Codex. An empty `codex.models` list is rejected for the same reason:
-it would silently disable Codex routing while the ready banner still claimed it.
-
-New knobs added in this release:
+config is rejected at load, because either the key or the target would route your
+main agent's traffic to Codex.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `codex.aliases` | `{}` | Custom alias overrides — map a short name to a canonical model id |
-| `codex.models` | _(all registry ids)_ | Narrow routing to a specific subset; omit this key to float with the registry |
-| `reasoningCache.maxEntries` | `4096` | Maximum number of reasoning cache LRU entries |
-| `reasoningCache.maxBytes` | `67108864` (64 MiB) | Maximum total byte footprint of the reasoning cache |
-| `limits.maxUpstreamSockets` | `32` | Maximum sockets in the Anthropic keep-alive connection pool |
+| `providers.codex.aliases` | `{}` | Custom alias overrides — map a short name to a canonical model id |
+| `providers.codex.reasoningCache.maxEntries` | `4096` | Maximum number of reasoning cache LRU entries |
+| `providers.codex.reasoningCache.maxBytes` | `67108864` (64 MiB) | Maximum total byte footprint of the reasoning cache |
+| `anthropic.maxUpstreamSockets` | `32` | Maximum sockets in the Anthropic keep-alive connection pool |
+| `limits.maxConcurrentRequests` | `32` | In-flight request ceiling; further requests get a 503 |
 
 ## How the Codex leg works
 

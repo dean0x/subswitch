@@ -12,7 +12,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, readdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -107,6 +107,29 @@ describe("CLI --help", () => {
     const result = await runCli(["--help"]);
     assert.equal(result.exitCode, 0);
     assert.ok(result.stdout.includes("models"), "help output must mention the models command");
+  });
+
+  // The README's CLI reference block is the published contract for these flags.
+  // Substring checks let it drift silently once already — it documented
+  // --codex-model/--codex-models for a release after both were deleted.
+  it("--help output is byte-identical to the README CLI reference block", async () => {
+    const result = await runCli(["--help"]);
+    assert.equal(result.exitCode, 0);
+
+    const readme = await readFile(new URL("../../README.md", import.meta.url), "utf8");
+    const marker = "subswitch — local subscription-routing proxy for Claude Code";
+    const start = readme.indexOf("```\n" + marker);
+    assert.ok(start >= 0, "README must contain a fenced CLI reference block");
+    const bodyStart = start + 4;
+    const end = readme.indexOf("```", bodyStart);
+    assert.ok(end > bodyStart, "README CLI reference block must be closed");
+
+    const readmeBlock = readme.slice(bodyStart, end).trimEnd();
+    assert.equal(
+      result.stdout.trimEnd(),
+      readmeBlock,
+      "src/cli.ts USAGE and the README CLI reference block must stay byte-identical",
+    );
   });
 });
 

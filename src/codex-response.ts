@@ -46,9 +46,19 @@ export const createSseParser = (maxEventBytes: number): Transform => {
       buffer += decoder.write(chunk);
       // Only scan from (prevLen - 3) on the first search: a 4-byte separator
       // (\r\n\r\n) cannot begin earlier, so any boundary in the already-scanned
-      // prefix was consumed in the previous chunk. This makes the search O(new
-      // bytes) rather than O(total buffer), fixing O(S²/C) complexity for large
-      // streams with infrequent events (e.g. a single 4 MiB reasoning block).
+      // prefix was consumed in the previous chunk. A newly-completed match must
+      // include at least one new byte, so prevLen - (4 - 1) is the earliest it can start.
+      //
+      // This bounds the REGEX work to O(new bytes), but the overall cost is still
+      // quadratic in stream size: `buffer += …` builds a cons-string and `.slice()`
+      // forces V8 to flatten it, an O(total buffer) memcpy per chunk. Measured with
+      // 8 KiB chunks and a single event: 37ms @2MiB, 138ms @4MiB, 557ms @8MiB —
+      // ~3.2x faster than scanning the whole buffer, but the same growth curve.
+      // Going genuinely linear means not accumulating into one string: keep the
+      // chunks in an array plus a 3-char carry tail, search only carry+chunk, and
+      // join on the rare chunk that completes an event (measured 16ms @8MiB).
+      // Deliberately not done here — this parser's frame boundaries are pinned by
+      // exhaustive split tests and a rewrite belongs in its own change.
       const scanStart = Math.max(0, prevLen - 3);
       let rel = buffer.slice(scanStart).search(/\r?\n\r?\n/);
       let boundary = rel === -1 ? -1 : scanStart + rel;
@@ -100,9 +110,8 @@ export interface TranslatorOptions {
   readonly providerName?: string;
   /**
    * Fallback message id placed in the `message_start` frame when the upstream
-   * response does not provide one. Defaults to `"msg_codex"` for the Codex leg.
-   * A second provider should pass its own prefix (e.g. `"msg_kimi"`) so clients
-   * see a provider-appropriate id when the upstream omits it.
+   * response does not provide one. Defaults to `msg_${providerName}`, i.e.
+   * `"msg_codex"` for the Codex leg — set this only to override that derivation.
    */
   readonly messageIdFallback?: string;
 }
@@ -136,7 +145,10 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   // Resolve provider-specific display values once at construction time (not per-chunk)
   // so the hot streaming path stays monomorphic. [preserves performance invariant]
   const providerName = options.providerName ?? "codex";
-  const msgIdFallback = options.messageIdFallback ?? "msg_codex";
+  // Derived from providerName, not defaulted independently: a handler constructed
+  // with providerName "kimi" previously said "kimi stream error" but still emitted
+  // id "msg_codex". Codex still resolves to "msg_codex", byte-identical.
+  const msgIdFallback = options.messageIdFallback ?? `msg_${providerName}`;
 
   const translator = new Transform({
     objectMode: true,

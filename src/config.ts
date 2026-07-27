@@ -32,8 +32,11 @@ const AnthropicSchema = z
   })
   .prefault({});
 
+// Both sides are bounded to the same 200 chars as ModelPeekSchema's `model`: an
+// alias target flows into the outbound request body and the `route` log field, so
+// an unbounded one would be a config-side hole in a limit the request side enforces.
 const AliasesSchema = z
-  .record(z.string().min(1), z.string().min(1))
+  .record(z.string().min(1).max(200), z.string().min(1).max(200))
   .refine((aliases) => !Object.keys(aliases).some(isReservedAnthropicName), {
     message:
       "alias keys matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",

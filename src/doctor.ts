@@ -407,48 +407,46 @@ export const runDoctor = async (
     const label = firstAgentFinding ? "agent model:" : "";
     firstAgentFinding = false;
 
+    // Severity travels with the finding, so this renderer never re-derives it.
+    if (finding.severity === "fail") failures++;
+    const tag = finding.severity === "fail" ? failStr("FAIL") : pc.dim("info");
+    const where = `${finding.file}: model "${finding.model}"`;
+
     switch (finding.kind) {
       case "unresolvable":
-        failures++;
-        io.write(
-          row(label, failStr(`FAIL`) + ` ${finding.file}: model "${finding.model}" is not a known id or alias`),
-        );
+        io.write(row(label, `${tag} ${where} is not a known id or alias`));
         break;
 
       case "ambiguous":
-        failures++;
         io.write(
-          row(label, failStr(`FAIL`) + ` ${finding.file}: model "${finding.model}" is ambiguous — claimed by: ${(finding.providers ?? []).join(", ")} — qualify with provider:name`),
+          row(label, `${tag} ${where} is ambiguous — claimed by: ${finding.providers.join(", ")} — qualify with provider:name`),
         );
         break;
 
       case "unknown_provider":
-        failures++;
-        io.write(
-          row(label, failStr(`FAIL`) + ` ${finding.file}: model "${finding.model}" — unknown provider "${finding.qualifier ?? ""}"`),
-        );
+        io.write(row(label, `${tag} ${where} — unknown provider "${finding.qualifier}"`));
         break;
 
       case "retired":
         io.write(
-          row(label, pc.dim(`info`) + ` ${finding.file}: model "${finding.model}" resolves to "${finding.canonical ?? ""}" which is retired — switch to an active model`),
+          row(label, `${tag} ${where} resolves to "${finding.canonical}" which is retired — switch to an active model`),
         );
         break;
 
       case "provider_unconfigured":
         io.write(
-          row(label, pc.dim(`info`) + ` ${finding.file}: model "${finding.model}" resolves to "${finding.canonical ?? ""}" but its provider is not configured`),
+          row(label, `${tag} ${where} resolves to "${finding.canonical}" but its provider is not configured`),
         );
         break;
 
       case "preview_only":
         io.write(
-          row(label, pc.dim(`info`) + ` ${finding.file}: model "${finding.model}" resolves to "${finding.canonical ?? ""}" which is a preview model — use with care`),
+          row(label, `${tag} ${where} resolves to "${finding.canonical}" which is a preview model — use with care`),
         );
         break;
 
       default: {
-        const _exhaustive: never = finding.kind;
+        const _exhaustive: never = finding;
         void _exhaustive;
       }
     }

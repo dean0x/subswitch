@@ -48,6 +48,23 @@ describe("parseFrontmatterModel", () => {
     assert.equal(parseFrontmatterModel(text), "sol");
   });
 
+  it("strips a trailing comment that follows a quoted value", () => {
+    const text = '---\nmodel: "gpt-5.6-sol" # the fast one\n---\n';
+    assert.equal(parseFrontmatterModel(text), "gpt-5.6-sol");
+  });
+
+  it("keeps a # that is INSIDE quotes — it is part of the value, not a comment", () => {
+    // Stripping the comment before resolving quotes truncated this to `"sol`, which
+    // doctor then reported as unresolvable — failing the exit code on a valid file.
+    const text = '---\nmodel: "sol # not-a-comment"\n---\n';
+    assert.equal(parseFrontmatterModel(text), "sol # not-a-comment");
+  });
+
+  it("does not emit a stray quote when a quoted value is unterminated", () => {
+    const text = '---\nmodel: "gpt-5.6-sol\n---\n';
+    assert.equal(parseFrontmatterModel(text), "gpt-5.6-sol");
+  });
+
   it("handles CRLF line endings", () => {
     const text = "---\r\nname: gpt-worker\r\nmodel: gpt-5.6-luna\r\n---\r\n";
     assert.equal(parseFrontmatterModel(text), "gpt-5.6-luna");

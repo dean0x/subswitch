@@ -87,7 +87,23 @@ export const buildDeps = (config: Config): ServerDeps => {
   const aliasesByProvider: Record<ProviderId, Record<string, string>> = {
     codex: config.codex.aliases,
   };
-  const { table } = buildRoutingTable(MODEL_REGISTRY, aliasesByProvider);
+  const { table, rejectedAliases, ambiguousFamilies, reservedNameEntries } = buildRoutingTable(
+    MODEL_REGISTRY,
+    aliasesByProvider,
+  );
+
+  // buildRoutingTable is total and reports problems as data rather than throwing —
+  // which only helps if someone reads them. Silence here would mean an alias the user
+  // wrote simply does not work, with nothing anywhere saying why.
+  for (const { alias, target } of rejectedAliases) {
+    logger.log("warn", "alias_rejected", { model: `${alias} -> ${target}` });
+  }
+  for (const { family, providers } of ambiguousFamilies) {
+    logger.log("warn", "ambiguous_family", { model: `${family} (${providers.join(", ")})` });
+  }
+  for (const id of reservedNameEntries) {
+    logger.log("warn", "registry_entry_uses_reserved_name", { model: id });
+  }
 
   return {
     config,

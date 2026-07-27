@@ -7,7 +7,14 @@ import type { AnthropicRequest } from "./anthropic-wire-types.js";
 
 type Block = Record<string, unknown>;
 
-const textOfBlocks = (blocks: readonly Block[]): string =>
+/**
+ * Concatenate the text of an Anthropic content-block array.
+ *
+ * Exported because BOTH the conversation-key path and the outbound request-body
+ * path must produce identical text — two copies that drift would silently reshape
+ * the prompt cache key while the request body kept working.
+ */
+export const textOfBlocks = (blocks: readonly Block[]): string =>
   blocks
     .filter((block) => block["type"] === "text")
     .map((block) => (typeof block["text"] === "string" ? block["text"] : ""))

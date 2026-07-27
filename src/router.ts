@@ -12,8 +12,12 @@ export type Route =
  * This function performs ZERO name matching. All matching is in resolveModel (ADR-005).
  *
  * Non-POST requests and non-/v1/messages* paths always route to Anthropic.
- * The server guarantees that `resolution` is constructible only by `resolveModel`,
- * so a raw unvalidated string can never reach this function.
+ *
+ * Taking a `ModelResolution` rather than a model name is what enforces ADR-005:
+ * there is no string here to match against, so name matching cannot creep back in.
+ * Note this is an argument-shape guarantee, not a provenance one — `ModelResolution`
+ * is an ordinary union, so callers must still resolve via `resolveModel` (server.ts
+ * closes over the table built once at startup).
  */
 export const decideRoute = (
   method: string,

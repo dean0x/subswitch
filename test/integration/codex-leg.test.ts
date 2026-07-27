@@ -495,7 +495,7 @@ describe("codex leg", () => {
   it("a codex.aliases config override routes a non-registry id upstream and proves override precedence", async () => {
     // Overriding 'sol' to 'gpt-9-sol' (not in registry) verifies:
     //   1. config override takes precedence over the derived family alias
-    //   2. the override target becomes routable (normalizeModelList pressure-valve)
+    //   2. the override target becomes routable via the alias map
     //   3. the upstream receives the exact override target
     const codex = await startFakeUpstream(sseHandler(loadSse("text-only.sse")));
     const anthropic = await startFakeUpstream((_req, res) => {

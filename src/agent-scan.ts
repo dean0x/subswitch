@@ -7,32 +7,62 @@ import { MODEL_REGISTRY, isReservedAnthropicName, type RoutingTable, type ModelE
 // Types
 // ---------------------------------------------------------------------------
 
-export interface AgentFinding {
+/** Fields every finding carries, whatever its kind. */
+interface AgentFindingBase {
   /** Path to the agent file that produced the finding. */
   readonly file: string;
   /** Model value exactly as written in the frontmatter. */
   readonly model: string;
   /**
-   * Finding severity and meaning:
+   * Whether this finding fails the doctor exit code.
    *
-   * Failures (increment doctor failures):
-   * - "unresolvable": not a known id, alias, or family in the routing table.
-   * - "ambiguous": family name claimed by multiple providers — must qualify with provider:name.
-   * - "unknown_provider": looks like "provider:id" but the prefix is not in PROVIDER_IDS.
-   *
-   * Informational (no failure increment):
-   * - "retired": resolves to a known canonical that is marked retired in the registry.
-   * - "provider_unconfigured": resolves to a known canonical but the provider lacks credentials.
-   * - "preview_only": resolves to a preview model — excluded from family alias derivation.
+   * Carried as data rather than re-derived by each consumer: the severity list
+   * previously lived in three places (this doc comment, doctor's failures++ calls,
+   * and a Set in the tests) with nothing keeping them in agreement. (applies PF-006)
    */
-  readonly kind: "unresolvable" | "ambiguous" | "unknown_provider" | "retired" | "provider_unconfigured" | "preview_only";
-  /** Populated when the model resolves to a canonical id (retired, provider_unconfigured, preview_only). */
-  readonly canonical?: string;
-  /** Populated for "ambiguous" — providers that claim the name. */
-  readonly providers?: readonly string[];
-  /** Populated for "unknown_provider" — the unrecognised prefix. */
-  readonly qualifier?: string;
+  readonly severity: "fail" | "info";
 }
+
+/**
+ * A model-routing problem found in an agent file's frontmatter.
+ *
+ * Discriminated union, not a bag of optional fields — `providers` exists only on
+ * the arm that has providers, `canonical` only on arms that resolved. Consumers
+ * read them without `?? []` / `?? ""` fallbacks for states that cannot occur.
+ */
+export type AgentFinding =
+  /** Not a known id, alias, or family in the routing table. */
+  | (AgentFindingBase & { readonly kind: "unresolvable"; readonly severity: "fail" })
+  /** Family name claimed by multiple providers — must qualify with provider:name. */
+  | (AgentFindingBase & {
+      readonly kind: "ambiguous";
+      readonly severity: "fail";
+      readonly providers: readonly string[];
+    })
+  /** Looks like "provider:id" but the prefix is not in PROVIDER_IDS. */
+  | (AgentFindingBase & {
+      readonly kind: "unknown_provider";
+      readonly severity: "fail";
+      readonly qualifier: string;
+    })
+  /** Resolves to a known canonical that is marked retired in the registry. */
+  | (AgentFindingBase & {
+      readonly kind: "retired";
+      readonly severity: "info";
+      readonly canonical: string;
+    })
+  /** Resolves to a known canonical but the provider lacks credentials. */
+  | (AgentFindingBase & {
+      readonly kind: "provider_unconfigured";
+      readonly severity: "info";
+      readonly canonical: string;
+    })
+  /** Resolves to a preview model — excluded from family alias derivation. */
+  | (AgentFindingBase & {
+      readonly kind: "preview_only";
+      readonly severity: "info";
+      readonly canonical: string;
+    });
 
 // ---------------------------------------------------------------------------
 // Frontmatter parser (no YAML dependency)
@@ -83,16 +113,20 @@ export const parseFrontmatterModel = (text: string): string | undefined => {
     // Match `model:` key (exact — `modelPreference:` does NOT match).
     const match = /^model:\s*(.+)$/.exec(line);
     if (match !== null) {
-      let value = match[1]!.trim();
-      // Strip trailing comment.
-      const commentIdx = value.indexOf(" #");
-      if (commentIdx >= 0) value = value.slice(0, commentIdx).trimEnd();
-      // Strip surrounding quotes (single or double).
-      if (
-        (value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))
-      ) {
-        value = value.slice(1, -1);
+      const raw = match[1]!.trim();
+      // Quoting is resolved BEFORE comment stripping: a `#` inside quotes is part of
+      // the value, not a comment. Stripping first would truncate `"sol # note"` to
+      // `"sol` — a stray quote that doctor then reports as an unresolvable model,
+      // failing the exit code on a perfectly valid agent file.
+      const quote = raw.startsWith('"') ? '"' : raw.startsWith("'") ? "'" : undefined;
+      let value: string;
+      if (quote !== undefined) {
+        const closing = raw.indexOf(quote, 1);
+        // Unterminated quote — take the remainder verbatim rather than guessing.
+        value = closing === -1 ? raw.slice(1) : raw.slice(1, closing);
+      } else {
+        const commentIdx = raw.indexOf(" #");
+        value = commentIdx >= 0 ? raw.slice(0, commentIdx).trimEnd() : raw;
       }
       return value.length > 0 ? value : undefined;
     }
@@ -144,15 +178,15 @@ export const checkAgentModels = (
 
     switch (resolution.kind) {
       case "unresolved":
-        findings.push({ file: path, model, kind: "unresolvable" });
+        findings.push({ file: path, model, kind: "unresolvable", severity: "fail" });
         break;
 
       case "ambiguous":
-        findings.push({ file: path, model, kind: "ambiguous", providers: resolution.providers });
+        findings.push({ file: path, model, kind: "ambiguous", severity: "fail", providers: resolution.providers });
         break;
 
       case "unknown_qualifier":
-        findings.push({ file: path, model, kind: "unknown_provider", qualifier: resolution.qualifier });
+        findings.push({ file: path, model, kind: "unknown_provider", severity: "fail", qualifier: resolution.qualifier });
         break;
 
       case "resolved": {
@@ -160,17 +194,17 @@ export const checkAgentModels = (
         const entry = registry.find((e) => e.id === target.id);
 
         if (entry?.retired === true) {
-          findings.push({ file: path, model, kind: "retired", canonical: target.id });
+          findings.push({ file: path, model, kind: "retired", severity: "info", canonical: target.id });
           break;
         }
 
         if (!configuredProviders.has(target.provider)) {
-          findings.push({ file: path, model, kind: "provider_unconfigured", canonical: target.id });
+          findings.push({ file: path, model, kind: "provider_unconfigured", severity: "info", canonical: target.id });
           break;
         }
 
         if (entry?.preview === true) {
-          findings.push({ file: path, model, kind: "preview_only", canonical: target.id });
+          findings.push({ file: path, model, kind: "preview_only", severity: "info", canonical: target.id });
           break;
         }
 

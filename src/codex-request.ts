@@ -2,7 +2,7 @@ import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { ReasoningCache } from "./reasoning-cache.js";
 import type { AnthropicRequest, AnthropicMessage } from "./anthropic-wire-types.js";
-import { buildInstructions } from "./anthropic-parse.js";
+import { buildInstructions, textOfBlocks } from "./anthropic-parse.js";
 
 /**
  * Warnings are closed codes (never request content) so they can be logged
@@ -28,12 +28,6 @@ export interface TranslateOutcome {
 type Block = Record<string, unknown>;
 
 const asString = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
-
-const textOfBlocks = (blocks: readonly Block[]): string =>
-  blocks
-    .filter((block) => block["type"] === "text")
-    .map((block) => asString(block["text"]) ?? "")
-    .join("\n\n");
 
 const flattenToolResultContent = (content: unknown, warnings: TranslateWarning[]): string => {
   if (typeof content === "string") return content;

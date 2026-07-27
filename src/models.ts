@@ -108,9 +108,10 @@ export type ModelResolution =
 // ---------------------------------------------------------------------------
 
 /**
- * Canonical model registry. Declared in registry order so ALL_MODEL_IDS is
- * byte-identical to the current DEFAULT_CODEX_MODELS. Never delete entries —
- * deleting silently unroutes anyone who pinned that id.
+ * Canonical model registry — THE exact-membership set for routing (applies ADR-005).
+ * Never delete entries: deleting silently unroutes anyone who pinned that id.
+ * Mark them `retired` instead, which keeps them resolvable and lets the upstream
+ * return a truthful 404.
  */
 export const MODEL_REGISTRY: readonly ModelEntry[] = [
   { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
