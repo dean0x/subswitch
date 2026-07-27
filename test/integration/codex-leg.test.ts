@@ -255,6 +255,44 @@ describe("codex leg", () => {
     assert.deepEqual(await anthropicResponse.json(), { id: "msg_from_anthropic" });
   });
 
+  // F10: auth file ENOENT — the error message must include `codex login` so the
+  // user knows how to recover (not just "cannot read file" with no action).
+  it("F10 — returns 401 with 'codex login' instruction when auth file does not exist", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-f10-test-"));
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
+    });
+    const subswitch = await startSubswitch(
+      {
+        anthropic: { baseUrl: anthropic.url },
+        // Point authFile at a path that does not exist — ENOENT scenario.
+        providers: { codex: { authFile: join(dir, "auth-does-not-exist.json") } },
+      },
+    );
+    try {
+      const codexResponse = await postMessages(
+        subswitch,
+        // gpt-5.6-sol routes to codex; auth failure surfaces there.
+        JSON.stringify({ model: "gpt-5.6-sol", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+      );
+      assert.equal(codexResponse.status, 401, "ENOENT auth file must return 401");
+      const body = (await codexResponse.json()) as { error: { type: string; message: string } };
+      assert.equal(body.error.type, "authentication_error");
+      assert.match(body.error.message, /codex login/, "error message must instruct user to run 'codex login'");
+
+      // Anthropic fallback must still work (codex leg degradation, not full outage).
+      const anthropicResponse = await postMessages(
+        subswitch,
+        JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+      );
+      assert.equal(anthropicResponse.status, 200, "Anthropic fallback must still work after codex auth failure");
+    } finally {
+      await subswitch.close();
+      await anthropic.close();
+    }
+  });
+
   it("sets the user-agent header from codex.userAgent config", async () => {
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
     const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
@@ -398,7 +436,7 @@ describe("codex leg", () => {
   // ---------------------------------------------------------------------------
 
   it("sends the canonical model id upstream when a derived family alias is used in the request", async () => {
-    // Default config: no explicit codex.models, so all registry ids are routable.
+    // Default config uses the built-in model registry — all non-retired registry ids are routable.
     // "sol" is a derived family alias for "gpt-5.6-sol".
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
     const body = JSON.stringify({ model: "sol", stream: true, messages: [{ role: "user", content: "hi" }] });

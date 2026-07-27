@@ -8,6 +8,7 @@ import {
   buildRoutingTable,
   resolveModel,
   type ModelEntry,
+  type ModelResolution,
 } from "../../src/models.js";
 
 // ---------------------------------------------------------------------------
@@ -101,6 +102,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
     const modelRows = buildModelRows(MODEL_REGISTRY, overrides);
 
     // Forward check: every non-direct alias row corresponds to a ModelRow alias entry.
+    // (Parity invariant applies only to aliases with registry-present targets.)
     for (const aliasRow of aliasRows) {
       if (aliasRow.source === "direct") continue;
       const modelRow = modelRows.find((m) => m.id === aliasRow.canonical);
@@ -132,6 +134,46 @@ describe("buildAliasRows and buildModelRows — parity", () => {
         );
       }
     }
+  });
+
+  it("dangling alias target (not in registry) — buildAliasRows shows enabled=true, gen='?'", () => {
+    // A dangling alias target (e.g. future model id) is routed by the router (forward-compat)
+    // so the display must agree: enabled=true, not disabled.
+    const overrides = { myalias: "gpt-9.9-nonexistent" };
+    const aliasRows = buildAliasRows(MODEL_REGISTRY, overrides);
+    const danglingRow = aliasRows.find((r) => r.alias === "myalias");
+    assert.ok(danglingRow !== undefined, "dangling alias must appear in AliasTableRows");
+    assert.equal(danglingRow.canonical, "gpt-9.9-nonexistent");
+    assert.equal(danglingRow.source, "config");
+    assert.equal(danglingRow.gen, "?", "gen must be '?' for dangling targets (not in registry)");
+    assert.equal(
+      danglingRow.enabled,
+      true,
+      "dangling alias must be enabled=true (router routes it via forward-compat; was incorrectly false before P1-3 fix)",
+    );
+  });
+
+  it("dangling alias target — buildRoutingTable reports it in danglingAliases", () => {
+    const overrides: Record<string, string> = { myalias: "gpt-9.9-nonexistent" };
+    const { danglingAliases } = buildRoutingTable(MODEL_REGISTRY, { codex: overrides });
+    assert.equal(danglingAliases.length, 1, "dangling alias must appear in danglingAliases");
+    assert.equal(danglingAliases[0]?.alias, "myalias");
+    assert.equal(danglingAliases[0]?.target, "gpt-9.9-nonexistent");
+  });
+
+  it("canonical-shadowing alias (alias key = registry id) — routing ignores alias due to rule 1", () => {
+    // {"gpt-5.5": "gpt-5.6-sol"} — alias name equals a canonical registry id.
+    // Rule 1 (byId) always fires first, so "gpt-5.5" routes to itself, not to "gpt-5.6-sol".
+    // The alias IS in byAlias but is unreachable via resolveModel.
+    const overrides: Record<string, string> = { "gpt-5.5": "gpt-5.6-sol" };
+    const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: overrides });
+    const resolution = resolveModel(table, "gpt-5.5");
+    assert.equal(resolution.kind, "resolved");
+    assert.equal(
+      (resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id,
+      "gpt-5.5",
+      "gpt-5.5 must route to itself (rule 1 wins), NOT to the alias target gpt-5.6-sol",
+    );
   });
 
   it("buildModelRows sets routable=true for non-retired entries", () => {
@@ -190,6 +232,51 @@ describe("buildAliasRows and buildModelRows — parity", () => {
       assert.equal(row.provider, "codex");
       assert.equal(row.source, "registry");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Preview exclusion from family alias derivation (P1-8)
+// ---------------------------------------------------------------------------
+
+describe("Preview exclusion from family alias derivation", () => {
+  it("newest family member being preview means the non-preview member wins the bare alias", () => {
+    // If the newest entry is preview, the bare family alias must NOT point to it —
+    // preview models are excluded from alias derivation. The older non-preview wins.
+    const reg: readonly ModelEntry[] = [
+      { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+      { id: "gpt-5.7-sol-preview", provider: "codex", family: "sol", gen: [5, 7], preview: true },
+    ];
+    const { table } = buildRoutingTable(reg, { codex: {} });
+
+    // Bare 'sol' must resolve to the older non-preview model
+    const bare = resolveModel(table, "sol");
+    assert.equal(bare.kind, "resolved");
+    assert.equal(
+      (bare as Extract<ModelResolution, { kind: "resolved" }>).target.id,
+      "gpt-5.6-sol",
+      "bare 'sol' must not float onto the preview model",
+    );
+
+    // The preview model IS still routable by exact id
+    const exact = resolveModel(table, "gpt-5.7-sol-preview");
+    assert.equal(exact.kind, "resolved", "preview model must still be routable by exact id");
+    assert.equal(
+      (exact as Extract<ModelResolution, { kind: "resolved" }>).target.id,
+      "gpt-5.7-sol-preview",
+    );
+  });
+
+  it("MUTATION CHECK: including preview entries in family derivation would cause this test to fail", () => {
+    // If buildFamilyMap did not filter preview entries, 'sol' would resolve to
+    // gpt-5.7-sol-preview (newer gen) instead of gpt-5.6-sol.
+    const reg: readonly ModelEntry[] = [
+      { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+      { id: "gpt-5.7-sol-preview", provider: "codex", family: "sol", gen: [5, 7], preview: true },
+    ];
+    const { table } = buildRoutingTable(reg, { codex: {} });
+    const resolution = resolveModel(table, "sol");
+    assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-5.6-sol");
   });
 });
 

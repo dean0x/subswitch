@@ -57,4 +57,45 @@ describe("__subswitch health namespace", () => {
     assert.equal(response.status, 404);
     assert.equal(anthropic.requests.length, 0);
   });
+
+  // P1-8: Health providers[] shape test
+  it("GET /__subswitch/health body has providers array with required per-provider fields", async () => {
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    const subswitch = await startSubswitch({ anthropic: { baseUrl: anthropic.url } });
+    cleanups.push(subswitch.close, anthropic.close);
+
+    const response = await fetch(`${subswitch.url}/__subswitch/health`);
+    assert.equal(response.status, 200);
+
+    const body = (await response.json()) as {
+      name: string;
+      version: string;
+      providers: Array<{ id: string; configured: boolean; modelCount: number }>;
+    };
+
+    // providers must be an array
+    assert.ok(Array.isArray(body.providers), "providers must be an array");
+    assert.ok(body.providers.length > 0, "providers must be non-empty");
+
+    // Each entry must have the documented shape
+    for (const provider of body.providers) {
+      assert.ok(typeof provider.id === "string" && provider.id.length > 0, "provider.id must be a non-empty string");
+      assert.ok(typeof provider.configured === "boolean", "provider.configured must be a boolean");
+      assert.ok(typeof provider.modelCount === "number" && provider.modelCount >= 0, "provider.modelCount must be a non-negative number");
+    }
+
+    // "codex" must appear in providers (it is the only registered provider)
+    const codexEntry = body.providers.find((p) => p.id === "codex");
+    assert.ok(codexEntry !== undefined, "providers must include 'codex'");
+
+    // modelCount for codex must reflect the real registry (non-zero, non-retired models)
+    assert.ok(codexEntry.modelCount > 0, "codex must have at least one non-retired model in registry");
+
+    // configured reflects whether the auth file exists on disk — we don't assert
+    // a specific value here because the test machine's state varies (auth file may or may not exist).
+    // The shape assertion above is sufficient: configured must be a boolean.
+  });
 });
