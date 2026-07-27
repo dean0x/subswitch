@@ -72,9 +72,17 @@ const createCodexProvider = (config: Config, logger: Logger): ProviderHandler =>
   });
 };
 
-/** The only wiring site: every production dependency is constructed here. */
-export const buildDeps = (config: Config): ServerDeps => {
-  const logger = createConsoleLogger(config.logLevel);
+/**
+ * The only wiring site: every production dependency is constructed here.
+ *
+ * `logger` is a parameter rather than a local so that an injected logger reaches the
+ * provider handlers too. It defaults to the real console logger, so production callers
+ * are unchanged. Constructing it internally made `startSubswitch`'s `logger` option
+ * silently partial — it replaced only the request-loop's logger, while every handler
+ * kept the one built here, so a test that injected a logger to observe handler records
+ * saw none of them and its assertions passed vacuously.
+ */
+export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel)): ServerDeps => {
 
   // Warn when a provider's configured base URL host differs from its own expected
   // default. A refreshable subscription credential pointed at an arbitrary host sends

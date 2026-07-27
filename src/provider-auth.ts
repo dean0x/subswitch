@@ -33,8 +33,17 @@ import type { Result } from "./result.js";
  *   this seam to carry all of them would move the protocol into the auth manager.
  *
  * One further payoff: everything secret sits under one key, so there is a single
- * redaction boundary to audit and `test/integration/credential-leak.test.ts` asserts
- * against the same surface the producer builds.
+ * redaction boundary to audit. Two tests hold that boundary, and they hold different
+ * halves of it — neither one alone is the guarantee:
+ *
+ * - `test/unit/codex-auth.test.ts` pins the PRODUCER surface: the exact key set
+ *   `toCredential` emits, so a third auth header cannot be added unnoticed.
+ * - `test/integration/credential-leak.test.ts` Row 6 pins that nothing crosses the
+ *   boundary: it drives a real Codex request and asserts the access token, refresh
+ *   token and account id appear in neither the client-visible response nor any log
+ *   record, while asserting the upstream did receive the credential so the scan is
+ *   not vacuous. Row 5 does NOT cover this — it sends a `claude-*` model, so the
+ *   Codex handler never runs in it.
  */
 export interface ProviderCredential<P extends ProviderId> {
   readonly provider: P;

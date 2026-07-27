@@ -97,10 +97,13 @@ export const startSubswitch = async (
     readFile: () => JSON.stringify({ logLevel: "error", ...overrides }),
   });
   if (!configResult.ok) throw new Error(configResult.error.message);
-  const deps = buildDeps(configResult.value.config);
+  // The logger goes through buildDeps, not over the top of it: the provider handlers are
+  // constructed inside buildDeps and close over whichever logger it was given, so spreading
+  // one onto the result afterwards would replace the request loop's logger only and leave
+  // every handler record uncaptured.
+  const deps = buildDeps(configResult.value.config, options.logger);
   const finalDeps = {
     ...deps,
-    ...(options.logger !== undefined ? { logger: options.logger } : {}),
     ...(options.resolve !== undefined ? { resolve: options.resolve } : {}),
   };
   const server = createProxyServer(finalDeps);
