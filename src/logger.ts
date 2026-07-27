@@ -44,6 +44,21 @@ const FIELD_KEYS = [
   "sessionKey",
 ] as const;
 
+/**
+ * Render one token's value: newlines stripped, then quoted if it could otherwise be
+ * mistaken for sibling tokens.
+ *
+ * Stripping prevents log-injection — a `\n` in an interpolated string forges a whole
+ * extra record. Quoting prevents field forgery — a value containing whitespace or `=`
+ * would otherwise parse as additional top-level fields under logfmt's last-wins
+ * semantics. Real values (model ids, route names, event names, status codes) contain
+ * none of these characters, so this is a no-op on every log line the tree emits.
+ */
+const renderToken = (value: string): string => {
+  const safe = value.replace(/[\r\n]/g, "");
+  return /[\s=]/.test(safe) ? `"${safe}"` : safe;
+};
+
 const formatTime = (): string => {
   const d = new Date();
   const h = d.getHours().toString().padStart(2, "0");
@@ -90,21 +105,21 @@ export const createConsoleLogger = (
     log(level, event, fields) {
       if (LEVEL_ORDER[level] < LEVEL_ORDER[minLevel]) return;
       const levelStr = colorLevelStr(level);
-      const eventStr = `event=${pc.bold(event)}`;
+      // `event` gets the same treatment as a field value. It is a different axis from
+      // FIELD_KEYS — the closed allow-list bounds which fields may be logged and says
+      // nothing about the event token — and it is interpolated into the same line, so
+      // an unsanitised event name forges records exactly as an unsanitised value would.
+      // Every event name in the tree is a compile-time literal derived from the closed
+      // ProviderId union, which is the primary control; this is defence in depth.
+      const eventStr = `event=${pc.bold(renderToken(event))}`;
       const parts = [levelStr, eventStr];
       if (fields !== undefined) {
         for (const key of FIELD_KEYS) {
           const value = fields[key];
           if (value !== undefined) {
-            // Strip newlines to prevent log-injection via crafted model strings or other
-            // field values. FIELD_KEYS is a closed allow-list so no token material can
-            // reach this path, but newlines in a model field could still forge a log line.
-            const safe = String(value).replace(/[\r\n]/g, "");
-            // Quote values that contain whitespace or '=' to prevent field-token forgery.
-            // Normal field values (model ids, route names, status codes) never contain these
-            // characters, so quoting is rare and the log format is unchanged for typical inputs.
-            const formatted = /[\s=]/.test(safe) ? `"${safe}"` : safe;
-            parts.push(`${key}=${formatted}`);
+            // FIELD_KEYS is a closed allow-list, so no token material can reach this
+            // path — but a crafted model string could still carry a newline or an `=`.
+            parts.push(`${key}=${renderToken(String(value))}`);
           }
         }
       }
