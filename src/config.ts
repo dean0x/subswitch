@@ -85,13 +85,24 @@ const CodexProviderSchema = z
   });
 
 /**
+ * The one plain-object predicate in this file.
+ *
+ * Load-bearing for the own-property walks below (`hasOwnPath`,
+ * `detectUnknownProviderKeys`, `detectConfiguredProviders`), which are what keep a
+ * polluted prototype from forging or masking a config key (avoids PF-010). Declared
+ * here, above its first use, so there is exactly one implementation to harden: a
+ * second inline copy would silently not inherit any future tightening.
+ */
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
  * Inject `kind` from the record key before Zod parses each provider block.
  * Zod reads the discriminant before defaults fire, so `kind` cannot carry `.default()`.
- * Uses an inline plain-object check to avoid a forward-reference to isPlainObject.
  */
 const injectKind = (raw: unknown, key: string): unknown => {
-  if (typeof raw === "object" && raw !== null && !Array.isArray(raw) && !Object.hasOwn(raw as Record<string, unknown>, "kind")) {
-    return { kind: key, ...(raw as Record<string, unknown>) };
+  if (isPlainObject(raw) && !Object.hasOwn(raw, "kind")) {
+    return { kind: key, ...raw };
   }
   return raw;
 };
@@ -308,9 +319,6 @@ const LEGACY_KEY_MOVES: readonly (readonly [path: string, replacement: string])[
   ["limits.requestTimeoutMs", "providers.codex.requestTimeoutMs"],
   ["limits.maxSseEventBytes", "providers.codex.maxSseEventBytes"],
 ];
-
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** Read a dotted path using own-property checks only (prototype-pollution safe). */
 const hasOwnPath = (root: Record<string, unknown>, path: string): boolean => {
