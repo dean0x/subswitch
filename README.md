@@ -212,6 +212,13 @@ The config file is located by the following precedence (highest wins):
 1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
 2. `subswitch.config.json` in the current working directory — silently uses defaults if absent
 
+**Migrating from an older config**: if your config file has a top-level `codex` block or a
+`codex.models` key, subswitch will reject it at load and tell you exactly where each key
+moved. This prevents the previous failure mode where Zod stripped unknown keys and every
+custom setting silently reverted to defaults.
+
+### Routable set and aliases
+
 The routable set is the **built-in model registry** — `gpt-5.6-sol`,
 `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.5`. It is not configurable: routing
 follows the registry so a new model becomes available on upgrade with no config
@@ -230,13 +237,102 @@ Anthropic model name (`claude-*`, `sonnet`, `opus`, `haiku`, `inherit`) — such
 config is rejected at load, because either the key or the target would route your
 main agent's traffic to Codex.
 
+### Config reference
+
+Minimal example — only override what you need:
+
+```json
+{
+  "providers": {
+    "codex": {
+      "aliases": {
+        "fast": "gpt-5.6-sol"
+      }
+    }
+  },
+  "limits": {
+    "maxConcurrentRequests": 16
+  }
+}
+```
+
+All keys and their defaults:
+
 | Key | Default | Description |
 |-----|---------|-------------|
-| `providers.codex.aliases` | `{}` | Custom alias overrides — map a short name to a canonical model id |
-| `providers.codex.reasoningCache.maxEntries` | `4096` | Maximum number of reasoning cache LRU entries |
+| `providers.codex.aliases` | `{}` | Custom alias overrides — map a short name to a canonical model id. Wins over derived family aliases; loses to exact registry ids. |
+| `providers.codex.reasoningCache.maxEntries` | `4096` | Maximum LRU entries in the reasoning round-trip cache |
 | `providers.codex.reasoningCache.maxBytes` | `67108864` (64 MiB) | Maximum total byte footprint of the reasoning cache |
-| `anthropic.maxUpstreamSockets` | `32` | Maximum sockets in the Anthropic keep-alive connection pool |
-| `limits.maxConcurrentRequests` | `32` | In-flight request ceiling; further requests get a 503 |
+| `providers.codex.requestTimeoutMs` | `600000` (10 min) | Wall-clock time limit per Codex request |
+| `providers.codex.streamIdleTimeoutMs` | `300000` (5 min) | Codex stream idle timeout — resets on each SSE chunk |
+| `providers.codex.maxSseEventBytes` | `4194304` (4 MiB) | Maximum bytes per individual SSE event from the Codex upstream |
+| `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection timeout (see note below) |
+| `anthropic.streamIdleTimeoutMs` | `300000` (5 min) | Anthropic stream idle timeout |
+| `anthropic.maxUpstreamSockets` | `32` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
+| `limits.maxConcurrentRequests` | `32` | In-flight request ceiling; requests above this limit receive a 503 |
+
+> **Why `connectTimeoutMs` and `maxUpstreamSockets` are Anthropic-leg-only**: the
+> Anthropic passthrough uses a node:http agent with an explicit keep-alive pool, so
+> both knobs have meaningful effect there. The Codex leg uses Node's global `fetch`
+> (undici's global dispatcher), which `maxUpstreamSockets` does not control — shipping
+> them as per-provider keys would be config that bounds nothing on the Codex side.
+
+### `subswitch models --json`
+
+`subswitch models --json` outputs a single JSON object describing the full model registry
+and alias resolution under the current config. It is the machine-readable counterpart to
+the human-readable `subswitch models` table.
+
+```
+subswitch models --json | jq .models[].id
+```
+
+**Schema** (`schemaVersion: 1`):
+
+```json
+{
+  "kind": "models",
+  "schemaVersion": 1,
+  "subswitchVersion": "0.1.0",
+  "name": "subswitch",
+  "fallbackProvider": "anthropic",
+  "configPath": "/path/to/subswitch.config.json",
+  "configFileFound": false,
+  "providers": [
+    { "id": "anthropic", "displayName": "Anthropic", "routing": "passthrough" },
+    { "id": "codex", "displayName": "Codex", "routing": "registry" }
+  ],
+  "models": [
+    {
+      "id": "gpt-5.6-sol",
+      "provider": "codex",
+      "aliases": [{ "name": "sol", "source": "derived" }],
+      "family": "sol",
+      "gen": [5, 6],
+      "routable": true,
+      "preview": false,
+      "retired": false,
+      "source": "registry"
+    }
+  ]
+}
+```
+
+**Field notes**:
+
+- `schemaVersion` is an integer that bumps on any breaking change to this structure.
+  Consumers must check `schemaVersion === 1` before reading other fields.
+- `gen` is an integer tuple (`[5, 6]`), not a string (`"5.6"`). String comparison sorts
+  `"5.10"` before `"5.9"` — the tuple is the correct form for numeric comparison.
+  `gen` is omitted when the generation is unknown; it is always present for registry entries.
+- `preview` and `retired` are always-present booleans — no `?? false` needed in consumers.
+- `family` is omitted for models with no family alias (e.g. `gpt-5.5`).
+- Anthropic appears in `providers` with zero model rows. subswitch cannot enumerate Claude
+  model names — it prefix-matches them and relays verbatim — so including a fabricated list
+  would be a lie that consumers might cache. The `fallbackProvider: "anthropic"` field
+  identifies where everything unresolved goes.
+- `aliases[].source` is `"derived"` for family aliases computed from the registry, or
+  `"config"` for entries you wrote in `providers.codex.aliases`.
 
 ## How the Codex leg works
 
