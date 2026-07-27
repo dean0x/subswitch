@@ -3,8 +3,9 @@
  *   F7  — ambiguous family name → 400 with both provider names in the body
  *   F6g — unknown provider qualifier → 400 with provider list
  *   P2  — routing table built once: ≥2 requests route consistently without per-request rebuilds
+ *         Verified via Proxy ownKeys trap on the aliases map (production resolver, no synthetic seam).
  *
- * These tests use the `resolve` injection seam in startSubswitch to drive the router
+ * F7 and F6g tests use the `resolve` injection seam in startSubswitch to drive the router
  * into states (ambiguous, unknown_qualifier) that cannot be produced by the real
  * registry alone (which only knows "codex").
  */
@@ -13,12 +14,15 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { AddressInfo } from "node:net";
 import {
   startSubswitch,
   startFakeUpstream,
   makeAuthFileContent,
   makeAccessToken,
 } from "./fake-upstreams.js";
+import { loadConfig } from "../../src/config.js";
+import { buildDeps, createProxyServer } from "../../src/server.js";
 import type { ModelResolution } from "../../src/models.js";
 
 // ---------------------------------------------------------------------------
@@ -184,39 +188,34 @@ describe("routing — unknown provider qualifier (F6g)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// P2: routing table built once (structural guarantee)
+// P2: routing table built once (structural guarantee via Proxy ownKeys trap)
 //
-// The routing table is closed over once in buildDeps. This test verifies that
-// ≥2 consecutive requests are both routed correctly — proving the table is
-// stable and not rebuilt or cleared between requests.
+// Approach: inject a Proxy for config.codex.aliases with an ownKeys trap that
+// counts invocations. buildRoutingTable calls Object.keys(aliases) exactly once.
+// After buildDeps returns, ≥2 requests are driven through the production resolver.
+// The trap count must not increase beyond what was observed after buildDeps —
+// proving the routing table is NOT rebuilt per-request.
+//
+// This replaces the prior synthetic-resolve test that could not observe production
+// routing table builds. With the Proxy approach we drive the real resolver and
+// intercept the structural guarantee at the alias-iteration boundary.
 // ---------------------------------------------------------------------------
 
-describe("routing — table built once handles multiple requests (P2)", () => {
-  it("routes two consecutive requests to codex correctly using the same routing table", async () => {
+describe("routing — table built once via ownKeys trap (P2)", () => {
+  it("ownKeys trap on aliases fires exactly once during buildDeps and not again across ≥2 requests", async () => {
     const cleanups: Array<() => Promise<void>> = [];
-    let resolveCallCount = 0;
 
-    // Track resolve invocations to verify it's called per-request (once per resolve call),
-    // not that buildRoutingTable is called more than once (which is a structural property
-    // of buildDeps — one call site in the source).
-    const resolve = (name: string): ModelResolution => {
-      resolveCallCount++;
-      if (name === "gpt-5.5") {
-        return { kind: "resolved", target: { id: "gpt-5.5", provider: "codex" } };
-      }
-      return { kind: "unresolved" };
-    };
+    const sseBody =
+      "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gpt-5.6-sol\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n" +
+      "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+      "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n" +
+      "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+      "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n" +
+      "data: {\"type\":\"message_stop\"}\n\n";
 
     const codex = await startFakeUpstream((_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
-      res.end(
-        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gpt-5.5\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n" +
-        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
-        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n" +
-        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
-        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n" +
-        "data: {\"type\":\"message_stop\"}\n\n",
-      );
+      res.end(sseBody);
     });
     cleanups.push(codex.close);
 
@@ -226,44 +225,88 @@ describe("routing — table built once handles multiple requests (P2)", () => {
     });
     cleanups.push(anthropic.close);
 
-    const dir = await mkdtemp(join(tmpdir(), "subswitch-p2-test-"));
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-p2-proxy-test-"));
     const authFilePath = join(dir, "auth.json");
     await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
 
-    const subswitch = await startSubswitch(
-      {
-        anthropic: { baseUrl: anthropic.url },
-        providers: { codex: { baseUrl: codex.url, authFile: authFilePath } },
+    // Build config normally, then inject a Proxy for codex.aliases.
+    const configResult = loadConfig({
+      configPath: "inline-test-config.json",
+      readFile: () =>
+        JSON.stringify({
+          logLevel: "error",
+          anthropic: { baseUrl: anthropic.url },
+          providers: { codex: { baseUrl: codex.url, authFile: authFilePath } },
+        }),
+    });
+    assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
+    const config = configResult.value.config;
+
+    // Count how many times Object.keys() iterates the aliases map.
+    // Each Object.keys() / Object.entries() call triggers the ownKeys trap once.
+    let ownKeysCallCount = 0;
+    const aliasesProxy = new Proxy({} as Record<string, string>, {
+      ownKeys(target) {
+        ownKeysCallCount++;
+        return Reflect.ownKeys(target);
       },
-      { resolve },
+      getOwnPropertyDescriptor(target, key) {
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+
+    // buildDeps calls buildRoutingTable which calls Object.keys(aliases) once.
+    const modifiedConfig = { ...config, codex: { ...config.codex, aliases: aliasesProxy } };
+    const deps = buildDeps(modifiedConfig);
+    const server = createProxyServer(deps);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const subswitchUrl = `http://127.0.0.1:${port}`;
+    cleanups.push(
+      () =>
+        new Promise((resolve) => {
+          server.closeAllConnections();
+          server.close(() => resolve());
+        }),
     );
-    cleanups.push(subswitch.close);
+
+    // Capture the ownKeys count immediately after buildDeps — this is the
+    // "expected" count (1 call from buildRoutingTable's Object.keys(aliases)).
+    const ownKeysAfterBuild = ownKeysCallCount;
+    assert.equal(ownKeysAfterBuild, 1, "buildRoutingTable must call Object.keys(aliases) exactly once during buildDeps");
 
     try {
-      const body = JSON.stringify({ model: "gpt-5.5", stream: true, max_tokens: 16, messages: [{ role: "user", content: "hi" }] });
+      const body = JSON.stringify({
+        model: "gpt-5.6-sol",
+        stream: true,
+        max_tokens: 16,
+        messages: [{ role: "user", content: "hi" }],
+      });
       const headers = {
         authorization: "Bearer sk-ant",
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
       };
 
-      // Send first request.
-      const res1 = await fetch(`${subswitch.url}/v1/messages`, { method: "POST", headers, body });
+      // Drive two requests through the production resolver.
+      const res1 = await fetch(`${subswitchUrl}/v1/messages`, { method: "POST", headers, body });
       assert.equal(res1.status, 200, "first request must succeed");
       await res1.text();
 
-      // Send second request — same model, same routing.
-      const res2 = await fetch(`${subswitch.url}/v1/messages`, { method: "POST", headers, body });
+      const res2 = await fetch(`${subswitchUrl}/v1/messages`, { method: "POST", headers, body });
       assert.equal(res2.status, 200, "second request must succeed");
       await res2.text();
 
-      // Both requests must have reached the codex upstream.
+      // The ownKeys trap must NOT have fired again — the routing table is not rebuilt per-request.
+      assert.equal(
+        ownKeysCallCount,
+        ownKeysAfterBuild,
+        `ownKeys trap fired ${ownKeysCallCount - ownKeysAfterBuild} extra time(s) during request handling — routing table is being rebuilt per-request`,
+      );
+
+      // Both requests must have reached the codex upstream (correct routing).
       assert.equal(codex.requests.length, 2, "both requests must route to codex");
       assert.equal(anthropic.requests.length, 0, "neither request should reach anthropic");
-
-      // The resolve function was called once per request — consistent routing
-      // means the same resolver (closed over the single routing table) handled both.
-      assert.equal(resolveCallCount, 2, "resolve called once per request");
     } finally {
       for (const cleanup of cleanups.reverse()) await cleanup();
     }

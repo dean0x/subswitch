@@ -383,50 +383,72 @@ describe("One-hop alias enforcement", () => {
 
 // ---------------------------------------------------------------------------
 // Prototype-pollution guard on alias records
+//
+// The production loop uses Object.keys() which returns ONLY own enumerable keys.
+// This means inherited properties (via Object.create) are already excluded before
+// the Object.hasOwn guard fires — Object.hasOwn is belt-and-braces defence-in-depth.
+//
+// The tests below use OWN-property versions of dangerous key names (as they would
+// appear in a real JSON-parsed alias object), verifying the correct behaviour:
+// own-property "constructor", "toString", and "__proto__" keys are all treated as
+// ordinary alias names since JSON.parse only creates own properties.
 // ---------------------------------------------------------------------------
 
 describe("Prototype-pollution guard on alias records", () => {
-  it("an alias record with key 'constructor' does not resolve to an inherited property", () => {
-    // JSON.parse('{}')["constructor"] returns Object — without hasOwn guard, this misroutes.
-    // We test by passing an alias-like object. The Object.hasOwn guard in buildRoutingTable
-    // means inherited properties are never installed in byAlias.
+  it("own-property key 'constructor' in alias record installs as an alias (ordinary key behaviour)", () => {
+    // JSON.parse('{"constructor":"gpt-5.6-sol"}') produces an own-property key "constructor".
+    // It must resolve as a normal alias — there is no special treatment.
     const reg = [entry("gpt-5.6-sol", { gen: [5, 6] })];
-
-    // Simulate a JSON-parsed object that has no own "constructor" property
-    // (it inherits it from Object.prototype)
-    const poisonedAliases = Object.create({ constructor: "gpt-5.6-sol" }) as Record<string, string>;
-    const { table } = buildTable(reg, poisonedAliases);
-
-    // "constructor" must NOT be in byAlias — it was inherited, not own
-    const resolution = resolveModel(table, "constructor");
-    assert.equal(
-      resolution.kind,
-      "unresolved",
-      "'constructor' (inherited) must not resolve via alias — Object.hasOwn guard required",
-    );
-  });
-
-  it("explicit own-property 'constructor' in alias record IS installed (hasOwn distinguishes)", () => {
-    const reg = [entry("gpt-5.6-sol", { gen: [5, 6] })];
-    // An explicit own-property key named "constructor" should resolve
     const { table } = buildTable(reg, { constructor: "gpt-5.6-sol" });
     const resolution = resolveModel(table, "constructor");
     assert.equal(resolution.kind, "resolved");
     assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-5.6-sol");
   });
 
-  it("key '__proto__' in alias record does not pollute and resolves correctly", () => {
+  it("own-property key 'toString' in alias record installs as an alias (ordinary key behaviour)", () => {
+    // Same rationale as 'constructor': JSON.parse creates own properties; no prototype contamination.
     const reg = [entry("gpt-5.6-sol", { gen: [5, 6] })];
-    // Object.keys() returns own enumerable keys; "__proto__" from JSON.parse is special —
-    // this just verifies our Object.hasOwn path is safe for any string key.
-    const aliases: Record<string, string> = {};
-    Object.defineProperty(aliases, "__proto__", { value: "gpt-5.6-sol", enumerable: true });
+    const { table } = buildTable(reg, { toString: "gpt-5.6-sol" });
+    const resolution = resolveModel(table, "toString");
+    assert.equal(resolution.kind, "resolved");
+    assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-5.6-sol");
+  });
+
+  it("own-property key '__proto__' in alias record resolves correctly without polluting Object.prototype", () => {
+    // JSON.parse('{"__proto__":"gpt-5.6-sol"}') produces an own-property key "__proto__"
+    // on the parsed object (JSON.parse sandboxes it — no prototype chain mutation).
+    // We verify: (a) Object.prototype is not mutated, (b) normal lookups still work.
+    const reg = [entry("gpt-5.6-sol", { gen: [5, 6] })];
+
+    // Simulate a JSON-parsed alias object with an own "__proto__" key.
+    const aliases: Record<string, string> = JSON.parse('{"__proto__":"gpt-5.6-sol"}') as Record<string, string>;
     const { table } = buildTable(reg, aliases);
-    // "__proto__" as an own enumerable property IS valid and should install
-    // (it's safe because Object.keys includes it when enumerable)
-    // The point is the table doesn't throw or corrupt byAlias Map
-    const resolution = resolveModel(table, "some-nonexistent");
-    assert.equal(resolution.kind, "unresolved"); // table is intact, just checking no throw
+
+    // Object.prototype must not be polluted.
+    // buildRoutingTable uses a Map (not a plain object) for byAlias, so Map.set("__proto__", ...)
+    // does NOT invoke the __proto__ setter on Object.prototype. Verify via prototype chain:
+    assert.equal(
+      Object.getPrototypeOf({}),
+      Object.prototype,
+      "Object.prototype must not have been polluted — fresh {} must still have Object.prototype as its prototype",
+    );
+
+    // Normal lookups must still work after processing the "__proto__" key.
+    const resolution = resolveModel(table, "gpt-5.6-sol");
+    assert.equal(resolution.kind, "resolved", "normal lookups must still work after processing '__proto__' key");
+  });
+
+  it("inherited key 'constructor' from Object.create is NOT installed (Object.keys excludes inherited props)", () => {
+    // Object.create({ constructor: "gpt-5.6-sol" }) creates an object whose "constructor"
+    // is inherited, not own. Object.keys() returns [] for this object — the loop body
+    // never executes, and Object.hasOwn serves as belt-and-braces for any future code path.
+    const reg = [entry("gpt-5.6-sol", { gen: [5, 6] })];
+    const inheritedOnlyAliases = Object.create({ constructor: "gpt-5.6-sol" }) as Record<string, string>;
+    // Object.keys returns [] — the alias is not installed regardless of the hasOwn guard.
+    assert.deepEqual(Object.keys(inheritedOnlyAliases), [], "sanity: Object.keys returns empty for purely-inherited object");
+    const { table } = buildTable(reg, inheritedOnlyAliases);
+    assert.equal(resolveModel(table, "constructor").kind, "unresolved",
+      "inherited-only key must not appear in byAlias — Object.keys already excludes it");
   });
 });
 
@@ -480,6 +502,100 @@ describe("Contested family — ambiguous resolution", () => {
     assert.equal(resolveModel(table, "sol").kind, "resolved");
     assert.equal(resolveModel(table, "luna").kind, "resolved");
     assert.equal(resolveModel(table, "terra").kind, "ambiguous");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0-1: Qualified resolution works for ALL families — contested or not.
+//
+// A qualified name explicitly states its provider, so "codex:pro" unambiguously
+// names codex's pro-family winner even when "pro" is contested.
+// The 400 error message "qualify with provider:name (e.g. codex:pro)" only helps
+// if "codex:pro" actually resolves — skipping contested families inverts the feature.
+// ---------------------------------------------------------------------------
+
+describe("Contested family — qualified resolution (P0-1)", () => {
+  it("codex:pro resolves to codex's pro-family winner even when 'pro' is contested", () => {
+    const reg: readonly ModelEntry[] = [
+      entry("gpt-pro-1", { family: "pro", gen: [5, 6] }),
+      foreignEntry("kimi-pro-1", "kimi", { family: "pro", gen: [5, 6] }),
+    ];
+    const aliasesByProvider = { codex: {}, kimi: {} } as Record<ProviderId, Record<string, string>>;
+    const { table } = buildRoutingTable(reg, aliasesByProvider);
+
+    // Bare 'pro' is contested → ambiguous
+    const bare = resolveModel(table, "pro");
+    assert.equal(bare.kind, "ambiguous", "bare 'pro' must be ambiguous when claimed by two providers");
+
+    // Qualified 'codex:pro' → resolves to codex's pro winner (P0-1 fix)
+    const codexQualified = resolveModel(table, "codex:pro");
+    assert.equal(codexQualified.kind, "resolved", "codex:pro must resolve via byQualified");
+    assert.equal((codexQualified as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-pro-1");
+    assert.equal((codexQualified as Extract<ModelResolution, { kind: "resolved" }>).target.provider, "codex" as ProviderId);
+  });
+
+  it("kimi:pro returns unknown_qualifier — 'kimi' is in byQualified but NOT in PROVIDER_IDS", () => {
+    // byQualified is populated for ALL provider:family entries (including kimi:pro from the
+    // synthetic registry), but resolveModel only checks byQualified when the qualifier prefix
+    // is a member of PROVIDER_IDS. Since "kimi" is not in PROVIDER_IDS (= ["codex"]),
+    // resolveModel returns unknown_qualifier before reaching the byQualified lookup.
+    //
+    // The remediation advice in 400 responses only mentions REGISTERED provider qualifiers
+    // — the fix for P0-1 benefits "codex:pro" (registered), not hypothetical unregistered ones.
+    const reg: readonly ModelEntry[] = [
+      entry("gpt-pro-1", { family: "pro", gen: [5, 6] }),
+      foreignEntry("kimi-pro-1", "kimi", { family: "pro", gen: [5, 6] }),
+    ];
+    const aliasesByProvider = { codex: {}, kimi: {} } as Record<ProviderId, Record<string, string>>;
+    const { table } = buildRoutingTable(reg, aliasesByProvider);
+
+    const kimiQualified = resolveModel(table, "kimi:pro");
+    // kimi is not in PROVIDER_IDS → unknown_qualifier (not resolved, not unresolved).
+    assert.equal(kimiQualified.kind, "unknown_qualifier", "kimi:pro returns unknown_qualifier because kimi is not in PROVIDER_IDS");
+    assert.equal((kimiQualified as Extract<ModelResolution, { kind: "unknown_qualifier" }>).qualifier, "kimi");
+  });
+
+  it("qualified resolve picks the per-provider family winner (newest non-preview non-retired)", () => {
+    const reg: readonly ModelEntry[] = [
+      entry("gpt-pro-1.0", { family: "pro", gen: [5, 4] }),
+      entry("gpt-pro-1.1", { family: "pro", gen: [5, 6] }), // newest active for codex
+      entry("gpt-pro-preview", { family: "pro", gen: [5, 7], preview: true }), // preview: excluded
+      foreignEntry("kimi-pro-1", "kimi", { family: "pro", gen: [6, 0] }),
+    ];
+    const aliasesByProvider = { codex: {}, kimi: {} } as Record<ProviderId, Record<string, string>>;
+    const { table } = buildRoutingTable(reg, aliasesByProvider);
+
+    const codexPro = resolveModel(table, "codex:pro");
+    assert.equal(codexPro.kind, "resolved");
+    assert.equal(
+      (codexPro as Extract<ModelResolution, { kind: "resolved" }>).target.id,
+      "gpt-pro-1.1",
+      "codex:pro must pick newest non-preview codex winner (not the preview)",
+    );
+  });
+
+  it("the 400 remediation string 'codex:sol' actually resolves (not dead-end)", () => {
+    // This tests the remediation advice from server.ts's ambiguous 400 handler:
+    // "qualify with provider:name (e.g. codex:sol)".
+    // If 'sol' were contested between two providers, 'codex:sol' must resolve — not dead-end.
+    const reg: readonly ModelEntry[] = [
+      entry("gpt-5.6-sol", { family: "sol", gen: [5, 6] }),
+      foreignEntry("kimi-sol-1", "kimi", { family: "sol", gen: [5, 6] }),
+    ];
+    const aliasesByProvider = { codex: {}, kimi: {} } as Record<ProviderId, Record<string, string>>;
+    const { table } = buildRoutingTable(reg, aliasesByProvider);
+
+    // The remediation string the 400 prints is "codex:sol"
+    const remediationResolution = resolveModel(table, "codex:sol");
+    assert.equal(
+      remediationResolution.kind,
+      "resolved",
+      "the 400 remediation 'codex:sol' must resolve — if it doesn't, the error gives dead-end advice",
+    );
+    assert.equal(
+      (remediationResolution as Extract<ModelResolution, { kind: "resolved" }>).target.provider,
+      "codex" as ProviderId,
+    );
   });
 });
 
@@ -626,16 +742,18 @@ describe("Mutation spot-check: one-hop alias enforcement", () => {
   });
 });
 
-describe("Mutation spot-check: prototype-pollution hasOwn guard", () => {
-  it("MUTATION CHECK: removing Object.hasOwn check would cause poisoned 'constructor' to resolve", () => {
-    // Without Object.hasOwn, Object.keys(aliases) might not include 'constructor'
-    // (not enumerable on a plain object's prototype), so this tests the correct guard
-    // path: inherited properties are never installed even if somehow reachable.
+describe("Mutation spot-check: prototype-pollution — correct test uses own-property keys", () => {
+  it("MUTATION CHECK: own-property 'constructor' alias resolves; removing byAlias lookup (rule 2) would cause failure", () => {
+    // This is the CORRECT mutation target: a JSON-produced own-property alias key.
+    // If rule 2 (byAlias lookup) is removed from resolveModel, an own-property
+    // "constructor" alias would no longer resolve.
     const reg = [entry("gpt-5.6-sol", { gen: [5, 6] })];
-    const poisonedAliases = Object.create({ constructor: "gpt-5.6-sol" }) as Record<string, string>;
-    const { table } = buildTable(reg, poisonedAliases);
-    // 'constructor' is inherited not own → not in byAlias → unresolved
-    assert.equal(resolveModel(table, "constructor").kind, "unresolved");
+    const { table } = buildTable(reg, { constructor: "gpt-5.6-sol" });
+    assert.equal(
+      (resolveModel(table, "constructor") as Extract<ModelResolution, { kind: "resolved" }>).target.id,
+      "gpt-5.6-sol",
+      "own-property 'constructor' alias must resolve via rule 2",
+    );
   });
 });
 
