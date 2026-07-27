@@ -119,9 +119,6 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   { id: "gpt-5.5", provider: "codex", gen: [5, 5] },
 ];
 
-/** All registry model ids in registry order. Byte-identical to the current DEFAULT_CODEX_MODELS. */
-export const ALL_MODEL_IDS: readonly string[] = MODEL_REGISTRY.map((e) => e.id);
-
 // ---------------------------------------------------------------------------
 // Anthropic-leg model names
 // ---------------------------------------------------------------------------
@@ -224,23 +221,18 @@ const buildOverrideMap = (overrides: Record<string, string>): Map<string, string
 };
 
 // ---------------------------------------------------------------------------
-// Public API
+// Phase-F decommission: kept for agent-scan.ts compatibility
 // ---------------------------------------------------------------------------
+// TODO(Phase F): Remove ALL_MODEL_IDS and makeModelResolver once agent-scan.ts
+// is updated to use the routing table directly.
+
+/** @deprecated Phase F will remove this — use buildRoutingTable for routing decisions. */
+export const ALL_MODEL_IDS: readonly string[] = MODEL_REGISTRY.map((e) => e.id);
 
 /**
- * Create a model name resolver for request-time use.
+ * @deprecated Phase F will remove this — use resolveModel + buildRoutingTable instead.
  *
- * Resolution order (exact contract — ADR-005 preserving):
- * 1. name is in routable set → itself (exact id always wins; no alias can hijack a real id)
- * 2. overrides has own-property name → its target (prototype-pollution safe)
- * 3. name is a family → newest non-preview, non-retired entry **in the routable set**
- *    (rule 3 scoping is the key invariant — "a pin pins")
- * 4. undefined → falls through to Anthropic, exactly as today
- *
- * @param registry  Model registry. Pass MODEL_REGISTRY in production; use a synthetic
- *                  registry in tests that need to check gen-tuple edge cases.
- * @param routable  Set of canonical ids permitted to go to Codex.
- * @param overrides config.codex.aliases — user-defined alias overrides.
+ * Create a model name resolver for request-time use. Kept for agent-scan.ts.
  */
 export const makeModelResolver = (
   registry: readonly ModelEntry[],
@@ -251,92 +243,13 @@ export const makeModelResolver = (
   const familyMap = buildFamilyMap(registry, routable);
 
   return (name: string): string | undefined => {
-    // Rule 1: exact id in routable set — always wins
     if (routable.has(name)) return name;
-    // Rule 2: own-property alias override (Map already built with hasOwn guard)
     const overrideTarget = overrideMap.get(name);
     if (overrideTarget !== undefined) return overrideTarget;
-    // Rule 3: derived family alias, scoped to routable set
     const familyTarget = familyMap.get(name);
     if (familyTarget !== undefined) return familyTarget;
-    // Rule 4: falls through — caller should route to Anthropic
     return undefined;
   };
-};
-
-/**
- * Normalize a model list through the full alias table.
- *
- * When list is undefined (codex.models key absent from config):
- *   Returns every non-retired registry id in registry order, plus any override
- *   targets not already in the registry (pressure valve — ensures override targets
- *   are routable even when models is not explicitly listed).
- *
- * When list is defined (codex.models explicitly present in config):
- *   Each entry is resolved: override alias → target, derived family → canonical,
- *   or verbatim for unknowns. Unknown ids are NEVER dropped (forward-compat).
- *   First-occurrence wins on dedup (alias + canonical collapse to one entry).
- *
- * Uses the FULL-REGISTRY alias table (no routable-set scoping) — normalization
- * determines what the routable set IS; the resolver's scoping is separate.
- *
- * @param registry Defaults to MODEL_REGISTRY. Injectable so tests can prove the
- *                 "a pin pins" property against a *future* registry — the property
- *                 spans normalization and resolution, so both halves must be
- *                 exercisable with the same synthetic registry.
- */
-export const normalizeModelList = (
-  list: readonly string[] | undefined,
-  overrides: Record<string, string>,
-  registry: readonly ModelEntry[] = MODEL_REGISTRY,
-): readonly string[] => {
-  const overrideMap = buildOverrideMap(overrides);
-
-  // Full-registry family map — no routable scoping here; normalization establishes the routable set
-  const nonRetiredIds = registry.filter((e) => e.retired !== true).map((e) => e.id);
-  // allRegistryIds spans retired AND active — used by the pressure valve to avoid
-  // re-adding a retired id that is already present in the registry (just not in the
-  // routable set). Without this, an alias target equal to a retired id would slip
-  // through the resultSet check (which is built from non-retired ids only).
-  const allRegistryIds = new Set(registry.map((e) => e.id));
-  const derivedFamilyMap = buildFamilyMap(registry, new Set(nonRetiredIds));
-
-  if (list === undefined) {
-    // All non-retired registry ids in registry order
-    const result = [...nonRetiredIds];
-    const resultSet = new Set<string>(result);
-    // Add override targets not in the FULL registry (pressure valve for forward-compat models).
-    // Checks allRegistryIds — not just resultSet — so retired registry ids are excluded too.
-    for (const target of overrideMap.values()) {
-      if (!allRegistryIds.has(target) && !resultSet.has(target)) {
-        result.push(target);
-        resultSet.add(target); // prevent dup if multiple overrides point to the same non-registry target
-      }
-    }
-    return result;
-  }
-
-  // List present: normalize through alias table, deduplicate, preserve unknowns verbatim.
-  // A real registry id always resolves to itself — mirrors makeModelResolver rule 1, so a
-  // config alias can never hijack a real model id on either side of the pipeline. Without
-  // this, `models: ["gpt-5.5"]` + `aliases: {"gpt-5.5": "gpt-5.6-sol"}` would make gpt-5.5
-  // unroutable and silently send its traffic upstream as gpt-5.6-sol.
-  const registryIds = new Set(registry.map((e) => e.id));
-  const resolveEntry = (name: string): string =>
-    registryIds.has(name) ? name : (overrideMap.get(name) ?? derivedFamilyMap.get(name) ?? name);
-
-  const seen = new Set<string>();
-  const result: string[] = [];
-
-  for (const item of list) {
-    const canonical = resolveEntry(item);
-    if (!seen.has(canonical)) {
-      seen.add(canonical);
-      result.push(canonical);
-    }
-  }
-
-  return result;
 };
 
 // ---------------------------------------------------------------------------
