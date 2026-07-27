@@ -4,7 +4,7 @@ import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { upstreamStatusToAnthropicError, toAnthropicErrorBody, toAnthropicErrorSse } from "./errors.js";
-import { respondJson, respondProxyError, readBoundedText } from "./provider-transport.js";
+import { respondJson, respondProxyError, readBoundedText, createFrameWriter } from "./provider-transport.js";
 import type { Config } from "./config.js";
 import type { Logger } from "./logger.js";
 import type { CodexAuthManager, CodexCredentials } from "./codex-auth.js";
@@ -234,34 +234,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
         // writeFrame races the drain wait against controller.signal so a client
         // that stops reading without closing cannot hold the connection open past
         // requestTimeoutMs. Project rule: every resource must have an explicit bound.
-        const writeFrame = (frame: string): Promise<void> =>
-          new Promise((resolve) => {
-            if (res.destroyed || res.write(frame)) {
-              resolve();
-              return;
-            }
-            // The signal may ALREADY be aborted by the time we get here (the total or
-            // idle timer can fire while an earlier frame was draining). addEventListener
-            // on an aborted signal never dispatches, so registering the abort listener
-            // first would wait forever: the request's cleanup() never runs and its
-            // concurrency slot is leaked for the lifetime of the process.
-            // Checked after res.write so a frame already handed to the socket still goes out.
-            if (controller.signal.aborted) {
-              resolve();
-              return;
-            }
-            const detach = (): void => {
-              res.off("drain", onDrain);
-              res.off("close", onClose);
-              controller.signal.removeEventListener("abort", onAbort);
-            };
-            const onDrain = (): void => { detach(); resolve(); };
-            const onClose = (): void => { detach(); resolve(); };
-            const onAbort = (): void => { detach(); resolve(); };
-            res.once("drain", onDrain);
-            res.once("close", onClose);
-            controller.signal.addEventListener("abort", onAbort, { once: true });
-          });
+        const writeFrame = createFrameWriter(res, controller.signal);
         try {
           await pipeline(bodyStream, parser, translator, async (source) => {
             for await (const chunk of source) await writeFrame(String(chunk));

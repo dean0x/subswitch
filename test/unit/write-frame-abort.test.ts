@@ -2,53 +2,57 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 
+import type { ServerResponse } from "node:http";
+import { createFrameWriter } from "../../src/provider-transport.js";
+
 /**
- * Tests that the writeFrame drain-wait races the abort signal.
+ * Tests the real createFrameWriter, not a copy of it.
  *
- * writeFrame is a closure inside createCodexHandler and cannot be exported
- * without coupling the module boundary. This test exercises the pattern
- * directly — same logic, same conditions — so any regression in the fix will
- * be visible here even though the helper is not exported.
- *
- * Scenario: a client stops reading without closing (TCP window full). The
- * socket's write() returns false and 'drain' never fires. Before the fix,
- * handleMessages would hang past requestTimeoutMs because writeFrame had
- * no timeout. After the fix, the AbortController fires and writeFrame
- * resolves, unblocking the pipeline.
+ * Scenario: a client stops reading without closing (TCP window full). write()
+ * returns false and 'drain' never fires, so the wait must be ended by the abort
+ * signal or by 'close' — never left hanging past requestTimeoutMs.
  */
 
-// Minimal ServerResponse lookalike: write() always returns false (back-pressure),
-// drain never fires, and close can be fired externally for other tests.
+// Minimal ServerResponse lookalike: write() returns false (back-pressure),
+// drain never fires, and close can be fired externally.
 class BlockingResponse extends EventEmitter {
   public destroyed = false;
   public write(_data: string): boolean { return false; }
 }
 
-// Replicate the fixed writeFrame closure.
 const makeWriteFrame = (
   res: BlockingResponse,
   signal: AbortSignal,
 ): ((frame: string) => Promise<void>) =>
-  (frame: string) =>
-    new Promise((resolve) => {
-      if (res.destroyed || res.write(frame)) {
-        resolve();
-        return;
-      }
-      const cleanup = (): void => {
-        res.off("drain", onDrain);
-        res.off("close", onClose);
-        signal.removeEventListener("abort", onAbort);
-      };
-      const onDrain = (): void => { cleanup(); resolve(); };
-      const onClose = (): void => { cleanup(); resolve(); };
-      const onAbort = (): void => { cleanup(); resolve(); };
-      res.once("drain", onDrain);
-      res.once("close", onClose);
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
+  createFrameWriter(res as unknown as ServerResponse, signal);
 
 describe("writeFrame abort-signal drain race", () => {
+  it("resolves when the signal is ALREADY aborted before the call", async () => {
+    const res = new BlockingResponse();
+    const controller = new AbortController();
+    // A total/idle timer can abort while an earlier frame is draining, so the very
+    // next writeFrame sees an already-aborted signal. addEventListener never fires
+    // on one, so without an explicit check this promise never settles — the request
+    // cleanup never runs and its concurrency slot leaks for the life of the process.
+    controller.abort();
+    const writeFrame = makeWriteFrame(res, controller.signal);
+
+    const settled = await Promise.race([
+      writeFrame("data: test\n\n").then(() => "resolved" as const),
+      new Promise<"hung">((r) => setTimeout(() => r("hung"), 200).unref()),
+    ]);
+    assert.equal(settled, "resolved", "writeFrame must not hang on an already-aborted signal");
+  });
+
+  it("registers no listeners when the signal is already aborted", async () => {
+    const res = new BlockingResponse();
+    const controller = new AbortController();
+    controller.abort();
+    await makeWriteFrame(res, controller.signal)("data: test\n\n");
+    assert.equal(res.listenerCount("drain"), 0, "no drain listener should remain");
+    assert.equal(res.listenerCount("close"), 0, "no close listener should remain");
+  });
+
   it("resolves immediately when res.write returns true (no drain needed)", async () => {
     const res = new BlockingResponse();
     const controller = new AbortController();

@@ -27,6 +27,49 @@ export const respondProxyError = (res: ServerResponse, error: ProxyError): void 
 };
 
 /**
+ * Build a backpressure-aware SSE frame writer bound to `res` and `signal`.
+ *
+ * Returns a function that resolves once the frame is handed to the socket, or
+ * once waiting becomes pointless. Every wait is bounded by one of three exits —
+ * 'drain', response 'close', or the abort signal — so a client that stops reading
+ * without closing cannot hold the request open past its timeout.
+ *
+ * Lives here rather than inline in a handler so tests exercise the real function.
+ * A hand-copied replica in a test keeps passing after the original drifts, which
+ * is exactly how the already-aborted case below went unnoticed.
+ */
+export const createFrameWriter = (
+  res: ServerResponse,
+  signal: AbortSignal,
+): ((frame: string) => Promise<void>) => (frame) =>
+  new Promise((resolve) => {
+    if (res.destroyed || res.write(frame)) {
+      resolve();
+      return;
+    }
+    // The signal may ALREADY be aborted here — a total/idle timer can fire while
+    // an earlier frame was draining. addEventListener on an aborted signal never
+    // dispatches, so registering below without this check waits forever: the
+    // request's cleanup never runs and its concurrency slot leaks for the life of
+    // the process. Checked after res.write so an in-flight frame still goes out.
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const detach = (): void => {
+      res.off("drain", onDrain);
+      res.off("close", onClose);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const onDrain = (): void => { detach(); resolve(); };
+    const onClose = (): void => { detach(); resolve(); };
+    const onAbort = (): void => { detach(); resolve(); };
+    res.once("drain", onDrain);
+    res.once("close", onClose);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+
+/**
  * Read at most `maxBytes` bytes from a WHATWG ReadableStream body.
  *
  * Safe to call with `null` (returns `""`). Cancels the reader after reading so
