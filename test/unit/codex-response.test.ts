@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { noopLogger, createConsoleLogger } from "../../src/logger.js";
+import type { ProviderId } from "../../src/models.js";
 import {
   aggregateFrames,
   createAnthropicSseTranslator,
@@ -26,7 +27,22 @@ interface TranslateRun {
   readonly reasoningPuts: { callId: string; items: readonly unknown[] }[];
 }
 
-const translate = async (sse: string, options: { readonly providerName?: string } = {}): Promise<TranslateRun> => {
+/**
+ * SYNTHETIC-PROVIDER CAST — the single sanctioned cast in this file.
+ *
+ * `providerId` is now required and typed as the closed `ProviderId` union, which is
+ * `"codex"` alone today. A test that can only ever pass `"codex"` cannot distinguish a
+ * threaded provider id from a hardcoded literal, so every assertion about
+ * parameterization would be vacuous. Casting through `string` (not a direct
+ * `as ProviderId`, which TypeScript rejects outright) buys a second value to test with.
+ *
+ * Remove this helper and all its callers when a second real provider lands and
+ * PROVIDER_IDS expands. (mirrors test/unit/routing-table.test.ts)
+ */
+const otherProviderName: string = "kimi";
+const OTHER_PROVIDER = otherProviderName as ProviderId;
+
+const translate = async (sse: string, options: { readonly providerId?: ProviderId } = {}): Promise<TranslateRun> => {
   const frames: string[] = [];
   const reasoningPuts: TranslateRun["reasoningPuts"] = [];
   await pipeline(
@@ -36,9 +52,7 @@ const translate = async (sse: string, options: { readonly providerName?: string 
       model: "gpt-5.5",
       logger: noopLogger,
       onReasoningItems: (callId, items) => reasoningPuts.push({ callId, items }),
-      // Omitted (not passed as undefined) when absent so the translator's own
-      // `?? "codex"` default is what the default-provider tests exercise.
-      ...(options.providerName !== undefined ? { providerName: options.providerName } : {}),
+      providerId: options.providerId ?? "codex",
     }),
     async (source) => {
       for await (const frame of source) frames.push(String(frame));
@@ -229,7 +243,7 @@ describe("createAnthropicSseTranslator", () => {
     assert.equal((delta["delta"] as Record<string, unknown>)["stop_reason"], "tool_use");
     assert.deepEqual(delta["usage"], { input_tokens: 66, output_tokens: 18 });
 
-    const aggregated = aggregateFrames(frames);
+    const aggregated = aggregateFrames(frames, "codex");
     assert.ok(aggregated.ok);
     const message = aggregated.value.kind === "message" ? aggregated.value.message : {};
     assert.deepEqual(message["content"], [{ type: "tool_use", id: "call_live_1", name: "list_files", input: { path: "." } }]);
@@ -271,7 +285,7 @@ describe("createAnthropicSseTranslator", () => {
     const types = frameTypes(frames);
     assert.ok(types.includes("error"), `expected an error frame, got ${types.join(",")}`);
     assert.ok(!types.includes("message_stop"), "terminal frames must not follow the error frame");
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "error");
   });
@@ -289,7 +303,7 @@ describe("createAnthropicSseTranslator", () => {
     ].join('\n');
     const { frames } = await translate(sse);
     assert.ok(frameTypes(frames).includes("error"), `expected error frame, got: ${frameTypes(frames).join(",")}`);
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "error");
   });
@@ -304,7 +318,7 @@ describe("createAnthropicSseTranslator", () => {
     ].join('\n');
     const { frames } = await translate(sse);
     assert.ok(frameTypes(frames).includes("error"), `expected error frame, got: ${frameTypes(frames).join(",")}`);
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "error");
   });
@@ -335,7 +349,7 @@ describe("createAnthropicSseTranslator", () => {
     ].join('\n');
     const { frames } = await translate(sse);
     assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
     const msg = result.value.kind === "message" ? result.value.message : {};
@@ -377,7 +391,7 @@ describe("createAnthropicSseTranslator", () => {
     const { frames } = await translate(sse);
     assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
     assert.ok(frameTypes(frames).includes("message_stop"), "must produce message_stop");
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
     const msg = result.value.kind === "message" ? result.value.message : {};
@@ -409,7 +423,7 @@ describe("createAnthropicSseTranslator", () => {
     ].join('\n');
     const { frames } = await translate(sse);
     assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
     const msg = result.value.kind === "message" ? result.value.message : {};
@@ -444,7 +458,7 @@ describe("createAnthropicSseTranslator", () => {
     ].join('\n');
     const { frames } = await translate(sse);
     assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
     const msg = result.value.kind === "message" ? result.value.message : {};
@@ -462,7 +476,7 @@ describe("createAnthropicSseTranslator", () => {
       "message_delta",
       "message_stop",
     ]);
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
     const msg = result.value.kind === "message" ? result.value.message : {};
@@ -494,7 +508,7 @@ describe("cache observability logging", () => {
     await pipeline(
       Readable.from([Buffer.from(cachedTokensSse)]),
       createSseParser(1024 * 1024),
-      createAnthropicSseTranslator({ model: "gpt-5.5", logger }),
+      createAnthropicSseTranslator({ model: "gpt-5.5", logger, providerId: "codex" }),
       async (source) => {
         for await (const _ of source) { /* drain */ }
       },
@@ -511,7 +525,7 @@ describe("cache observability logging", () => {
     await pipeline(
       Readable.from([Buffer.from(cachedTokensSse)]),
       createSseParser(1024 * 1024),
-      createAnthropicSseTranslator({ model: "gpt-5.5", logger, conversationKey: key }),
+      createAnthropicSseTranslator({ model: "gpt-5.5", logger, conversationKey: key, providerId: "codex" }),
       async (source) => {
         for await (const _ of source) { /* drain */ }
       },
@@ -528,7 +542,7 @@ describe("cache observability logging", () => {
 describe("aggregateFrames", () => {
   it("folds streamed frames into a complete message", async () => {
     const { frames } = await translate(loadSse("tool-call-with-reasoning.sse"));
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
     const message = result.value.kind === "message" ? result.value.message : {};
@@ -539,7 +553,7 @@ describe("aggregateFrames", () => {
 
   it("folds text frames into a text message", async () => {
     const { frames } = await translate(loadSse("text-only.sse"));
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     const message = result.value.kind === "message" ? result.value.message : {};
     assert.deepEqual(message["content"], [{ type: "text", text: "Hello from codex" }]);
@@ -548,13 +562,13 @@ describe("aggregateFrames", () => {
 
   it("surfaces stream errors as an error outcome", async () => {
     const { frames } = await translate(loadSse("failed.sse"));
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "error");
   });
 
   it("errors when no message was produced", () => {
-    const result = aggregateFrames([]);
+    const result = aggregateFrames([], "codex");
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "upstream");
   });
@@ -567,7 +581,7 @@ describe("aggregateFrames", () => {
       'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
       'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
       'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"orphaned"}}\n\n',
-    ]);
+    ], "codex");
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "upstream");
   });
@@ -585,7 +599,7 @@ describe("aggregateFrames", () => {
       'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
       'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":5,"output_tokens":3}}\n\n',
       'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-    ]);
+    ], "codex");
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "upstream");
     assert.match(result.error.message, /unparseable tool_use/);
@@ -603,7 +617,7 @@ describe("aggregateFrames", () => {
       'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
       'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":5,"output_tokens":2}}\n\n',
       'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-    ]);
+    ], "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
     const msg = result.value.kind === "message" ? result.value.message : {};
@@ -619,7 +633,7 @@ describe("aggregateFrames", () => {
       'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
       'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":5,"output_tokens":2}}\n\n',
       'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-    ]);
+    ], "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
     const msg = result.value.kind === "message" ? result.value.message : {};
@@ -628,22 +642,25 @@ describe("aggregateFrames", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Provider-name parameterization.
+// Provider-id parameterization.
 //
 // Four client-visible fallback messages on this leg name the provider they came
-// from. Each is pinned TWICE against the same input: once under the default —
-// which must stay byte-identical "codex …" — and once under a non-default name.
+// from. Each is pinned TWICE against the same input: once as "codex", which must
+// stay byte-identical, and once as OTHER_PROVIDER.
 //
-// The pair is what makes the assertions falsifiable in both directions:
-//   - re-hardcoding "codex" into a message body fails ONLY the non-default case;
-//   - moving the hardcode into the `?? "codex"` / `providerName = "codex"`
-//     DEFAULT fails ONLY the default case.
+// The pair is what keeps the assertions falsifiable in both directions:
+//   - re-hardcoding "codex" into a message body fails ONLY the OTHER_PROVIDER case;
+//   - rendering some other constant fails ONLY the "codex" case.
 // A single-sided test would pass under one of those two regressions.
+//
+// `providerId` is now required with no default, so the previous third failure mode —
+// a hardcode hiding inside a `?? "codex"` fallback — is gone by construction: there
+// is no fallback left to hide in.
 //
 // Assertions are on the fully rendered message, not on the interpolation.
 // ---------------------------------------------------------------------------
 
-describe("provider-name parameterization", () => {
+describe("provider-id parameterization", () => {
   // (2) flush() — stream opened, block announced, but EOF arrived with no delta
   // and no terminal lifecycle event.
   const truncatedNoContentSse = [
@@ -671,9 +688,45 @@ describe("provider-name parameterization", () => {
     'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"orphaned"}}\n\n',
   ];
 
+  // --- (0) message_start id fallback when the upstream never supplies one ---
+
+  // The stream opens on output_item.added, so ensureStarted() runs with no upstream id
+  // and message_start must fall back to a synthesised one. response.completed arrives
+  // later but cannot backfill the id — `started` is already true by then.
+  const noUpstreamIdSse = [
+    "event: response.output_item.added",
+    'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m_noid","role":"assistant"}}',
+    "",
+    "event: response.output_text.delta",
+    'data: {"type":"response.output_text.delta","output_index":0,"item_id":"m_noid","delta":"hi"}',
+    "",
+    "event: response.output_item.done",
+    'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m_noid","role":"assistant"}}',
+    "",
+    "event: response.completed",
+    'data: {"type":"response.completed","response":{"id":"resp_noid","model":"gpt-5.5","status":"completed"}}',
+    "",
+    "",
+  ].join("\n");
+
+  const messageStartId = (frames: readonly string[]): unknown =>
+    (frameData(frames[0]!)["message"] as Record<string, unknown>)["id"];
+
+  it("derives the message_start fallback id from the provider id", async () => {
+    // The fallback id is the one provider-derived value with no other observable
+    // effect, so without this pair it can be re-hardcoded to "msg_codex" silently.
+    const { frames } = await translate(noUpstreamIdSse, { providerId: OTHER_PROVIDER });
+    assert.equal(messageStartId(frames), "msg_kimi");
+  });
+
+  it("keeps the Codex leg's fallback message id byte-identical", async () => {
+    const { frames } = await translate(noUpstreamIdSse);
+    assert.equal(messageStartId(frames), "msg_codex");
+  });
+
   // --- (1) reconcileOpenBlocks: every delta dropped, no block ever got content ---
 
-  it("names the default provider when all content deltas matched no block", async () => {
+  it("names the codex provider when all content deltas matched no block", async () => {
     const { frames } = await translate(loadSse("delta-id-mismatch.sse"));
     assert.equal(
       errorFrameMessage(frames),
@@ -682,14 +735,14 @@ describe("provider-name parameterization", () => {
     );
   });
 
-  it("names a non-default provider when all content deltas matched no block", async () => {
-    const { frames } = await translate(loadSse("delta-id-mismatch.sse"), { providerName: "kimi" });
+  it("names a second provider when all content deltas matched no block", async () => {
+    const { frames } = await translate(loadSse("delta-id-mismatch.sse"), { providerId: OTHER_PROVIDER });
     assert.equal(errorFrameMessage(frames), "kimi stream dropped content deltas that matched no content block");
   });
 
   // --- (2) flush(): truncated stream with no recoverable content ---
 
-  it("names the default provider when the stream ends with no terminal event or content", async () => {
+  it("names the codex provider when the stream ends with no terminal event or content", async () => {
     const { frames } = await translate(truncatedNoContentSse);
     assert.equal(
       errorFrameMessage(frames),
@@ -698,15 +751,15 @@ describe("provider-name parameterization", () => {
     );
   });
 
-  it("names a non-default provider when the stream ends with no terminal event or content", async () => {
-    const { frames } = await translate(truncatedNoContentSse, { providerName: "kimi" });
+  it("names a second provider when the stream ends with no terminal event or content", async () => {
+    const { frames } = await translate(truncatedNoContentSse, { providerId: OTHER_PROVIDER });
     assert.equal(errorFrameMessage(frames), "kimi stream ended without a terminal event or recoverable content");
   });
 
   // --- (3) aggregateFrames: unparseable tool_use arguments ---
 
-  it("names the default provider when tool_use arguments are unparseable", () => {
-    const result = aggregateFrames(unparseableToolUseFrames);
+  it("names the codex provider when tool_use arguments are unparseable", () => {
+    const result = aggregateFrames(unparseableToolUseFrames, "codex");
     assert.ok(!result.ok);
     assert.equal(
       result.error.message,
@@ -715,16 +768,16 @@ describe("provider-name parameterization", () => {
     );
   });
 
-  it("names a non-default provider when tool_use arguments are unparseable", () => {
-    const result = aggregateFrames(unparseableToolUseFrames, "kimi");
+  it("names a second provider when tool_use arguments are unparseable", () => {
+    const result = aggregateFrames(unparseableToolUseFrames, OTHER_PROVIDER);
     assert.ok(!result.ok);
     assert.equal(result.error.message, "kimi stream ended with unparseable tool_use arguments");
   });
 
   // --- (4) aggregateFrames: unclosed content blocks that carry content ---
 
-  it("names the default provider when a content block carrying text was never closed", () => {
-    const result = aggregateFrames(unclosedBlockFrames);
+  it("names the codex provider when a content block carrying text was never closed", () => {
+    const result = aggregateFrames(unclosedBlockFrames, "codex");
     assert.ok(!result.ok);
     assert.equal(
       result.error.message,
@@ -733,8 +786,8 @@ describe("provider-name parameterization", () => {
     );
   });
 
-  it("names a non-default provider when a content block carrying text was never closed", () => {
-    const result = aggregateFrames(unclosedBlockFrames, "kimi");
+  it("names a second provider when a content block carrying text was never closed", () => {
+    const result = aggregateFrames(unclosedBlockFrames, OTHER_PROVIDER);
     assert.ok(!result.ok);
     assert.equal(result.error.message, "kimi stream ended with 1 unclosed content block(s)");
   });

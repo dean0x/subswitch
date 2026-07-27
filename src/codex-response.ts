@@ -3,6 +3,8 @@ import { StringDecoder } from "node:string_decoder";
 import { type Result, ok, err } from "./result.js";
 import { type AnthropicErrorType, type ProxyError, toAnthropicErrorSse } from "./errors.js";
 import type { Logger } from "./logger.js";
+import { providerEvents } from "./provider-events.js";
+import type { ProviderId } from "./models.js";
 import {
   ResponsesDeltaEventSchema,
   ResponsesErrorEventSchema,
@@ -104,16 +106,13 @@ export interface TranslatorOptions {
    *  key stability across turns can be verified without logging the full key. */
   readonly conversationKey?: string;
   /**
-   * Provider display name used in client-visible fallback error messages.
-   * Defaults to `"codex"` so all existing Codex error messages are byte-identical.
+   * The provider whose stream this translator is reading. Required, and drawn from
+   * the closed `ProviderId` union: it names the provider in client-visible fallback
+   * error messages, seeds the `message_start` fallback id, and derives this
+   * translator's log event names (see `provider-events.ts` — a config-supplied
+   * string must never reach an event name).
    */
-  readonly providerName?: string;
-  /**
-   * Fallback message id placed in the `message_start` frame when the upstream
-   * response does not provide one. Defaults to `msg_${providerName}`, i.e.
-   * `"msg_codex"` for the Codex leg — set this only to override that derivation.
-   */
-  readonly messageIdFallback?: string;
+  readonly providerId: ProviderId;
 }
 
 export const createAnthropicSseTranslator = (options: TranslatorOptions): Transform => {
@@ -157,11 +156,11 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
 
   // Resolve provider-specific display values once at construction time (not per-chunk)
   // so the hot streaming path stays monomorphic. [preserves performance invariant]
-  const providerName = options.providerName ?? "codex";
-  // Derived from providerName, not defaulted independently: a handler constructed
-  // with providerName "kimi" previously said "kimi stream error" but still emitted
-  // id "msg_codex". Codex still resolves to "msg_codex", byte-identical.
-  const msgIdFallback = options.messageIdFallback ?? `msg_${providerName}`;
+  const providerId = options.providerId;
+  const events = providerEvents(providerId);
+  // Derived, never independently defaulted: a translator reading a "kimi" stream must
+  // not emit id "msg_codex". Codex still resolves to "msg_codex", byte-identical.
+  const msgIdFallback = `msg_${providerId}`;
 
   /** Reconcile blocks the upstream left open at a terminal point, so a response that
    *  carried content upstream is never delivered as a healthy-looking empty turn.
@@ -182,7 +181,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   const reconcileOpenBlocks = (push: (frameText: string) => void): boolean => {
     if (sawUnmatchedDelta && blocksWithContent.size === 0) {
       openBlockIndices.clear();
-      push(toAnthropicErrorSse("api_error", `${providerName} stream dropped content deltas that matched no content block`));
+      push(toAnthropicErrorSse("api_error", `${providerId} stream dropped content deltas that matched no content block`));
       return true;
     }
     for (const index of openBlockIndices) {
@@ -212,7 +211,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
       try {
         json = JSON.parse(sseEvent.data);
       } catch {
-        options.logger.log("debug", "codex_sse_unparseable_data");
+        options.logger.log("debug", events.sseUnparseableData);
         callback();
         return;
       }
@@ -377,10 +376,10 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           // stability across turns.
           const cachedTokens = response.usage?.input_tokens_details?.cached_tokens;
           if (cachedTokens !== undefined && cachedTokens > 0) {
-            options.logger.log("debug", "codex_cache_tokens", { cachedTokens });
+            options.logger.log("debug", events.cacheTokens, { cachedTokens });
           }
           if (options.conversationKey !== undefined) {
-            options.logger.log("debug", "codex_session_key", {
+            options.logger.log("debug", events.sessionKey, {
               // First 8 hex chars of the UUID (chars before the first dash).
               sessionKey: options.conversationKey.slice(0, 8),
             });
@@ -392,20 +391,20 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const message =
             parsed.success && typeof parsed.data.response.error?.["message"] === "string"
               ? (parsed.data.response.error["message"] as string)
-              : `${providerName} response failed`;
+              : `${providerId} response failed`;
           ensureStarted();
           emitError("api_error", message);
           break;
         }
         case "error": {
           const parsed = ResponsesErrorEventSchema.safeParse(json);
-          const message = parsed.success && parsed.data.message != null ? parsed.data.message : `${providerName} stream error`;
+          const message = parsed.success && parsed.data.message != null ? parsed.data.message : `${providerId} stream error`;
           ensureStarted();
           emitError("api_error", message);
           break;
         }
         default:
-          options.logger.log("debug", "codex_sse_event_ignored", { eventType: type });
+          options.logger.log("debug", events.sseEventIgnored, { eventType: type });
           break;
       }
       callback();
@@ -426,7 +425,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           // arrived and no terminal lifecycle event was received.  This is a truncated
           // stream — emit an error so the client gets 502 rather than a misleading
           // 200 with empty or null content.
-          this.push(toAnthropicErrorSse("api_error", `${providerName} stream ended without a terminal event or recoverable content`));
+          this.push(toAnthropicErrorSse("api_error", `${providerId} stream ended without a terminal event or recoverable content`));
         }
         // If !started: aggregateFrames will return err("no message_start") → 502.
       }
@@ -468,7 +467,7 @@ interface PendingBlock {
   partialJson: string;
 }
 
-export const aggregateFrames = (frames: readonly string[], providerName = "codex"): Result<AggregateOutcome, ProxyError> => {
+export const aggregateFrames = (frames: readonly string[], providerId: ProviderId): Result<AggregateOutcome, ProxyError> => {
   let message: Record<string, unknown> | undefined;
   const blocks = new Map<number, PendingBlock>();
   const content: Record<string, unknown>[] = [];
@@ -520,7 +519,7 @@ export const aggregateFrames = (frames: readonly string[], providerName = "codex
             // invented empty arguments. Note: partialJson === "" and whitespace-only both
             // fall through to the {} default above; this catch is only hit when there is
             // actual non-whitespace content to parse but it is malformed JSON.
-            return err({ kind: "upstream", message: `${providerName} stream ended with unparseable tool_use arguments` });
+            return err({ kind: "upstream", message: `${providerId} stream ended with unparseable tool_use arguments` });
           }
           content.push({ type: "tool_use", id: pending.block["id"], name: pending.block["name"], input });
         }
@@ -537,7 +536,7 @@ export const aggregateFrames = (frames: readonly string[], providerName = "codex
         return ok({
           kind: "error",
           errorType: (errorBody?.["type"] as AnthropicErrorType | undefined) ?? "api_error",
-          message: (errorBody?.["message"] as string | undefined) ?? `${providerName} upstream error`,
+          message: (errorBody?.["message"] as string | undefined) ?? `${providerId} upstream error`,
         });
       }
       default:
@@ -546,7 +545,7 @@ export const aggregateFrames = (frames: readonly string[], providerName = "codex
   }
 
   if (message === undefined) {
-    return err({ kind: "upstream", message: `${providerName} stream ended before producing a message` });
+    return err({ kind: "upstream", message: `${providerId} stream ended before producing a message` });
   }
   // Every content_block_start must be matched by a content_block_stop before we can
   // assemble a valid response.  The translator's reconcileOpenBlocks() synthesises stops
@@ -556,7 +555,7 @@ export const aggregateFrames = (frames: readonly string[], providerName = "codex
   // have actual content, and silently discard unclosed blocks with no content.
   const unclosedWithContent = [...blocks.values()].filter((p) => p.text !== "" || p.partialJson !== "");
   if (unclosedWithContent.length > 0) {
-    return err({ kind: "upstream", message: `${providerName} stream ended with ${unclosedWithContent.length} unclosed content block(s)` });
+    return err({ kind: "upstream", message: `${providerId} stream ended with ${unclosedWithContent.length} unclosed content block(s)` });
   }
   return ok({
     kind: "message",

@@ -221,6 +221,15 @@ export interface ProviderRuntimeConfig {
   readonly baseUrl: string;
   /** Shell command that obtains this provider's credential, quoted in doctor remediation. */
   readonly loginCommand: string;
+  /**
+   * Hostname this provider's API is expected to live on.
+   *
+   * A `baseUrl` pointing anywhere else sends a subscription credential to a
+   * third-party host, so buildDeps warns at startup when the two differ. Kept here
+   * rather than as a constant in server.ts so the check is per-provider by
+   * construction — one provider's default host can never be used to vet another's.
+   */
+  readonly defaultHost: string;
 }
 
 /**
@@ -237,6 +246,7 @@ const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) =>
     authFile: config.providers.codex.authFile,
     baseUrl: config.providers.codex.baseUrl,
     loginCommand: "codex login",
+    defaultHost: "chatgpt.com",
   }),
 };
 

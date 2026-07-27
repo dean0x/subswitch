@@ -6,6 +6,7 @@ import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import { aliasesByProvider, providerConfigFor, type Config } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
+import { providerEvents } from "./provider-events.js";
 import { decideRoute } from "./router.js";
 import { createAnthropicForwarder, type AnthropicForwarder } from "./anthropic-passthrough.js";
 import { CodexAuthManager, createFsAuthFileStore } from "./codex-auth.js";
@@ -43,9 +44,6 @@ export interface ServerDeps {
   readonly resolve: (name: string) => ModelResolution;
 }
 
-/** The default Codex API host. Used to emit a startup warning when overridden. */
-const DEFAULT_CODEX_HOST = "chatgpt.com";
-
 /**
  * Create and wire the Codex provider handler.
  *
@@ -62,36 +60,40 @@ const DEFAULT_CODEX_HOST = "chatgpt.com";
  * shape — headers-out instead of token-out — so it was removed; the type-level
  * barrier is deferred to the branch that wires a second credential).
  */
-const createCodexProvider = (config: Config, logger: Logger): ProviderHandler =>
-  createCodexHandler({
-    config,
+const createCodexProvider = (config: Config, logger: Logger): ProviderHandler => {
+  const provider = config.providers.codex;
+  return createCodexHandler({
+    providerId: "codex",
+    provider,
+    pingIntervalMs: config.limits.pingIntervalMs,
+    loginCommand: providerConfigFor(config, "codex").loginCommand,
     logger,
     auth: new CodexAuthManager({
-      store: createFsAuthFileStore(config.providers.codex.authFile),
-      oauthTokenUrl: config.providers.codex.oauthTokenUrl,
+      store: createFsAuthFileStore(provider.authFile),
+      oauthTokenUrl: provider.oauthTokenUrl,
       logger,
     }),
-    cache: new ReasoningCache(
-      config.providers.codex.reasoningCache.maxEntries,
-      config.providers.codex.reasoningCache.maxBytes,
-    ),
+    cache: new ReasoningCache(provider.reasoningCache.maxEntries, provider.reasoningCache.maxBytes),
   });
+};
 
 /** The only wiring site: every production dependency is constructed here. */
 export const buildDeps = (config: Config): ServerDeps => {
   const logger = createConsoleLogger(config.logLevel);
 
-  // Warn when the configured base URL host differs from the expected default.
-  // A refreshable subscription credential pointed at an arbitrary host sends the
-  // OAuth token there — warn at startup so operators notice immediately.
+  // Warn when a provider's configured base URL host differs from its own expected
+  // default. A refreshable subscription credential pointed at an arbitrary host sends
+  // the OAuth token there — warn at startup so operators notice immediately.
   // z.url() in the config schema guarantees baseUrl is a valid URL here.
-  try {
-    const configHost = new URL(config.providers.codex.baseUrl).hostname;
-    if (configHost !== DEFAULT_CODEX_HOST) {
-      logger.log("warn", "codex_base_url_override_detected");
+  for (const id of PROVIDER_IDS) {
+    const { baseUrl, defaultHost } = providerConfigFor(config, id);
+    try {
+      if (new URL(baseUrl).hostname !== defaultHost) {
+        logger.log("warn", providerEvents(id).baseUrlOverrideDetected);
+      }
+    } catch {
+      // Unreachable: z.url() already validated the URL during config parsing.
     }
-  } catch {
-    // Unreachable: z.url() already validated the URL during config parsing.
   }
 
   // Build the routing table once. The resolver is a pure closure over this table;

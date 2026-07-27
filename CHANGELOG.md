@@ -69,6 +69,11 @@ An old config file is **rejected at load** with an error that names each key and
 replacement. This is intentional: Zod's default behaviour strips unknown keys, so
 without the detection gate every custom setting would silently revert to defaults.
 
+For the same reason, a `providers.<id>` block written under an id subswitch does not
+ship — a typo like `providers.codexx`, or a provider from a future release — is also
+**rejected at load**, naming the offending key and listing the known provider ids.
+Such a block would otherwise be stripped by the schema and do nothing at all.
+
 ### Changed / Behavior
 
 - **`codex.models` deleted**: the user-maintained model allowlist is gone. The compiled-in
@@ -90,18 +95,27 @@ without the detection gate every custom setting would silently revert to default
   count and target hostname, rather than a single Codex-only line.
 - **Renames**: `codexStatusToAnthropicError` → `upstreamStatusToAnthropicError`;
   `isAnthropicModelName` → `isReservedAnthropicName`.
+- **Resolved config is keyed by provider id**: the runtime `Config` now exposes
+  `providers.<id>.*` instead of a top-level `codex` block, matching the on-disk shape.
+  `anthropic` deliberately stays top-level — it is the privileged default leg, not a
+  peer provider. Provider totality is now compile-enforced at every site (schemas,
+  resolvers, accessors, alias records, handler table), replacing two comments that
+  asked contributors to remember. The **on-disk format is unchanged** by this.
+- **The provider handler is genuinely provider-neutral**: it receives its own config
+  slice rather than the whole `Config`, takes a required `providerId` from the closed
+  `ProviderId` union rather than an optional display name no caller ever set, and
+  derives its log event names from that id. The Codex leg's output and log records are
+  byte-identical — `codex_effort_applied` and friends are unchanged.
+- **Log event tokens are sanitized** the same way field values already were (newlines
+  stripped, whitespace/`=` quoted). The closed `FIELD_KEYS` allow-list is untouched;
+  this is a different axis. Event names are constrained at compile time to the
+  `ProviderId` union, so a config-supplied string cannot become an event name.
 
 ### Known limitations and deferred work
 
 These items are deliberately deferred — they are real constraints that should be fixed
 before adding a second production provider:
 
-- **`codex-handler` is not yet provider-neutral**: `providerName` is parameterized but
-  never set by any caller, and five `config.codex.*` reads plus five `codex_*` log event
-  names are hardcoded. Deferred to the branch that adds a second provider.
-- **Runtime `Config` still carries a top-level `codex` block** rather than
-  `providers.<id>.*`. The on-disk shape generalized; the runtime shape did not. Moving it
-  cascades into codex-handler and all call sites — deferred with the second provider.
 - **SSE parser boundary scan is effectively quadratic in pathological cases**: the scan
   offset bounds the regex to O(new bytes), but `buffer.slice()` allocates per chunk and
   forces V8 to flatten the cons-string. Measured 37 / 138 / 557 ms at 2 / 4 / 8 MiB.

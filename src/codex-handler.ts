@@ -5,8 +5,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { upstreamStatusToAnthropicError, toAnthropicErrorBody, toAnthropicErrorSse } from "./errors.js";
 import { respondJson, respondProxyError, readBoundedText, createFrameWriter } from "./provider-transport.js";
-import type { Config } from "./config.js";
+import type { CodexProviderConfig } from "./config.js";
 import type { Logger } from "./logger.js";
+import { providerEvents } from "./provider-events.js";
+import type { ProviderId } from "./models.js";
 import type { CodexAuthManager, CodexCredentials } from "./codex-auth.js";
 import type { ReasoningCache } from "./reasoning-cache.js";
 import { estimateTokens, translateRequest } from "./codex-request.js";
@@ -17,18 +19,38 @@ import { AnthropicRequestSchema } from "./anthropic-wire-types.js";
 const ERROR_BODY_PEEK_BYTES = 2048;
 
 export interface CodexHandlerDeps {
-  readonly config: Config;
+  /**
+   * This provider's identity. Required, and drawn from the closed `ProviderId` union
+   * — deliberately NOT an optional `providerName?: string`.
+   *
+   * The optional-with-a-default form is precisely why the previous parameterization
+   * was inert: no caller ever had to think about it, so every path resolved to the
+   * `?? "codex"` default and nothing downstream was ever exercised with a real second
+   * value. Required means a second provider physically cannot forget to pass one, and
+   * closed-union means the value is safe to derive log event names from (see
+   * `provider-events.ts` — the event token is a log-injection surface).
+   */
+  readonly providerId: ProviderId;
+  /**
+   * This provider's own config slice — NOT the whole `Config`. The handler cannot
+   * reach another provider's credentials, base URL, or aliases, and cannot read
+   * global settings that were never meant to be per-provider.
+   */
+  readonly provider: CodexProviderConfig;
+  /** The one cross-cutting limit this handler reads; everything else comes from `provider`. */
+  readonly pingIntervalMs: number;
+  /**
+   * Shell command that obtains this provider's credential, quoted verbatim in the
+   * client-visible auth-failure message. Taken from config rather than synthesised as
+   * `${providerId} login`: a provider whose id is `kimi` may well log in with
+   * `kimi auth login`, and inventing the wrong command is worse than naming none.
+   */
+  readonly loginCommand: string;
   readonly logger: Logger;
   readonly auth: CodexAuthManager;
   readonly cache: ReasoningCache;
   readonly fetchImpl?: typeof fetch;
   readonly newSessionId?: () => string;
-  /**
-   * Display name used in client-visible error messages (e.g. "codex upstream unreachable").
-   * Defaults to `"codex"`. A second provider passes its own name so failures say
-   * "kimi upstream unreachable" rather than implying the Codex leg failed.
-   */
-  readonly providerName?: string;
 }
 
 export interface CodexHandler {
@@ -51,16 +73,16 @@ export interface CodexHandler {
 }
 
 export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
-  const { config, logger, auth, cache } = deps;
+  const { providerId, provider, logger, auth, cache, loginCommand, pingIntervalMs } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const newSessionId = deps.newSessionId ?? randomUUID;
-  // providerName drives client-visible error strings; defaults to "codex" so
-  // every existing error message is byte-identical and no pinned test assertions change.
-  const providerName = deps.providerName ?? "codex";
-  const responsesUrl = `${config.providers.codex.baseUrl.replace(/\/$/, "")}/responses`;
-  const requestTimeoutMs = config.providers.codex.requestTimeoutMs;
-  const streamIdleTimeoutMs = config.providers.codex.streamIdleTimeoutMs;
-  const maxSseEventBytes = config.providers.codex.maxSseEventBytes;
+  // Event names resolved once here, not per request: the hot path does no string work,
+  // and there is exactly one place to audit that every name comes from `providerId`.
+  const events = providerEvents(providerId);
+  const responsesUrl = `${provider.baseUrl.replace(/\/$/, "")}/responses`;
+  const requestTimeoutMs = provider.requestTimeoutMs;
+  const streamIdleTimeoutMs = provider.streamIdleTimeoutMs;
+  const maxSseEventBytes = provider.maxSseEventBytes;
 
   const buildHeaders = (credentials: CodexCredentials, sessionId: string): Record<string, string> => ({
     authorization: `Bearer ${credentials.accessToken}`,
@@ -75,7 +97,7 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
     session_id: sessionId,
     accept: "text/event-stream",
     "content-type": "application/json",
-    "user-agent": config.providers.codex.userAgent,
+    "user-agent": provider.userAgent,
   });
 
   const handleMessages = async (_req: IncomingMessage, res: ServerResponse, _rawBody: Buffer, parsedBody: unknown, canonicalModel: string): Promise<void> => {
@@ -112,10 +134,10 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
       return;
     }
     for (const warning of translated.value.warnings) {
-      logger.log("warn", "codex_translate_warning", { model, errorCode: warning });
+      logger.log("warn", events.translateWarning, { model, errorCode: warning });
     }
     if (translated.value.effort !== undefined) {
-      logger.log("info", "codex_effort_applied", { model, effort: translated.value.effort });
+      logger.log("info", events.effortApplied, { model, effort: translated.value.effort });
     }
 
     const credentialsResult = await auth.getCredentials();
@@ -165,13 +187,13 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
           respondProxyError(
             res,
             controller.signal.aborted
-              ? { kind: "timeout", message: `${providerName} request timed out` }
-              : { kind: "upstream", message: `${providerName} upstream unreachable` },
+              ? { kind: "timeout", message: `${providerId} request timed out` }
+              : { kind: "upstream", message: `${providerId} upstream unreachable` },
           );
           return;
         }
         if (response.status === 401 && attempt === 0) {
-          logger.log("warn", "codex_upstream_401_refreshing", { model });
+          logger.log("warn", events.upstream401Refreshing, { model });
           await response.body?.cancel().catch(() => undefined);
           const refreshed = await auth.forceRefresh();
           if (!refreshed.ok) {
@@ -185,26 +207,26 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
         break;
       }
       if (upstream === undefined) {
-        respondProxyError(res, { kind: "auth", message: `${providerName} authentication failed after refresh — run \`${providerName} login\`` });
+        respondProxyError(res, { kind: "auth", message: `${providerId} authentication failed after refresh — run \`${loginCommand}\`` });
         return;
       }
 
       if (!upstream.ok) {
         const mapped = upstreamStatusToAnthropicError(upstream.status);
         const detail = await readBoundedText(upstream.body, ERROR_BODY_PEEK_BYTES);
-        logger.log("warn", "codex_upstream_error", { model, status: upstream.status });
+        logger.log("warn", events.upstreamError, { model, status: upstream.status });
         const retryAfter = upstream.headers.get("retry-after");
         respondJson(
           res,
           mapped.status,
-          toAnthropicErrorBody(mapped.type, `${providerName} upstream error (${upstream.status})${detail === "" ? "" : `: ${detail}`}`),
+          toAnthropicErrorBody(mapped.type, `${providerId} upstream error (${upstream.status})${detail === "" ? "" : `: ${detail}`}`),
           retryAfter !== null ? { "retry-after": retryAfter } : {},
         );
         return;
       }
 
       if (upstream.body === null) {
-        respondProxyError(res, { kind: "upstream", message: `${providerName} upstream returned an empty body` });
+        respondProxyError(res, { kind: "upstream", message: `${providerId} upstream returned an empty body` });
         return;
       }
 
@@ -215,10 +237,10 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
         // so clients see the canonical id even when the upstream omits model in response.created.
         model: request.model,
         logger,
-        providerName,
+        providerId,
         onReasoningItems: (callId, items) => cache.put(callId, items),
         ...(conversationKey !== undefined ? { conversationKey } : {}),
-        ...(wantStream ? { pingIntervalMs: config.limits.pingIntervalMs } : {}),
+        ...(wantStream ? { pingIntervalMs } : {}),
       });
       const bodyStream = Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>);
       bodyStream.on("data", resetIdle);
@@ -242,9 +264,9 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
           res.end();
         } catch {
           // Mid-stream failure after message_start: emit an error event, never retry.
-          logger.log("warn", "codex_stream_interrupted", { model });
+          logger.log("warn", events.streamInterrupted, { model });
           if (!res.writableEnded && !res.destroyed) {
-            res.write(toAnthropicErrorSse("api_error", `${providerName} stream interrupted`));
+            res.write(toAnthropicErrorSse("api_error", `${providerId} stream interrupted`));
             res.end();
           }
         }
@@ -257,10 +279,10 @@ export const createCodexHandler = (deps: CodexHandlerDeps): CodexHandler => {
           for await (const chunk of source) frames.push(String(chunk));
         });
       } catch {
-        respondProxyError(res, { kind: "upstream", message: `${providerName} stream interrupted` });
+        respondProxyError(res, { kind: "upstream", message: `${providerId} stream interrupted` });
         return;
       }
-      const aggregated = aggregateFrames(frames, providerName);
+      const aggregated = aggregateFrames(frames, providerId);
       if (!aggregated.ok) {
         respondProxyError(res, aggregated.error);
         return;
