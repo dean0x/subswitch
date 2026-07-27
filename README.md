@@ -212,10 +212,24 @@ The config file is located by the following precedence (highest wins):
 1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
 2. `subswitch.config.json` in the current working directory — silently uses defaults if absent
 
-**Migrating from an older config**: if your config file has a top-level `codex` block or a
-`codex.models` key, subswitch will reject it at load and tell you exactly where each key
-moved. This prevents the previous failure mode where Zod stripped unknown keys and every
-custom setting silently reverted to defaults.
+**An unrecognised key is rejected, not ignored.** Two checks run against the raw file
+before it is parsed, and a hit on either is a hard load failure — subswitch prints the
+offending key and exits 1 rather than starting:
+
+1. **Keys from an older layout.** A top-level `codex` block or a `codex.models` key is
+   rejected with a message naming exactly where each key moved.
+2. **Unknown provider ids.** A `providers.<id>` block whose id this build does not ship —
+   a typo like `providers.codexx`, or a provider from a future release — is rejected, and
+   the message lists the ids that *are* known. Today that is `codex`, so `providers.codex`
+   is the only valid block.
+
+This is deliberate, and the reason is the same in both cases: the config schema **strips**
+keys it does not recognise instead of reporting them, so the only alternative to failing
+the load is a config file that still sits on disk looking correct while the proxy runs
+entirely on defaults — custom aliases gone, `baseUrl` silently back to the public
+endpoint, `userAgent` back to the built-in value, and your configured provider reported as
+absent. A stripping schema can never tell you what it discarded, which is why the check has
+to run on the raw file first and why a refusal to start is the better failure.
 
 ### Routable set and aliases
 
