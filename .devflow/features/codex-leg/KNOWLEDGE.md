@@ -153,6 +153,24 @@ Where:
 
 `sessionId` is computed ONCE before the retry loop. Both the initial attempt and the 401-refresh retry use the same value. The retry is bounded: `maxAttempts = auth.refreshable ? 2 : 1` — a static credential gets exactly one attempt so its truthful 401 reaches the client.
 
+### Terminal block reconciliation — every provider owes a synthesized close (src/codex-response.ts)
+
+**Provider-neutral rule: any upstream that does not emit a per-item done event MUST have its content-block closes synthesized at the terminal event, or content is silently dropped.** This is a constraint on the translator seam, not a Codex anecdote — the next provider inherits it (avoids PF-008).
+
+The mechanism that makes it load-bearing: `aggregateFrames` materialises a content block **only** in its `content_block_stop` branch. A block that is opened and filled with deltas but never stopped contributes nothing to the assembled response. The Codex translator emits `content_block_stop` from `response.output_item.done`; `response.completed` emits `message_delta` and `message_stop` without closing anything still open. So a stream that ends without a matching done event — completed with items open, an item id or `output_index` that resolves to no block, or a truncation/abort/idle timeout after `message_start` — hands the non-streaming client **HTTP 200 with empty content** while the streaming client sees the correct text. The failure is invisible to every streaming unit test and to the streaming e2e.
+
+A Chat Completions–style upstream has **no per-item done event at all**. Its closes must be synthesized from `finish_reason`. A translator written against such an upstream that omits this step is silently lossy on every non-streaming request, and its streaming tests will all pass.
+
+`reconcileOpenBlocks(push)` is the single implementation. Its contract:
+
+- **Placement is in band and non-negotiable.** It is called by the `response.completed` / `response.incomplete` handler **before** `message_delta` and `message_stop`, not from `flush()`. A streaming client that receives a `content_block_stop` after the terminal frame sees a corrupt stream. `test/unit/codex-response.test.ts` — "closes a block left open by a missing output_item.done before the terminal frames" — asserts the exact frame sequence, so moving the reconcile after `message_stop` fails the suite.
+- **It returns `true` when it emitted an error frame**, meaning the caller must not emit the normal terminal frames. Callers `break` on `true`.
+- **Open blocks with content get a synthesised stop; zero-delta blocks do not.** `blocksWithContent` (per-block) decides. Synthesising a stop for a block that received no delta appends a spurious empty text block; discarding it is correct.
+- **A dropped delta is only fatal when nothing else landed.** `sawUnmatchedDelta && blocksWithContent.size === 0` → error frame → 502. If another block did receive content, the dropped delta degrades gracefully and the real content is returned.
+- **`flush()` is the truncation path only**, reachable when no terminal lifecycle event arrived (`finished` is still false). It reconciles when some block has content, and otherwise emits an error frame if the stream had started. Guarding on `finished` is what makes a post-`message_stop` frame unreachable.
+
+The rule in one line: **never return a healthy-looking empty turn.** An unrecoverable turn is a 502 with an error frame; a recoverable one is reconciled before the terminal frames.
+
 ## Technical Implementation Patterns
 
 ### Data flow through the Codex leg
@@ -173,8 +191,11 @@ IncomingMessage (Anthropic wire)
       → fetch POST /responses
       → createSseParser (chunk → SseEvent)
       → createAnthropicSseTranslator (SseEvent → Anthropic SSE frame)
+          → reconcileOpenBlocks at the terminal event, BEFORE message_delta/message_stop
+            (synthesised closes; error frame when nothing is recoverable)
       → createFrameWriter (res, signal) — real function; backpressure + abort-safe
-      → stream to client (or aggregateFrames for non-streaming callers)
+      → stream to client (or aggregateFrames for non-streaming callers —
+        materialises a block ONLY on its content_block_stop)
 ```
 
 ### Reasoning round-trip (src/codex-request.ts + codex-response.ts)
@@ -194,6 +215,10 @@ IncomingMessage (Anthropic wire)
 | 401 before streaming begins | One credential refresh, then one retry (when `auth.refreshable`). If still 401, `auth` error returned to client. |
 | Non-2xx upstream (non-401) | Error body peeked (2 KB cap), mapped to Anthropic error shape via `upstreamStatusToAnthropicError`, `retry-after` header forwarded. |
 | Mid-stream upstream failure | After `message_start` is already sent, emit `toAnthropicErrorSse("api_error", …)` and close. Never retry mid-stream. |
+| Stream ends with content blocks still open | `reconcileOpenBlocks` synthesises `content_block_stop` for every open block that received a delta, in band **before** `message_delta`/`message_stop`. Zero-delta blocks are discarded, not closed. Without this the non-streaming client gets a 200 with empty content (avoids PF-008). |
+| Delta that matches no content block | Text is dropped. Fatal only when no block received any content — then an error frame, 502. Otherwise degrades gracefully and the placed content is returned. |
+| Stream truncated before any terminal lifecycle event | `flush()` reconciles when some block has content; otherwise emits an error frame so the client gets 502, never a 200 with empty or null content. |
+| Tool-use arguments non-empty but unparseable | `aggregateFrames` returns `err()` → 502. The client must not act on an invented `input: {}`. An empty argument string still yields `input: {}` — correct for a zero-argument call. |
 | Abort (client close or timeout) | `AbortController` shared between `res.on("close")` and total/idle timers. Idle timer resets on each data chunk. |
 | `reasoning_cache_miss` | Degraded, not broken. Warning logged as `errorCode`. |
 | `maxConcurrentRequests` exceeded | 503 returned immediately; health endpoint is exempt from the concurrency gate. |
@@ -201,6 +226,12 @@ IncomingMessage (Anthropic wire)
 ## Anti-Patterns
 
 **Aligning `/responses` headers to `codex exec` wire captures.** The parity gaps table in `e2e/README.md` documents analytics-endpoint headers from the wrong transport (avoids PF-005). Changing `buildHeaders` to match that table will break the working `/responses` HTTP leg.
+
+**Writing a provider translator with no terminal reconciliation.** Any upstream lacking a per-item done event needs its content-block closes synthesized at the terminal event — a Chat Completions–style upstream must synthesize them from `finish_reason` (avoids PF-008). Omitting this is silently lossy on every non-streaming request while the whole streaming test suite stays green, because `aggregateFrames` materialises a block only on its `content_block_stop`.
+
+**Moving `reconcileOpenBlocks` out of the terminal handler and into `flush()`.** The synthesised closes must be emitted in band, before `message_delta` and `message_stop`. A `content_block_stop` that lands after the terminal frame is a corrupt stream to a streaming client. This was the shape of the first fix and it is pinned by "closes a block left open by a missing output_item.done before the terminal frames" in `test/unit/codex-response.test.ts`. `flush()` is the truncation path only, guarded on `finished`.
+
+**Synthesising a close for every open block.** Only blocks in `blocksWithContent` get a stop; a block that received zero deltas is discarded. Closing it appends a spurious empty text block to the assembled response — a different way to lie about what the upstream produced.
 
 **Deriving the conversation key from builder output.** `deriveConversationKey` must receive `request` (with canonical model substitution), not the result of `translateRequest`. Builder output may have system-role messages translated to developer-role (PF-003) and the key must hash the original first user message.
 
@@ -276,4 +307,5 @@ IncomingMessage (Anthropic wire)
 - PF-005: The `e2e/README.md` parity table is the WRONG transport — do not use it to change `buildHeaders`
 - PF-006: Doctor's non-zero exit is load-bearing; never assert doctor exits 0
 - PF-007: Alias targets validated, not just keys — a `claude-*` target becomes routable and misroutes main-thread traffic
+- PF-008: An upstream without a per-item done event needs a synthesized close, or `aggregateFrames` returns a 200 with empty content
 - `.devflow/features/cli-ux/KNOWLEDGE.md` — CLI UX layer; `subswitch models` command; doctor agent-scan; N-provider fan-out
