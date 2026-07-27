@@ -1,4 +1,5 @@
 import http from "node:http";
+import { existsSync } from "node:fs";
 import type { IncomingMessage, Server } from "node:http";
 import { toAnthropicErrorBody } from "./errors.js";
 import { type Result, ok, err } from "./result.js";
@@ -15,6 +16,7 @@ import {
   buildRoutingTable,
   resolveModel as resolveModelFromTable,
   MODEL_REGISTRY,
+  PROVIDER_IDS,
   type ModelResolution,
   type ProviderId,
 } from "./models.js";
@@ -127,7 +129,24 @@ export const listenServer = (
     server.listen(port, host);
   });
 
-const HEALTH_BODY = JSON.stringify({ name: SUBSWITCH_NAME, version: SUBSWITCH_VERSION });
+/**
+ * Build the health response body for a given config.
+ * Dynamic: includes per-provider status (configured + model count).
+ * Never includes credentials, tokens, or secrets — only structural metadata. [compliance]
+ */
+const buildHealthBody = (config: Config): string =>
+  JSON.stringify({
+    name: SUBSWITCH_NAME,
+    version: SUBSWITCH_VERSION,
+    providers: PROVIDER_IDS.map((id) => {
+      // Each provider has its auth file in config — check presence without reading content.
+      // existsSync is sync and acceptable here (health endpoint, not hot path).
+      const authFile = id === "codex" ? config.codex.authFile : "";
+      const configured = authFile !== "" && existsSync(authFile);
+      const modelCount = MODEL_REGISTRY.filter((e) => e.provider === id && e.retired !== true).length;
+      return { id, configured, modelCount };
+    }),
+  });
 
 const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buffer, ProxyError>> =>
   new Promise((resolve) => {
@@ -164,6 +183,7 @@ const peekModel = (parsed: unknown): string | undefined => {
 
 export const createProxyServer = (deps: ServerDeps): Server => {
   const { config, logger } = deps;
+  let activeRequests = 0;
 
   return http.createServer((req, res) => {
     const startedAt = Date.now();
@@ -187,11 +207,22 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       if (pathname.startsWith("/__subswitch/")) {
         if (req.method === "GET" && pathname === "/__subswitch/health") {
           res.writeHead(200, { "content-type": "application/json" });
-          res.end(HEALTH_BODY);
+          res.end(buildHealthBody(config));
           return;
         }
         res.writeHead(404, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "not found" }));
+        return;
+      }
+
+      // Concurrency gate — reject with 503 when active requests exceed the configured limit.
+      // Checked here (after /__subswitch/* is handled above) so health checks are never gated.
+      activeRequests++;
+      res.on("close", () => { activeRequests--; });
+      if (activeRequests > config.limits.maxConcurrentRequests) {
+        route = "rate_limited";
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(toAnthropicErrorBody("overloaded_error", "too many concurrent requests — try again shortly"));
         return;
       }
 

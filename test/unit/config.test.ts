@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../../src/config.js";
-import { MODEL_REGISTRY } from "../../src/models.js";
 
 const missingFile = (): never => {
   const error = new Error("ENOENT") as Error & { code: string };
@@ -32,10 +31,8 @@ describe("loadConfig", () => {
     assert.equal(result.value.config.codex.maxSseEventBytes, 4 * 1024 * 1024);
     assert.equal(result.value.config.limits.maxBodyBytes, 32 * 1024 * 1024);
     assert.equal(result.value.config.limits.pingIntervalMs, 15_000);
+    assert.equal(result.value.config.limits.maxConcurrentRequests, 32);
     assert.equal(result.value.fileFound, false);
-    // codex.models is derived from MODEL_REGISTRY (all non-retired ids) — not user-configurable.
-    const expectedModels = MODEL_REGISTRY.filter((e) => e.retired !== true).map((e) => e.id);
-    assert.deepEqual([...result.value.config.codex.models], expectedModels);
   });
 
   it("merges partial overrides over defaults", () => {
@@ -233,18 +230,21 @@ describe("loadConfig", () => {
   });
 
   // -------------------------------------------------------------------------
-  // codex.models — now derived from registry, not user-configurable
+  // limits.maxConcurrentRequests
   // -------------------------------------------------------------------------
 
-  it("codex.models is derived from MODEL_REGISTRY (not user-configurable)", () => {
-    // Even if the raw config contains a legacy codex.models field, it is ignored.
-    // codex.models is always the full set of non-retired registry ids.
+  it("limits.maxConcurrentRequests defaults to 32", () => {
     const result = loadConfig({ readFile: missingFile, env: {} });
     assert.ok(result.ok);
-    const expected = MODEL_REGISTRY.filter((e) => e.retired !== true).map((e) => e.id);
-    assert.deepEqual([...result.value.config.codex.models], expected);
-    // Verify the registry contains known ids
-    assert.ok(result.value.config.codex.models.includes("gpt-5.6-sol"));
-    assert.ok(result.value.config.codex.models.includes("gpt-5.5"));
+    assert.equal(result.value.config.limits.maxConcurrentRequests, 32);
+  });
+
+  it("limits.maxConcurrentRequests can be overridden via config file", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ limits: { maxConcurrentRequests: 64 } }),
+    });
+    assert.ok(result.ok);
+    assert.equal(result.value.config.limits.maxConcurrentRequests, 64);
   });
 });

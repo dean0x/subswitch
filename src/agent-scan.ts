@@ -1,7 +1,7 @@
 // Agent frontmatter scanner for the doctor preflight check.
 // No external dependencies — a parser for one `model:` line does not warrant one.
 
-import { makeModelResolver, MODEL_REGISTRY, ALL_MODEL_IDS, isReservedAnthropicName } from "./models.js";
+import { MODEL_REGISTRY, isReservedAnthropicName, type RoutingTable, type ModelEntry, resolveModel } from "./models.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -13,15 +13,25 @@ export interface AgentFinding {
   /** Model value exactly as written in the frontmatter. */
   readonly model: string;
   /**
-   * - "unresolvable": the model string is not a known canonical id, alias, or family —
-   *   it will silently 404 on the Codex leg. Increments doctor failures.
-   * - "excluded": the model resolves to a known canonical but that canonical is not
-   *   in the configured codex.models list — routing is informational (not a failure)
-   *   because the proxy will pass through to Anthropic, which may or may not know it.
+   * Finding severity and meaning:
+   *
+   * Failures (increment doctor failures):
+   * - "unresolvable": not a known id, alias, or family in the routing table.
+   * - "ambiguous": family name claimed by multiple providers — must qualify with provider:name.
+   * - "unknown_provider": looks like "provider:id" but the prefix is not in PROVIDER_IDS.
+   *
+   * Informational (no failure increment):
+   * - "retired": resolves to a known canonical that is marked retired in the registry.
+   * - "provider_unconfigured": resolves to a known canonical but the provider lacks credentials.
+   * - "preview_only": resolves to a preview model — excluded from family alias derivation.
    */
-  readonly kind: "unresolvable" | "excluded";
-  /** Populated for "excluded" — the canonical id the model string would resolve to. */
+  readonly kind: "unresolvable" | "ambiguous" | "unknown_provider" | "retired" | "provider_unconfigured" | "preview_only";
+  /** Populated when the model resolves to a canonical id (retired, provider_unconfigured, preview_only). */
   readonly canonical?: string;
+  /** Populated for "ambiguous" — providers that claim the name. */
+  readonly providers?: readonly string[];
+  /** Populated for "unknown_provider" — the unrecognised prefix. */
+  readonly qualifier?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,28 +111,25 @@ export const parseFrontmatterModel = (text: string): string | undefined => {
  * Each element of `files` is a `{ path, text }` pair — path is logged in
  * findings; text is the raw file content (already read by the caller).
  *
- * Resolution uses two resolvers:
- * - `routeResolver`: scoped to the actual `codex.models` set — returns non-null
- *   when the model will route successfully through the proxy.
- * - `fullResolver`: scoped to all known model ids — returns non-null when the
- *   model is recognized at all, regardless of whether it's in codex.models.
+ * @param files              Agent file path + text pairs to inspect.
+ * @param table              Pre-built routing table (built once at startup by doctor).
+ * @param configuredProviders Set of provider ids that have credentials available.
+ * @param registry           Model registry — injectable for testing retired/preview kinds.
  *
- * Finding kinds:
- * - "unresolvable": routeResolver and fullResolver both return undefined —
- *   the model string is entirely unknown. Increments failures.
- * - "excluded": fullResolver resolves but routeResolver does not —
- *   the model is known but not in the narrowed codex.models. Informational only.
+ * Finding kinds (in resolution order):
+ * - unresolvable  (fail): resolveModel returns "unresolved".
+ * - ambiguous     (fail): resolveModel returns "ambiguous".
+ * - unknown_provider (fail): resolveModel returns "unknown_qualifier".
+ * - retired       (info): resolves to a registry entry marked retired.
+ * - provider_unconfigured (info): resolves ok but provider is not in configuredProviders.
+ * - preview_only  (info): resolves to a registry entry marked preview.
  */
 export const checkAgentModels = (
   files: ReadonlyArray<{ readonly path: string; readonly text: string }>,
-  routable: ReadonlySet<string>,
-  overrides: Record<string, string>,
+  table: RoutingTable,
+  configuredProviders: ReadonlySet<string>,
+  registry: readonly ModelEntry[] = MODEL_REGISTRY,
 ): readonly AgentFinding[] => {
-  // Two resolvers: one against all known ids, one against the actual routable set.
-  const allKnownSet = new Set(ALL_MODEL_IDS);
-  const fullResolver = makeModelResolver(MODEL_REGISTRY, allKnownSet, overrides);
-  const routeResolver = makeModelResolver(MODEL_REGISTRY, routable, overrides);
-
   const findings: AgentFinding[] = [];
 
   for (const { path, text } of files) {
@@ -133,19 +140,49 @@ export const checkAgentModels = (
     // Without this skip doctor would fail on every repo that has Claude subagents.
     if (isReservedAnthropicName(model)) continue;
 
-    // Check routing first: if it routes successfully, no finding.
-    const routed = routeResolver(model);
-    if (routed !== undefined) continue;
+    const resolution = resolveModel(table, model);
 
-    // Doesn't route — check if it's known at all.
-    const canonical = fullResolver(model);
-    if (canonical === undefined) {
-      // Truly unknown — will silently 404 on the Codex leg.
-      findings.push({ file: path, model, kind: "unresolvable" });
-    } else {
-      // Known canonical but excluded from the narrowed codex.models list.
-      // Informational only — matches doctor's own precedent for missing config. [F53]
-      findings.push({ file: path, model, kind: "excluded", canonical });
+    switch (resolution.kind) {
+      case "unresolved":
+        findings.push({ file: path, model, kind: "unresolvable" });
+        break;
+
+      case "ambiguous":
+        findings.push({ file: path, model, kind: "ambiguous", providers: resolution.providers });
+        break;
+
+      case "unknown_qualifier":
+        findings.push({ file: path, model, kind: "unknown_provider", qualifier: resolution.qualifier });
+        break;
+
+      case "resolved": {
+        const { target } = resolution;
+        const entry = registry.find((e) => e.id === target.id);
+
+        if (entry?.retired === true) {
+          findings.push({ file: path, model, kind: "retired", canonical: target.id });
+          break;
+        }
+
+        if (!configuredProviders.has(target.provider)) {
+          findings.push({ file: path, model, kind: "provider_unconfigured", canonical: target.id });
+          break;
+        }
+
+        if (entry?.preview === true) {
+          findings.push({ file: path, model, kind: "preview_only", canonical: target.id });
+          break;
+        }
+
+        // Resolves fine, provider configured, not retired, not preview → no finding.
+        break;
+      }
+
+      default: {
+        // Exhaustive guard — compiler enforces that all ModelResolution arms are handled.
+        const _exhaustive: never = resolution;
+        void _exhaustive;
+      }
     }
   }
 

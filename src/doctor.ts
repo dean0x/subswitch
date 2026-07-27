@@ -5,7 +5,7 @@ import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
 import type { Config } from "./config.js";
 import { isPlainObject } from "./init.js";
-import { MODEL_REGISTRY, formatModelsReport } from "./models.js";
+import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
 import { checkAgentModels } from "./agent-scan.js";
 
 // ---------------------------------------------------------------------------
@@ -200,19 +200,31 @@ const LABEL_WIDTH = 22;
 const row = (label: string, value: string): string => `  ${label}`.padEnd(LABEL_WIDTH) + value;
 
 /**
+ * Return the auth-file path and base URL for the given provider.
+ * Exhaustive switch over ProviderId — adding a provider without updating here
+ * is a compile error (the never guard fires). [TypeScript: exhaustive switch]
+ */
+const getProviderConfig = (config: Config, id: ProviderId): { authFile: string; baseUrl: string } => {
+  switch (id) {
+    case "codex":
+      return { authFile: config.codex.authFile, baseUrl: config.codex.baseUrl };
+    default: {
+      const _exhaustive: never = id;
+      void _exhaustive;
+      return { authFile: "", baseUrl: "" };
+    }
+  }
+};
+
+/**
  * Run all doctor checks and write output to io.write.
  * Returns 0 if all checks passed, 1 if any check failed.
- *
- * @param codexModelsPinned - When true, emit an informational nudge encouraging
- *   family aliases instead of pinned canonical ids. Trailing-defaulted so the
- *   seven existing runDoctor(...) call sites in doctor.test.ts compile untouched.
  */
 export const runDoctor = async (
   config: Config,
   configPath: string,
   fileFound: boolean,
   io: DoctorIO,
-  codexModelsPinned = false,
 ): Promise<number> => {
   const pc = createColors(io.color);
   const passStr = (text: string): string => pc.green(text);
@@ -227,57 +239,71 @@ export const runDoctor = async (
   io.write(row("logLevel:", config.logLevel));
   io.write(row("anthropic.baseUrl:", config.anthropic.baseUrl));
   io.write(row("codex.baseUrl:", config.codex.baseUrl));
-  io.write(row("codex.models:", config.codex.models.join(", ")));
+
+  // Build the routing table once for display and agent-scan.
+  const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: config.codex.aliases });
 
   // Alias table — shows effective alias → canonical mapping for the current config.
-  const routable = new Set(config.codex.models);
   const aliasLines = formatModelsReport({
     registry: MODEL_REGISTRY,
-    routable,
     overrides: config.codex.aliases,
   });
   for (const line of aliasLines) {
     io.write(`    ${line}`);
   }
 
-  // Alias nudge — informational: suggest floating with aliases instead of pinned ids.
-  if (codexModelsPinned) {
-    io.write(
-      row("aliases:", pc.dim("consider using family aliases (sol, terra, luna) — they auto-track the latest generation")),
-    );
-  }
+  // N-provider auth check: check each provider deterministically.
+  // ENOENT = unconfigured = informational (PF-006); other errors = failure.
+  const configuredProviders = new Set<string>();
 
-  io.write(row("codex.authFile:", config.codex.authFile));
+  const checkOneProvider = async (id: ProviderId): Promise<void> => {
+    const { authFile, baseUrl: _baseUrl } = getProviderConfig(config, id);
+    if (authFile === "") return; // safety: should not happen
 
-  try {
-    const raw = await io.readAuthFile(config.codex.authFile);
-    // Lazy import to avoid circular deps — inspectAuthFile lives in codex-auth.ts
-    const { inspectAuthFile } = await import("./codex-auth.js");
-    const inspection = inspectAuthFile(raw);
-    if (!inspection.ok) {
-      failures++;
-      io.write(row("codex auth:", failStr(`INVALID (${inspection.error.message})`)));
-    } else {
-      const info = inspection.value;
-      io.write(row("codex auth mode:", passStr(info.authMode)));
-      io.write(row("codex account:", info.accountIdSuffix));
-      io.write(row("token expires:", info.accessTokenExpiresAt ?? "(no exp claim)"));
-      io.write(row("last refresh:", info.lastRefresh ?? "(unknown)"));
+    io.write(row(`${id}.authFile:`, authFile));
+
+    try {
+      const raw = await io.readAuthFile(authFile);
+      // Lazy import to avoid circular deps — inspectAuthFile lives in codex-auth.ts
+      const { inspectAuthFile } = await import("./codex-auth.js");
+      const inspection = inspectAuthFile(raw);
+      if (!inspection.ok) {
+        failures++;
+        io.write(row(`${id} auth:`, failStr(`INVALID (${inspection.error.message})`)));
+      } else {
+        const info = inspection.value;
+        configuredProviders.add(id);
+        io.write(row(`${id} auth mode:`, passStr(info.authMode)));
+        io.write(row(`${id} account:`, info.accountIdSuffix));
+        io.write(row("token expires:", info.accessTokenExpiresAt ?? "(no exp claim)"));
+        io.write(row("last refresh:", info.lastRefresh ?? "(unknown)"));
+      }
+    } catch (e) {
+      const isEnoent =
+        (e instanceof Error && (e as NodeJS.ErrnoException).code === "ENOENT") ||
+        (e instanceof Error && e.message.includes("ENOENT"));
+      if (isEnoent) {
+        // Unconfigured provider — informational only (PF-006). Does NOT increment failures.
+        io.write(row(`${id} auth:`, pc.dim(`unconfigured`) + ` (run \`codex login\` to enable ${id} routing)`));
+      } else {
+        // Configured but unreadable — this is a failure.
+        failures++;
+        io.write(row(`${id} auth:`, failStr("UNAVAILABLE") + ` (cannot read auth file — run \`codex login\`)`));
+        io.write(`  note: the Anthropic leg works without ${id} auth; only configured ${id} models are affected`);
+      }
     }
-  } catch {
-    failures++;
-    io.write(row("codex auth:", failStr("UNAVAILABLE") + ` (cannot read auth file — run \`codex login\`)`));
-    io.write("  note: the Anthropic leg works without codex auth; only configured codex models are affected");
-  }
+  };
 
-  // Run all three network probes in parallel; write results in the fixed output order below. [F28/F5]
+  // Run subswitch probe, anthropic TLS, and per-provider checks concurrently.
+  // Results are written in deterministic order after all complete. [F28/F5]
   const anthropicHost = new URL(config.anthropic.baseUrl).hostname;
-  const codexHost = new URL(config.codex.baseUrl).hostname;
 
-  const [subswitchStatus, anthropicTls, codexTls] = await Promise.all([
+  const providerChecks = PROVIDER_IDS.map((id) => checkOneProvider(id));
+
+  const [subswitchStatus, anthropicTls] = await Promise.all([
     probeSubswitch(config.port, { httpGet: io.httpGet }),
     probeTlsReachable(anthropicHost, { tlsConnect: io.tlsConnect }),
-    probeTlsReachable(codexHost, { tlsConnect: io.tlsConnect }),
+    ...providerChecks,
   ]);
 
   // Write subswitch probe result
@@ -306,7 +332,19 @@ export const runDoctor = async (
   };
 
   checkTls("anthropic TLS", anthropicHost, anthropicTls);
-  checkTls("codex TLS", codexHost, codexTls);
+
+  // Per-provider TLS checks (deterministic order via PROVIDER_IDS).
+  for (const id of PROVIDER_IDS) {
+    const { baseUrl } = getProviderConfig(config, id);
+    if (baseUrl === "") continue;
+    try {
+      const provHost = new URL(baseUrl).hostname;
+      const status = await probeTlsReachable(provHost, { tlsConnect: io.tlsConnect });
+      checkTls(`${id} TLS`, provHost, status);
+    } catch {
+      // Unreachable: z.url() validated the URL at config parse time.
+    }
+  }
 
   // Agent frontmatter scan — check both project and user-level agent directories.
   // A missing directory resolves to an empty list — never an error. [F53]
@@ -334,7 +372,7 @@ export const runDoctor = async (
     }),
   );
 
-  const agentFindings = checkAgentModels(fileTexts, routable, config.codex.aliases);
+  const agentFindings = checkAgentModels(fileTexts, table, configuredProviders);
 
   // Label the first finding row; blank-label subsequent rows to avoid N identical "agent model:"
   // labels in the columnar output when multiple agents are misconfigured.
@@ -342,17 +380,51 @@ export const runDoctor = async (
   for (const finding of agentFindings) {
     const label = firstAgentFinding ? "agent model:" : "";
     firstAgentFinding = false;
-    if (finding.kind === "unresolvable") {
-      // Unresolvable model → will silently 404 on the Codex leg. This is a failure.
-      failures++;
-      io.write(
-        row(label, failStr(`FAIL`) + ` ${finding.file}: model "${finding.model}" is not a known id or alias`),
-      );
-    } else {
-      // Excluded from narrowed codex.models — informational only. [F53]
-      io.write(
-        row(label, pc.dim(`info`) + ` ${finding.file}: model "${finding.model}" resolves to "${finding.canonical}" but is not in codex.models`),
-      );
+
+    switch (finding.kind) {
+      case "unresolvable":
+        failures++;
+        io.write(
+          row(label, failStr(`FAIL`) + ` ${finding.file}: model "${finding.model}" is not a known id or alias`),
+        );
+        break;
+
+      case "ambiguous":
+        failures++;
+        io.write(
+          row(label, failStr(`FAIL`) + ` ${finding.file}: model "${finding.model}" is ambiguous — claimed by: ${(finding.providers ?? []).join(", ")} — qualify with provider:name`),
+        );
+        break;
+
+      case "unknown_provider":
+        failures++;
+        io.write(
+          row(label, failStr(`FAIL`) + ` ${finding.file}: model "${finding.model}" — unknown provider "${finding.qualifier ?? ""}"`),
+        );
+        break;
+
+      case "retired":
+        io.write(
+          row(label, pc.dim(`info`) + ` ${finding.file}: model "${finding.model}" resolves to "${finding.canonical ?? ""}" which is retired — switch to an active model`),
+        );
+        break;
+
+      case "provider_unconfigured":
+        io.write(
+          row(label, pc.dim(`info`) + ` ${finding.file}: model "${finding.model}" resolves to "${finding.canonical ?? ""}" but its provider is not configured`),
+        );
+        break;
+
+      case "preview_only":
+        io.write(
+          row(label, pc.dim(`info`) + ` ${finding.file}: model "${finding.model}" resolves to "${finding.canonical ?? ""}" which is a preview model — use with care`),
+        );
+        break;
+
+      default: {
+        const _exhaustive: never = finding.kind;
+        void _exhaustive;
+      }
     }
   }
 

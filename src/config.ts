@@ -5,7 +5,7 @@ import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { LogLevel } from "./logger.js";
-import { MODEL_REGISTRY, isReservedAnthropicName } from "./models.js";
+import { isReservedAnthropicName } from "./models.js";
 
 export const DEFAULT_PORT = 4141 as const;
 
@@ -83,6 +83,8 @@ const LimitsSchema = z
     maxBodyBytes: z.number().int().positive().default(32 * 1024 * 1024),
     /** Interval between SSE ping frames sent to clients during long Codex streams. */
     pingIntervalMs: z.number().int().positive().default(15_000),
+    /** Maximum concurrent in-flight requests; 503 is returned when the limit is exceeded. */
+    maxConcurrentRequests: z.number().int().positive().default(32),
   })
   .prefault({});
 
@@ -103,13 +105,7 @@ export type FileConfig = z.infer<typeof FileConfigSchema>;
 
 /**
  * Resolved runtime config. Hand-written (NOT z.infer) so:
- *  - doctor.ts can read config.codex.* without being modified (Phase E constraint).
  *  - authFile is always tilde-expanded (resolveConfig applies expandHome).
- *  - codex.models is always derived from MODEL_REGISTRY (not user-configurable).
- *
- * Coders note: when Phase F removes config.codex.models and updates doctor.ts,
- * the codex.models field can be removed here. For now it is a derived field that
- * keeps doctor running.
  */
 export interface Config {
   readonly port: number;
@@ -120,10 +116,7 @@ export interface Config {
     readonly streamIdleTimeoutMs: number;
     readonly maxUpstreamSockets: number;
   };
-  /**
-   * Codex provider settings. Doctor reads these fields directly — do not remove
-   * or rename without updating src/doctor.ts (Phase F task).
-   */
+  /** Codex provider settings. */
   readonly codex: {
     readonly baseUrl: string;
     readonly oauthTokenUrl: string;
@@ -131,13 +124,6 @@ export interface Config {
     readonly authFile: string;
     readonly userAgent: string;
     readonly aliases: Readonly<Record<string, string>>;
-    /**
-     * All non-retired Codex model ids in registry order.
-     * Derived from MODEL_REGISTRY — never from user config.
-     * Doctor displays this as the routable set. Phase F will update doctor.ts
-     * to read from the routing table instead and this field will be removed.
-     */
-    readonly models: readonly string[];
     readonly reasoningCache: {
       readonly maxEntries: number;
       readonly maxBytes: number;
@@ -149,6 +135,7 @@ export interface Config {
   readonly limits: {
     readonly maxBodyBytes: number;
     readonly pingIntervalMs: number;
+    readonly maxConcurrentRequests: number;
   };
 }
 
@@ -174,9 +161,8 @@ export const expandHome = (path: string): string =>
  *
  * Pure: no I/O. All effectful operations (file reads, env access) happen in loadConfig.
  *
- * Maps providers.codex.* → codex.* for doctor.ts compatibility.
+ * Maps providers.codex.* → codex.*.
  * Expands tilde in authFile.
- * Derives codex.models from MODEL_REGISTRY (routing is now registry-based).
  */
 export const resolveConfig = (file: FileConfig): Config => {
   const codex = file.providers.codex;
@@ -190,8 +176,6 @@ export const resolveConfig = (file: FileConfig): Config => {
       authFile: expandHome(codex.authFile),
       userAgent: codex.userAgent,
       aliases: codex.aliases,
-      // Derived from registry — not configurable. Routing is registry-based (ADR-005).
-      models: MODEL_REGISTRY.filter((e) => e.retired !== true).map((e) => e.id),
       reasoningCache: codex.reasoningCache,
       requestTimeoutMs: codex.requestTimeoutMs,
       streamIdleTimeoutMs: codex.streamIdleTimeoutMs,

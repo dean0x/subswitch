@@ -221,38 +221,6 @@ const buildOverrideMap = (overrides: Record<string, string>): Map<string, string
 };
 
 // ---------------------------------------------------------------------------
-// Phase-F decommission: kept for agent-scan.ts compatibility
-// ---------------------------------------------------------------------------
-// TODO(Phase F): Remove ALL_MODEL_IDS and makeModelResolver once agent-scan.ts
-// is updated to use the routing table directly.
-
-/** @deprecated Phase F will remove this — use buildRoutingTable for routing decisions. */
-export const ALL_MODEL_IDS: readonly string[] = MODEL_REGISTRY.map((e) => e.id);
-
-/**
- * @deprecated Phase F will remove this — use resolveModel + buildRoutingTable instead.
- *
- * Create a model name resolver for request-time use. Kept for agent-scan.ts.
- */
-export const makeModelResolver = (
-  registry: readonly ModelEntry[],
-  routable: ReadonlySet<string>,
-  overrides: Record<string, string>,
-): (name: string) => string | undefined => {
-  const overrideMap = buildOverrideMap(overrides);
-  const familyMap = buildFamilyMap(registry, routable);
-
-  return (name: string): string | undefined => {
-    if (routable.has(name)) return name;
-    const overrideTarget = overrideMap.get(name);
-    if (overrideTarget !== undefined) return overrideTarget;
-    const familyTarget = familyMap.get(name);
-    if (familyTarget !== undefined) return familyTarget;
-    return undefined;
-  };
-};
-
-// ---------------------------------------------------------------------------
 // Routing table builder (Phase B)
 // ---------------------------------------------------------------------------
 
@@ -504,84 +472,189 @@ export const resolveModel = (table: RoutingTable, name: string): ModelResolution
 };
 
 // ---------------------------------------------------------------------------
-// Report formatting
+// Report formatting — model-centric and alias-centric views
 // ---------------------------------------------------------------------------
 
-/** Input for formatModelsReport. Config-free so cli.ts and doctor.ts can call without circular imports. */
-export interface FormatModelsReportInput {
-  readonly registry: readonly ModelEntry[];
-  readonly routable: ReadonlySet<string>;
-  readonly overrides: Record<string, string>;
+/** An alias entry attached to a ModelRow (name + how it was derived). */
+export interface AliasEntry {
+  readonly name: string;
+  readonly source: "derived" | "config";
 }
 
 /**
- * Format a human-readable, colorless report of model aliases.
- * Callers wrap with their own display logic (picocolors, indentation, etc.).
+ * Model-centric row: one entry per registry model, with all aliases attached.
+ * Used for JSON output (models --json) and parity testing.
  *
- * Rows: one per alias — config overrides first, then derived family aliases.
- * Columns: alias → canonical  gen:X.Y  enabled|disabled  (derived)|(config)
+ * exactOptionalPropertyTypes: family and gen use conditional spreads so the
+ * field is truly absent (not undefined) when unknown.
  */
-export const formatModelsReport = (input: FormatModelsReportInput): readonly string[] => {
-  const { registry, routable, overrides } = input;
+export interface ModelRow {
+  readonly id: string;
+  readonly provider: ProviderId;
+  readonly aliases: readonly AliasEntry[];
+  /** Present when the registry entry has a family key. */
+  readonly family?: string;
+  /** Present when the generation is known (always for registry entries); absent means unknown. */
+  readonly gen?: readonly number[];
+  /** True when the model is not retired. */
+  readonly routable: boolean;
+  /** Always-present boolean — consumers write `if (m.preview)` with no `?? false`. */
+  readonly preview: boolean;
+  /** Always-present boolean — consumers write `if (m.retired)` with no `?? false`. */
+  readonly retired: boolean;
+  /** Always "registry" for MODEL_REGISTRY entries. */
+  readonly source: "registry";
+}
+
+/** Alias-centric row: one entry per alias or one direct row per aliasless model. */
+export interface AliasTableRow {
+  /** Empty string for "direct" rows (models with no alias coverage). */
+  readonly alias: string;
+  readonly canonical: string;
+  readonly provider: ProviderId;
+  /** Display generation string: "5.6", "5.5", or "?" if unknown. */
+  readonly gen: string;
+  /** True for non-retired models. */
+  readonly enabled: boolean;
+  readonly source: "derived" | "config" | "direct";
+}
+
+/**
+ * Build alias-centric rows for human-readable table display.
+ *
+ * One row per alias (config overrides first, then derived family aliases), plus
+ * one "direct" row per non-retired model that has no alias coverage.
+ *
+ * Invariant with buildModelRows: the alias names in every ModelRow correspond
+ * exactly to the non-direct AliasTableRows that share the same canonical.
+ */
+export const buildAliasRows = (
+  registry: readonly ModelEntry[],
+  overrides: Record<string, string>,
+): readonly AliasTableRow[] => {
   const overrideMap = buildOverrideMap(overrides);
-
-  // Full-registry family map for display purposes (no routable scoping — so we can
-  // show disabled aliases too, using the registry to find what they WOULD resolve to)
   const allNonRetired = new Set(registry.filter((e) => e.retired !== true).map((e) => e.id));
-  const fullFamilyMap = buildFamilyMap(registry, allNonRetired);
+  const familyMap = buildFamilyMap(registry, allNonRetired);
 
-  type Row = {
-    readonly alias: string;
-    readonly canonical: string;
-    readonly gen: string;
-    readonly enabled: boolean;
-    readonly source: "derived" | "config" | "direct";
-  };
-
-  const rows: Row[] = [];
+  const rows: AliasTableRow[] = [];
   const coveredAliases = new Set<string>();
+  const coveredCanonicals = new Set<string>();
 
   // Config override aliases first (they shadow derived aliases of the same name)
   for (const [alias, canonical] of overrideMap.entries()) {
     const entry = registry.find((e) => e.id === canonical);
-    const gen = entry !== undefined ? entry.gen.join(".") : "?";
-    rows.push({ alias, canonical, gen, enabled: routable.has(canonical), source: "config" });
+    const genStr = entry !== undefined ? entry.gen.join(".") : "?";
+    const provider: ProviderId = entry?.provider ?? PROVIDER_IDS[0];
+    rows.push({ alias, canonical, provider, gen: genStr, enabled: allNonRetired.has(canonical), source: "config" });
     coveredAliases.add(alias);
+    coveredCanonicals.add(canonical);
   }
 
   // Derived family aliases (skip any alias already covered by a config override)
-  for (const [family, canonical] of fullFamilyMap.entries()) {
+  for (const [family, canonical] of familyMap.entries()) {
     if (coveredAliases.has(family)) continue;
     const entry = registry.find((e) => e.id === canonical);
-    const gen = entry !== undefined ? entry.gen.join(".") : "?";
-    rows.push({ alias: family, canonical, gen, enabled: routable.has(canonical), source: "derived" });
+    const genStr = entry !== undefined ? entry.gen.join(".") : "?";
+    const provider: ProviderId = entry?.provider ?? PROVIDER_IDS[0];
+    rows.push({ alias: family, canonical, provider, gen: genStr, enabled: true, source: "derived" });
+    coveredAliases.add(family);
+    coveredCanonicals.add(canonical);
   }
 
-  // Direct routable ids — ids that are in the routable set but not covered as the
-  // canonical of any alias row (e.g. gpt-5.5 which has no family, or a user-pinned
-  // id like gpt-9-experimental that has no registry entry).  Append as a trailing
-  // section with an empty alias column so the table shows the complete effective picture.
-  const coveredCanonicals = new Set(rows.map((r) => r.canonical));
-  for (const id of routable) {
+  // Direct rows for non-retired models with no alias coverage
+  for (const id of allNonRetired) {
     if (coveredCanonicals.has(id)) continue;
     const entry = registry.find((e) => e.id === id);
-    const gen = entry !== undefined ? entry.gen.join(".") : "?";
-    rows.push({ alias: "", canonical: id, gen, enabled: true, source: "direct" });
+    if (entry === undefined) continue;
+    rows.push({ alias: "", canonical: id, provider: entry.provider, gen: entry.gen.join("."), enabled: true, source: "direct" });
   }
 
+  return rows;
+};
+
+/**
+ * Build model-centric rows for JSON output and parity testing.
+ *
+ * One row per registry entry. Aliases include all config overrides pointing to
+ * this model (source: "config") and all derived family aliases where this model
+ * is the family winner (source: "derived"). Order within aliases: config first.
+ *
+ * Invariant with buildAliasRows: the alias names on each ModelRow correspond
+ * exactly to the non-direct AliasTableRows that share the same canonical.
+ */
+export const buildModelRows = (
+  registry: readonly ModelEntry[],
+  overrides: Record<string, string>,
+): readonly ModelRow[] => {
+  const overrideMap = buildOverrideMap(overrides);
+  const allNonRetired = new Set(registry.filter((e) => e.retired !== true).map((e) => e.id));
+  const familyMap = buildFamilyMap(registry, allNonRetired);
+
+  // Collect aliases per model id
+  const aliasesByModel = new Map<string, AliasEntry[]>();
+  for (const entry of registry) {
+    aliasesByModel.set(entry.id, []);
+  }
+
+  // Config overrides first
+  for (const [alias, targetId] of overrideMap.entries()) {
+    const list = aliasesByModel.get(targetId);
+    if (list !== undefined) list.push({ name: alias, source: "config" });
+  }
+
+  // Derived family aliases (skip if shadowed by a config override with the same alias name)
+  for (const [family, canonicalId] of familyMap.entries()) {
+    if (overrideMap.has(family)) continue;
+    const list = aliasesByModel.get(canonicalId);
+    if (list !== undefined) list.push({ name: family, source: "derived" });
+  }
+
+  return registry.map((entry) => {
+    const aliases = aliasesByModel.get(entry.id) ?? [];
+    const row: ModelRow = {
+      id: entry.id,
+      provider: entry.provider,
+      aliases,
+      ...(entry.family !== undefined ? { family: entry.family } : {}),
+      ...(entry.gen.length > 0 ? { gen: entry.gen } : {}),
+      routable: entry.retired !== true,
+      preview: entry.preview === true,
+      retired: entry.retired === true,
+      source: "registry",
+    };
+    return row;
+  });
+};
+
+/** Input for formatModelsReport. Config-free so cli.ts and doctor.ts can call without circular imports. */
+export interface FormatModelsReportInput {
+  readonly registry: readonly ModelEntry[];
+  readonly overrides: Record<string, string>;
+}
+
+/**
+ * Format a human-readable, colorless alias table.
+ * Callers wrap with their own display logic (picocolors, indentation, etc.).
+ *
+ * Columns: alias → canonical  provider  gen:X.Y  enabled|disabled  (derived)|(config)|(direct)
+ */
+export const formatModelsReport = (input: FormatModelsReportInput): readonly string[] => {
+  const rows = buildAliasRows(input.registry, input.overrides);
   if (rows.length === 0) return [];
 
   const aliasWidth = Math.max(...rows.map((r) => r.alias.length));
   const canonWidth = Math.max(...rows.map((r) => r.canonical.length));
+  const providerWidth = Math.max(...rows.map((r) => r.provider.length));
   const genWidth = Math.max(...rows.map((r) => `gen:${r.gen}`.length));
   const statusWidth = Math.max(...rows.map((r) => (r.enabled ? "enabled" : "disabled").length));
 
   return rows.map((r) => {
     const alias = r.alias.padEnd(aliasWidth);
     const canon = r.canonical.padEnd(canonWidth);
+    const provider = r.provider.padEnd(providerWidth);
     const gen = `gen:${r.gen}`.padEnd(genWidth);
     const status = (r.enabled ? "enabled" : "disabled").padEnd(statusWidth);
     const source = r.source === "derived" ? "(derived)" : r.source === "config" ? "(config)" : "(direct)";
-    return `${alias}  →  ${canon}  ${gen}  ${status}  ${source}`;
+    return `${alias}  →  ${canon}  ${provider}  ${gen}  ${status}  ${source}`;
   });
 };

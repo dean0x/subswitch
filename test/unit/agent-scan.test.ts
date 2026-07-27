@@ -1,6 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { parseFrontmatterModel, checkAgentModels } from "../../src/agent-scan.js";
+import {
+  MODEL_REGISTRY,
+  buildRoutingTable,
+  type RoutingTable,
+  type ModelEntry,
+} from "../../src/models.js";
 
 // ---------------------------------------------------------------------------
 // parseFrontmatterModel — frontmatter parsing
@@ -93,132 +99,159 @@ describe("parseFrontmatterModel", () => {
 // ---------------------------------------------------------------------------
 
 describe("checkAgentModels", () => {
-  // Routable set covering all known canonical ids
-  const fullRoutable = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
-  const noOverrides: Record<string, string> = {};
+  // Build a routing table from the real registry with no overrides.
+  const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: {} });
+  // All providers configured by default.
+  const configuredProviders = new Set<string>(["codex"]);
+  const noConfiguredProviders = new Set<string>();
 
   it("returns empty findings when all files have no frontmatter model", () => {
     const files = [
       { path: "/a.md", text: "# Just markdown" },
       { path: "/b.md", text: "---\nname: agent\n---\nNo model key." },
     ];
-    const findings = checkAgentModels(files, fullRoutable, noOverrides);
+    const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 0);
   });
 
-  it("returns an unresolvable finding when the model is not a known id or alias", () => {
-    const files = [
-      { path: "/agent.md", text: "---\nmodel: my-unknown-model\n---\n" },
-    ];
-    const findings = checkAgentModels(files, fullRoutable, noOverrides);
+  // ------------------------------------------------------------------
+  // Failing kinds (increment doctor failures)
+  // ------------------------------------------------------------------
+
+  it("returns 'unresolvable' finding when the model is not known at all", () => {
+    const files = [{ path: "/agent.md", text: "---\nmodel: my-unknown-model\n---\n" }];
+    const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 1);
     assert.equal(findings[0]!.kind, "unresolvable");
     assert.equal(findings[0]!.model, "my-unknown-model");
     assert.equal(findings[0]!.file, "/agent.md");
   });
 
-  it("returns no finding when the model is a known family alias (e.g. sol)", () => {
-    const files = [
-      { path: "/agent.md", text: "---\nmodel: sol\n---\n" },
-    ];
-    const findings = checkAgentModels(files, fullRoutable, noOverrides);
-    assert.equal(findings.length, 0, "known alias should produce no finding");
-  });
-
-  it("returns no finding when the model is a canonical id present in codex.models", () => {
-    const files = [
-      { path: "/agent.md", text: "---\nmodel: gpt-5.5\n---\n" },
-    ];
-    const findings = checkAgentModels(files, fullRoutable, noOverrides);
-    assert.equal(findings.length, 0);
-  });
-
-  it("returns an excluded finding when the model resolves but is not in narrowed codex.models", () => {
-    const narrowed = new Set(["gpt-5.5"]); // only gpt-5.5, no sol-family models
-    const files = [
-      { path: "/agent.md", text: "---\nmodel: gpt-5.6-sol\n---\n" },
-    ];
-    const findings = checkAgentModels(files, narrowed, noOverrides);
+  it("returns 'ambiguous' finding when a family name is claimed by multiple providers", () => {
+    // Construct a minimal RoutingTable manually to simulate an ambiguous family.
+    const ambiguousTable: RoutingTable = {
+      byId: new Map([["gpt-5.6-sol", "codex"] as const]),
+      byFamily: new Map([["sol", { kind: "ambiguous", providers: ["codex", "codex"] as readonly ["codex", "codex"] }]]),
+      byQualified: new Map(),
+      byAlias: new Map(),
+    };
+    const files = [{ path: "/agent.md", text: "---\nmodel: sol\n---\n" }];
+    const findings = checkAgentModels(files, ambiguousTable, configuredProviders);
     assert.equal(findings.length, 1);
-    assert.equal(findings[0]!.kind, "excluded");
-    assert.equal(findings[0]!.model, "gpt-5.6-sol");
+    assert.equal(findings[0]!.kind, "ambiguous");
+    assert.ok(Array.isArray(findings[0]!.providers), "ambiguous finding must include providers list");
+  });
+
+  it("returns 'unknown_provider' finding when the model uses an unrecognised provider prefix", () => {
+    const files = [{ path: "/agent.md", text: "---\nmodel: kimi:k2-ultra\n---\n" }];
+    const findings = checkAgentModels(files, table, configuredProviders);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]!.kind, "unknown_provider");
+    assert.equal(findings[0]!.qualifier, "kimi");
+  });
+
+  // ------------------------------------------------------------------
+  // Informational kinds (do NOT increment doctor failures)
+  // ------------------------------------------------------------------
+
+  it("returns 'retired' finding when the model resolves to a retired registry entry", () => {
+    const reg: readonly ModelEntry[] = [
+      { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+      { id: "gpt-retired", provider: "codex", gen: [5, 0], retired: true },
+    ];
+    const { table: regTable } = buildRoutingTable(reg, { codex: {} });
+    const files = [{ path: "/agent.md", text: "---\nmodel: gpt-retired\n---\n" }];
+    const findings = checkAgentModels(files, regTable, configuredProviders, reg);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]!.kind, "retired");
+    assert.equal(findings[0]!.canonical, "gpt-retired");
+  });
+
+  it("returns 'provider_unconfigured' finding when the provider is not in configuredProviders", () => {
+    const files = [{ path: "/agent.md", text: "---\nmodel: gpt-5.6-sol\n---\n" }];
+    const findings = checkAgentModels(files, table, noConfiguredProviders);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]!.kind, "provider_unconfigured");
     assert.equal(findings[0]!.canonical, "gpt-5.6-sol");
   });
 
-  it("produces no finding for Anthropic tier name 'sonnet'", () => {
-    const files = [
-      { path: "/main.md", text: "---\nmodel: sonnet\n---\n" },
+  it("returns 'preview_only' finding when the model resolves to a preview registry entry", () => {
+    const reg: readonly ModelEntry[] = [
+      { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+      { id: "gpt-preview", provider: "codex", gen: [5, 7], preview: true },
     ];
-    const findings = checkAgentModels(files, fullRoutable, noOverrides);
+    const { table: regTable } = buildRoutingTable(reg, { codex: {} });
+    const files = [{ path: "/agent.md", text: "---\nmodel: gpt-preview\n---\n" }];
+    const findings = checkAgentModels(files, regTable, configuredProviders, reg);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]!.kind, "preview_only");
+    assert.equal(findings[0]!.canonical, "gpt-preview");
+  });
+
+  // ------------------------------------------------------------------
+  // Anthropic skip list (must produce no findings)
+  // ------------------------------------------------------------------
+
+  it("produces no finding for Anthropic tier name 'sonnet'", () => {
+    const files = [{ path: "/main.md", text: "---\nmodel: sonnet\n---\n" }];
+    const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 0, "sonnet should be silently skipped");
   });
 
   it("produces no finding for Anthropic tier name 'opus'", () => {
-    const files = [
-      { path: "/main.md", text: "---\nmodel: opus\n---\n" },
-    ];
-    const findings = checkAgentModels(files, fullRoutable, noOverrides);
+    const files = [{ path: "/main.md", text: "---\nmodel: opus\n---\n" }];
+    const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 0, "opus should be silently skipped");
   });
 
   it("produces no finding for Anthropic tier name 'haiku'", () => {
-    const files = [
-      { path: "/main.md", text: "---\nmodel: haiku\n---\n" },
-    ];
-    const findings = checkAgentModels(files, fullRoutable, noOverrides);
+    const files = [{ path: "/main.md", text: "---\nmodel: haiku\n---\n" }];
+    const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 0, "haiku should be silently skipped");
   });
 
   it("produces no finding for 'inherit' sentinel", () => {
-    const files = [
-      { path: "/agent.md", text: "---\nmodel: inherit\n---\n" },
-    ];
-    const findings = checkAgentModels(files, fullRoutable, noOverrides);
+    const files = [{ path: "/agent.md", text: "---\nmodel: inherit\n---\n" }];
+    const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 0, "inherit should be silently skipped");
   });
 
   it("produces no finding for a claude-* model id", () => {
-    const files = [
-      { path: "/agent.md", text: "---\nmodel: claude-3-7-sonnet-20250219\n---\n" },
-    ];
-    const findings = checkAgentModels(files, fullRoutable, noOverrides);
+    const files = [{ path: "/agent.md", text: "---\nmodel: claude-3-7-sonnet-20250219\n---\n" }];
+    const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 0, "claude-* models should be silently skipped");
   });
 
   it("produces no finding for Anthropic tier names carrying a variant suffix", () => {
-    // Claude Code accepts `sonnet[1m]`, `opusplan`, etc. Flagging these would make doctor
-    // fail on ordinary repos, so the skip is a prefix match, not an exact word match.
     for (const model of ["sonnet[1m]", "opusplan", "haiku-3-5", "Claude-Sonnet-4-5"]) {
       const findings = checkAgentModels(
         [{ path: "/main.md", text: `---\nmodel: ${model}\n---\n` }],
-        fullRoutable,
-        noOverrides,
+        table,
+        configuredProviders,
       );
       assert.equal(findings.length, 0, `${model} should be silently skipped`);
     }
   });
 
-  it("'excluded' finding is not a failure — it is informational only", () => {
-    // Verify that excluded findings have kind === "excluded", not "unresolvable".
-    // The doctor counts only "unresolvable" as failures.
-    const narrowed = new Set(["gpt-5.5"]);
-    const files = [
-      { path: "/agent.md", text: "---\nmodel: gpt-5.6-sol\n---\n" },
-    ];
-    const findings = checkAgentModels(files, narrowed, noOverrides);
-    assert.equal(findings.length, 1);
-    assert.equal(findings[0]!.kind, "excluded");
+  // ------------------------------------------------------------------
+  // Happy-path resolution (no finding)
+  // ------------------------------------------------------------------
+
+  it("returns no finding when the model is a known family alias (e.g. sol)", () => {
+    const files = [{ path: "/agent.md", text: "---\nmodel: sol\n---\n" }];
+    const findings = checkAgentModels(files, table, configuredProviders);
+    assert.equal(findings.length, 0, "known alias should produce no finding");
   });
 
-  it("returns no finding when a custom model id is directly in codex.models", () => {
-    // Custom id (not in registry) but present in codex.models → exact membership wins.
-    const customRoutable = new Set(["gpt-5.5", "my-custom-id"]);
-    const files = [
-      { path: "/agent.md", text: "---\nmodel: my-custom-id\n---\n" },
-    ];
-    const findings = checkAgentModels(files, customRoutable, noOverrides);
-    assert.equal(findings.length, 0, "exact id in codex.models must route fine");
+  it("returns no finding when the model is a canonical id in the registry", () => {
+    const files = [{ path: "/agent.md", text: "---\nmodel: gpt-5.5\n---\n" }];
+    const findings = checkAgentModels(files, table, configuredProviders);
+    assert.equal(findings.length, 0);
   });
+
+  // ------------------------------------------------------------------
+  // Multi-file and informational-vs-failure classification
+  // ------------------------------------------------------------------
 
   it("handles multiple files and returns a finding per problematic file", () => {
     const files = [
@@ -226,9 +259,20 @@ describe("checkAgentModels", () => {
       { path: "/bad.md", text: "---\nmodel: totally-unknown\n---\n" },
       { path: "/also-bad.md", text: "---\nmodel: another-unknown\n---\n" },
     ];
-    const findings = checkAgentModels(files, fullRoutable, noOverrides);
+    const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 2);
     assert.ok(findings.some((f) => f.file === "/bad.md"), "bad.md should produce a finding");
     assert.ok(findings.some((f) => f.file === "/also-bad.md"), "also-bad.md should produce a finding");
+  });
+
+  it("'retired', 'provider_unconfigured', and 'preview_only' findings are informational (kind is NOT 'unresolvable')", () => {
+    // All three informational kinds must have kind that is not a failing kind.
+    const failingKinds = new Set(["unresolvable", "ambiguous", "unknown_provider"]);
+
+    // provider_unconfigured case
+    const files = [{ path: "/agent.md", text: "---\nmodel: gpt-5.6-sol\n---\n" }];
+    const findings = checkAgentModels(files, table, noConfiguredProviders);
+    assert.equal(findings.length, 1);
+    assert.ok(!failingKinds.has(findings[0]!.kind), `provider_unconfigured must not be a failing kind; got: ${findings[0]!.kind}`);
   });
 });

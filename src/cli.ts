@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
-import { type Config, loadConfig, DEFAULT_PORT } from "./config.js";
+import { type Config, type LoadConfigResult, loadConfig, DEFAULT_PORT } from "./config.js";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
@@ -15,9 +16,9 @@ import {
   PortSchema,
   type InitFlags,
 } from "./init.js";
-import { MODEL_REGISTRY, formatModelsReport } from "./models.js";
+import { MODEL_REGISTRY, formatModelsReport, buildModelRows, PROVIDER_IDS } from "./models.js";
 import { resolveColorEnabled } from "./tty.js";
-import { SUBSWITCH_VERSION } from "./version.js";
+import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
 
@@ -49,6 +50,7 @@ Commands:
   doctor    Check config, codex auth, and network reachability
   init      Interactive setup — writes config + wires Claude Code
   models    Show effective alias table (registry × aliases)
+            --json   Output model registry as JSON (no color, no TTY check)
 
 Flags (global):
   -h, --help       Show this help message
@@ -90,14 +92,14 @@ type CliCommand =
   | { readonly kind: "version" }
   | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly port?: string }
   | { readonly kind: "doctor" }
-  | { readonly kind: "models" }
+  | { readonly kind: "models"; readonly json: boolean }
   | { readonly kind: "init"; readonly yes: boolean; readonly dryRun: boolean; readonly flags: InitFlags };
 
 // Flag sets per command — used for per-command validation (A3.19)
 const GLOBAL_FLAGS = new Set(["help", "version"]);
 const SERVE_FLAGS = new Set(["verbose", "quiet", "port"]);
 const DOCTOR_FLAGS = new Set<string>();
-const MODELS_FLAGS = new Set<string>(); // models takes no flags — any flag is an error
+const MODELS_FLAGS = new Set(["json"]);
 const INIT_FLAGS = new Set(["yes", "dry-run", "port", "settings-target"]);
 
 /**
@@ -120,6 +122,8 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
         "dry-run":         { type: "boolean" },
         port:              { type: "string" },
         "settings-target": { type: "string" },
+        // models flags
+        json:              { type: "boolean" },
       },
       allowPositionals: true,
       strict: true,
@@ -204,7 +208,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     }
 
     // command === "models"
-    return { ok: true, value: { kind: "models" } };
+    return { ok: true, value: { kind: "models", json: values.json === true } };
   } catch (e) {
     // Translate parseArgs throw to Result err (A3.21)
     if (e instanceof Error) {
@@ -275,9 +279,15 @@ const serve = async (
   });
   deps.logger.log("info", "listening", { path: `http://127.0.0.1:${effectiveConfig.port}` });
 
-  // Human-readable ready banner (one-shot startup moment, safe to use a distinct format).
+  // Human-readable ready banner — one line per provider (7d).
   errOut(`\nsubswitch ready — http://127.0.0.1:${effectiveConfig.port}`);
-  errOut(`  routing: ${effectiveConfig.codex.models.join(", ")} → Codex`);
+  for (const id of PROVIDER_IDS) {
+    const modelCount = MODEL_REGISTRY.filter((e) => e.provider === id && e.retired !== true).length;
+    const providerBaseUrl = id === "codex" ? effectiveConfig.codex.baseUrl : "";
+    const host = providerBaseUrl !== "" ? (() => { try { return new URL(providerBaseUrl).hostname; } catch { return providerBaseUrl; } })() : "";
+    const hostSuffix = host !== "" ? `  → ${host}` : "";
+    errOut(`  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${hostSuffix}`);
+  }
   errOut(`  run \`subswitch doctor\` to verify setup\n`);
 
   const shutdown = (): void => {
@@ -300,9 +310,6 @@ const doctor = async (config: Config, configPath: string, fileFound: boolean): P
     process.stdout.isTTY === true,
   );
 
-  // codexModelsPinned is no longer computed from config (codex.models is now a derived
-  // registry field, not user-configurable). Pass false — Phase F will update doctor.ts
-  // to remove this parameter entirely.
   process.exitCode = await runDoctor(config, configPath, fileFound, {
     write: out,
     readAuthFile: (path) => readFile(path, "utf8"),
@@ -311,12 +318,54 @@ const doctor = async (config: Config, configPath: string, fileFound: boolean): P
     color,
     listAgentFiles: makeLiveListAgentFiles(),
     readTextFile: makeLiveReadTextFile(),
-  }, false);
+  });
 };
 
 // ---------------------------------------------------------------------------
-// models — print effective alias table
+// models — print effective alias table or JSON output
 // ---------------------------------------------------------------------------
+
+/**
+ * Output model registry as machine-readable JSON.
+ *
+ * This function returns BEFORE resolveColorEnabled is called so that FORCE_COLOR
+ * in the environment never affects JSON output (structural: not conditional). [7b]
+ *
+ * Never writes credentials, tokens, PII, or secrets. [compliance]
+ */
+const modelsJson = async (result: LoadConfigResult): Promise<void> => {
+  const { config, configPath, fileFound } = result;
+  const rows = buildModelRows(MODEL_REGISTRY, config.codex.aliases);
+
+  let configFileFound = fileFound;
+  if (!fileFound) {
+    // Double-check: access() for explicit confirmation (avoids race with loadConfig).
+    try {
+      await access(configPath);
+      configFileFound = true;
+    } catch {
+      configFileFound = false;
+    }
+  }
+
+  const payload = {
+    kind: "models",
+    schemaVersion: 1,
+    subswitchVersion: SUBSWITCH_VERSION,
+    name: SUBSWITCH_NAME,
+    fallbackProvider: "anthropic",
+    configPath,
+    configFileFound,
+    providers: PROVIDER_IDS.map((id) => ({
+      id,
+      displayName: id === "codex" ? "Codex" : id,
+      routing: "registry",
+    })),
+    models: rows,
+  };
+
+  out(JSON.stringify(payload));
+};
 
 const models = (config: Config): void => {
   const color = resolveColorEnabled(
@@ -325,10 +374,8 @@ const models = (config: Config): void => {
   );
   const pc = createColors(color);
 
-  const routable = new Set(config.codex.models);
   const lines = formatModelsReport({
     registry: MODEL_REGISTRY,
-    routable,
     overrides: config.codex.aliases,
   });
 
@@ -439,6 +486,11 @@ const main = async (): Promise<void> => {
       const configResult = loadConfig();
       if (!configResult.ok) {
         fail(configResult.error.message);
+        return;
+      }
+      // JSON branch returns before resolveColorEnabled — FORCE_COLOR cannot bleed into JSON. [7b]
+      if (command.json) {
+        await modelsJson(configResult.value);
         return;
       }
       models(configResult.value.config);

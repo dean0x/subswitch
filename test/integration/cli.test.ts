@@ -319,4 +319,150 @@ describe("CLI models", () => {
     assert.ok(result.stdout.includes("(direct)"), "gpt-5.5 must appear as a (direct) row");
   });
 
+  it("shows the provider column in human-readable output", async () => {
+    const result = await runCli(["models"]);
+    assert.equal(result.exitCode, 0);
+    assert.ok(result.stdout.includes("codex"), "models output must include the provider column");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// models --json (A14–A22, P5)
+// ---------------------------------------------------------------------------
+
+describe("CLI models --json", () => {
+  // A14: exits 0
+  it("A14 — exits 0", async () => {
+    const result = await runCli(["models", "--json"]);
+    assert.equal(result.exitCode, 0);
+  });
+
+  // A15: stdout is valid JSON
+  it("A15 — stdout is valid JSON", async () => {
+    const result = await runCli(["models", "--json"]);
+    assert.doesNotThrow(() => JSON.parse(result.stdout), "stdout must be valid JSON");
+  });
+
+  // A16: JSON has kind: "models"
+  it("A16 — JSON.kind === 'models'", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.equal(parsed["kind"], "models");
+  });
+
+  // A17: JSON has schemaVersion: 1
+  it("A17 — JSON.schemaVersion === 1", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.equal(parsed["schemaVersion"], 1);
+  });
+
+  // A18: models array is present and non-empty
+  it("A18 — JSON.models is a non-empty array", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as { models: unknown[] };
+    assert.ok(Array.isArray(parsed.models), "models must be an array");
+    assert.ok(parsed.models.length > 0, "models array must be non-empty");
+  });
+
+  // A19: each model entry has the required structural fields
+  it("A19 — each model entry has id, provider, routable, preview, retired, source", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as { models: Record<string, unknown>[] };
+    for (const model of parsed.models) {
+      assert.ok(typeof model["id"] === "string", `model.id must be a string; got: ${JSON.stringify(model["id"])}`);
+      assert.ok(typeof model["provider"] === "string", `model.provider must be a string; got: ${JSON.stringify(model["provider"])}`);
+      assert.ok(typeof model["routable"] === "boolean", `model.routable must be a boolean; got: ${JSON.stringify(model["routable"])}`);
+      assert.ok(typeof model["preview"] === "boolean", `model.preview must be a boolean; got: ${JSON.stringify(model["preview"])}`);
+      assert.ok(typeof model["retired"] === "boolean", `model.retired must be a boolean; got: ${JSON.stringify(model["retired"])}`);
+      assert.equal(model["source"], "registry", "model.source must be 'registry'");
+    }
+  });
+
+  // A20: providers array has an entry for "codex"
+  it("A20 — providers array includes a codex entry", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as { providers: Array<{ id: string }> };
+    assert.ok(Array.isArray(parsed.providers), "providers must be an array");
+    assert.ok(
+      parsed.providers.some((p) => p.id === "codex"),
+      "providers must include an entry with id 'codex'",
+    );
+  });
+
+  // A21: fallbackProvider is "anthropic"
+  it("A21 — JSON.fallbackProvider === 'anthropic'", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.equal(parsed["fallbackProvider"], "anthropic");
+  });
+
+  // A22: gpt-5.6-sol appears in models array with gen: [5, 6]
+  it("A22 — gpt-5.6-sol appears in models with gen: [5, 6] (tuple, not string)", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as { models: Array<{ id: string; gen?: number[] }> };
+    const solModel = parsed.models.find((m) => m.id === "gpt-5.6-sol");
+    assert.ok(solModel !== undefined, "models must include gpt-5.6-sol");
+    assert.ok(Array.isArray(solModel.gen), "gen must be an array (tuple), not a string");
+    assert.deepEqual(solModel.gen, [5, 6], "gen for gpt-5.6-sol must be [5, 6]");
+  });
+
+  // P5 (FORCE_COLOR negative control): JSON branch returns before resolveColorEnabled.
+  // With FORCE_COLOR=1, human-readable `models` stdout has ANSI; `models --json` stdout must NOT.
+  it("P5 — FORCE_COLOR=1 does NOT bleed ANSI codes into JSON output (structural: JSON branch exits early)", async () => {
+    // Force color on for the non-JSON branch (FORCE_COLOR beats NO_COLOR).
+    // Passing NO_COLOR: undefined unsets it so FORCE_COLOR dominates.
+    const forcedEnv = { ...process.env, FORCE_COLOR: "1", NO_COLOR: undefined };
+
+    const humanResult = await runCli(["models"], { env: forcedEnv });
+    const jsonResult = await runCli(["models", "--json"], { env: forcedEnv });
+
+    // Human-readable output MUST contain ANSI when FORCE_COLOR=1.
+    assert.ok(
+      humanResult.stdout.includes("\x1b["),
+      "models without --json must include ANSI codes when FORCE_COLOR=1",
+    );
+
+    // JSON output must NEVER contain ANSI codes — FORCE_COLOR must not bleed through.
+    assert.ok(
+      !jsonResult.stdout.includes("\x1b"),
+      "models --json stdout must not contain ANSI escape codes even with FORCE_COLOR=1",
+    );
+
+    // And the JSON must still be valid.
+    assert.doesNotThrow(() => JSON.parse(jsonResult.stdout), "JSON output must remain valid with FORCE_COLOR=1");
+  });
+
+  it("models --json output does not contain aliases when there are no config overrides", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as { models: Array<{ aliases?: unknown[] }> };
+    // aliases array may be present but should be an array (possibly empty for models with no alias)
+    for (const model of parsed.models) {
+      if (model.aliases !== undefined) {
+        assert.ok(Array.isArray(model.aliases), "model.aliases must be an array when present");
+      }
+    }
+  });
+
+  it("models --json includes a config alias when one is configured", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "subswitch-json-test-"));
+    try {
+      await writeFile(
+        join(tmpDir, "subswitch.config.json"),
+        JSON.stringify({ providers: { codex: { aliases: { fast: "gpt-5.6-sol" } } } }),
+        "utf8",
+      );
+      const result = await runCli(["models", "--json"], { cwd: tmpDir });
+      assert.equal(result.exitCode, 0);
+      const parsed = JSON.parse(result.stdout) as {
+        models: Array<{ id: string; aliases: Array<{ name: string; source: string }> }>;
+      };
+      const solModel = parsed.models.find((m) => m.id === "gpt-5.6-sol");
+      assert.ok(solModel !== undefined, "gpt-5.6-sol must appear in models");
+      const fastAlias = solModel.aliases.find((a) => a.name === "fast" && a.source === "config");
+      assert.ok(fastAlias !== undefined, "gpt-5.6-sol must have 'fast' alias with source 'config'");
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -136,7 +136,6 @@ const makeTestConfig = (): Config => ({
     baseUrl: "https://chatgpt.com/backend-api/codex",
     oauthTokenUrl: "https://auth.openai.com/oauth/token",
     authFile: "/home/user/.codex/auth.json",
-    models: ["gpt-5.6-sol", "gpt-5.5"],
     userAgent: "codex_cli_rs/0.144.6",
     aliases: {},
     reasoningCache: { maxEntries: 4096, maxBytes: 64 * 1024 * 1024 },
@@ -147,6 +146,7 @@ const makeTestConfig = (): Config => ({
   limits: {
     maxBodyBytes: 32 * 1024 * 1024,
     pingIntervalMs: 15_000,
+    maxConcurrentRequests: 32,
   },
 });
 
@@ -178,8 +178,22 @@ const failingProbeIO = (lines: string[]) => ({
   ...allPassIO(lines),
   httpGet: async (): Promise<HttpGetResult> => ({ ok: false, connectionRefused: true }),
   tlsConnect: async (): Promise<TlsStatus> => ({ kind: "unreachable", message: "ECONNREFUSED" }),
+  // ENOENT = unconfigured = informational; other errors = failure.
+  // Use a non-ENOENT error so it still contributes a failure for these tests.
   readAuthFile: async (): Promise<string> => {
-    throw new Error("ENOENT");
+    const err = new Error("EACCES: permission denied") as Error & { code: string };
+    err.code = "EACCES";
+    throw err;
+  },
+});
+
+const enoentAuthIO = (lines: string[]) => ({
+  ...allPassIO(lines),
+  readAuthFile: async (): Promise<string> => {
+    // Simulate an ENOENT (unconfigured provider) — should NOT increment failures.
+    const err = new Error("ENOENT: no such file") as Error & { code: string };
+    err.code = "ENOENT";
+    throw err;
   },
 });
 
@@ -200,7 +214,7 @@ describe("runDoctor", () => {
     assert.ok(lines.some((l) => l.includes("all checks passed")), "must include all-pass verdict");
   });
 
-  it("returns exit code 1 when a check fails (subswitch not running + TLS unreachable + auth unavailable)", async () => {
+  it("returns exit code 1 when a check fails (subswitch not running + TLS unreachable + auth permission error)", async () => {
     const lines: string[] = [];
     const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, failingProbeIO(lines));
     assert.equal(exitCode, 1);
@@ -248,34 +262,36 @@ describe("runDoctor", () => {
   it("prints the alias table rows (one line per alias)", async () => {
     const lines: string[] = [];
     await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines));
-    // The alias table renders rows like: "sol  →  gpt-5.6-sol  gen:5.6  enabled  (derived)"
-    // Assert on content only the table can produce — the → separator together with
-    // the specific alias name, its canonical, and the generation column.
-    // "sol" alone is vacuous because makeTestConfig already includes "gpt-5.6-sol"
-    // in codex.models, so the substring matches the models row regardless.
+    // The alias table renders rows like: "sol  →  gpt-5.6-sol  codex  gen:5.6  enabled  (derived)"
     const tableLine = lines.find((l) => l.includes("sol") && l.includes("→") && l.includes("gpt-5.6-sol") && l.includes("gen:5.6"));
     assert.ok(tableLine !== undefined, "alias table must render a row: sol → gpt-5.6-sol gen:5.6 ...");
   });
 
-  it("emits a nudge line when codexModelsPinned is true", async () => {
+  // PF-006: unconfigured provider (ENOENT auth file) must NOT increment failures.
+  it("does NOT increment failures when provider auth file is absent (ENOENT = unconfigured = informational)", async () => {
     const lines: string[] = [];
-    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines), true);
+    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, enoentAuthIO(lines));
+    // Only subswitch probe + TLS checks remain; enoentAuthIO leaves those at pass.
+    // So exit code must be 0 (no TLS failure, no subswitch failure, no auth failure).
+    assert.equal(exitCode, 0, "ENOENT auth file must not cause failure — it is informational");
     const output = lines.join("\n");
-    assert.ok(
-      output.includes("aliases") || output.includes("family"),
-      "must include a nudge about family aliases when codexModelsPinned=true",
-    );
+    // Must not emit a FAIL row for auth.
+    assert.ok(!output.includes("FAIL"), "ENOENT auth must not produce a FAIL row");
+    // Must emit an informational message instead.
+    assert.ok(output.includes("unconfigured"), "ENOENT auth must emit an 'unconfigured' informational message (PF-006)");
   });
 
-  it("does not emit a nudge line when codexModelsPinned is false", async () => {
+  it("increments failures when provider auth file exists but is unreadable (non-ENOENT)", async () => {
     const lines: string[] = [];
-    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines), false);
-    const output = lines.join("\n");
-    // The nudge mentions "consider using family aliases" — should be absent when false.
-    assert.ok(
-      !output.includes("consider using family aliases"),
-      "must not emit the alias nudge when codexModelsPinned=false",
-    );
+    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      readAuthFile: async (): Promise<string> => {
+        const err = new Error("EACCES: permission denied") as Error & { code: string };
+        err.code = "EACCES";
+        throw err;
+      },
+    });
+    assert.equal(exitCode, 1, "non-ENOENT auth error must cause failure");
   });
 });
 
@@ -292,19 +308,10 @@ describe("runDoctor — agent model scan", () => {
 
   it("emits a FAIL row for an unresolvable agent model", async () => {
     const lines: string[] = [];
-    // Directory-aware fake: the project dir arg is relative (".claude/agents")
-    // while the user dir arg is absolute ("~/. claude/agents"). Pre-fix production
-    // code returned raw strings — ".claude/agents/x.md" vs "/home/.../.claude/agents/x.md"
-    // — that the new Set([...]) could not deduplicate, causing every finding to be
-    // reported twice when doctor runs from $HOME. The fake simulates what the fixed
-    // factory (makeLiveListAgentFiles) returns after resolving both dirs to the same
-    // absolute path: both calls yield the identical absolute file path.
     const agentFile = join(homedir(), ".claude", "agents", "bad-agent.md");
     await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       listAgentFiles: async (dir: string): Promise<readonly string[]> => {
-        // Both the project dir and the user dir include ".claude/agents" — return
-        // the same absolute path for each to simulate the post-fix deduplicated state.
         return dir.includes(join(".claude", "agents")) ? [agentFile] : [];
       },
       readTextFile: async () => "---\nmodel: totally-unknown-model\n---\n",
@@ -315,8 +322,6 @@ describe("runDoctor — agent model scan", () => {
       "output must mention the problematic model name",
     );
     // A file discovered under both agent dirs must produce exactly ONE FAIL row.
-    // Pre-fix: the Set received ".claude/agents/x.md" and "/home/.../.claude/agents/x.md"
-    // — two distinct strings for the same file — and reported the finding twice.
     const failRows = lines.filter((l) => l.includes("totally-unknown-model"));
     assert.equal(failRows.length, 1, "a file discovered under both agent dirs must report once");
   });
@@ -361,21 +366,24 @@ describe("runDoctor — agent model scan", () => {
     assert.ok(firstRow.includes("agent model:"), "first finding must carry the 'agent model:' label");
     assert.ok(!secondRow.includes("agent model:"), "subsequent findings must not repeat the 'agent model:' label");
   });
+
+  it("does not increment failures for a provider_unconfigured finding (informational)", async () => {
+    // When the auth file is absent (ENOENT), the provider is unconfigured.
+    // Agent models that resolve to that provider produce provider_unconfigured (info, no failure).
+    const lines: string[] = [];
+    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+      ...enoentAuthIO(lines),
+      listAgentFiles: async () => ["/project/.claude/agents/worker.md"],
+      readTextFile: async () => "---\nmodel: gpt-5.6-sol\n---\n",
+    });
+    // codex is unconfigured → gpt-5.6-sol gets provider_unconfigured (info).
+    // No other failures from enoentAuthIO + allPass TLS/subswitch.
+    assert.equal(exitCode, 0, "provider_unconfigured finding must not cause failure");
+  });
 });
 
 // ---------------------------------------------------------------------------
 // makeLiveListAgentFiles — factory-level absolute path resolution (item 1 guard)
-// ---------------------------------------------------------------------------
-//
-// The production fix for the $HOME dedup bug lives in the factory: it calls
-// pathResolve(dir) before building result paths so that a relative project dir
-// (".claude/agents") and an absolute user dir ("~/.claude/agents") produce the
-// same strings when they point to the same physical location, letting the Set in
-// runDoctor collapse them.
-//
-// The DoctorIO injection seam cannot reach this code path, so no fake injected
-// through listAgentFiles can exercise it. This test exercises the real factory
-// against the real filesystem.
 // ---------------------------------------------------------------------------
 
 describe("makeLiveListAgentFiles — absolute path deduplication", () => {
@@ -405,10 +413,6 @@ describe("makeLiveListAgentFiles — absolute path deduplication", () => {
       assert.ok(absResult.length > 0, "absolute path must return at least one file");
 
       // Both calls must return identical absolute path strings for the same file.
-      // Pre-fix: relResult contained a relative path, absResult an absolute path —
-      // two distinct strings for the same file — so new Set() never collapsed them
-      // and every finding was reported twice.  Post-fix: both are absolute, the Set
-      // collapses them to one entry.
       const combined = new Set([...relResult, ...absResult]);
       assert.equal(
         combined.size,
