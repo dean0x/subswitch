@@ -63,7 +63,10 @@ export const createFsAuthFileStore = (path: string): AuthFileStore => ({
       // auth.json. Without the unlink in the catch block, a failure between open and rename
       // leaves a complete credential set on disk at a predictable path.
       // A stale or hostile temp now costs one failed refresh (self-healing on the next
-      // attempt) rather than being silently written through. (mirrors src/init.ts:288-295)
+      // attempt) rather than being silently written through.
+      // Cleanup idiom (unlink-in-catch) mirrors src/init.ts:288-295; the O_EXCL flag and
+      // 0o600 mode are new here — init.ts uses plain fsWriteFile with no exclusive open
+      // and no permission hardening.
       const handle = await open(tmpPath, "wx", 0o600);
       try {
         await handle.writeFile(content, "utf8");

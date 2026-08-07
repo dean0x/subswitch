@@ -383,8 +383,8 @@ describe("codex leg", () => {
   /**
    * I1.1: rawHeaders name sequence has auth-first, then transport constants.
    *
-   * undici preserves insertion order of the buildHeaders object literal verbatim onto
-   * the wire (verified live 2026-08-07, Node 22.22.3 / undici 6.24.1, HTTP/1.1 only).
+   * undici preserves the relative order of the eight application headers onto the wire
+   * (verified live 2026-08-07, Node 22.22.3 / undici 6.24.1, HTTP/1.1 only).
    * We filter rawHeaders to only the eight application names to tolerate undici-injected
    * headers (host, connection, accept-language, sec-fetch-mode, accept-encoding,
    * content-length) — that filtering is what keeps the assertion non-brittle across

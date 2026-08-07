@@ -113,8 +113,12 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
     // to change header NAMES or VALUES. It does NOT govern ORDER. Restoring a
     // previously-live-verified order is not a PF-005 violation.
     //
-    // Order is load-bearing and verified end-to-end through undici 6.24.1 on Node 22.22.3
-    // (live-verified 2026-08-07, HTTP/1.1 only). (avoids PF-005)
+    // Both orders have been observed working against the live backend: the pre-fix build
+    // (auth headers at tail) returned HTTP 200 with a well-formed SSE stream and a usage
+    // object on 2026-08-07. Restoring auth-first is precautionary — it returns this leg to
+    // the configuration live-verified in the b337a75 era and hedges against upstream
+    // fingerprinting changes. It is not fixing an observed failure. The substantive
+    // correctness fix in this block is the owned shadowing guard, not the ordering. (avoids PF-005)
     const headers: Record<string, string> = { ...credential.authHeaders };
     const owned = new Set(Object.keys(credential.authHeaders).map((k) => k.toLowerCase()));
     // Both sides of the comparison are lowercased so the guard holds for any caller, not

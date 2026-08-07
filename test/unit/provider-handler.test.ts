@@ -704,7 +704,8 @@ describe("buildHeaders — auth-first header order with owned-name guard (avoids
  */
 describe("upstream 401 names the provider loginCommand in the client-visible message", () => {
   /**
-   * U2.1: providerId: OTHER_PROVIDER, loginCommand: "kimi auth login", refreshable: false.
+   * U2.1: providerId: OTHER_PROVIDER, loginCommand: "kimi auth login".
+   * auth is makeStandardAuth() — refreshable: false — exercising the non-refreshable path.
    * Assert message ends with "kimi auth login" and does NOT match /kimi login/.
    *
    * Mutation that MUST turn it red: synthesise the login command as `${providerId} login`
