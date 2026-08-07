@@ -201,7 +201,47 @@ describe("codex leg", () => {
     assert.deepEqual(authFile["future_cli_key"], { must: "survive" });
   });
 
-  it("passes 429 through with retry-after and a rate_limit_error body", async () => {
+  /**
+   * I2.1: upstream 401s on every request, body contains no "login" text.
+   * Assert /codex login/ in client message AND rig.oauth.requests.length === 1.
+   *
+   * The upstream body deliberately omits the word "login" so /codex login/ can only
+   * match the remediation suffix we add — not text forwarded from upstream.
+   *
+   * Mutation that MUST turn it red: delete the remediation suffix (set remediation = "").
+   * Proven red: assert.match(body.error.message, /codex login/) fails — "codex login"
+   * is absent from the base message "codex upstream error (401): ...".
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("I2.1 — a persistent 401 after refresh includes the loginCommand in the client-visible message", async () => {
+    // Codex upstream 401s on every request — the refresh+retry path runs fully.
+    // Body contains no "login" text so the assertion targets our suffix only.
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "token expired, no login hint here" } }));
+    });
+
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
+    assert.equal(response.status, 401);
+    const body = (await response.json()) as { error: { type: string; message: string } };
+    assert.equal(body.error.type, "authentication_error");
+    assert.match(body.error.message, /codex login/, "remediation suffix must name the login command");
+    // Exactly one token refresh must have been attempted (the retry path was exercised).
+    assert.equal(rig.oauth.requests.length, 1, "exactly one token refresh must be attempted before reporting 401");
+  });
+
+  /**
+   * I2.2: the existing 429 test gains assert.doesNotMatch(msg, /run `/).
+   * Remediation suffix must ONLY appear on 401, never on other status codes.
+   *
+   * Mutation that MUST turn it red: drop the `status === 401` condition so every
+   * upstream error gets a remediation suffix.
+   * Proven red: doesNotMatch(/run `/) fails because the suffix is now present on 429.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("passes 429 through with retry-after and a rate_limit_error body (I2.2: no remediation suffix)", async () => {
     const rig = await setupRig((_req, res) => {
       res.writeHead(429, { "content-type": "application/json", "retry-after": "7" });
       res.end(JSON.stringify({ error: { message: "rate limited" } }));
@@ -210,8 +250,10 @@ describe("codex leg", () => {
     const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     assert.equal(response.status, 429);
     assert.equal(response.headers.get("retry-after"), "7");
-    const body = (await response.json()) as { error: { type: string } };
+    const body = (await response.json()) as { error: { type: string; message: string } };
     assert.equal(body.error.type, "rate_limit_error");
+    // The remediation suffix must ONLY appear on 401 — never on other status codes.
+    assert.doesNotMatch(body.error.message, /run `/, "remediation suffix must not appear on 429");
   });
 
   it("answers count_tokens locally with the chars/4 estimate", async () => {

@@ -42,6 +42,16 @@ export interface CodexHandlerDeps<P extends ProviderId> {
    * global settings that were never meant to be per-provider.
    */
   readonly provider: CodexProviderConfig;
+  /**
+   * Shell command the user must run to obtain or refresh this provider's credential.
+   * Read from `providerConfigFor(config, id).loginCommand` at the wiring site.
+   *
+   * Cannot be synthesised from `providerId`: a provider whose id is "kimi" may well
+   * log in with "kimi auth login", not "kimi login". The field must carry the
+   * hand-written value from the config accessor table (src/config.ts:PROVIDER_CONFIG_ACCESSORS).
+   * It is not user-settable — it is absent from the Zod schema.
+   */
+  readonly loginCommand: string;
   /** The one cross-cutting limit this handler reads; everything else comes from `provider`. */
   readonly pingIntervalMs: number;
   readonly logger: Logger;
@@ -80,7 +90,7 @@ export interface CodexHandler {
 }
 
 export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<P>): CodexHandler => {
-  const { providerId, provider, logger, auth, cache, pingIntervalMs } = deps;
+  const { providerId, provider, logger, auth, cache, pingIntervalMs, loginCommand } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const newSessionId = deps.newSessionId ?? randomUUID;
   // Event names resolved once here, not per request: the hot path does no string work,
@@ -254,10 +264,14 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
         const detail = await readBoundedText(upstream.body, ERROR_BODY_PEEK_BYTES);
         logger.log("warn", events.upstreamError, { model, status: upstream.status });
         const retryAfter = upstream.headers.get("retry-after");
+        // Only 401s get a remediation hint — no other status code changes behaviour.
+        // The existing message remains a strict prefix of the new one so existing
+        // pattern matches (/codex upstream error/) continue to work unchanged.
+        const remediation = upstream.status === 401 ? ` — run \`${loginCommand}\`` : "";
         respondJson(
           res,
           mapped.status,
-          toAnthropicErrorBody(mapped.type, `${providerId} upstream error (${upstream.status})${detail === "" ? "" : `: ${detail}`}`),
+          toAnthropicErrorBody(mapped.type, `${providerId} upstream error (${upstream.status})${detail === "" ? "" : `: ${detail}`}${remediation}`),
           retryAfter !== null ? { "retry-after": retryAfter } : {},
         );
         return;

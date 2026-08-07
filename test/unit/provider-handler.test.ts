@@ -8,7 +8,7 @@ import { ReasoningCache } from "../../src/reasoning-cache.js";
 import { CodexAuthManager, type AuthFileStore } from "../../src/codex-auth.js";
 import type { ProviderAuth, ProviderCredential } from "../../src/provider-auth.js";
 import { ok } from "../../src/result.js";
-import { loadConfig, type Config, type CodexProviderConfig } from "../../src/config.js";
+import { loadConfig, providerConfigFor, type Config, type CodexProviderConfig } from "../../src/config.js";
 import type { ProviderId } from "../../src/models.js";
 
 /**
@@ -34,6 +34,7 @@ const codexDepsFrom = (config: Config) => ({
   providerId: "codex" as ProviderId,
   provider: config.providers.codex,
   pingIntervalMs: config.limits.pingIntervalMs,
+  loginCommand: providerConfigFor(config, "codex").loginCommand,
 });
 
 /**
@@ -689,5 +690,69 @@ describe("buildHeaders — auth-first header order with owned-name guard (avoids
     const captured = await captureOutgoingHeaders(authWithCapUa, "inline-header-u1-3.json");
     const uaKeys = Object.keys(captured).filter((k) => /^user-agent$/i.test(k));
     assert.equal(uaKeys.length, 1, `exactly one user-agent key must exist; got keys: ${JSON.stringify(Object.keys(captured))}`);
+  });
+});
+
+/**
+ * Upstream 401 message includes the provider's loginCommand from deps.
+ *
+ * The loginCommand cannot be synthesised from providerId: a provider whose id is "kimi"
+ * may log in with "kimi auth login", not "kimi login". The value comes from the
+ * hand-written PROVIDER_CONFIG_ACCESSORS table in config.ts and is read from deps.
+ *
+ * PF-011: proven RED against the named mutation before trusting green.
+ */
+describe("upstream 401 names the provider loginCommand in the client-visible message", () => {
+  /**
+   * U2.1: providerId: OTHER_PROVIDER, loginCommand: "kimi auth login", refreshable: false.
+   * Assert message ends with "kimi auth login" and does NOT match /kimi login/.
+   *
+   * Mutation that MUST turn it red: synthesise the login command as `${providerId} login`
+   * instead of reading from deps (i.e. produce "kimi login" instead of "kimi auth login").
+   * Proven red: doesNotMatch(/kimi login/) fails because the synthesised form IS "kimi login".
+   */
+  it("U2.1 — message ends with the loginCommand from deps, not a synthesised providerId-login form", async () => {
+    const configResult = loadConfig({
+      configPath: "inline-login-cmd-u2-1.json",
+      readFile: () => JSON.stringify({ logLevel: "error" }),
+    });
+    assert.ok(configResult.ok, "config load should succeed");
+
+    const always401: typeof fetch = async () => new Response("unauthorized", { status: 401 });
+    const staticAuth: ProviderAuth<"codex"> = {
+      refreshable: false,
+      getCredentials: async () =>
+        ok({ provider: "codex" as const, authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" } }),
+      forceRefresh: async () =>
+        ok({ provider: "codex" as const, authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" } }),
+    };
+
+    const handler = createCodexHandler({
+      ...codexDepsFrom(configResult.value.config),
+      providerId: OTHER_PROVIDER,
+      loginCommand: "kimi auth login",
+      logger: noopLogger,
+      auth: staticAuth,
+      cache: new ReasoningCache(4, 1024),
+      fetchImpl: always401,
+    });
+
+    const body = { model: "gpt-5.5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
+    const res = new StubResponse();
+    const req = new EventEmitter() as unknown as IncomingMessage;
+    await handler.handleMessages(req, res as unknown as ServerResponse, Buffer.from(JSON.stringify(body)), body, "gpt-5.5");
+
+    assert.equal(res.statusCode, 401, `expected 401; body was: ${res.body}`);
+    const parsed = JSON.parse(res.body) as { error: { message: string } };
+    assert.match(
+      parsed.error.message,
+      /kimi auth login/,
+      "message must include the loginCommand from deps",
+    );
+    assert.doesNotMatch(
+      parsed.error.message,
+      /kimi login/,
+      'synthesising `${providerId} login` would produce "kimi login" — must read from deps',
+    );
   });
 });
