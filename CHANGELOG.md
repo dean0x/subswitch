@@ -117,8 +117,8 @@ Such a block would otherwise be stripped by the schema and do nothing at all.
   `auth` share one type parameter. Wiring one provider's credential into another
   provider's handler is a compile error at the wiring site rather than a subscription
   token sent to a third-party host. The seam carries auth headers only — protocol
-  constants stay with the handler that owns the transport. Codex sends the same two
-  headers with the same values as before.
+  constants stay with the handler that owns the transport. Codex sends the same values,
+  in the same positions.
 - **The SSE parser is linear in stream length**: undelivered text is held as an array of
   segments and joined only on the chunk that completes an event, instead of being
   concatenated into one string per chunk. Frame boundaries are unchanged by construction
@@ -130,6 +130,21 @@ Such a block would otherwise be stripped by the schema and do nothing at all.
   per-provider partition and the collapsed per-family verdict in one pass, and the router
   and the display both read it. Previously each side derived "newest non-preview,
   non-retired wins" for itself.
+- **`buildHeaders` outgoing header order**: credential headers (from `authHeaders`) now
+  seed the outgoing object first; the six transport constants (`openai-beta`, `originator`,
+  `session_id`, `accept`, `content-type`, `user-agent`) are appended after via a `put()`
+  guard that silently skips any name the credential already owns, compared lowercased.
+  This restores the auth-first ordering live-verified in the `b337a75` era and hedges
+  against upstream fingerprinting changes. **The ordering change is precautionary — live
+  tests against both the pre-fix build (transport constants first) and the post-fix build
+  (credential headers first) returned HTTP 200 with identical response headers, SSE event
+  sequence, and `usage`.** The substantive correctness fix — the shadowing guard — is
+  listed under Fixed below.
+- **Unresolvable 401 names the login command**: when a credential refresh succeeds but the
+  upstream still responds 401, the client-visible error message is now suffixed with
+  `` — run `codex login` ``. The command name is sourced from
+  `providerConfigFor(config, "codex").loginCommand`; it is never synthesized from the
+  provider id.
 
 ### Fixed
 
@@ -168,23 +183,25 @@ Such a block would otherwise be stripped by the schema and do nothing at all.
   and the client received a synthesised "authentication failed after refresh" instead of
   the upstream's own 401. The Codex leg sets `refreshable: true` and is unaffected — its
   request sequence and error text are unchanged.
+- **Credential redaction in client-visible error messages**: `redactCredentials` is now
+  applied inside `toAnthropicErrorBody` — the chokepoint both upstream-text relay paths
+  funnel through (the handler's body peek and `codex-response.ts`'s SSE `response.failed`
+  interpolation). Bearer tokens and JWTs are stripped before the text reaches the client.
+- **Auth file written with O_EXCL and unlinked on failure**: `codex-auth.ts` temp write
+  now uses `open(tmp, "wx", 0o600)` (O_EXCL) — the file is created exclusively with
+  `0o600` permissions and the temp is unlinked on any write failure, closing the
+  predictable-temp-path and world-readable race conditions.
+- **Case-variant header shadowing**: previously a credential that supplied a header name
+  that matched a transport constant under a different case (e.g., `Content-Type` vs
+  `content-type`) caused both to be emitted; undici comma-joins duplicate header names
+  into a single malformed value. The `put()` guard compares names lowercased before
+  writing, so exactly one value is emitted and the credential's version wins.
 
 ### Known limitations and deferred work
 
 These items are deliberately deferred — they are real constraints that should be fixed
 before adding a second production provider:
 
-- **An expired Codex credential produces a 401 with no remediation text.** The client
-  sees `codex upstream error (401): <detail>` and is not told to run `codex login`.
-  Nothing regressed — the message that was meant to carry that advice
-  (`authentication failed after refresh`) had been unreachable in production, and
-  removing it is what made the gap visible. `subswitch doctor` still names the command.
-  Adding remediation to the 401 path is a one-line change, deliberately not made here
-  because it alters a client-visible Codex string; it needs an owner and a decision.
-- **An upstream error body is forwarded to the client verbatim** (first 2 KB). If a
-  provider's backend ever echoed the bearer token in an error body, the proxy would
-  relay it. No evidence the Codex backend does this, and the proxy binds `127.0.0.1`
-  only — but the control is upstream behaviour rather than anything enforced here.
 - **`PROVIDER_IDS[0]`-vs-declaring-provider and per-provider default-host checks are
   unfalsifiable with one provider id.** Both are correct by inspection and by an
   out-of-tree probe, but no in-suite test can distinguish them until a second id ships.
@@ -202,17 +219,22 @@ before adding a second production provider:
   emit `codex_*` events for its own credential or need its own hardcoded copies.
   Moving them into the table is deliberately deferred: it renames operator-visible
   log events and needs a decision, not a drive-by edit.
-- **The Codex leg's outgoing request-header order changed.** `buildHeaders` spreads
-  `credential.authHeaders` last so a transport constant can never silently shadow the
-  credential — a quietly overridden `authorization` is a far worse failure than a loud
-  401, and the spread order makes it structurally impossible. The trade is that
-  `authorization` and `chatgpt-account-id` moved from the front of the outgoing header
-  list to the back. Header names and values are unchanged, and HTTP treats the relative
-  order of distinct field names as insignificant — but this leg deliberately
-  impersonates `codex_cli_rs` to a Cloudflare-fronted endpoint, and request-header order
-  is a known client-fingerprinting axis (see PF-005). The new order has not been verified
-  against the live backend. If it ever proves to matter, restore the order by building
-  the header object explicitly — never by moving the auth spread earlier.
+- **`src/init.ts` shares the predictable-temp-path exposure that `codex-auth.ts` just
+  fixed**: it writes via `fsWriteFile` with no `O_EXCL` and no `0o600` mode. The
+  unlink-on-failure half is present, but the exclusive-create and restrictive-permissions
+  halves are not. Out of scope for this branch.
+- **`e2e/capture/codex-recorder.ts` cannot capture SSE from the live backend**: its
+  detection gates on `contentType.includes("text/event-stream")`, but the production
+  `/responses` stream sends no `Content-Type` header at all, so the recorder silently
+  degrades to pass-through mode and captures no events and no `usage`. It works correctly
+  only against local fixture upstreams, which do set the header. A one-line
+  `|| contentType === ""` relaxation fixes it. Anyone repeating the live-capture protocol
+  with the checked-in recorder will get empty event captures and may wrongly conclude the
+  stream is broken.
+- **`e2e/README.md` contains a stale top-level `codex.*` config example**: the correct
+  shape is `providers.codex.*`; the stale example would now be rejected at load by
+  `detectLegacyConfigKeys`. The parity table in the same file is a separately scoped
+  known limitation (PF-005). Fixing the config example is out of scope for this branch.
 - **Kimi provider leg** is a separate branch, gated on a five-question live probe
   requiring a real subscription.
 
