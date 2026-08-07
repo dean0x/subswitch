@@ -285,6 +285,42 @@ describe("createAnthropicSseTranslator", () => {
     assert.equal(error["message"], "upstream exploded");
   });
 
+  /**
+   * U3.3 — SSE response.failed event carrying a JWT in error.message: the emitted
+   * error frame must contain no `eyJ` prefix.
+   *
+   * Mutation that MUST turn this red: apply the redaction in the handler instead of
+   * in errors.ts (i.e. remove the redactCredentials call from toAnthropicErrorBody
+   * and add it only to the upstream-body-relay in codex-handler.ts). This mutation
+   * exists specifically to prove the chokepoint choice was correct: the response.failed
+   * path flows through toAnthropicErrorSse → toAnthropicErrorBody, NOT through the
+   * handler's upstream-body relay, so handler-side redaction does not cover it.
+   * U3.3 must go RED under this mutation.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("U3.3 — response.failed JWT in error.message is redacted in the emitted error frame", async () => {
+    const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIn0.sig";
+    const sse = [
+      `event: response.created`,
+      `data: {"type":"response.created","response":{"id":"resp_u33","model":"gpt-5.5","status":"in_progress"}}`,
+      ``,
+      `event: response.failed`,
+      `data: {"type":"response.failed","response":{"id":"resp_u33","model":"gpt-5.5","status":"failed","error":{"code":"auth_failed","message":"token ${jwt} rejected"}}}`,
+      ``,
+      ``,
+    ].join("\n");
+    const { frames } = await translate(sse);
+    const errorFrame = frames.find((f) => frameData(f)["type"] === "error");
+    assert.ok(errorFrame !== undefined, "an error frame must be emitted");
+    const message = (frameData(errorFrame)["error"] as Record<string, unknown>)["message"] as string;
+    // JWT must be redacted
+    assert.ok(!message.includes("eyJ"), `JWT (eyJ prefix) must not appear in error frame message, got: ${message}`);
+    // Surrounding context must be preserved (proves surgical redaction, not nuking the message)
+    assert.ok(message.includes("token"), "surrounding context 'token' must be preserved");
+    assert.ok(message.includes("rejected"), "surrounding context 'rejected' must be preserved");
+  });
+
   it("translates a recorded real transcript (sanitized) end-to-end", async () => {
     const { frames } = await translate(loadSse("live-transcript.sse"));
     assert.deepEqual(frameTypes(frames), [

@@ -256,6 +256,39 @@ describe("codex leg", () => {
     assert.doesNotMatch(body.error.message, /run `/, "remediation suffix must not appear on 429");
   });
 
+  /**
+   * I3.1 — upstream returns 500 with a body containing a JWT.
+   * The client-visible body must contain no `eyJ…` prefix but MUST retain
+   * the surrounding words — proving surgical redaction, not message erasure.
+   *
+   * Mutation that MUST turn this red: remove the redactCredentials call from
+   * toAnthropicErrorBody (or from wherever it lives after the fix).
+   * Proven red: the !includes("eyJ") assertion fails because the raw JWT appears.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("I3.1 — upstream 500 body containing a JWT is redacted but surrounding words are kept", async () => {
+    const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIn0.sig";
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(500, { "content-type": "text/plain" });
+      res.end(`token ${jwt} was rejected by the server`);
+    });
+
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
+    assert.equal(response.status, 500);
+    const body = (await response.json()) as { error: { type: string; message: string } };
+    // JWT must be redacted
+    assert.ok(
+      !body.error.message.includes("eyJ"),
+      `JWT must not appear in client-visible message, got: ${body.error.message}`,
+    );
+    // Surrounding context must be preserved (surgical redaction, not nuke)
+    assert.ok(
+      body.error.message.includes("token") && body.error.message.includes("rejected"),
+      `surrounding context must be preserved, got: ${body.error.message}`,
+    );
+  });
+
   it("answers count_tokens locally with the chars/4 estimate", async () => {
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
     const body = JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "estimate me" }] });
