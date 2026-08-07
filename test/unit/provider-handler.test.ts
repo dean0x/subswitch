@@ -533,3 +533,161 @@ describe("log event names derive from the handler's providerId", () => {
     );
   });
 });
+
+/**
+ * buildHeaders puts auth-first with transport constants after (regression avoidance).
+ *
+ * Verified end-to-end through undici 6.24.1 on Node 22.22.3: undici preserves
+ * insertion order of the object literal verbatim onto the wire (HTTP/1.1 only).
+ * The auth-first order was live-verified 2026-08-07.
+ *
+ * PF-005 scope: PF-005 forbids using the e2e/README.md wrong-transport capture table
+ * to change header names or values. It does NOT govern order. These tests assert order
+ * and the shadow-prevention guard, not parity with codex exec analytics captures.
+ *
+ * PF-011: each test below is proven RED against its named mutation before trusting green.
+ */
+const TARGET_HEADER_ORDER = [
+  "authorization",
+  "chatgpt-account-id",
+  "openai-beta",
+  "originator",
+  "session_id",
+  "accept",
+  "content-type",
+  "user-agent",
+] as const;
+
+/** Minimal two-header credential that matches what CodexAuthManager emits. */
+const makeStandardAuth = (): ProviderAuth<"codex"> => ({
+  refreshable: false,
+  getCredentials: async () =>
+    ok({
+      provider: "codex" as const,
+      authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" },
+    }),
+  forceRefresh: async () =>
+    ok({ provider: "codex" as const, authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" } }),
+});
+
+/** Run the handler far enough to call fetchImpl, then return the captured headers. */
+const captureOutgoingHeaders = async (
+  auth: ProviderAuth<"codex">,
+  configPath = "inline-header-capture.json",
+): Promise<Record<string, string>> => {
+  const configResult = loadConfig({
+    configPath,
+    readFile: () => JSON.stringify({ logLevel: "error" }),
+  });
+  assert.ok(configResult.ok, "config load should succeed");
+
+  let capturedHeaders: Record<string, string> | undefined;
+  const fetchImpl: typeof fetch = async (_input, init) => {
+    capturedHeaders = { ...(init?.headers as Record<string, string> | undefined) };
+    // Return a non-streaming error so the handler exits quickly.
+    return new Response("upstream", { status: 502 });
+  };
+
+  const handler = createCodexHandler({
+    ...codexDepsFrom(configResult.value.config),
+    logger: noopLogger,
+    auth,
+    cache: new ReasoningCache(4, 1024),
+    fetchImpl,
+  });
+
+  const body = { model: "gpt-5.5", max_tokens: 10, messages: [{ role: "user", content: "hi" }] };
+  const res = new StubResponse();
+  const req = new EventEmitter() as unknown as IncomingMessage;
+  await handler.handleMessages(req, res as unknown as ServerResponse, Buffer.from(JSON.stringify(body)), body, "gpt-5.5");
+
+  assert.ok(capturedHeaders !== undefined, "fetchImpl must have been called — handler returned before reaching fetch");
+  return capturedHeaders;
+};
+
+describe("buildHeaders — auth-first header order with owned-name guard (avoids PF-005)", () => {
+  /**
+   * U1.1: Object.keys(captured) deep-equals the eight-name target order.
+   *
+   * Mutation that MUST turn it red: move the auth spread back to last (old pattern).
+   * Proven red: "Expected values to be strictly deep-equal" — keys start with
+   * ["openai-beta", "originator", ...] instead of ["authorization", "chatgpt-account-id", ...].
+   */
+  it("U1.1 — Object.keys of outgoing headers equals the eight-name target order", async () => {
+    const captured = await captureOutgoingHeaders(makeStandardAuth(), "inline-header-u1-1.json");
+    assert.deepEqual(Object.keys(captured), [...TARGET_HEADER_ORDER]);
+  });
+
+  /**
+   * U1.2: a credential returning user-agent wins over provider.userAgent.
+   *
+   * Mutation that MUST turn it red: delete the owned guard (always call `headers[name] = value`).
+   * Proven red: "Expected 'codex_cli_rs/0.144.6' to equal 'credential-ua/1.0'" (provider UA wins).
+   */
+  it("U1.2 — a credential returning user-agent wins over provider.userAgent (owned guard)", async () => {
+    const authWithUa: ProviderAuth<"codex"> = {
+      refreshable: false,
+      getCredentials: async () =>
+        ok({
+          provider: "codex" as const,
+          authHeaders: {
+            authorization: "Bearer tok",
+            "chatgpt-account-id": "acct_x",
+            "user-agent": "credential-ua/1.0",
+          },
+        }),
+      forceRefresh: async () =>
+        ok({
+          provider: "codex" as const,
+          authHeaders: {
+            authorization: "Bearer tok",
+            "chatgpt-account-id": "acct_x",
+            "user-agent": "credential-ua/1.0",
+          },
+        }),
+    };
+    const captured = await captureOutgoingHeaders(authWithUa, "inline-header-u1-2.json");
+    assert.equal(
+      captured["user-agent"],
+      "credential-ua/1.0",
+      "credential's user-agent must win over provider.userAgent",
+    );
+  });
+
+  /**
+   * U1.3: a credential returning User-Agent (capital) → exactly one key matching /^user-agent$/i.
+   *
+   * Mutation that MUST turn it red: drop .toLowerCase() from the owned Set construction
+   * (change `k.toLowerCase()` → `k`). Transport constant names ("user-agent") are all
+   * lowercase, so only the owned-construction normalisation detects the case collision.
+   * Proven red: "Expected 1 to be equal to 2" — both "User-Agent" (from credential spread)
+   * and "user-agent" (from put) are emitted when owned has "User-Agent" but put checks
+   * owned.has("user-agent"), which returns false on a case-sensitive set.
+   */
+  it("U1.3 — a credential returning User-Agent (capital) produces exactly one user-agent key", async () => {
+    const authWithCapUa: ProviderAuth<"codex"> = {
+      refreshable: false,
+      getCredentials: async () =>
+        ok({
+          provider: "codex" as const,
+          authHeaders: {
+            authorization: "Bearer tok",
+            "chatgpt-account-id": "acct_x",
+            "User-Agent": "capital-ua/1.0",
+          },
+        }),
+      forceRefresh: async () =>
+        ok({
+          provider: "codex" as const,
+          authHeaders: {
+            authorization: "Bearer tok",
+            "chatgpt-account-id": "acct_x",
+            "User-Agent": "capital-ua/1.0",
+          },
+        }),
+    };
+    const captured = await captureOutgoingHeaders(authWithCapUa, "inline-header-u1-3.json");
+    const uaKeys = Object.keys(captured).filter((k) => /^user-agent$/i.test(k));
+    assert.equal(uaKeys.length, 1, `exactly one user-agent key must exist; got keys: ${JSON.stringify(Object.keys(captured))}`);
+  });
+});

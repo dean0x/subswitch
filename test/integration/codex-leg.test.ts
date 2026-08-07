@@ -305,6 +305,56 @@ describe("codex leg", () => {
     }
   });
 
+  /**
+   * I1.1: rawHeaders name sequence has auth-first, then transport constants.
+   *
+   * undici preserves insertion order of the buildHeaders object literal verbatim onto
+   * the wire (verified live 2026-08-07, Node 22.22.3 / undici 6.24.1, HTTP/1.1 only).
+   * We filter rawHeaders to only the eight application names to tolerate undici-injected
+   * headers (host, connection, accept-language, sec-fetch-mode, accept-encoding,
+   * content-length) — that filtering is what keeps the assertion non-brittle across
+   * undici version bumps while remaining fully falsifiable by the U1.1 mutation.
+   *
+   * Mutation that MUST turn it red: move the auth spread back to last (same as U1.1).
+   * Proven red: deepEqual fails — first two names are openai-beta/originator, not authorization/chatgpt-account-id.
+   *
+   * PF-005 scope: PF-005 forbids using the e2e/README.md wrong-transport capture table
+   * to change header names or values. It does NOT govern order. (avoids PF-005)
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("I1.1 — outgoing rawHeaders name sequence is auth-first, then transport constants", async () => {
+    const APPLICATION_HEADERS = new Set([
+      "authorization",
+      "chatgpt-account-id",
+      "openai-beta",
+      "originator",
+      "session_id",
+      "accept",
+      "content-type",
+      "user-agent",
+    ]);
+
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
+    assert.equal(response.status, 200);
+    await response.text();
+
+    const rawHeaders = rig.codex.requests[0]!.rawHeaders;
+    // rawHeaders is flat [name, value, name, value, ...].
+    // Even indices are names; odd indices are values.
+    // Filter to the eight application-level headers to tolerate undici-injected ones.
+    const appNames = rawHeaders
+      .filter((_entry, i) => i % 2 === 0)
+      .filter((name) => APPLICATION_HEADERS.has(name.toLowerCase()))
+      .map((name) => name.toLowerCase());
+
+    assert.deepEqual(
+      appNames,
+      ["authorization", "chatgpt-account-id", "openai-beta", "originator", "session_id", "accept", "content-type", "user-agent"],
+      "auth headers must come first on the wire, then transport constants (live-verified 2026-08-07)",
+    );
+  });
+
   it("sets the user-agent header from codex.userAgent config", async () => {
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
     const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));

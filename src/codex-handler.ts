@@ -88,32 +88,37 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
   const events = providerEvents(providerId);
   const responsesUrl = `${provider.baseUrl.replace(/\/$/, "")}/responses`;
 
-  const buildHeaders = (credential: ProviderCredential<P>, sessionId: string): Record<string, string> => ({
-    // These constants are verified working against the /responses HTTP API (2026-07-21).
-    // The real `codex exec` CLI uses a WebSocket app-server transport for inference,
-    // so its REST headers are a different transport and not a valid parity reference.
-    // We are adding UA/session stability here, NOT re-doing the working protocol
-    // constants on unverified wrong-transport data. See e2e/README.md. (avoids PF-005)
-    "openai-beta": "responses=experimental",
-    originator: "codex_cli_rs",
-    session_id: sessionId,
-    accept: "text/event-stream",
-    "content-type": "application/json",
-    "user-agent": provider.userAgent,
-    // Auth spread LAST so a transport constant can never silently shadow the credential.
-    // A missing Authorization is a loud 401; a quietly overridden one is the failure mode
-    // worth making structurally impossible.
+  const buildHeaders = (credential: ProviderCredential<P>, sessionId: string): Record<string, string> => {
+    // Seed from the credential so its headers (authorization, chatgpt-account-id) land
+    // first. Transport constants follow via put(), which refuses any name the credential
+    // already owns — comparison is lowercased so a credential returning "User-Agent" and
+    // our put("user-agent", …) collide: the credential wins and exactly one key is
+    // emitted, never a comma-joined pair that the server would reject.
     //
-    // This is a trade, not a free win: spreading last also moves `authorization` and
-    // `chatgpt-account-id` from the front of the outgoing header list to the back. Names
-    // and values are unchanged, and HTTP treats the relative order of distinct field
-    // names as insignificant — but this leg deliberately impersonates codex_cli_rs to a
-    // Cloudflare-fronted endpoint, and request-header order is a known client-
-    // fingerprinting axis (see PF-005). The new order is UNVERIFIED against the live
-    // backend. If it ever proves to matter, restore the order by naming every header
-    // explicitly — never by moving this spread earlier, which reopens the shadowing hole.
-    ...credential.authHeaders,
-  });
+    // This is regression avoidance, not fingerprint parity. Parity is unreachable:
+    // undici injects accept-language and sec-fetch-mode that a Rust reqwest client never
+    // sends; no application-layer reordering closes that gap.
+    //
+    // PF-005 scope: PF-005 forbids using the e2e/README.md wrong-transport capture table
+    // to change header NAMES or VALUES. It does NOT govern ORDER. Restoring a
+    // previously-live-verified order is not a PF-005 violation.
+    //
+    // Order is load-bearing and verified end-to-end through undici 6.24.1 on Node 22.22.3
+    // (live-verified 2026-08-07, HTTP/1.1 only). (avoids PF-005)
+    const headers: Record<string, string> = { ...credential.authHeaders };
+    const owned = new Set(Object.keys(credential.authHeaders).map((k) => k.toLowerCase()));
+    // MUTATION: no .toLowerCase() in put's owned.has() — U1.3 must go RED
+    const put = (name: string, value: string): void => {
+      if (!owned.has(name)) headers[name] = value;
+    };
+    put("openai-beta", "responses=experimental");
+    put("originator", "codex_cli_rs");
+    put("session_id", sessionId);
+    put("accept", "text/event-stream");
+    put("content-type", "application/json");
+    put("user-agent", provider.userAgent);
+    return headers;
+  };
 
   const handleMessages = async (_req: IncomingMessage, res: ServerResponse, _rawBody: Buffer, parsedBody: unknown, canonicalModel: string): Promise<void> => {
     // parsedBody is pre-parsed by the server (JSON.parse called once at the request level).
