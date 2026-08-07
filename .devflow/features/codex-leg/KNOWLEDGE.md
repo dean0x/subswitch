@@ -28,7 +28,7 @@ The Codex backend is accessed with the user's ChatGPT subscription OAuth credent
 
 **The real `codex exec` CLI does NOT POST to `/responses` over HTTP for AI inference.** It uses a WebSocket app-server transport (`rpc_transport: "app_server"`). The HTTP calls captured from `codex exec` are analytics and session management only.
 
-Consequence: subswitch's `/responses` protocol constants were independently verified working against the HTTP backend (2026-07-21), not derived from a `codex exec` wire capture. The parity gaps table in `e2e/README.md` (Section "Parity gaps — subswitch vs real CLI") compares subswitch against analytics-endpoint headers from the wrong transport. **Do not use that table to "fix"** the `buildHeaders` function in `codex-handler.ts` (avoids PF-005).
+Consequence: subswitch's `/responses` protocol constants were independently verified working against the HTTP backend (2026-07-21), not derived from a `codex exec` wire capture. The parity gaps table in `e2e/README.md` (Section "Parity gaps — subswitch vs real CLI") compares subswitch against analytics-endpoint headers from the wrong transport. **Do not use that table to change header names or values** in `buildHeaders` (avoids PF-005). PF-005 forbids using the wrong-transport capture table to change header **names or values**; it does **not** govern **order**.
 
 | subswitch `/responses` header | Status |
 |---|---|
@@ -187,7 +187,11 @@ IncomingMessage (Anthropic wire)
       → canonical substitution (model field → canonical in `request`)
       → deriveConversationKey (hashes canonical model + system + first user msg)
       → translateRequest (codex-request.ts; ReasoningCache for reasoning re-injection)
-      → buildHeaders (credentials + sessionId; bounded retry; same sessionId both attempts)
+      → buildHeaders — credential.authHeaders seed the object first; transport constants
+          (openai-beta, originator, session_id, accept, content-type, user-agent) appended
+          via put() guard that skips any name the credential owns, compared lowercased;
+          outgoing order: authorization, chatgpt-account-id, openai-beta, originator,
+          session_id, accept, content-type, user-agent; bounded retry; same sessionId both attempts
       → fetch POST /responses
       → createSseParser (chunk → SseEvent)
       → createAnthropicSseTranslator (SseEvent → Anthropic SSE frame)
@@ -212,8 +216,8 @@ IncomingMessage (Anthropic wire)
 
 | Failure | Handling |
 |---|---|
-| 401 before streaming begins | One credential refresh, then one retry (when `auth.refreshable`). If still 401, `auth` error returned to client. |
-| Non-2xx upstream (non-401) | Error body peeked (2 KB cap), mapped to Anthropic error shape via `upstreamStatusToAnthropicError`, `retry-after` header forwarded. |
+| 401 before streaming begins | One credential refresh, then one retry (when `auth.refreshable`). If still 401, `auth` error returned to client, suffixed with `` — run `<loginCommand>` `` (sourced from `providerConfigFor(config, "codex").loginCommand`). |
+| Non-2xx upstream (non-401) | Error body peeked (2 KB cap), mapped to Anthropic error shape via `upstreamStatusToAnthropicError`; credentials stripped via `redactCredentials` inside `toAnthropicErrorBody` before the text reaches the client; `retry-after` header forwarded. |
 | Mid-stream upstream failure | After `message_start` is already sent, emit `toAnthropicErrorSse("api_error", …)` and close. Never retry mid-stream. |
 | Stream ends with content blocks still open | `reconcileOpenBlocks` synthesises `content_block_stop` for every open block that received a delta, in band **before** `message_delta`/`message_stop`. Zero-delta blocks are discarded, not closed. Without this the non-streaming client gets a 200 with empty content (avoids PF-008). |
 | Delta that matches no content block | Text is dropped. Fatal only when no block received any content — then an error frame, 502. Otherwise degrades gracefully and the placed content is returned. |
@@ -225,7 +229,9 @@ IncomingMessage (Anthropic wire)
 
 ## Anti-Patterns
 
-**Aligning `/responses` headers to `codex exec` wire captures.** The parity gaps table in `e2e/README.md` documents analytics-endpoint headers from the wrong transport (avoids PF-005). Changing `buildHeaders` to match that table will break the working `/responses` HTTP leg.
+**Aligning `/responses` headers to `codex exec` wire captures.** The parity gaps table in `e2e/README.md` documents analytics-endpoint headers from the wrong transport (avoids PF-005). Changing `buildHeaders` to match that table will break the working `/responses` HTTP leg. PF-005 forbids using the wrong-transport capture table to change header **names or values**; it does **not** govern **order**.
+
+**Naming `authorization` / `chatgpt-account-id` explicitly in `buildHeaders`.** Building the header object by spelling out `authorization` and `chatgpt-account-id` by name re-hardcodes one provider's header names into a provider-neutral handler. Any provider whose credential returns `x-api-key` or `{}` instead of those names would have its auth headers silently dropped, leaving the request unauthenticated. Credentials supply their own names via `authHeaders`; `buildHeaders` must not know what those names are — the `put()` guard writes transport constants and the credential's own entries land first.
 
 **Writing a provider translator with no terminal reconciliation.** Any upstream lacking a per-item done event needs its content-block closes synthesized at the terminal event — a Chat Completions–style upstream must synthesize them from `finish_reason` (avoids PF-008). Omitting this is silently lossy on every non-streaming request while the whole streaming test suite stays green, because `aggregateFrames` materialises a block only on its `content_block_stop`.
 
@@ -275,6 +281,8 @@ IncomingMessage (Anthropic wire)
 
 **`maxSseEventBytes` counts UTF-16 code units, not bytes, despite the name.** Preserved deliberately through the parser rewrite — changing it to byte length moves the trip point for multi-byte payloads and is a separate decision. The check runs per chunk against the undelivered residual, so it bounds live memory; a version that checks after assembling the event still reports `sse_event_too_large` but is no longer a memory control, and only a test counting chunks accepted before rejection can tell the two apart.
 
+**`codex-recorder.ts` cannot capture SSE events from the live backend.** Its detection gates on `contentType.includes("text/event-stream")`, but the production `/responses` stream sends **no `Content-Type` header at all**. The recorder therefore silently degrades to pass-through mode, capturing no events and no `usage`. It works correctly only against local fixture upstreams, which do set the header. A one-line `|| contentType === ""` relaxation in the content-type check fixes it. Anyone repeating the live-capture protocol with the checked-in recorder will get empty event captures and may wrongly conclude the stream is broken. (See also CHANGELOG known limitations.)
+
 ## Key Files
 
 - `src/server.ts` — Wiring site for resolve→route→send; `buildDeps` calls `buildRoutingTable` once; `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; concurrency gate
@@ -291,7 +299,7 @@ IncomingMessage (Anthropic wire)
 - `test/fixtures/sse-splits.golden.json` — Frame-boundary pin for `createSseParser`, captured pre-rewrite; 16,269 two-way + 49,770 three-way splits asserted by `test/unit/sse-split-golden.test.ts`
 - `src/config.ts` — `providers.codex.*` schema; `FileConfig`/`Config` split; `resolveConfig`; `detectLegacyConfigKeys`; `AliasesSchema` refines for `isReservedAnthropicName`
 - `src/logger.ts` — Closed `FIELD_KEYS` set; `cachedTokens` and `sessionKey` observability fields; log injection prevention
-- `e2e/capture/codex-recorder.ts` — Dev-only transparent forwarder; excluded from npm test; NEVER commit real captures
+- `e2e/capture/codex-recorder.ts` — Dev-only transparent forwarder; excluded from npm test; NEVER commit real captures. **Known defect**: cannot capture SSE from the live backend (no `Content-Type` header on production `/responses` stream); see Gotchas.
 
 ## Related
 
@@ -304,7 +312,7 @@ IncomingMessage (Anthropic wire)
 - PF-002: Drop `max_output_tokens` — backend rejects this field with 400
 - PF-003: `system`-role → `developer`-role translation
 - PF-004: `output_config.effort` → `reasoning.effort` propagation
-- PF-005: The `e2e/README.md` parity table is the WRONG transport — do not use it to change `buildHeaders`
+- PF-005: The `e2e/README.md` parity table is the WRONG transport — do not use it to change header **names or values** in `buildHeaders`; it does **not** govern header **order**
 - PF-006: Doctor's non-zero exit is load-bearing; never assert doctor exits 0
 - PF-007: Alias targets validated, not just keys — a `claude-*` target becomes routable and misroutes main-thread traffic
 - PF-008: An upstream without a per-item done event needs a synthesized close, or `aggregateFrames` returns a 200 with empty content

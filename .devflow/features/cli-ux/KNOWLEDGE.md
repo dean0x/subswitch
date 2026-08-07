@@ -86,6 +86,8 @@ Both scans and `detectConfiguredProviders` walk with `Object.hasOwn` only, throu
 
 **`providerConfigFor(config, id)`** returns the provider-neutral `ProviderRuntimeConfig` slice (`displayName`, `authFile`, `baseUrl`, `loginCommand`, `defaultHost`) that doctor, `/__subswitch/health`, the serve banner, and `models --json` all read. `defaultHost` lives here rather than as a constant in `server.ts` so the base-URL-override warning is per-provider by construction — one provider's default host can never be used to vet another's.
 
+**`loginCommand`** has two consumers: `src/doctor.ts` (names the command in the auth-status check, original usage) and `src/server.ts`, which wires it into `CodexHandlerDeps` so the 401 remediation path can suffix `` — run `<loginCommand>` `` on an unresolvable 401 (after a refresh cycle). It is config-sourced rather than synthesized because a provider whose id is `kimi` may log in via `kimi auth login`, not `kimi login` — so `` `${providerId} login` `` is not a safe derivation. Test U2.1 exists to catch exactly this mistake.
+
 **Three per-provider limits.** Each provider has `requestTimeoutMs`, `streamIdleTimeoutMs`, `maxSseEventBytes`. `connectTimeoutMs` and `maxUpstreamSockets` are Anthropic-leg-only (under `anthropic.*`) because the Codex leg uses global `fetch`. The global `limits.*` block holds `maxBodyBytes`, `pingIntervalMs`, and `maxConcurrentRequests` (default 32) — a single leaked decrement-without-increment permanently degrades the server to 503.
 
 `ANTHROPIC_BASE_URL` is always derived from `config.port` as `http://127.0.0.1:{port}`. Coupling is intentional: the Claude Code settings URL and the proxy port cannot drift from each other because they come from the same source.
