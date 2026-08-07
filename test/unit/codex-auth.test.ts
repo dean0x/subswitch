@@ -1,6 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { CodexAuthManager, inspectAuthFile, type AuthFileStore } from "../../src/codex-auth.js";
+import { mkdtemp, open, mkdir, stat, access } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { CodexAuthManager, createFsAuthFileStore, inspectAuthFile, type AuthFileStore } from "../../src/codex-auth.js";
 import { noopLogger } from "../../src/logger.js";
 import { ok, err } from "../../src/result.js";
 
@@ -214,5 +217,116 @@ describe("inspectAuthFile", () => {
   it("rejects corrupt files", () => {
     assert.ok(!inspectAuthFile("not json").ok);
     assert.ok(!inspectAuthFile('{"tokens":{}}').ok);
+  });
+});
+
+/**
+ * createFsAuthFileStore — O_EXCL and cleanup tests.
+ *
+ * These test the REAL file-system implementation, not the in-memory stub, so they can
+ * verify the security properties of the atomic write path.
+ *
+ * The temp path the store constructs is: `${path}.subswitch-${process.pid}.tmp`.
+ * Tests derive this the same way so they can set up preconditions and inspect residue.
+ */
+describe("createFsAuthFileStore — O_EXCL and cleanup", () => {
+  /**
+   * T4a: pre-creating the temp path must cause the write to fail (O_EXCL enforcement).
+   * auth.json must be unchanged, and no .tmp file may be left behind.
+   *
+   * Mutation that MUST turn this red: change "wx" back to "w".
+   * Under "w", open succeeds on the pre-existing file, writes through it, renames it to
+   * auth.json, and returns ok — so `!result.ok` fails.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("T4a — pre-created temp path causes write to fail with O_EXCL; no .tmp is left behind", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "croxy-t4a-"));
+    const authFilePath = join(dir, "auth.json");
+    const tmpPath = `${authFilePath}.subswitch-${process.pid}.tmp`;
+
+    // Pre-create the temp file with a permissive mode — an attacker who owns the slot.
+    const preCreated = await open(tmpPath, "w", 0o666);
+    await preCreated.close();
+
+    const store = createFsAuthFileStore(authFilePath);
+    const result = await store.writeAtomic('{"replaced": true}');
+
+    // Write must fail (O_EXCL prevents open on existing temp).
+    assert.ok(!result.ok, "writeAtomic must fail when the temp path is pre-created");
+    assert.equal(result.error.kind, "auth");
+
+    // auth.json must not exist (was never the rename target).
+    await assert.rejects(
+      access(authFilePath),
+      "auth.json must not be created when the write fails",
+    );
+
+    // No .tmp file may survive — catch block must have unlinked it.
+    await assert.rejects(
+      access(tmpPath),
+      "temp file must be removed when writeAtomic fails",
+    );
+  });
+
+  /**
+   * T4b: when rename fails (auth path is a directory → EISDIR), no .tmp must survive.
+   *
+   * Mutation that MUST turn this red: delete the unlink(tmpPath) in the catch block.
+   * Under the mutation, the temp file is left at tmpPath after the rename fails.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("T4b — rename failure (EISDIR) leaves no .tmp file behind", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "croxy-t4b-"));
+    const authFilePath = join(dir, "auth.json");
+    const tmpPath = `${authFilePath}.subswitch-${process.pid}.tmp`;
+
+    // Place a directory at the auth path so rename(tmpPath, authFilePath) fails with EISDIR.
+    await mkdir(authFilePath);
+
+    const store = createFsAuthFileStore(authFilePath);
+    const result = await store.writeAtomic('{"data": "irrelevant"}');
+
+    // Write must fail (rename over a directory is rejected on all platforms).
+    assert.ok(!result.ok, "writeAtomic must fail when rename target is a directory");
+    assert.equal(result.error.kind, "auth");
+
+    // The temp file must have been cleaned up by the catch block's unlink.
+    await assert.rejects(
+      access(tmpPath),
+      "temp file must be removed even when rename fails",
+    );
+  });
+
+  /**
+   * T4c — mode pin: auth.json must be created with mode 0o600 (no group/other bits).
+   *
+   * NOTE — SCOPE LIMIT: this test pins the mode argument and does NOT prove the O_EXCL
+   * behaviour. It is green on the pre-fix code (which already passed 0o600) and on the
+   * fixed code. Its mutation target (dropping the mode argument) is orthogonal to T4a.
+   * Do not read it as a security proof for O_EXCL.
+   *
+   * Mutation that MUST turn this red: drop the 0o600 argument from open().
+   * Without an explicit mode the OS applies the default (0o666 masked by umask, typically
+   * 0o644), which leaks read permission to the group — mode & 0o077 becomes non-zero.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("T4c [mode-only, does NOT prove O_EXCL] — auth.json is created with mode 0o600", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "croxy-t4c-"));
+    const authFilePath = join(dir, "auth.json");
+
+    const store = createFsAuthFileStore(authFilePath);
+    const result = await store.writeAtomic('{"tokens": {"access_token": "tok"}}');
+    assert.ok(result.ok, "writeAtomic must succeed on a fresh path");
+
+    const fileStat = await stat(authFilePath);
+    // S_IRWXG and S_IRWXO bits must be zero — no permissions for group or other.
+    assert.equal(
+      fileStat.mode & 0o077,
+      0,
+      `auth.json must have mode 0o600, got 0o${(fileStat.mode & 0o777).toString(8)}`,
+    );
   });
 });

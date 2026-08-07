@@ -1,4 +1,4 @@
-import { open, readFile, rename } from "node:fs/promises";
+import { open, readFile, rename, unlink } from "node:fs/promises";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { Logger } from "./logger.js";
@@ -57,7 +57,14 @@ export const createFsAuthFileStore = (path: string): AuthFileStore => ({
   async writeAtomic(content) {
     const tmpPath = `${path}.subswitch-${process.pid}.tmp`;
     try {
-      const handle = await open(tmpPath, "w", 0o600);
+      // O_EXCL (the "x" in "wx") ensures the open fails if the temp path already exists.
+      // Without it, an attacker who pre-creates this path keeps their own mode on the file
+      // and receives the token material written into it before the rename places it over
+      // auth.json. Without the unlink in the catch block, a failure between open and rename
+      // leaves a complete credential set on disk at a predictable path.
+      // A stale or hostile temp now costs one failed refresh (self-healing on the next
+      // attempt) rather than being silently written through. (mirrors src/init.ts:288-295)
+      const handle = await open(tmpPath, "wx", 0o600);
       try {
         await handle.writeFile(content, "utf8");
         await handle.sync();
@@ -67,6 +74,7 @@ export const createFsAuthFileStore = (path: string): AuthFileStore => ({
       await rename(tmpPath, path);
       return ok(undefined);
     } catch {
+      await unlink(tmpPath).catch(() => undefined);
       return err({ kind: "auth", message: `cannot write codex auth file at ${path}` });
     }
   },
