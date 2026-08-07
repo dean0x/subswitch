@@ -719,20 +719,13 @@ describe("upstream 401 names the provider loginCommand in the client-visible mes
     assert.ok(configResult.ok, "config load should succeed");
 
     const always401: typeof fetch = async () => new Response("unauthorized", { status: 401 });
-    const staticAuth: ProviderAuth<"codex"> = {
-      refreshable: false,
-      getCredentials: async () =>
-        ok({ provider: "codex" as const, authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" } }),
-      forceRefresh: async () =>
-        ok({ provider: "codex" as const, authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" } }),
-    };
 
     const handler = createCodexHandler({
       ...codexDepsFrom(configResult.value.config),
       providerId: OTHER_PROVIDER,
       loginCommand: "kimi auth login",
       logger: noopLogger,
-      auth: staticAuth,
+      auth: makeStandardAuth(),
       cache: new ReasoningCache(4, 1024),
       fetchImpl: always401,
     });

@@ -230,6 +230,13 @@ describe("inspectAuthFile", () => {
  * Tests derive this the same way so they can set up preconditions and inspect residue.
  */
 describe("createFsAuthFileStore — O_EXCL and cleanup", () => {
+  /** Returns authFilePath (auth.json inside a fresh temp dir) and the derived tmpPath. */
+  const makePaths = async (prefix: string): Promise<{ authFilePath: string; tmpPath: string }> => {
+    const dir = await mkdtemp(join(tmpdir(), prefix));
+    const authFilePath = join(dir, "auth.json");
+    return { authFilePath, tmpPath: `${authFilePath}.subswitch-${process.pid}.tmp` };
+  };
+
   /**
    * T4a: pre-creating the temp path must cause the write to fail (O_EXCL enforcement).
    * auth.json must be unchanged, and no .tmp file may be left behind.
@@ -241,9 +248,7 @@ describe("createFsAuthFileStore — O_EXCL and cleanup", () => {
    * PF-011: proven RED against the named mutation before trusting green.
    */
   it("T4a — pre-created temp path causes write to fail with O_EXCL; no .tmp is left behind", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "croxy-t4a-"));
-    const authFilePath = join(dir, "auth.json");
-    const tmpPath = `${authFilePath}.subswitch-${process.pid}.tmp`;
+    const { authFilePath, tmpPath } = await makePaths("croxy-t4a-");
 
     // Pre-create the temp file with a permissive mode — an attacker who owns the slot.
     const preCreated = await open(tmpPath, "w", 0o666);
@@ -278,9 +283,7 @@ describe("createFsAuthFileStore — O_EXCL and cleanup", () => {
    * PF-011: proven RED against the named mutation before trusting green.
    */
   it("T4b — rename failure (EISDIR) leaves no .tmp file behind", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "croxy-t4b-"));
-    const authFilePath = join(dir, "auth.json");
-    const tmpPath = `${authFilePath}.subswitch-${process.pid}.tmp`;
+    const { authFilePath, tmpPath } = await makePaths("croxy-t4b-");
 
     // Place a directory at the auth path so rename(tmpPath, authFilePath) fails with EISDIR.
     await mkdir(authFilePath);
@@ -314,8 +317,7 @@ describe("createFsAuthFileStore — O_EXCL and cleanup", () => {
    * PF-011: proven RED against the named mutation before trusting green.
    */
   it("T4c [mode-only, does NOT prove O_EXCL] — auth.json is created with mode 0o600", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "croxy-t4c-"));
-    const authFilePath = join(dir, "auth.json");
+    const { authFilePath } = await makePaths("croxy-t4c-");
 
     const store = createFsAuthFileStore(authFilePath);
     const result = await store.writeAtomic('{"tokens": {"access_token": "tok"}}');

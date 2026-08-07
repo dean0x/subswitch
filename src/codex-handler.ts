@@ -117,9 +117,13 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
     // (live-verified 2026-08-07, HTTP/1.1 only). (avoids PF-005)
     const headers: Record<string, string> = { ...credential.authHeaders };
     const owned = new Set(Object.keys(credential.authHeaders).map((k) => k.toLowerCase()));
-    // MUTATION: no .toLowerCase() in put's owned.has() — U1.3 must go RED
+    // Both sides of the comparison are lowercased so the guard holds for any caller, not
+    // only for callers that remembered the convention. All six call sites below already
+    // pass lowercase literals, so `name.toLowerCase()` is a no-op today and no test
+    // exercises a mixed-case name — it is here so that a future `put("Content-Type", …)`
+    // cannot silently reopen the duplicate-header hole that U1.3 pins.
     const put = (name: string, value: string): void => {
-      if (!owned.has(name)) headers[name] = value;
+      if (!owned.has(name.toLowerCase())) headers[name] = value;
     };
     put("openai-beta", "responses=experimental");
     put("originator", "codex_cli_rs");
