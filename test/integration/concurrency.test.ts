@@ -144,11 +144,22 @@ describe("concurrency gate — health never gated (P0-2b)", () => {
 // ---------------------------------------------------------------------------
 // (c) Counter-leak detection: abort → slot released → next request accepted
 //
-// MUTATION VERIFICATION: deleting the `res.on("close", () => { activeRequests-- })`
-// line at src/server.ts (after the gate check) would mean that aborting request 1
-// never decrements activeRequests. After the abort, activeRequests would still be
-// ≥1, and request 3 would still receive 503 instead of passing. This test FAILS
-// without the decrement, which is the mutation we are verifying.
+// Two problems with the old fixed-sleep approach:
+//  1. The 30 ms precondition was not reliable: if request 1 had not reached
+//     the proxy yet, request 2 (the 503 probe) would be admitted, park forever,
+//     and hang the test with no default timeout.
+//  2. The 80 ms Promise.race decided leak/no-leak via a timeout: a leaked-slot
+//     503 arriving at 90 ms would register as timedOut: true and score as PASS.
+//
+// Fix: poll parkedRes instead of fixed sleeps.  A parked request exposes the
+// upstream's ServerResponse setter — poll until non-null to know the slot is
+// held, then decide on an OBSERVED outcome (parkedRes update = slot released;
+// immediate 503 = slot leaked) rather than on a race timing out.
+//
+// MUTATION VERIFICATION: deleting `res.on("close", () => { activeRequests-- })`
+// at src/server.ts (after the gate check) means the slot is never decremented.
+// Request 3 immediately receives 503, this test goes RED.  With the decrement,
+// request 3 parks in the upstream (parkedRes becomes non-null), test stays GREEN.
 // ---------------------------------------------------------------------------
 
 describe("concurrency gate — counter not leaked after abort (P0-2c)", () => {
@@ -159,56 +170,70 @@ describe("concurrency gate — counter not leaked after abort (P0-2c)", () => {
     const subswitch = await startSubswitch({ anthropic: { baseUrl: parked.url }, limits: { maxConcurrentRequests: 1 } });
     cleanups.push(subswitch.close);
 
-    // Step 1: fire request 1 (parks in upstream, holds the slot).
+    // Step 1: fire request 1 and poll until it has parked in the upstream.
+    // Polling parkedRes is the reliable signal that the slot is held —
+    // no fixed sleep that might fire before the proxy has received the request.
     const controller1 = new AbortController();
     const req1Promise = fetch(`${subswitch.url}/v1/park-probe`, {
       method: "GET",
       signal: controller1.signal,
     });
-
-    // Wait for it to reach the proxy and park.
-    await new Promise<void>((r) => setTimeout(r, 30));
+    while (parked.parkedRes === null) {
+      await new Promise<void>((r) => setTimeout(r, 5));
+    }
 
     // Step 2: verify that request 2 is blocked (slot full).
     const res2 = await fetch(`${subswitch.url}/v1/probe-2`, { method: "GET" });
     assert.equal(res2.status, 503, "second request must be blocked while slot is held");
     await res2.body?.cancel();
 
-    // Step 3: abort request 1. The proxy's res.on("close") handler fires and
-    // decrements activeRequests back to 0.
+    // Step 3: reset parkedRes so request 3's arrival is observable, then abort
+    // request 1.  The proxy's res.on("close") handler fires and decrements
+    // activeRequests back to 0.
+    parked.parkedRes = null;
     controller1.abort();
     try { await req1Promise; } catch { /* AbortError expected */ }
 
-    // Step 4: wait for the close event to propagate through the event loop.
-    // This is a single fixed wait (not a polling loop) — the close event fires
-    // essentially immediately after the TCP teardown, so 80 ms is generous.
-    await new Promise<void>((r) => setTimeout(r, 80));
-
-    // Step 5: request 3 must now pass through (slot has been released).
-    // The parking upstream will receive it and park again, so we just check
-    // the response is NOT 503. We use a new abort controller to clean up.
+    // Step 4: fire request 3 and decide on an OBSERVED outcome — no fixed race
+    // timeout.  In correct code the slot is released within ms of the abort; the
+    // 2 s deadline is a safety net only.
+    //
+    //   parkedRes non-null  → request 3 reached the upstream → slot released ✓
+    //   req3Promise resolves as 503 → counter was NOT decremented (leak) ✗
     const controller3 = new AbortController();
     const req3Promise = fetch(`${subswitch.url}/v1/probe-3`, {
       method: "GET",
       signal: controller3.signal,
     });
 
-    // Give request 3 time to reach the upstream before asserting (it won't
-    // respond — it parks again — so we check it's in-flight, not rejected).
-    // We use a short timeout race: if the request returns within 50 ms with a
-    // non-503 status, the slot was released. If it returns 503, the slot leaked.
-    const raceResult = await Promise.race([
-      req3Promise.then((r) => ({ timedOut: false, status: r.status }) as const),
-      new Promise<{ timedOut: true }>((r) => setTimeout(() => r({ timedOut: true }), 80)),
+    type Outcome =
+      | { kind: "parked" }
+      | { kind: "responded"; status: number }
+      | { kind: "timeout" };
+
+    const outcome: Outcome = await Promise.race<Outcome>([
+      req3Promise.then((r): Outcome => ({ kind: "responded", status: r.status })),
+      (async (): Promise<Outcome> => {
+        const deadline = Date.now() + 2000;
+        while (Date.now() < deadline) {
+          if (parked.parkedRes !== null) return { kind: "parked" };
+          await new Promise<void>((r) => setTimeout(r, 5));
+        }
+        return { kind: "timeout" };
+      })(),
     ]);
 
-    // If the response came back immediately with 503 → slot was NOT released (bug).
-    // If it timed out (still in-flight, parked upstream) → slot IS released (correct).
-    if (!raceResult.timedOut) {
-      assert.notEqual(raceResult.status, 503, "request 3 must not be 503-rejected after slot was released by abort");
+    switch (outcome.kind) {
+      case "parked":
+        // Slot was released: request 3 reached the upstream and parked ✓
+        break;
+      case "responded":
+        assert.notEqual(outcome.status, 503, "request 3 must not be 503-rejected after slot was released by abort");
+        break;
+      case "timeout":
+        assert.fail("concurrency slot was not released within 2 s of abort");
+        break;
     }
-    // Either the request is still parked (timedOut) or it returned with a non-503 status.
-    // Both indicate the slot was successfully released.
 
     controller3.abort();
     try { await req3Promise; } catch { /* AbortError expected */ }
