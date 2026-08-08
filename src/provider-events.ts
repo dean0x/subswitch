@@ -59,6 +59,15 @@ export interface ProviderEvents<P extends ProviderId> {
    * reach the derivation, so it cannot inject a newline or `=` into the log line.
    */
   readonly insecureBaseUrlScheme: `${P}_insecure_base_url_scheme`;
+  /**
+   * A URL (baseUrl or oauthTokenUrl) points at a non-default host and
+   * `allowInsecureBaseUrl` is false. Emitted at error level; `buildDeps` returns an
+   * error Result so `serve` can exit non-zero. Loopback hosts are always exempt.
+   *
+   * COMPILE-TIME SAFETY: template literal over `P extends ProviderId` — same guarantee
+   * as every other field in this interface.
+   */
+  readonly baseUrlHostRejected: `${P}_base_url_host_rejected`;
 
   // -------------------------------------------------------------------------
   // Auth manager events (formerly hardcoded in codex-auth.ts).
@@ -124,6 +133,7 @@ export const providerEvents = <P extends ProviderId>(providerId: P): ProviderEve
   sessionKey: `${providerId}_session_key`,
   baseUrlOverrideDetected: `${providerId}_base_url_override_detected`,
   insecureBaseUrlScheme: `${providerId}_insecure_base_url_scheme`,
+  baseUrlHostRejected: `${providerId}_base_url_host_rejected`,
   tokenRefreshed: `${providerId}_token_refreshed`,
   refreshTokenRotatedExternally: `${providerId}_refresh_token_rotated_externally`,
   tokenRefreshFailed: `${providerId}_token_refresh_failed`,

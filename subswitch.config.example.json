@@ -5,7 +5,8 @@
     "baseUrl": "https://api.anthropic.com",
     "connectTimeoutMs": 10000,
     "streamIdleTimeoutMs": 300000,
-    "maxUpstreamSockets": 32
+    "maxUpstreamSockets": 32,
+    "allowInsecureBaseUrl": false
   },
   "providers": {
     "codex": {
@@ -21,7 +22,8 @@
       "requestTimeoutMs": 600000,
       "streamIdleTimeoutMs": 300000,
       "maxSseEventBytes": 4194304,
-      "maxAggregateBytes": 67108864
+      "maxAggregateBytes": 67108864,
+      "allowInsecureBaseUrl": false
     }
   },
   "limits": {

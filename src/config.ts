@@ -65,6 +65,19 @@ const AnthropicSchema = z
     streamIdleTimeoutMs: z.number().int().positive().default(300_000),
     /** Maximum sockets in the keep-alive pool for the Anthropic passthrough. */
     maxUpstreamSockets: z.number().int().positive().default(32),
+    /**
+     * Opt-in to a non-default `anthropic.baseUrl` host.
+     *
+     * When false (the default), `subswitch serve` refuses to start if
+     * `anthropic.baseUrl` points at a host other than `api.anthropic.com`, because
+     * doing so would forward the user's Anthropic credentials to an untrusted host.
+     * Loopback addresses (127.0.0.0/8, localhost, ::1) are always exempt — the wire-recorder
+     * workflow uses `http://127.0.0.1`.
+     *
+     * Set to `true` only when you intentionally route through a trusted proxy that
+     * sits in front of Anthropic's API.
+     */
+    allowInsecureBaseUrl: z.boolean().default(false),
   })
   .prefault({});
 
@@ -137,6 +150,23 @@ const CodexProviderSchema = z
      * any other pipeline failure on this leg. Default: 64 MiB.
      */
     maxAggregateBytes: z.number().int().positive().default(64 * 1024 * 1024),
+    /**
+     * Opt-in to a non-default `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` host.
+     *
+     * When false (the default), `subswitch serve` refuses to start if either
+     * `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` points at a host
+     * other than the provider's expected defaults (`chatgpt.com` and `auth.openai.com`
+     * respectively), because doing so would forward the user's subscription credentials
+     * to an untrusted host. `oauthTokenUrl` carries the long-lived refresh token, making
+     * it more damaging to expose than the short-lived access token in `baseUrl`.
+     *
+     * Loopback addresses (127.0.0.0/8, localhost, ::1) are always exempt — the wire-recorder
+     * workflow uses `http://127.0.0.1:4142`.
+     *
+     * Set to `true` only when you intentionally route through a trusted proxy that
+     * sits in front of the Codex backend.
+     */
+    allowInsecureBaseUrl: z.boolean().default(false),
   });
 
 /**
@@ -228,6 +258,11 @@ export interface CodexProviderConfig {
   readonly streamIdleTimeoutMs: number;
   readonly maxSseEventBytes: number;
   readonly maxAggregateBytes: number;
+  /**
+   * Opt-in to a non-default host on `baseUrl` or `oauthTokenUrl`.
+   * When false, `serve` refuses to start if either URL points at a foreign host.
+   */
+  readonly allowInsecureBaseUrl: boolean;
 }
 
 /** Provider id → that provider's resolved slice type. One entry per ProviderId. */
@@ -263,6 +298,11 @@ export interface Config {
     readonly connectTimeoutMs: number;
     readonly streamIdleTimeoutMs: number;
     readonly maxUpstreamSockets: number;
+    /**
+     * Opt-in to a non-default host on `anthropic.baseUrl`.
+     * When false, `serve` refuses to start if the URL points at a foreign host.
+     */
+    readonly allowInsecureBaseUrl: boolean;
   };
   readonly providers: ProviderConfigs;
   readonly limits: {
@@ -314,6 +354,13 @@ export interface ProviderRuntimeConfig {
    * configured `oauthTokenUrl` points at a different host.
    */
   readonly defaultOauthHost?: string;
+  /**
+   * Opt-in to a non-default host on `baseUrl` or `oauthTokenUrl`.
+   *
+   * When false, `buildDeps` returns an error (fatal for `serve`) if either URL points at
+   * a host other than `defaultHost` / `defaultOauthHost`. Loopback hosts are always exempt.
+   */
+  readonly allowInsecureBaseUrl: boolean;
 }
 
 /**
@@ -333,6 +380,7 @@ const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) =>
     defaultHost: "chatgpt.com",
     oauthTokenUrl: config.providers.codex.oauthTokenUrl,
     defaultOauthHost: "auth.openai.com",
+    allowInsecureBaseUrl: config.providers.codex.allowInsecureBaseUrl,
   }),
 };
 
@@ -520,6 +568,7 @@ const PROVIDER_RESOLVERS: {
     streamIdleTimeoutMs: file.streamIdleTimeoutMs,
     maxSseEventBytes: file.maxSseEventBytes,
     maxAggregateBytes: file.maxAggregateBytes,
+    allowInsecureBaseUrl: file.allowInsecureBaseUrl,
   }),
 };
 
@@ -536,7 +585,13 @@ const PROVIDER_RESOLVERS: {
 export const resolveConfig = (file: FileConfig): Config => ({
   port: file.port,
   logLevel: file.logLevel,
-  anthropic: file.anthropic,
+  anthropic: {
+    baseUrl: file.anthropic.baseUrl,
+    connectTimeoutMs: file.anthropic.connectTimeoutMs,
+    streamIdleTimeoutMs: file.anthropic.streamIdleTimeoutMs,
+    maxUpstreamSockets: file.anthropic.maxUpstreamSockets,
+    allowInsecureBaseUrl: file.anthropic.allowInsecureBaseUrl,
+  },
   providers: {
     codex: PROVIDER_RESOLVERS.codex(file.providers.codex),
   },

@@ -280,6 +280,7 @@ All keys and their defaults:
 | `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection timeout (see note below) |
 | `anthropic.streamIdleTimeoutMs` | `300000` (5 min) | Anthropic stream idle timeout |
 | `anthropic.maxUpstreamSockets` | `32` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
+| `anthropic.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `anthropic.baseUrl` points at a host other than `api.anthropic.com`. Set to `true` only when routing through a trusted proxy in front of Anthropic's API. Loopback addresses are always exempt. |
 | `providers.codex.baseUrl` | `"https://chatgpt.com/backend-api/codex"` | Codex backend base URL — override to route subswitch through the wire recorder |
 | `providers.codex.oauthTokenUrl` | `"https://auth.openai.com/oauth/token"` | Token refresh endpoint for the Codex OAuth flow |
 | `providers.codex.authFile` | `"~/.codex/auth.json"` | Path to the Codex credential file written by `codex login` |
@@ -291,6 +292,7 @@ All keys and their defaults:
 | `providers.codex.streamIdleTimeoutMs` | `300000` (5 min) | Codex stream idle timeout — resets on each SSE chunk |
 | `providers.codex.maxSseEventBytes` | `4194304` (4 MiB) | Maximum bytes per individual SSE event from the Codex upstream |
 | `providers.codex.maxAggregateBytes` | `67108864` (64 MiB) | Maximum total accumulated frame bytes for non-streaming response aggregation; exceeding this returns 502 |
+| `providers.codex.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` points at a host other than `chatgpt.com` or `auth.openai.com`. This prevents credential forwarding to an untrusted host. Set to `true` only when routing through a trusted proxy. Loopback addresses are always exempt. |
 | `limits.maxBodyBytes` | `33554432` (32 MiB) | Maximum request body bytes buffered before the routing decision |
 | `limits.pingIntervalMs` | `15000` (15 s) | Interval between SSE ping frames sent to clients during long Codex streams |
 | `limits.maxConcurrentRequests` | `32` | In-flight request ceiling; requests above this limit receive a 503 |

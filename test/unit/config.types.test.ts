@@ -24,6 +24,7 @@ const codexSlice: CodexProviderConfig = {
   streamIdleTimeoutMs: 300_000,
   maxSseEventBytes: 4 * 1024 * 1024,
   maxAggregateBytes: 64 * 1024 * 1024,
+  allowInsecureBaseUrl: false,
 };
 
 const providerConfigsIsTotalOverProviderId = (): void => {

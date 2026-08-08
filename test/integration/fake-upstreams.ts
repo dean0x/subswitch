@@ -101,7 +101,9 @@ export const startSubswitch = async (
   // constructed inside buildDeps and close over whichever logger it was given, so spreading
   // one onto the result afterwards would replace the request loop's logger only and leave
   // every handler record uncaptured.
-  const deps = buildDeps(configResult.value.config, options.logger);
+  const depsResult = buildDeps(configResult.value.config, options.logger);
+  if (!depsResult.ok) throw new Error(`buildDeps rejected config: ${depsResult.error}`);
+  const deps = depsResult.value;
   const finalDeps = {
     ...deps,
     ...(options.resolve !== undefined ? { resolve: options.resolve } : {}),

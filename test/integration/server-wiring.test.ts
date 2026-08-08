@@ -8,6 +8,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { loadConfig, type Config } from "../../src/config.js";
 import { buildDeps } from "../../src/server.js";
 
@@ -27,93 +28,24 @@ const captureStderr = (fn: () => void): string[] => {
   return lines.join("").split("\n").filter((line) => line !== "");
 };
 
-const buildWithCodexBaseUrl = (baseUrl: string): string[] => {
-  const result = loadConfig({
-    configPath: "inline-wiring-test.json",
-    // logLevel must admit `warn`, or the check under test is filtered out before
-    // it reaches the sink and the test passes for the wrong reason.
-    readFile: () => JSON.stringify({ logLevel: "warn", providers: { codex: { baseUrl } } }),
-  });
-  assert.ok(result.ok, `config must load: ${!result.ok ? result.error.message : ""}`);
-  return captureStderr(() => {
-    buildDeps(result.value.config);
-  });
-};
-
-describe("buildDeps — per-provider base-URL override warning", () => {
-  it("warns with the provider's own event name when its baseUrl is on a foreign host", () => {
-    const lines = buildWithCodexBaseUrl("https://evil.example/backend-api/codex");
-    const warning = lines.find((line) => line.includes("base_url_override_detected"));
-    assert.ok(warning !== undefined, `expected a base-URL override warning; got: ${lines.join(" | ")}`);
-    // The event name is derived from the provider id, so it names WHICH provider was
-    // redirected. A single shared event name would leave an operator with several
-    // providers unable to tell which credential is being sent to the wrong host.
-    assert.match(warning, /event=codex_base_url_override_detected/);
-    assert.match(warning, /level=warn/);
-  });
-
-  it("stays silent when every provider's baseUrl is on its own default host", () => {
-    const lines = buildWithCodexBaseUrl("https://chatgpt.com/backend-api/codex");
-    assert.equal(
-      lines.filter((line) => line.includes("base_url_override_detected")).length,
-      0,
-      `the default host must not warn; got: ${lines.join(" | ")}`,
-    );
-  });
-
-  it("emits one warning per misconfigured provider", () => {
-    // KNOWN HOLE, stated rather than dressed up. The property this file would like to
-    // pin — that buildDeps compares each provider against ITS OWN defaultHost rather
-    // than one shared constant — is NOT observable while PROVIDER_IDS is ["codex"]:
-    // a shared constant and a per-provider defaultHost produce byte-identical output,
-    // so no assertion here can separate them. An earlier version of this test opened
-    // with `assert.ok(PROVIDER_IDS.length >= 1)`, which is constant-true — it read as
-    // coverage of that property while proving nothing. It is gone.
-    //
-    // What this test does assert is real but narrow: the warning count tracks the
-    // number of misconfigured providers rather than firing unconditionally.
-    // The per-provider axis becomes falsifiable the moment a second id exists — at
-    // that point, configure one provider on a foreign host and the other on its own,
-    // and assert exactly one warning naming the right id.
-    // (The per-provider value itself lives on ProviderRuntimeConfig, where the
-    // Record<ProviderId, …> makes omitting one a compile error — that much IS enforced.)
-    const lines = buildWithCodexBaseUrl("https://evil.example/backend-api/codex");
-    const warnings = lines.filter((line) => line.includes("base_url_override_detected"));
-    assert.equal(warnings.length, 1, "exactly one provider is misconfigured, so exactly one warning");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// buildDeps — insecureBaseUrlScheme and oauthTokenUrl runtime warnings
-//
-// The Zod refinements in config.ts already reject http:// non-loopback URLs at
-// parse time. These tests exercise the RUNTIME defence-in-depth in buildDeps,
-// which also fires when a Config is constructed programmatically. They build a
-// Config object directly to bypass Zod validation.
-//
-// MUTATION PROOF: removing the scheme check from the buildDeps loop causes
-// `insecureBaseUrlScheme` tests to pass vacuously (no warning is emitted and
-// the assertion that no warning fires is trivially green — but the opposite
-// assertion, that the warning IS there, correctly fails).
-// The named mutation for each test is: remove the `parsedBase.protocol !==
-// "https:"` branch (for baseUrl) or the `parsedOauth.protocol !== "https:"`
-// branch (for oauthTokenUrl).
-// ---------------------------------------------------------------------------
-
 /**
  * Build a minimal Config for testing buildDeps directly, bypassing Zod validation.
  * This is the only way to exercise the runtime defence-in-depth with URLs that
  * the schema's https-only refinements would reject at parse time.
  */
-const makeMinimalConfig = (overrides: Partial<Config["anthropic"]> & {
+const makeMinimalConfig = (overrides: {
   codexBaseUrl?: string;
   codexOauthTokenUrl?: string;
+  codexAllowInsecureBaseUrl?: boolean;
+  anthropicBaseUrl?: string;
+  anthropicAllowInsecureBaseUrl?: boolean;
 } = {}): Config => {
   const {
     codexBaseUrl = "https://chatgpt.com/backend-api/codex",
     codexOauthTokenUrl = "https://auth.openai.com/oauth/token",
-    baseUrl: anthropicBaseUrl = "https://api.anthropic.com",
-    ...anthropicRest
+    codexAllowInsecureBaseUrl = false,
+    anthropicBaseUrl = "https://api.anthropic.com",
+    anthropicAllowInsecureBaseUrl = false,
   } = overrides;
   return {
     port: 4141,
@@ -123,7 +55,7 @@ const makeMinimalConfig = (overrides: Partial<Config["anthropic"]> & {
       connectTimeoutMs: 10_000,
       streamIdleTimeoutMs: 300_000,
       maxUpstreamSockets: 32,
-      ...anthropicRest,
+      allowInsecureBaseUrl: anthropicAllowInsecureBaseUrl,
     },
     providers: {
       codex: {
@@ -137,16 +69,156 @@ const makeMinimalConfig = (overrides: Partial<Config["anthropic"]> & {
         streamIdleTimeoutMs: 60_000,
         maxSseEventBytes: 1024,
         maxAggregateBytes: 64 * 1024 * 1024,
+        allowInsecureBaseUrl: codexAllowInsecureBaseUrl,
       },
     },
     limits: { maxBodyBytes: 1024, pingIntervalMs: 15_000, maxConcurrentRequests: 32 },
   };
 };
 
+/** Capture stderr lines AND the Result from buildDeps in one shot. */
+const buildAndCapture = (config: Config): { result: ReturnType<typeof buildDeps>; lines: string[] } => {
+  let result!: ReturnType<typeof buildDeps>;
+  const lines = captureStderr(() => { result = buildDeps(config); });
+  return { result, lines };
+};
+
+// ---------------------------------------------------------------------------
+// buildDeps — host-rejection gate (SEC-04)
+//
+// A credential-bearing URL pointing at a non-default host is now fatal unless
+// the operator opts in with `allowInsecureBaseUrl: true`. Tests cover:
+//   - Refused without opt-in (err Result + error event)
+//   - Permitted with opt-in (ok Result + warn event)
+//   - Loopback always exempt (ok Result, no event)
+//   - Both baseUrl and oauthTokenUrl covered
+//   - Anthropic leg covered consistently
+//
+// MUTATION PROOF per PF-011/PF-012:
+//   - Removing the `if (!allowInsecureBaseUrl)` guard in buildDeps causes the
+//     "rejects when..." tests to fail (no err Result returned).
+//   - Removing the `if (parsedBase.hostname !== defaultHost)` condition causes
+//     both the rejection and the opt-in warning tests to fail.
+// ---------------------------------------------------------------------------
+
+describe("buildDeps — SEC-04 host-rejection gate (providers.codex.baseUrl)", () => {
+  it("returns err and logs error when providers.codex.baseUrl is on a foreign host (no opt-in)", () => {
+    // MUTATION: remove the `if (!allowInsecureBaseUrl)` check in buildDeps — this test fails
+    const config = makeMinimalConfig({ codexBaseUrl: "https://evil.example/backend-api/codex" });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(!result.ok, "buildDeps must return err for a foreign host without opt-in");
+    assert.match(result.error, /providers\.codex\.baseUrl/, "error message must name the config key");
+    assert.match(result.error, /evil\.example/, "error message must name the offending host");
+    assert.match(result.error, /allowInsecureBaseUrl/, "error message must name the opt-in key");
+    const errorLine = lines.find((line) => line.includes("codex_base_url_host_rejected"));
+    assert.ok(errorLine !== undefined, `expected codex_base_url_host_rejected event; got: ${lines.join(" | ")}`);
+    assert.match(errorLine, /level=error/);
+  });
+
+  it("returns ok and logs a warning (not fatal) when providers.codex.baseUrl is on a foreign host with allowInsecureBaseUrl: true", () => {
+    // MUTATION: change `logger.log("warn", events.baseUrlOverrideDetected)` to no-op — warning test fails
+    const config = makeMinimalConfig({
+      codexBaseUrl: "https://evil.example/backend-api/codex",
+      codexAllowInsecureBaseUrl: true,
+    });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, `buildDeps must return ok when allowInsecureBaseUrl is true; error: ${!result.ok ? result.error : ""}`);
+    const warnLine = lines.find((line) => line.includes("codex_base_url_override_detected"));
+    assert.ok(warnLine !== undefined, `expected codex_base_url_override_detected warning; got: ${lines.join(" | ")}`);
+    assert.match(warnLine, /level=warn/);
+  });
+
+  it("returns ok and stays silent when providers.codex.baseUrl is on the default host", () => {
+    const config = makeMinimalConfig({ codexBaseUrl: "https://chatgpt.com/backend-api/codex" });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, `buildDeps must return ok for the default host; error: ${!result.ok ? result.error : ""}`);
+    assert.equal(
+      lines.filter((l) => l.includes("base_url")).length,
+      0,
+      `default host must produce no base-URL events; got: ${lines.join(" | ")}`,
+    );
+  });
+
+  it("returns ok and stays silent when providers.codex.baseUrl uses http:// to loopback (loopback exemption)", () => {
+    // Loopback is always exempt — host-mismatch check does not apply to 127.*/localhost/::1
+    const config = makeMinimalConfig({ codexBaseUrl: "http://127.0.0.1:4142/backend-api/codex" });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, "http://127.0.0.1 must be exempt (loopback)");
+    assert.equal(
+      lines.filter((l) => l.includes("base_url_host_rejected")).length,
+      0,
+      "loopback must not trigger host rejection",
+    );
+  });
+
+  it("returns exactly one error for the first misconfigured provider", () => {
+    // Verifies the count tracks the gate rather than firing unconditionally.
+    // With a single foreign-host provider the gate fires once then returns early.
+    const config = makeMinimalConfig({ codexBaseUrl: "https://evil.example/backend-api/codex" });
+    const { lines } = buildAndCapture(config);
+    const rejections = lines.filter((l) => l.includes("base_url_host_rejected"));
+    assert.equal(rejections.length, 1, "exactly one provider is misconfigured — exactly one rejection");
+  });
+});
+
+describe("buildDeps — SEC-04 host-rejection gate (providers.codex.oauthTokenUrl)", () => {
+  it("returns err and logs error when providers.codex.oauthTokenUrl is on a foreign host (no opt-in)", () => {
+    // MUTATION: remove the `if (!allowInsecureBaseUrl)` check for oauthTokenUrl — this test fails
+    const config = makeMinimalConfig({ codexOauthTokenUrl: "https://evil.example/oauth/token" });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(!result.ok, "buildDeps must return err for a foreign oauthTokenUrl host without opt-in");
+    assert.match(result.error, /providers\.codex\.oauthTokenUrl/, "error message must name the config key");
+    assert.match(result.error, /evil\.example/, "error message must name the offending host");
+    assert.match(result.error, /allowInsecureBaseUrl/, "error message must name the opt-in key");
+    // oauthTokenUrl carries the long-lived refresh token — the message should mention it
+    assert.match(result.error, /refresh token/, "error message must mention the refresh token risk");
+    const errorLine = lines.find((line) => line.includes("codex_base_url_host_rejected"));
+    assert.ok(errorLine !== undefined, `expected codex_base_url_host_rejected for oauthTokenUrl; got: ${lines.join(" | ")}`);
+    assert.match(errorLine, /level=error/);
+  });
+
+  it("returns ok and warns when providers.codex.oauthTokenUrl is on a foreign host with allowInsecureBaseUrl: true", () => {
+    const config = makeMinimalConfig({
+      codexOauthTokenUrl: "https://evil.example/oauth/token",
+      codexAllowInsecureBaseUrl: true,
+    });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, `expected ok with allowInsecureBaseUrl; error: ${!result.ok ? result.error : ""}`);
+    const warnLine = lines.find((line) => line.includes("codex_base_url_override_detected"));
+    assert.ok(warnLine !== undefined, `expected codex_base_url_override_detected for opted-in oauthTokenUrl; got: ${lines.join(" | ")}`);
+  });
+
+  it("returns ok when oauthTokenUrl uses http:// to loopback (loopback exemption)", () => {
+    const config = makeMinimalConfig({ codexOauthTokenUrl: "http://127.0.0.1:9000/oauth" });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, "http://127.0.0.1 oauthTokenUrl must be exempt (loopback)");
+    assert.equal(
+      lines.filter((l) => l.includes("base_url_host_rejected")).length,
+      0,
+      "loopback oauthTokenUrl must not trigger host rejection",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildDeps — insecureBaseUrlScheme runtime warnings (SEC-01 defence-in-depth)
+//
+// The Zod refinements in config.ts already reject http:// non-loopback URLs at
+// parse time. These tests exercise the RUNTIME defence-in-depth in buildDeps,
+// which also fires when a Config is constructed programmatically.
+//
+// All scheme-warning tests use the DEFAULT host (chatgpt.com / auth.openai.com /
+// api.anthropic.com) so they are not affected by the new host-rejection gate.
+//
+// MUTATION PROOF: removing the `parsedBase.protocol !== "https:"` branch from
+// buildDeps causes these tests to fail (no insecure_base_url_scheme event emitted).
+// ---------------------------------------------------------------------------
+
 describe("buildDeps — insecureBaseUrlScheme runtime warning (SEC-01 defence-in-depth)", () => {
   it("emits codex_insecure_base_url_scheme when providers.codex.baseUrl uses http:// to a non-loopback host", () => {
     const config = makeMinimalConfig({ codexBaseUrl: "http://chatgpt.com/backend-api/codex" });
-    const lines = captureStderr(() => buildDeps(config));
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, "http to default host is not fatal (host check passes, only scheme warns)");
     const warning = lines.find((line) => line.includes("codex_insecure_base_url_scheme"));
     assert.ok(
       warning !== undefined,
@@ -157,7 +229,8 @@ describe("buildDeps — insecureBaseUrlScheme runtime warning (SEC-01 defence-in
 
   it("does NOT emit insecureBaseUrlScheme when providers.codex.baseUrl uses https://", () => {
     const config = makeMinimalConfig({ codexBaseUrl: "https://chatgpt.com/backend-api/codex" });
-    const lines = captureStderr(() => buildDeps(config));
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok);
     assert.equal(
       lines.filter((line) => line.includes("insecure_base_url_scheme")).length,
       0,
@@ -167,7 +240,8 @@ describe("buildDeps — insecureBaseUrlScheme runtime warning (SEC-01 defence-in
 
   it("does NOT emit insecureBaseUrlScheme when providers.codex.baseUrl uses http:// to 127.0.0.1 (loopback exemption)", () => {
     const config = makeMinimalConfig({ codexBaseUrl: "http://127.0.0.1:4142/backend-api/codex" });
-    const lines = captureStderr(() => buildDeps(config));
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, "http://127.0.0.1 must be exempt (loopback)");
     assert.equal(
       lines.filter((line) => line.includes("insecure_base_url_scheme")).length,
       0,
@@ -179,7 +253,8 @@ describe("buildDeps — insecureBaseUrlScheme runtime warning (SEC-01 defence-in
     // oauthTokenUrl carries the long-lived refresh token — more damaging to leak than
     // the short-lived access token that a misconfigured baseUrl would expose.
     const config = makeMinimalConfig({ codexOauthTokenUrl: "http://auth.openai.com/oauth/token" });
-    const lines = captureStderr(() => buildDeps(config));
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, "http to default oauth host is not fatal (host check passes, scheme warns)");
     const warning = lines.find((line) => line.includes("codex_insecure_base_url_scheme"));
     assert.ok(
       warning !== undefined,
@@ -189,7 +264,8 @@ describe("buildDeps — insecureBaseUrlScheme runtime warning (SEC-01 defence-in
 
   it("does NOT emit insecureBaseUrlScheme when providers.codex.oauthTokenUrl uses https://", () => {
     const config = makeMinimalConfig({ codexOauthTokenUrl: "https://auth.openai.com/oauth/token" });
-    const lines = captureStderr(() => buildDeps(config));
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok);
     assert.equal(
       lines.filter((line) => line.includes("insecure_base_url_scheme")).length,
       0,
@@ -199,7 +275,8 @@ describe("buildDeps — insecureBaseUrlScheme runtime warning (SEC-01 defence-in
 
   it("does NOT emit insecureBaseUrlScheme for oauthTokenUrl pointing at loopback (loopback exemption)", () => {
     const config = makeMinimalConfig({ codexOauthTokenUrl: "http://127.0.0.1:9000/oauth" });
-    const lines = captureStderr(() => buildDeps(config));
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, "http://127.0.0.1 oauthTokenUrl must be exempt (loopback)");
     assert.equal(
       lines.filter((line) => line.includes("insecure_base_url_scheme")).length,
       0,
@@ -207,23 +284,13 @@ describe("buildDeps — insecureBaseUrlScheme runtime warning (SEC-01 defence-in
     );
   });
 
-  it("emits codex_base_url_override_detected for oauthTokenUrl pointing at a foreign host", () => {
-    // The existing host-override check now also covers oauthTokenUrl — an operator who
-    // points the OAuth endpoint at a third-party host is leaking the refresh token there.
-    const config = makeMinimalConfig({ codexOauthTokenUrl: "https://evil.example/oauth/token" });
-    const lines = captureStderr(() => buildDeps(config));
-    const warning = lines.find((line) => line.includes("codex_base_url_override_detected"));
-    assert.ok(
-      warning !== undefined,
-      `expected codex_base_url_override_detected for foreign oauthTokenUrl host; got: ${lines.join(" | ")}`,
-    );
-  });
-
   it("emits anthropic_insecure_base_url_scheme when anthropic.baseUrl uses http:// to a non-loopback host", () => {
     // The anthropic leg forwards sk-ant-* keys verbatim; http:// to a non-loopback
-    // host leaks them in cleartext.
-    const config = makeMinimalConfig({ baseUrl: "http://api.anthropic.com" });
-    const lines = captureStderr(() => buildDeps(config));
+    // host leaks them in cleartext. api.anthropic.com IS the default host, so
+    // the host-rejection gate does not fire — only the scheme warning.
+    const config = makeMinimalConfig({ anthropicBaseUrl: "http://api.anthropic.com" });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, "http to default anthropic host is not fatal (host check passes, scheme warns)");
     const warning = lines.find((line) => line.includes("anthropic_insecure_base_url_scheme"));
     assert.ok(
       warning !== undefined,
@@ -233,8 +300,9 @@ describe("buildDeps — insecureBaseUrlScheme runtime warning (SEC-01 defence-in
   });
 
   it("does NOT emit anthropic_insecure_base_url_scheme when anthropic.baseUrl uses https://", () => {
-    const config = makeMinimalConfig({ baseUrl: "https://api.anthropic.com" });
-    const lines = captureStderr(() => buildDeps(config));
+    const config = makeMinimalConfig({ anthropicBaseUrl: "https://api.anthropic.com" });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok);
     assert.equal(
       lines.filter((line) => line.includes("anthropic_insecure_base_url_scheme")).length,
       0,
@@ -243,12 +311,82 @@ describe("buildDeps — insecureBaseUrlScheme runtime warning (SEC-01 defence-in
   });
 
   it("does NOT emit anthropic_insecure_base_url_scheme when anthropic.baseUrl uses http:// to loopback", () => {
-    const config = makeMinimalConfig({ baseUrl: "http://127.0.0.1:4141" });
-    const lines = captureStderr(() => buildDeps(config));
+    const config = makeMinimalConfig({ anthropicBaseUrl: "http://127.0.0.1:4141" });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, "http://127.0.0.1 anthropic baseUrl must be exempt (loopback)");
     assert.equal(
       lines.filter((line) => line.includes("anthropic_insecure_base_url_scheme")).length,
       0,
       `http://127.0.0.1 anthropic.baseUrl must not trigger warning (loopback exempt); got: ${lines.join(" | ")}`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildDeps — SEC-04 Anthropic leg host-rejection gate
+//
+// Consistent treatment: anthropic.baseUrl pointing at a foreign host is fatal
+// unless anthropic.allowInsecureBaseUrl: true.
+// ---------------------------------------------------------------------------
+
+describe("buildDeps — SEC-04 host-rejection gate (anthropic.baseUrl)", () => {
+  it("returns err and logs error when anthropic.baseUrl is on a foreign host (no opt-in)", () => {
+    // MUTATION: remove the host-rejection block in the Anthropic section — this test fails
+    const config = makeMinimalConfig({ anthropicBaseUrl: "https://evil.example/v1" });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(!result.ok, "buildDeps must return err for a foreign anthropic host without opt-in");
+    assert.match(result.error, /anthropic\.baseUrl/, "error message must name the config key");
+    assert.match(result.error, /evil\.example/, "error message must name the offending host");
+    assert.match(result.error, /allowInsecureBaseUrl/, "error message must name the opt-in key");
+    const errorLine = lines.find((line) => line.includes("anthropic_base_url_host_rejected"));
+    assert.ok(errorLine !== undefined, `expected anthropic_base_url_host_rejected event; got: ${lines.join(" | ")}`);
+    assert.match(errorLine, /level=error/);
+  });
+
+  it("returns ok and warns when anthropic.baseUrl is on a foreign host with allowInsecureBaseUrl: true", () => {
+    const config = makeMinimalConfig({
+      anthropicBaseUrl: "https://evil.example/v1",
+      anthropicAllowInsecureBaseUrl: true,
+    });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, `expected ok with allowInsecureBaseUrl; error: ${!result.ok ? result.error : ""}`);
+    const warnLine = lines.find((line) => line.includes("anthropic_base_url_override_detected"));
+    assert.ok(warnLine !== undefined, `expected anthropic_base_url_override_detected warning; got: ${lines.join(" | ")}`);
+    assert.match(warnLine, /level=warn/);
+  });
+
+  it("returns ok when anthropic.baseUrl uses http:// to loopback (loopback exemption)", () => {
+    // Integration tests point anthropic.baseUrl at http://127.0.0.1:PORT — must remain exempt.
+    const config = makeMinimalConfig({ anthropicBaseUrl: "http://127.0.0.1:4141" });
+    const { result, lines } = buildAndCapture(config);
+    assert.ok(result.ok, "http://127.0.0.1 anthropic must be exempt (loopback)");
+    assert.equal(
+      lines.filter((l) => l.includes("anthropic_base_url_host_rejected")).length,
+      0,
+      "loopback anthropic.baseUrl must not trigger host rejection",
+    );
+  });
+
+  it("returns ok when anthropic.baseUrl is on the default host", () => {
+    const config = makeMinimalConfig({ anthropicBaseUrl: "https://api.anthropic.com" });
+    const { result } = buildAndCapture(config);
+    assert.ok(result.ok, "default anthropic host must not be rejected");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadConfig — example config file schema sync (PF-010)
+//
+// z.strictObject rejects unknown keys. If `subswitch.config.example.json` has
+// a key the schema does not know, this test fails — forcing the example and the
+// schema to stay in sync after every schema change.
+// ---------------------------------------------------------------------------
+
+describe("loadConfig — example config schema sync (PF-010)", () => {
+  it("subswitch.config.example.json parses cleanly with the new allowInsecureBaseUrl fields", () => {
+    const result = loadConfig({ configPath: join(process.cwd(), "subswitch.config.example.json") });
+    assert.ok(result.ok, `example config must parse: ${!result.ok ? result.error.message : ""}`);
+    assert.strictEqual(result.value.config.anthropic.allowInsecureBaseUrl, false, "anthropic.allowInsecureBaseUrl must default to false in example");
+    assert.strictEqual(result.value.config.providers.codex.allowInsecureBaseUrl, false, "providers.codex.allowInsecureBaseUrl must default to false in example");
   });
 });

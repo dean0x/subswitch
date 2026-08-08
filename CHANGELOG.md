@@ -6,7 +6,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking change — non-default base URL hosts now refused by default (SEC-04)
+
+**`subswitch serve` now exits with an error** if `providers.codex.baseUrl`,
+`providers.codex.oauthTokenUrl`, or `anthropic.baseUrl` points at a host other than
+the provider's expected default (`chatgpt.com`, `auth.openai.com`, and
+`api.anthropic.com` respectively), **unless the new opt-in key is set**.
+
+Previously, a non-default host emitted a startup warning and the server started
+anyway. A warning is easy to miss in a long `serve` session, and a hostile
+`subswitch.config.json` in a cloned repository would silently forward the user's
+subscription credentials and OAuth refresh token to an attacker-chosen host.
+
+**If you were intentionally overriding a URL to route through a trusted proxy**, add
+the opt-in key to your `subswitch.config.json`:
+
+```json
+{
+  "providers": {
+    "codex": {
+      "baseUrl": "https://your-proxy.example.com/...",
+      "oauthTokenUrl": "https://your-proxy.example.com/...",
+      "allowInsecureBaseUrl": true
+    }
+  }
+}
+```
+
+Or for the Anthropic leg:
+
+```json
+{
+  "anthropic": {
+    "baseUrl": "https://your-proxy.example.com/v1",
+    "allowInsecureBaseUrl": true
+  }
+}
+```
+
+**Loopback addresses (`127.*`, `localhost`, `::1`) are always exempt** — the e2e
+wire-recorder workflow (`http://127.0.0.1:4142`) continues to work without the opt-in.
+
+`oauthTokenUrl` is also gated because it carries the long-lived OAuth refresh token —
+more damaging to expose than the short-lived access token in `baseUrl`.
+
 ### Added
+
+- **`providers.codex.allowInsecureBaseUrl`** (default `false`): opt-in that permits
+  `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` to point at a
+  non-default host. When the gate fires, the error message names the offending host,
+  the config key, and this opt-in key.
+- **`anthropic.allowInsecureBaseUrl`** (default `false`): same gate for the Anthropic
+  passthrough leg.
+- **`codex_base_url_host_rejected`** log event (error level): emitted when the
+  host-rejection gate fires for a Codex URL. Event name is a compile-time template
+  literal over the `ProviderId` union — part of the log-injection barrier.
+- **`anthropic_base_url_host_rejected`** log event (error level): emitted when the
+  gate fires for the Anthropic leg.
 
 - **Model family aliases**: `sol`, `terra`, and `luna` are now valid `model:` values
   in agent frontmatter. Each alias resolves to the highest-generation canonical id

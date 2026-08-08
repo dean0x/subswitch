@@ -84,8 +84,13 @@ const createCodexProvider = (config: Config, logger: Logger): ProviderHandler =>
  * silently partial — it replaced only the request-loop's logger, while every handler
  * kept the one built here, so a test that injected a logger to observe handler records
  * saw none of them and its assertions passed vacuously.
+ *
+ * Returns `err(message)` when a security gate rejects the config (e.g. a credential-
+ * bearing URL points at a non-default host without `allowInsecureBaseUrl: true`).
+ * The `serve` command exits non-zero on err; diagnostic commands (`doctor`, `models`)
+ * do not call `buildDeps` and are unaffected.
  */
-export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel)): ServerDeps => {
+export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel)): Result<ServerDeps, string> => {
 
   // Vet each provider's credential-carrying URLs at startup.
   //
@@ -95,20 +100,21 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
   //      Loopback (127.*/localhost/::1) is exempt; the e2e dev workflow uses
   //      http://127.0.0.1:4142 intentionally.
   //   2. HOST: a URL on a different hostname than this provider's expected default
-  //      sends credentials to a third-party host — warn.
+  //      sends credentials to a third-party host — FATAL unless allowInsecureBaseUrl.
+  //      Loopback hosts are always exempt.
   //
   // Both baseUrl (short-lived access token) and oauthTokenUrl (long-lived refresh
-  // token) are swept. The asymmetry was backwards before: guarding only baseUrl left
-  // the more damaging credential unguarded.
+  // token) are swept. oauthTokenUrl carries the more damaging credential.
   //
   // Anthropic baseUrl is checked separately below (not a ProviderId, so it is outside
-  // this loop, but the threat model is the same: a sk-ant-* key over cleartext).
+  // this loop, but the threat model is the same: a sk-ant-* key forwarded to a
+  // non-default host).
   //
   // z.url() in the config schema validates URL format; z.refine(requireHttpsOrLoopback)
   // rejects http:// non-loopback at parse time — this loop is defence in depth and also
   // catches programmatically-constructed Config objects that bypass Zod.
   for (const id of PROVIDER_IDS) {
-    const { baseUrl, defaultHost, oauthTokenUrl, defaultOauthHost } = providerConfigFor(config, id);
+    const { baseUrl, defaultHost, oauthTokenUrl, defaultOauthHost, allowInsecureBaseUrl } = providerConfigFor(config, id);
     const events = providerEvents(id);
 
     // Check baseUrl scheme and hostname.
@@ -119,11 +125,21 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
         logger.log("warn", events.insecureBaseUrlScheme);
       }
       if (parsedBase.hostname !== defaultHost) {
+        if (!allowInsecureBaseUrl) {
+          logger.log("error", events.baseUrlHostRejected, { path: `providers.${id}.baseUrl` });
+          return err(
+            `providers.${id}.baseUrl points at '${parsedBase.hostname}' (expected '${defaultHost}'). ` +
+            `Credentials would be sent to an untrusted host. ` +
+            `Set "providers.${id}.allowInsecureBaseUrl": true in subswitch.config.json to opt in.`,
+          );
+        }
         logger.log("warn", events.baseUrlOverrideDetected);
       }
     }
 
     // Check oauthTokenUrl scheme and hostname (present only for OAuth providers).
+    // oauthTokenUrl carries the long-lived refresh token — more damaging to expose than
+    // the short-lived access token in baseUrl.
     if (oauthTokenUrl !== undefined && defaultOauthHost !== undefined) {
       const parsedOauth = new URL(oauthTokenUrl);
       if (!isLoopbackHost(parsedOauth.hostname)) {
@@ -131,18 +147,42 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
           logger.log("warn", events.insecureBaseUrlScheme);
         }
         if (parsedOauth.hostname !== defaultOauthHost) {
+          if (!allowInsecureBaseUrl) {
+            logger.log("error", events.baseUrlHostRejected, { path: `providers.${id}.oauthTokenUrl` });
+            return err(
+              `providers.${id}.oauthTokenUrl points at '${parsedOauth.hostname}' (expected '${defaultOauthHost}'). ` +
+              `Your long-lived refresh token would be sent to an untrusted host. ` +
+              `Set "providers.${id}.allowInsecureBaseUrl": true in subswitch.config.json to opt in.`,
+            );
+          }
           logger.log("warn", events.baseUrlOverrideDetected);
         }
       }
     }
   }
 
-  // Anthropic leg: same threat model — a sk-ant-* key forwarded verbatim over http://
-  // to a non-loopback host leaks the credential in cleartext.
+  // Anthropic leg: same threat model — a sk-ant-* key forwarded verbatim to a
+  // non-default host. `anthropic` is not a ProviderId, so the check is separate and
+  // uses hardcoded event-name literals, following the existing pattern for
+  // "anthropic_insecure_base_url_scheme".
   {
+    const ANTHROPIC_DEFAULT_HOST = "api.anthropic.com";
     const parsedAnthropic = new URL(config.anthropic.baseUrl);
-    if (!isLoopbackHost(parsedAnthropic.hostname) && parsedAnthropic.protocol !== "https:") {
-      logger.log("warn", "anthropic_insecure_base_url_scheme");
+    if (!isLoopbackHost(parsedAnthropic.hostname)) {
+      if (parsedAnthropic.protocol !== "https:") {
+        logger.log("warn", "anthropic_insecure_base_url_scheme");
+      }
+      if (parsedAnthropic.hostname !== ANTHROPIC_DEFAULT_HOST) {
+        if (!config.anthropic.allowInsecureBaseUrl) {
+          logger.log("error", "anthropic_base_url_host_rejected", { path: "anthropic.baseUrl" });
+          return err(
+            `anthropic.baseUrl points at '${parsedAnthropic.hostname}' (expected '${ANTHROPIC_DEFAULT_HOST}'). ` +
+            `Credentials would be sent to an untrusted host. ` +
+            `Set "anthropic.allowInsecureBaseUrl": true in subswitch.config.json to opt in.`,
+          );
+        }
+        logger.log("warn", "anthropic_base_url_override_detected");
+      }
     }
   }
 
@@ -169,7 +209,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
     logger.log("warn", "registry_entry_uses_reserved_name", { model: id });
   }
 
-  return {
+  return ok({
     config,
     logger,
     forwardAnthropic: createAnthropicForwarder({
@@ -183,7 +223,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
       codex: createCodexProvider(config, logger),
     },
     resolve: (name) => resolveModelFromTable(table, name),
-  };
+  });
 };
 
 /**

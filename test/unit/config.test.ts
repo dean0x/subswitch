@@ -320,6 +320,7 @@ describe("loadConfig", () => {
       streamIdleTimeoutMs: 222,
       maxSseEventBytes: 333,
       maxAggregateBytes: 444,
+      allowInsecureBaseUrl: false,
     });
   });
 

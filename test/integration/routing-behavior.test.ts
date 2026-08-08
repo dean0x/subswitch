@@ -260,7 +260,9 @@ describe("routing — table built once via ownKeys trap (P2)", () => {
       ...config,
       providers: { ...config.providers, codex: { ...config.providers.codex, aliases: aliasesProxy } },
     };
-    const deps = buildDeps(modifiedConfig);
+    const depsResult = buildDeps(modifiedConfig);
+    assert.ok(depsResult.ok, `buildDeps must succeed for default config: ${!depsResult.ok ? depsResult.error : ""}`);
+    const deps = depsResult.value;
     const server = createProxyServer(deps);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const { port } = server.address() as AddressInfo;

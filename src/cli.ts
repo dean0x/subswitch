@@ -261,7 +261,12 @@ const serve = async (
 
   const effectiveConfig = { ...config, logLevel, port: effectivePort };
 
-  const deps = buildDeps(effectiveConfig);
+  const depsResult = buildDeps(effectiveConfig);
+  if (!depsResult.ok) {
+    fail(depsResult.error);
+    return;
+  }
+  const deps = depsResult.value;
   const server = createProxyServer(deps);
   const listenResult = await listenServer(server, effectiveConfig.port, "127.0.0.1");
   if (!listenResult.ok) {
