@@ -274,15 +274,24 @@ All keys and their defaults:
 
 | Key | Default | Description |
 |-----|---------|-------------|
+| `port` | `4141` | Port the proxy listens on |
+| `logLevel` | `"info"` | Log verbosity: `debug`, `info`, `warn`, or `error` |
+| `anthropic.baseUrl` | `"https://api.anthropic.com"` | Anthropic passthrough base URL |
+| `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection timeout (see note below) |
+| `anthropic.streamIdleTimeoutMs` | `300000` (5 min) | Anthropic stream idle timeout |
+| `anthropic.maxUpstreamSockets` | `32` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
+| `providers.codex.baseUrl` | `"https://chatgpt.com/backend-api/codex"` | Codex backend base URL — override to route subswitch through the wire recorder |
+| `providers.codex.oauthTokenUrl` | `"https://auth.openai.com/oauth/token"` | Token refresh endpoint for the Codex OAuth flow |
+| `providers.codex.authFile` | `"~/.codex/auth.json"` | Path to the Codex credential file written by `codex login` |
+| `providers.codex.userAgent` | `"codex_cli_rs/0.144.6"` | User-agent string sent on Codex leg requests |
 | `providers.codex.aliases` | `{}` | Custom alias overrides — map a short name to a canonical model id. Wins over derived family aliases; loses to exact registry ids. |
 | `providers.codex.reasoningCache.maxEntries` | `4096` | Maximum LRU entries in the reasoning round-trip cache |
 | `providers.codex.reasoningCache.maxBytes` | `67108864` (64 MiB) | Maximum total byte footprint of the reasoning cache |
 | `providers.codex.requestTimeoutMs` | `600000` (10 min) | Wall-clock time limit per Codex request |
 | `providers.codex.streamIdleTimeoutMs` | `300000` (5 min) | Codex stream idle timeout — resets on each SSE chunk |
 | `providers.codex.maxSseEventBytes` | `4194304` (4 MiB) | Maximum bytes per individual SSE event from the Codex upstream |
-| `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection timeout (see note below) |
-| `anthropic.streamIdleTimeoutMs` | `300000` (5 min) | Anthropic stream idle timeout |
-| `anthropic.maxUpstreamSockets` | `32` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
+| `limits.maxBodyBytes` | `33554432` (32 MiB) | Maximum request body bytes buffered before the routing decision |
+| `limits.pingIntervalMs` | `15000` (15 s) | Interval between SSE ping frames sent to clients during long Codex streams |
 | `limits.maxConcurrentRequests` | `32` | In-flight request ceiling; requests above this limit receive a 503 |
 
 > **Why `connectTimeoutMs` and `maxUpstreamSockets` are Anthropic-leg-only**: the
@@ -404,6 +413,14 @@ End-to-end verification against the real CLI and real upstreams:
   `image_dropped`).
 - One subswitch instance holds the reasoning cache in memory; restarting it
   mid-conversation degrades the next Codex turn to a cache miss.
+- The wire recorder (`e2e/capture/codex-recorder.ts`) silently degrades to
+  pass-through when run against the live Codex backend: the production
+  `/responses` stream carries no `content-type` header, so the recorder's SSE
+  detection never fires and it records zero events and no usage — with no error
+  and no warning. The recorder works correctly only against local fixture
+  upstreams, which do set the header. Anyone repeating the live-capture workflow
+  with the checked-in recorder will get an empty capture and may wrongly conclude
+  the stream is broken.
 
 ## Contributing
 

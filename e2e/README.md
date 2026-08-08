@@ -121,13 +121,15 @@ CODEX_RECORDER_UPSTREAM=https://chatgpt.com/backend-api/codex \
 
 ### Routing subswitch through the recorder
 
-Edit (or create) `subswitch.config.json` and set `codex.baseUrl` to point at the
-recorder instead of directly to Codex:
+Edit (or create) `subswitch.config.json` and set `providers.codex.baseUrl` to point
+at the recorder instead of directly to Codex:
 
 ```json
 {
-  "codex": {
-    "baseUrl": "http://127.0.0.1:4142"
+  "providers": {
+    "codex": {
+      "baseUrl": "http://127.0.0.1:4142"
+    }
   }
 }
 ```
@@ -249,6 +251,14 @@ Fields observed in the analytics event body (`POST /backend-api/codex/ps/event`)
 
 `prompt_cache_key` was NOT observed in any captured body (inference goes via
 WebSocket, not HTTP POST).
+
+> **Warning — wrong transport reference:** `codex exec` inference runs over a
+> WebSocket app-server transport (`rpc_transport: app_server`), not over HTTP
+> `/responses` — see [Transport finding](#transport-finding-2026-07-22-codex-cli-01446)
+> above. Every "Fix" in the table below was derived from HTTP analytics REST captures
+> and applies to the wrong transport. Applying any of those fixes would overwrite the
+> live-verified `/responses` header constants and break the Codex leg. Do not use this
+> table to change header names or values.
 
 #### Parity gaps — subswitch vs real CLI
 
