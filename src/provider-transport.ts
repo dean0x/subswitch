@@ -92,5 +92,11 @@ export const readBoundedText = async (body: Response["body"], maxBytes: number):
   } finally {
     await reader.cancel().catch(() => undefined);
   }
+  // .slice(0, maxBytes) operates on a JS string, so the unit here is UTF-16 code
+  // units, not bytes. This is intentional: the enforcing byte bound is the read
+  // loop above (total < maxBytes on value.byteLength). The slice is a belt-and-
+  // suspenders trim for multi-byte sequences that straddle the chunk boundary and
+  // inflate the string past maxBytes — tolerable because the caller already guards
+  // against truncated JSON.
   return Buffer.concat(parts).toString("utf8").slice(0, maxBytes);
 };

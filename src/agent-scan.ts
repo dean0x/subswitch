@@ -113,7 +113,9 @@ export const parseFrontmatterModel = (text: string): string | undefined => {
     // Match `model:` key (exact — `modelPreference:` does NOT match).
     const match = /^model:\s*(.+)$/.exec(line);
     if (match !== null) {
-      const raw = match[1]!.trim();
+      const [, rawCapture] = match;
+      if (rawCapture === undefined) continue;
+      const raw = rawCapture.trim();
       // Quoting is resolved BEFORE comment stripping: a `#` inside quotes is part of
       // the value, not a comment. Stripping first would truncate `"sol # note"` to
       // `"sol` — a stray quote that doctor then reports as an unresolvable model,
