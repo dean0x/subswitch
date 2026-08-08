@@ -27,10 +27,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   load because either side would route main-agent traffic to Codex.
 - **`subswitch doctor`** per-provider diagnostics: doctor fans out to all configured
   providers, prints a per-provider ready banner on startup, and scans `.claude/agents/`
-  for six finding kinds (unresolvable model, misrouted Anthropic name, dangling alias
-  target, ambiguous family, unknown provider qualifier, and missing auth). Finding
-  severity follows provider configuration — a provider the user never configured stays
-  informational; only explicitly configured providers can fail the exit code.
+  and `~/.claude/agents/` for six finding kinds: `unresolvable`, `ambiguous`,
+  `unknown_provider`, `retired`, `provider_unconfigured`, and `preview_only`.
+  Anthropic-named subagents are skipped. Finding severity follows provider configuration
+  — a provider the user never configured stays informational; only explicitly configured
+  providers can fail the exit code.
 - **`limits.maxConcurrentRequests`** (default: `32`): in-flight request ceiling. Requests
   above this limit receive an immediate 503. Protects against burst overload and makes
   resource usage predictable.
@@ -43,8 +44,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   array so monitoring scripts can check provider-level ready state without parsing
   server logs.
 - **New modules**: `anthropic-wire-types.ts`, `anthropic-parse.ts`,
-  `provider-transport.ts`, `provider-handler.ts` — provider-neutral seams for the
-  future second provider.
+  `provider-transport.ts`, `provider-handler.ts`, `provider-auth.ts`,
+  `provider-events.ts`, `models.ts`, `agent-scan.ts` — provider-neutral seams,
+  the pure model registry, and the agent frontmatter scanner.
 
 ### Breaking change — config file format restructured
 
@@ -64,6 +66,13 @@ What moved and what was removed:
 | `limits.requestTimeoutMs` | `providers.codex.requestTimeoutMs` |
 | `limits.maxSseEventBytes` | `providers.codex.maxSseEventBytes` |
 | `codex.models` | **Removed** — routing now follows the built-in model registry; use `providers.codex.aliases` for custom names |
+
+Two `subswitch init` flags were also removed:
+
+| Old flag | Replacement |
+|----------|-------------|
+| `--codex-model <name>` | **Removed** — use `providers.codex.aliases` in config to map custom model names |
+| `--codex-models <csv>` | **Removed** — use `providers.codex.aliases` in config to map custom model names |
 
 An old config file is **rejected at load** with an error that names each key and its
 replacement. This is intentional: Zod's default behaviour strips unknown keys, so
