@@ -113,7 +113,7 @@ export const parseFrontmatterModel = (text: string): string | undefined => {
     // Match `model:` key (exact — `modelPreference:` does NOT match).
     const match = /^model:\s*(.+)$/.exec(line);
     if (match !== null) {
-      const [, rawCapture] = match;
+      const rawCapture = match[1];
       if (rawCapture === undefined) continue;
       const raw = rawCapture.trim();
       // Quoting is resolved BEFORE comment stripping: a `#` inside quotes is part of

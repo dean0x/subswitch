@@ -74,7 +74,7 @@ export const createFsAuthFileStore = (path: string): AuthFileStore => ({
     // path. Without it, an attacker who pre-creates this path keeps their own mode on the
     // file and receives the token material before the rename places it over auth.json.
     // 0o600 grants only the process owner read/write access on the freshly-created file.
-    // Cleanup idiom (unlink-in-catch) mirrors src/init.ts:288-295.
+    // Cleanup idiom (unlink-in-catch) mirrors the makeRealFsDeps.writeFile in src/init.ts.
     const openExclusive = async () => {
       try {
         return await open(tmpPath, "wx", 0o600);
@@ -306,7 +306,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
     //   - attempt 1 (any failure) → error return (inside loop, because attempt===0 is false)
     // Reaching here means these two have drifted apart in a later edit. This is a
     // programming error, not a credential condition — do not report it as one.
-    // Match the idiom in codex-handler.ts lines 264-267 (events.retryBoundViolated).
+    // Match the idiom in codex-handler.ts (events.retryBoundViolated in the retry loop).
     this.logger.log("error", this.events.refreshRetryBoundViolated);
     return err({ kind: "upstream", message: "codex internal error: refresh retry bound violated", status: 500 });
   }
