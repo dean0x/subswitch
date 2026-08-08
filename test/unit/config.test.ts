@@ -37,6 +37,7 @@ describe("loadConfig", () => {
     assert.equal(result.value.config.providers.codex.requestTimeoutMs, 600_000);
     assert.equal(result.value.config.providers.codex.streamIdleTimeoutMs, 300_000);
     assert.equal(result.value.config.providers.codex.maxSseEventBytes, 4 * 1024 * 1024);
+    assert.equal(result.value.config.providers.codex.maxAggregateBytes, 64 * 1024 * 1024);
     assert.equal(result.value.config.limits.maxBodyBytes, 32 * 1024 * 1024);
     assert.equal(result.value.config.limits.pingIntervalMs, 15_000);
     assert.equal(result.value.config.limits.maxConcurrentRequests, 32);
@@ -301,6 +302,7 @@ describe("loadConfig", () => {
               requestTimeoutMs: 111,
               streamIdleTimeoutMs: 222,
               maxSseEventBytes: 333,
+              maxAggregateBytes: 444,
             },
           },
         }),
@@ -317,6 +319,7 @@ describe("loadConfig", () => {
       requestTimeoutMs: 111,
       streamIdleTimeoutMs: 222,
       maxSseEventBytes: 333,
+      maxAggregateBytes: 444,
     });
   });
 

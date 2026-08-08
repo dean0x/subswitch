@@ -376,9 +376,24 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
       }
 
       const frames: string[] = [];
+      let framesBytes = 0;
       try {
         await pipeline(bodyStream, parser, translator, async (source) => {
-          for await (const chunk of source) frames.push(String(chunk));
+          for await (const chunk of source) {
+            const frame = String(chunk);
+            framesBytes += frame.length;
+            // RELI-06: bound the accumulation buffer before aggregateFrames materialises
+            // the turn. Every other buffer on this path is bounded (maxEventBytes,
+            // maxBodyBytes, MAX_CONTENT_BLOCKS); this is the one that was not.
+            // Exceeding the cap is reported as a pipeline failure — the same 502
+            // "stream interrupted" shape as any other midstream abort. We must never
+            // pass a truncated frames array to aggregateFrames, which would produce a
+            // silent 200 with empty content (avoids PF-008).
+            if (framesBytes > provider.maxAggregateBytes) {
+              throw new Error("sse_aggregate_too_large");
+            }
+            frames.push(frame);
+          }
         });
       } catch {
         respondProxyError(res, { kind: "upstream", message: `${providerId} stream interrupted` });

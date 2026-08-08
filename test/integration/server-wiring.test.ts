@@ -136,6 +136,7 @@ const makeMinimalConfig = (overrides: Partial<Config["anthropic"]> & {
         requestTimeoutMs: 60_000,
         streamIdleTimeoutMs: 60_000,
         maxSseEventBytes: 1024,
+        maxAggregateBytes: 64 * 1024 * 1024,
       },
     },
     limits: { maxBodyBytes: 1024, pingIntervalMs: 15_000, maxConcurrentRequests: 32 },

@@ -45,7 +45,10 @@ interface Rig {
   readonly authFilePath: string;
 }
 
-const setupRig = async (codexHandler: UpstreamHandler, options: { authFileContent?: string } = {}): Promise<Rig> => {
+const setupRig = async (
+  codexHandler: UpstreamHandler,
+  options: { authFileContent?: string; codexConfig?: Record<string, unknown> } = {},
+): Promise<Rig> => {
   const codex = await startFakeUpstream(codexHandler);
   const anthropic = await startFakeUpstream((_req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
@@ -68,7 +71,7 @@ const setupRig = async (codexHandler: UpstreamHandler, options: { authFileConten
 
   const subswitch = await startSubswitch({
     anthropic: { baseUrl: anthropic.url },
-    providers: { codex: { baseUrl: codex.url, oauthTokenUrl: `${oauth.url}/token`, authFile: authFilePath } },
+    providers: { codex: { baseUrl: codex.url, oauthTokenUrl: `${oauth.url}/token`, authFile: authFilePath, ...options.codexConfig } },
   });
   cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
   return { subswitch, codex, anthropic, oauth, authFilePath };
@@ -721,6 +724,36 @@ describe("codex leg", () => {
     assert.equal(response.status, 502);
     const body = (await response.json()) as { error: { type: string } };
     assert.equal(body.error.type, "api_error");
+  });
+
+  /**
+   * RELI-06: the non-streaming frame accumulation buffer must be bounded.
+   *
+   * All other buffers on the non-streaming path are bounded (SSE parser: maxSseEventBytes,
+   * request body: maxBodyBytes, translator: MAX_CONTENT_BLOCKS). The accumulation loop
+   * was the only remaining upstream-controlled, unbounded buffer.
+   *
+   * When the cap is exceeded the handler must return 502, not a 200 with empty or
+   * partial content. Returning a truncated frames array to aggregateFrames would
+   * produce the silent-loss shape PF-008 exists to prevent.
+   *
+   * Mutation proof (PF-011/PF-012): raising maxAggregateBytes to Number.MAX_SAFE_INTEGER
+   * in the implementation causes this test to fail — the cap is never exceeded, the
+   * pipeline completes normally, and aggregateFrames returns a 200. Verified RED against
+   * that mutation before trusting green. Restored cap to provider.maxAggregateBytes.
+   */
+  it("RELI-06 — returns 502 when non-streaming frames exceed maxAggregateBytes", async () => {
+    // Cap set to 1 byte so the very first translated frame triggers the limit.
+    // Non-streaming request (no stream:true) so frames accumulate before aggregation.
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")), { codexConfig: { maxAggregateBytes: 1 } });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string; message: string } };
+    assert.equal(body.error.type, "api_error");
+    assert.match(body.error.message, /stream interrupted/);
   });
 
   it("shapes mid-stream upstream failures as an SSE error event", async () => {

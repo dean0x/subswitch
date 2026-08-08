@@ -124,6 +124,19 @@ const CodexProviderSchema = z
     streamIdleTimeoutMs: z.number().int().positive().default(300_000),
     /** Maximum bytes per individual SSE event from the Codex upstream. */
     maxSseEventBytes: z.number().int().positive().default(4 * 1024 * 1024),
+    /**
+     * Maximum total accumulated frame bytes for non-streaming response aggregation.
+     *
+     * Every other buffer on the non-streaming path is bounded: the SSE parser caps
+     * individual events at `maxSseEventBytes`, the request body is capped at
+     * `maxBodyBytes`, and the translator now has `MAX_CONTENT_BLOCKS`. The
+     * non-streaming accumulation loop is the only remaining unbounded buffer, and its
+     * size is upstream-controlled.
+     *
+     * When exceeded, the handler returns 502 "stream interrupted" — the same shape as
+     * any other pipeline failure on this leg. Default: 64 MiB.
+     */
+    maxAggregateBytes: z.number().int().positive().default(64 * 1024 * 1024),
   });
 
 /**
@@ -214,6 +227,7 @@ export interface CodexProviderConfig {
   readonly requestTimeoutMs: number;
   readonly streamIdleTimeoutMs: number;
   readonly maxSseEventBytes: number;
+  readonly maxAggregateBytes: number;
 }
 
 /** Provider id → that provider's resolved slice type. One entry per ProviderId. */
@@ -505,6 +519,7 @@ const PROVIDER_RESOLVERS: {
     requestTimeoutMs: file.requestTimeoutMs,
     streamIdleTimeoutMs: file.streamIdleTimeoutMs,
     maxSseEventBytes: file.maxSseEventBytes,
+    maxAggregateBytes: file.maxAggregateBytes,
   }),
 };
 
