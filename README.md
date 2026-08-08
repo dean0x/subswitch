@@ -290,6 +290,7 @@ All keys and their defaults:
 | `providers.codex.requestTimeoutMs` | `600000` (10 min) | Wall-clock time limit per Codex request |
 | `providers.codex.streamIdleTimeoutMs` | `300000` (5 min) | Codex stream idle timeout — resets on each SSE chunk |
 | `providers.codex.maxSseEventBytes` | `4194304` (4 MiB) | Maximum bytes per individual SSE event from the Codex upstream |
+| `providers.codex.maxAggregateBytes` | `67108864` (64 MiB) | Maximum total accumulated frame bytes for non-streaming response aggregation; exceeding this returns 502 |
 | `limits.maxBodyBytes` | `33554432` (32 MiB) | Maximum request body bytes buffered before the routing decision |
 | `limits.pingIntervalMs` | `15000` (15 s) | Interval between SSE ping frames sent to clients during long Codex streams |
 | `limits.maxConcurrentRequests` | `32` | In-flight request ceiling; requests above this limit receive a 503 |

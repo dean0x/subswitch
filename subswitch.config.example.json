@@ -20,7 +20,8 @@
       },
       "requestTimeoutMs": 600000,
       "streamIdleTimeoutMs": 300000,
-      "maxSseEventBytes": 4194304
+      "maxSseEventBytes": 4194304,
+      "maxAggregateBytes": 67108864
     }
   },
   "limits": {
