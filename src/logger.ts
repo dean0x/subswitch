@@ -45,18 +45,20 @@ const FIELD_KEYS = [
 ] as const;
 
 /**
- * Render one token's value: newlines stripped, then quoted if it could otherwise be
- * mistaken for sibling tokens.
+ * Render one token's value: newlines stripped, then quoted (with internal escaping)
+ * if it could otherwise be mistaken for sibling tokens.
  *
- * Stripping prevents log-injection — a `\n` in an interpolated string forges a whole
- * extra record. Quoting prevents field forgery — a value containing whitespace or `=`
- * would otherwise parse as additional top-level fields under logfmt's last-wins
- * semantics. Real values (model ids, route names, event names, status codes) contain
- * none of these characters, so this is a no-op on every log line the tree emits.
+ * Stripping prevents record-forgery — a `\n` in an interpolated string forges a whole
+ * extra record. Quoting prevents field-forgery — a value containing whitespace, `=`,
+ * `"`, or `\` would otherwise parse as additional top-level fields under logfmt's
+ * last-wins semantics. Embedded `"` and `\` are backslash-escaped so the surrounding
+ * quotes cannot be closed by a crafted value. Real values (model ids, route names,
+ * event names, status codes) contain none of these characters, so this is a no-op on
+ * every log line the tree emits.
  */
 const renderToken = (value: string): string => {
   const safe = value.replace(/[\r\n]/g, "");
-  return /[\s=]/.test(safe) ? `"${safe}"` : safe;
+  return /[\s="\\]/.test(safe) ? `"${safe.replace(/["\\]/g, (c) => `\\${c}`)}"` : safe;
 };
 
 const formatTime = (): string => {

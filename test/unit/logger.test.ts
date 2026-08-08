@@ -221,4 +221,30 @@ describe("createConsoleLogger", () => {
     // The real event token must remain.
     assert.ok(line.includes("event=request_complete"), "real event= token must be present");
   });
+
+  it("prevents field-forgery via embedded double-quote — quoted value escapes internal quotes so a logfmt parser reads exactly one model field", () => {
+    const lines: string[] = [];
+    const logger = createConsoleLogger("info", (line) => lines.push(line), false);
+    // Demonstrated attack (TS-01): a client-supplied model string that embeds a closing
+    // quote followed by a forged field.  Without internal-quote escaping the logger emits:
+    //   model="x" errorCode="forged" status=200
+    // A logfmt parser then reads model=x  errorCode=forged  status=200 — the client
+    // minted an errorCode= field that no code path ever sets.
+    logger.log("info", "request_complete", {
+      model: 'x" errorCode="forged',
+      status: 200,
+    });
+    const line = lines[0] ?? "";
+    // Internal double-quotes must be backslash-escaped inside the quoted value.
+    assert.ok(
+      line.includes('model="x\\" errorCode=\\"forged"'),
+      `model field must be quoted with internal quotes escaped; got: ${line}`,
+    );
+    // Strip properly-escaped quoted values; remaining tokens must not contain errorCode=.
+    const unquoted = line.replace(/"(?:[^"\\]|\\.)*"/g, "");
+    assert.ok(
+      !unquoted.includes("errorCode="),
+      `unquoted errorCode= token must not appear as a top-level field; got unquoted: ${unquoted}`,
+    );
+  });
 });
