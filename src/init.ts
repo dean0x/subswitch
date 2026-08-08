@@ -1,9 +1,9 @@
-import { mkdir, readFile as fsReadFile, writeFile as fsWriteFile, rename as fsRename, unlink as fsUnlink } from "node:fs/promises";
+import { mkdir, open, readFile as fsReadFile, rename as fsRename, unlink as fsUnlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
-import { DEFAULT_PORT, DEFAULT_CODEX_AUTH_FILE, expandHome } from "./config.js";
+import { DEFAULT_PORT, DEFAULT_CODEX_AUTH_FILE, expandHome, detectLegacyConfigKeys } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,7 +19,8 @@ export interface InitOptions {
 export type InitError =
   | { readonly kind: "malformed_json"; readonly message: string }
   | { readonly kind: "invalid_input"; readonly message: string }
-  | { readonly kind: "write_error"; readonly message: string };
+  | { readonly kind: "write_error"; readonly message: string }
+  | { readonly kind: "legacy_config"; readonly message: string };
 
 // ---------------------------------------------------------------------------
 // Validation schemas (parse at boundaries)
@@ -251,6 +252,21 @@ export const planConfigWrite = (
     existing = parseResult.value;
   }
 
+  // Reject legacy config keys before merging — init runs before loadConfig, so it is the
+  // only repair tool for a user blocked by the legacy-key gate. Writing { ...existing, port }
+  // over a legacy config would preserve the offending keys and leave the user in the same
+  // loop: init reports success, the next `serve` rejects the config identically. (avoids PF-010)
+  const legacyKeys = detectLegacyConfigKeys(existing);
+  if (legacyKeys.length > 0) {
+    return err({
+      kind: "legacy_config",
+      message:
+        `outdated config layout in ${path} — ` +
+        legacyKeys.map((l) => `move \`${l.path}\` to \`${l.replacement}\``).join("; ") +
+        `. Edit the file to match subswitch.config.example.json, or delete it and run init again.`,
+    });
+  }
+
   const merged: Record<string, unknown> = {
     ...existing,
     port,
@@ -283,11 +299,21 @@ export const makeRealFsDeps = (): InitFsDeps => ({
   },
   writeFile: async (path: string, content: string): Promise<void> => {
     await mkdir(dirname(path), { recursive: true });
-    // Atomic write: write to a temp file then rename over the target so a
-    // crash mid-write never leaves a partially-written config. [F2]
+    // Atomic write: open an exclusive temp file then rename over the target.
+    // O_EXCL ("wx") fails if the temp path already exists, preventing a
+    // pre-created symlink or file from receiving the config content before the
+    // rename. 0o600 restricts the file to the owner — consistent with the same
+    // fix in src/codex-auth.ts. A crash between open and rename leaves the temp;
+    // the catch block unlinks it. (fixes SEC-03) [F2]
     const tmp = `${path}.tmp.${process.pid}`;
     try {
-      await fsWriteFile(tmp, content, "utf8");
+      const handle = await open(tmp, "wx", 0o600);
+      try {
+        await handle.writeFile(content, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
       await fsRename(tmp, path);
     } catch (e) {
       try { await fsUnlink(tmp); } catch { /* ignore cleanup error */ }

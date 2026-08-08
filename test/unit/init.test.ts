@@ -149,6 +149,31 @@ describe("planConfigWrite", () => {
     assert.ok(result.ok);
     assert.doesNotThrow(() => JSON.parse(result.value.content));
   });
+
+  // REGR-02: init runs before loadConfig, so it is the only repair path for a user
+  // blocked by the legacy-key gate. Without this check planConfigWrite would write
+  // { ...legacy, port } back to disk and leave the user in an infinite loop: init
+  // reports success but the next `serve` rejects the config identically.
+  //
+  // RED proof: current code (without detection) returns ok() for a legacy input, so
+  // assert.ok(!result.ok) fails. After the fix, detectLegacyConfigKeys finds the key
+  // and planConfigWrite returns err({ kind: "legacy_config" }) → GREEN.
+  it("rejects a legacy config with a top-level `codex` block — init cannot write over a legacy layout", () => {
+    const legacy = JSON.stringify({ codex: { userAgent: "old-agent" }, port: 4141 });
+    const result = planConfigWrite(legacy, 9090, "/project");
+    assert.ok(!result.ok, "should return an error for a legacy config layout");
+    assert.equal(result.error.kind, "legacy_config");
+    assert.ok(result.error.message.includes("`codex`"), "error should name the legacy key");
+    assert.ok(result.error.message.includes("`providers.codex`"), "error should name the replacement path");
+  });
+
+  it("rejects a legacy config with a top-level `reasoningCache` key", () => {
+    const legacy = JSON.stringify({ reasoningCache: { enabled: true } });
+    const result = planConfigWrite(legacy, 4141, "/project");
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "legacy_config");
+    assert.ok(result.error.message.includes("`reasoningCache`"), "error should name the legacy key");
+  });
 });
 
 // ---------------------------------------------------------------------------
