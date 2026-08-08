@@ -4,7 +4,7 @@ import type { IncomingMessage, Server } from "node:http";
 import { toAnthropicErrorBody } from "./errors.js";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
-import { aliasesByProvider, providerConfigFor, type Config } from "./config.js";
+import { aliasesByProvider, isLoopbackHost, providerConfigFor, type Config } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
 import { providerEvents } from "./provider-events.js";
 import { decideRoute } from "./router.js";
@@ -85,18 +85,62 @@ const createCodexProvider = (config: Config, logger: Logger): ProviderHandler =>
  */
 export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel)): ServerDeps => {
 
-  // Warn when a provider's configured base URL host differs from its own expected
-  // default. A refreshable subscription credential pointed at an arbitrary host sends
-  // the OAuth token there — warn at startup so operators notice immediately.
-  // z.url() in the config schema guarantees baseUrl is a valid URL here.
+  // Vet each provider's credential-carrying URLs at startup.
+  //
+  // Two controls, both per-provider by construction (one provider's defaultHost cannot
+  // accidentally vet another's baseUrl):
+  //   1. SCHEME: http:// to a non-loopback host sends credentials in cleartext — warn.
+  //      Loopback (127.*/localhost/::1) is exempt; the e2e dev workflow uses
+  //      http://127.0.0.1:4142 intentionally.
+  //   2. HOST: a URL on a different hostname than this provider's expected default
+  //      sends credentials to a third-party host — warn.
+  //
+  // Both baseUrl (short-lived access token) and oauthTokenUrl (long-lived refresh
+  // token) are swept. The asymmetry was backwards before: guarding only baseUrl left
+  // the more damaging credential unguarded.
+  //
+  // Anthropic baseUrl is checked separately below (not a ProviderId, so it is outside
+  // this loop, but the threat model is the same: a sk-ant-* key over cleartext).
+  //
+  // z.url() in the config schema validates URL format; z.refine(requireHttpsOrLoopback)
+  // rejects http:// non-loopback at parse time — this loop is defence in depth and also
+  // catches programmatically-constructed Config objects that bypass Zod.
   for (const id of PROVIDER_IDS) {
-    const { baseUrl, defaultHost } = providerConfigFor(config, id);
-    try {
-      if (new URL(baseUrl).hostname !== defaultHost) {
-        logger.log("warn", providerEvents(id).baseUrlOverrideDetected);
+    const { baseUrl, defaultHost, oauthTokenUrl, defaultOauthHost } = providerConfigFor(config, id);
+    const events = providerEvents(id);
+
+    // Check baseUrl scheme and hostname.
+    // new URL() is safe: z.url() already validated the URL at config-parse time.
+    const parsedBase = new URL(baseUrl);
+    if (!isLoopbackHost(parsedBase.hostname)) {
+      if (parsedBase.protocol !== "https:") {
+        logger.log("warn", events.insecureBaseUrlScheme);
       }
-    } catch {
-      // Unreachable: z.url() already validated the URL during config parsing.
+      if (parsedBase.hostname !== defaultHost) {
+        logger.log("warn", events.baseUrlOverrideDetected);
+      }
+    }
+
+    // Check oauthTokenUrl scheme and hostname (present only for OAuth providers).
+    if (oauthTokenUrl !== undefined && defaultOauthHost !== undefined) {
+      const parsedOauth = new URL(oauthTokenUrl);
+      if (!isLoopbackHost(parsedOauth.hostname)) {
+        if (parsedOauth.protocol !== "https:") {
+          logger.log("warn", events.insecureBaseUrlScheme);
+        }
+        if (parsedOauth.hostname !== defaultOauthHost) {
+          logger.log("warn", events.baseUrlOverrideDetected);
+        }
+      }
+    }
+  }
+
+  // Anthropic leg: same threat model — a sk-ant-* key forwarded verbatim over http://
+  // to a non-loopback host leaks the credential in cleartext.
+  {
+    const parsedAnthropic = new URL(config.anthropic.baseUrl);
+    if (!isLoopbackHost(parsedAnthropic.hostname) && parsedAnthropic.protocol !== "https:") {
+      logger.log("warn", "anthropic_insecure_base_url_scheme");
     }
   }
 

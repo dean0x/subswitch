@@ -509,3 +509,209 @@ describe("detectUnknownProviderKeys", () => {
     assert.equal(result.value.config.providers.codex.userAgent, "ok/1.0");
   });
 });
+
+// ---------------------------------------------------------------------------
+// TS-02: z.strictObject catches typo'd leaf keys (avoids PF-010)
+//
+// Before this fix, CodexProviderSchema, AnthropicSchema, LimitsSchema and
+// FileConfigSchema used z.object (which STRIPS unknown keys). A typo'd key
+// like `userAgnet` parsed clean and silently fell back to the default, giving
+// the user no diagnostic and a proxy running on an unexpected value.
+//
+// MUTATION PROOF: removing z.strictObject (reverting to z.object) on any of
+// these schemas causes the test for that schema to pass vacuously — the typo'd
+// config parses without error and the assertion `!result.ok` fails.
+// ---------------------------------------------------------------------------
+
+describe("TS-02: z.strictObject catches typo'd leaf keys", () => {
+  it("rejects providers.codex.userAgnet (typo of userAgent) — not silently stripped to default", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { userAgnet: "bad-typo/1.0" } } }),
+    });
+    assert.ok(!result.ok, "a typo'd key must be rejected, not silently stripped to defaults");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /userAgnet/i, "error must name the offending key");
+  });
+
+  it("rejects providers.codex.baseURL (wrong casing, correct value would be baseUrl)", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { baseURL: "https://chatgpt.com/backend-api/codex" } } }),
+    });
+    assert.ok(!result.ok, "wrong-cased key must be rejected — casing is significant in JSON");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /baseURL/i, "error must name the offending key");
+  });
+
+  it("rejects limits.pingIntervalMS (wrong casing, correct value would be pingIntervalMs)", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ limits: { pingIntervalMS: 5000 } }),
+    });
+    assert.ok(!result.ok, "wrong-cased key must be rejected");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /pingIntervalMS/i, "error must name the offending key");
+  });
+
+  it("rejects anthropic.baseURL (wrong casing, correct value would be baseUrl)", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ anthropic: { baseURL: "https://api.anthropic.com" } }),
+    });
+    assert.ok(!result.ok, "wrong-cased anthropic key must be rejected");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /baseURL/i, "error must name the offending key");
+  });
+
+  it("rejects a top-level unknown key (FileConfigSchema is strict)", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ unknownTopLevel: true }),
+    });
+    assert.ok(!result.ok, "unknown top-level key must be rejected");
+    assert.equal(result.error.kind, "translate");
+  });
+
+  it("accepts a valid config — strict schemas must not over-reject", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({
+          port: 4141,
+          logLevel: "info",
+          anthropic: { baseUrl: "https://api.anthropic.com" },
+          providers: { codex: { userAgent: "ok/1.0" } },
+          limits: { pingIntervalMs: 5000 },
+        }),
+    });
+    assert.ok(result.ok, `valid config should be accepted; got: ${!result.ok ? result.error.message : ""}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SEC-01 + COMP-01/02/03: HTTPS-only schema refinements for credential URLs
+//
+// http:// to a non-loopback host sends subscription credentials in cleartext.
+// Loopback (127.0.0.0/8, localhost, ::1) is exempt — the e2e dev workflow
+// points baseUrl at http://127.0.0.1:4142 intentionally.
+//
+// MUTATION PROOF: removing the .refine(requireHttpsOrLoopback) call on any URL
+// field causes the test for that field to pass vacuously — the http:// URL
+// loads clean and the `!result.ok` assertion fails.
+// ---------------------------------------------------------------------------
+
+describe("SEC-01: HTTPS-only refinements for credential URLs", () => {
+  // ---- providers.codex.baseUrl ----
+  it("rejects providers.codex.baseUrl with http:// to a non-loopback host", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { baseUrl: "http://chatgpt.com/backend-api/codex" } } }),
+    });
+    assert.ok(!result.ok, "http:// to chatgpt.com must be rejected — credential leaks in cleartext");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /https/i, "error must mention the https requirement");
+  });
+
+  it("accepts providers.codex.baseUrl with https:// to any host", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { baseUrl: "https://custom.proxy.example/api" } } }),
+    });
+    assert.ok(result.ok, `https:// to any host must be accepted; got: ${!result.ok ? result.error.message : ""}`);
+  });
+
+  it("accepts providers.codex.baseUrl with http:// to 127.0.0.1 (loopback exemption)", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { baseUrl: "http://127.0.0.1:4142/backend-api/codex" } } }),
+    });
+    assert.ok(result.ok, `http://127.0.0.1 must be accepted (loopback exemption); got: ${!result.ok ? result.error.message : ""}`);
+    assert.equal(result.value.config.providers.codex.baseUrl, "http://127.0.0.1:4142/backend-api/codex");
+  });
+
+  it("accepts providers.codex.baseUrl with http:// to localhost (loopback exemption)", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { baseUrl: "http://localhost:4142/backend-api/codex" } } }),
+    });
+    assert.ok(result.ok, `http://localhost must be accepted (loopback exemption); got: ${!result.ok ? result.error.message : ""}`);
+  });
+
+  it("accepts providers.codex.baseUrl with http:// to 127.x.x.x subnet (loopback exemption)", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { baseUrl: "http://127.0.0.2:4142/" } } }),
+    });
+    assert.ok(result.ok, `http://127.0.0.2 must be accepted (loopback subnet); got: ${!result.ok ? result.error.message : ""}`);
+  });
+
+  // ---- providers.codex.oauthTokenUrl ----
+  it("rejects providers.codex.oauthTokenUrl with http:// to a non-loopback host", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { oauthTokenUrl: "http://auth.openai.com/oauth/token" } } }),
+    });
+    assert.ok(!result.ok, "http:// oauthTokenUrl must be rejected — long-lived refresh token leaks in cleartext");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /https/i);
+  });
+
+  it("accepts providers.codex.oauthTokenUrl with https://", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { oauthTokenUrl: "https://custom.auth.example/oauth/token" } } }),
+    });
+    assert.ok(result.ok, `https:// oauthTokenUrl must be accepted; got: ${!result.ok ? result.error.message : ""}`);
+    assert.equal(result.value.config.providers.codex.oauthTokenUrl, "https://custom.auth.example/oauth/token");
+  });
+
+  it("accepts providers.codex.oauthTokenUrl with http:// to loopback (loopback exemption)", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { oauthTokenUrl: "http://127.0.0.1:9000/oauth" } } }),
+    });
+    assert.ok(result.ok, `http://127.0.0.1 oauthTokenUrl must be accepted; got: ${!result.ok ? result.error.message : ""}`);
+  });
+
+  // ---- anthropic.baseUrl ----
+  it("rejects anthropic.baseUrl with http:// to a non-loopback host", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ anthropic: { baseUrl: "http://api.anthropic.com" } }),
+    });
+    assert.ok(!result.ok, "http:// anthropic.baseUrl must be rejected — sk-ant-* key leaks in cleartext");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /https/i);
+  });
+
+  it("accepts anthropic.baseUrl with https://", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ anthropic: { baseUrl: "https://custom-anthropic-endpoint.example/api" } }),
+    });
+    assert.ok(result.ok, `https:// anthropic.baseUrl must be accepted; got: ${!result.ok ? result.error.message : ""}`);
+  });
+
+  it("accepts anthropic.baseUrl with http:// to loopback (loopback exemption)", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ anthropic: { baseUrl: "http://127.0.0.1:8080" } }),
+    });
+    assert.ok(result.ok, `http://127.0.0.1 anthropic.baseUrl must be accepted; got: ${!result.ok ? result.error.message : ""}`);
+  });
+});

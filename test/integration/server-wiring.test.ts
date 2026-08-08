@@ -8,7 +8,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig } from "../../src/config.js";
+import { loadConfig, type Config } from "../../src/config.js";
 import { buildDeps } from "../../src/server.js";
 
 /** Run `fn` with stderr captured, returning every line it wrote. */
@@ -80,5 +80,174 @@ describe("buildDeps — per-provider base-URL override warning", () => {
     const lines = buildWithCodexBaseUrl("https://evil.example/backend-api/codex");
     const warnings = lines.filter((line) => line.includes("base_url_override_detected"));
     assert.equal(warnings.length, 1, "exactly one provider is misconfigured, so exactly one warning");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildDeps — insecureBaseUrlScheme and oauthTokenUrl runtime warnings
+//
+// The Zod refinements in config.ts already reject http:// non-loopback URLs at
+// parse time. These tests exercise the RUNTIME defence-in-depth in buildDeps,
+// which also fires when a Config is constructed programmatically. They build a
+// Config object directly to bypass Zod validation.
+//
+// MUTATION PROOF: removing the scheme check from the buildDeps loop causes
+// `insecureBaseUrlScheme` tests to pass vacuously (no warning is emitted and
+// the assertion that no warning fires is trivially green — but the opposite
+// assertion, that the warning IS there, correctly fails).
+// The named mutation for each test is: remove the `parsedBase.protocol !==
+// "https:"` branch (for baseUrl) or the `parsedOauth.protocol !== "https:"`
+// branch (for oauthTokenUrl).
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a minimal Config for testing buildDeps directly, bypassing Zod validation.
+ * This is the only way to exercise the runtime defence-in-depth with URLs that
+ * the schema's https-only refinements would reject at parse time.
+ */
+const makeMinimalConfig = (overrides: Partial<Config["anthropic"]> & {
+  codexBaseUrl?: string;
+  codexOauthTokenUrl?: string;
+} = {}): Config => {
+  const {
+    codexBaseUrl = "https://chatgpt.com/backend-api/codex",
+    codexOauthTokenUrl = "https://auth.openai.com/oauth/token",
+    baseUrl: anthropicBaseUrl = "https://api.anthropic.com",
+    ...anthropicRest
+  } = overrides;
+  return {
+    port: 4141,
+    logLevel: "warn",
+    anthropic: {
+      baseUrl: anthropicBaseUrl,
+      connectTimeoutMs: 10_000,
+      streamIdleTimeoutMs: 300_000,
+      maxUpstreamSockets: 32,
+      ...anthropicRest,
+    },
+    providers: {
+      codex: {
+        baseUrl: codexBaseUrl,
+        oauthTokenUrl: codexOauthTokenUrl,
+        authFile: "/tmp/nonexistent-auth.json",
+        userAgent: "test/1.0",
+        aliases: {},
+        reasoningCache: { maxEntries: 10, maxBytes: 1024 },
+        requestTimeoutMs: 60_000,
+        streamIdleTimeoutMs: 60_000,
+        maxSseEventBytes: 1024,
+      },
+    },
+    limits: { maxBodyBytes: 1024, pingIntervalMs: 15_000, maxConcurrentRequests: 32 },
+  };
+};
+
+describe("buildDeps — insecureBaseUrlScheme runtime warning (SEC-01 defence-in-depth)", () => {
+  it("emits codex_insecure_base_url_scheme when providers.codex.baseUrl uses http:// to a non-loopback host", () => {
+    const config = makeMinimalConfig({ codexBaseUrl: "http://chatgpt.com/backend-api/codex" });
+    const lines = captureStderr(() => buildDeps(config));
+    const warning = lines.find((line) => line.includes("codex_insecure_base_url_scheme"));
+    assert.ok(
+      warning !== undefined,
+      `expected codex_insecure_base_url_scheme warning; got: ${lines.join(" | ")}`,
+    );
+    assert.match(warning, /level=warn/);
+  });
+
+  it("does NOT emit insecureBaseUrlScheme when providers.codex.baseUrl uses https://", () => {
+    const config = makeMinimalConfig({ codexBaseUrl: "https://chatgpt.com/backend-api/codex" });
+    const lines = captureStderr(() => buildDeps(config));
+    assert.equal(
+      lines.filter((line) => line.includes("insecure_base_url_scheme")).length,
+      0,
+      `https:// baseUrl must not trigger scheme warning; got: ${lines.join(" | ")}`,
+    );
+  });
+
+  it("does NOT emit insecureBaseUrlScheme when providers.codex.baseUrl uses http:// to 127.0.0.1 (loopback exemption)", () => {
+    const config = makeMinimalConfig({ codexBaseUrl: "http://127.0.0.1:4142/backend-api/codex" });
+    const lines = captureStderr(() => buildDeps(config));
+    assert.equal(
+      lines.filter((line) => line.includes("insecure_base_url_scheme")).length,
+      0,
+      `http://127.0.0.1 must not trigger scheme warning (loopback exempt); got: ${lines.join(" | ")}`,
+    );
+  });
+
+  it("emits codex_insecure_base_url_scheme when providers.codex.oauthTokenUrl uses http:// to a non-loopback host", () => {
+    // oauthTokenUrl carries the long-lived refresh token — more damaging to leak than
+    // the short-lived access token that a misconfigured baseUrl would expose.
+    const config = makeMinimalConfig({ codexOauthTokenUrl: "http://auth.openai.com/oauth/token" });
+    const lines = captureStderr(() => buildDeps(config));
+    const warning = lines.find((line) => line.includes("codex_insecure_base_url_scheme"));
+    assert.ok(
+      warning !== undefined,
+      `expected codex_insecure_base_url_scheme for http oauthTokenUrl; got: ${lines.join(" | ")}`,
+    );
+  });
+
+  it("does NOT emit insecureBaseUrlScheme when providers.codex.oauthTokenUrl uses https://", () => {
+    const config = makeMinimalConfig({ codexOauthTokenUrl: "https://auth.openai.com/oauth/token" });
+    const lines = captureStderr(() => buildDeps(config));
+    assert.equal(
+      lines.filter((line) => line.includes("insecure_base_url_scheme")).length,
+      0,
+      `https:// oauthTokenUrl must not trigger scheme warning; got: ${lines.join(" | ")}`,
+    );
+  });
+
+  it("does NOT emit insecureBaseUrlScheme for oauthTokenUrl pointing at loopback (loopback exemption)", () => {
+    const config = makeMinimalConfig({ codexOauthTokenUrl: "http://127.0.0.1:9000/oauth" });
+    const lines = captureStderr(() => buildDeps(config));
+    assert.equal(
+      lines.filter((line) => line.includes("insecure_base_url_scheme")).length,
+      0,
+      `http://127.0.0.1 oauthTokenUrl must not trigger warning (loopback exempt); got: ${lines.join(" | ")}`,
+    );
+  });
+
+  it("emits codex_base_url_override_detected for oauthTokenUrl pointing at a foreign host", () => {
+    // The existing host-override check now also covers oauthTokenUrl — an operator who
+    // points the OAuth endpoint at a third-party host is leaking the refresh token there.
+    const config = makeMinimalConfig({ codexOauthTokenUrl: "https://evil.example/oauth/token" });
+    const lines = captureStderr(() => buildDeps(config));
+    const warning = lines.find((line) => line.includes("codex_base_url_override_detected"));
+    assert.ok(
+      warning !== undefined,
+      `expected codex_base_url_override_detected for foreign oauthTokenUrl host; got: ${lines.join(" | ")}`,
+    );
+  });
+
+  it("emits anthropic_insecure_base_url_scheme when anthropic.baseUrl uses http:// to a non-loopback host", () => {
+    // The anthropic leg forwards sk-ant-* keys verbatim; http:// to a non-loopback
+    // host leaks them in cleartext.
+    const config = makeMinimalConfig({ baseUrl: "http://api.anthropic.com" });
+    const lines = captureStderr(() => buildDeps(config));
+    const warning = lines.find((line) => line.includes("anthropic_insecure_base_url_scheme"));
+    assert.ok(
+      warning !== undefined,
+      `expected anthropic_insecure_base_url_scheme warning; got: ${lines.join(" | ")}`,
+    );
+    assert.match(warning, /level=warn/);
+  });
+
+  it("does NOT emit anthropic_insecure_base_url_scheme when anthropic.baseUrl uses https://", () => {
+    const config = makeMinimalConfig({ baseUrl: "https://api.anthropic.com" });
+    const lines = captureStderr(() => buildDeps(config));
+    assert.equal(
+      lines.filter((line) => line.includes("anthropic_insecure_base_url_scheme")).length,
+      0,
+      `https:// anthropic.baseUrl must not trigger warning; got: ${lines.join(" | ")}`,
+    );
+  });
+
+  it("does NOT emit anthropic_insecure_base_url_scheme when anthropic.baseUrl uses http:// to loopback", () => {
+    const config = makeMinimalConfig({ baseUrl: "http://127.0.0.1:4141" });
+    const lines = captureStderr(() => buildDeps(config));
+    assert.equal(
+      lines.filter((line) => line.includes("anthropic_insecure_base_url_scheme")).length,
+      0,
+      `http://127.0.0.1 anthropic.baseUrl must not trigger warning (loopback exempt); got: ${lines.join(" | ")}`,
+    );
   });
 });

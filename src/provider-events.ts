@@ -48,6 +48,17 @@ export interface ProviderEvents<P extends ProviderId> {
   readonly sessionKey: `${P}_session_key`;
   /** The configured base URL points at a host other than this provider's default. */
   readonly baseUrlOverrideDetected: `${P}_base_url_override_detected`;
+  /**
+   * A URL (baseUrl or oauthTokenUrl) uses http to a non-loopback host, sending
+   * credentials over cleartext. Emitted at startup by `buildDeps` for each affected
+   * provider. Loopback addresses (127.0.0.0/8, localhost, ::1) are exempt — the e2e dev
+   * workflow intentionally points baseUrl at http://127.0.0.1:4142.
+   *
+   * COMPILE-TIME SAFETY: this field is a template literal over `P extends ProviderId`
+   * for the same reason every other field here is — a config-supplied string cannot
+   * reach the derivation, so it cannot inject a newline or `=` into the log line.
+   */
+  readonly insecureBaseUrlScheme: `${P}_insecure_base_url_scheme`;
 }
 
 /**
@@ -68,4 +79,5 @@ export const providerEvents = <P extends ProviderId>(providerId: P): ProviderEve
   cacheTokens: `${providerId}_cache_tokens`,
   sessionKey: `${providerId}_session_key`,
   baseUrlOverrideDetected: `${providerId}_base_url_override_detected`,
+  insecureBaseUrlScheme: `${providerId}_insecure_base_url_scheme`,
 });

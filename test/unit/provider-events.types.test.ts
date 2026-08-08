@@ -23,6 +23,10 @@ const onlyProviderIdsCanBecomeEventNames = (): void => {
   const name: "codex_upstream_error" = events.upstreamError;
   void name;
 
+  // The new insecureBaseUrlScheme event is also a compile-time template literal.
+  const schemeEvent: "codex_insecure_base_url_scheme" = events.insecureBaseUrlScheme;
+  void schemeEvent;
+
   // @ts-expect-error a value read from config is `string`, and `string` is not a
   // ProviderId. THIS is the log-injection barrier: a provider id supplied by a config
   // file cannot reach the derivation at all, so it cannot carry a newline into the
@@ -57,5 +61,9 @@ const eventNamesAreTiedToTheProviderTheyName = <P extends ProviderId>(providerId
   // suffix — the suffixes are literals, not free-form strings.
   const mismatchedSuffix: `${P}_upstream_error` = events.streamInterrupted;
   void mismatchedSuffix;
+
+  // insecureBaseUrlScheme is a template literal over P — same guarantee as every other event.
+  const insecureScheme: `${P}_insecure_base_url_scheme` = events.insecureBaseUrlScheme;
+  void insecureScheme;
 };
 void eventNamesAreTiedToTheProviderTheyName;

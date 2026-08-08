@@ -17,12 +17,48 @@ export const DEFAULT_PORT = 4141 as const;
 export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
 
 // ---------------------------------------------------------------------------
+// Loopback helper — shared between schema refinements and buildDeps runtime checks
+// ---------------------------------------------------------------------------
+
+/**
+ * True when a URL's hostname is a loopback address.
+ *
+ * Loopback addresses are exempt from the HTTPS requirement because the e2e dev
+ * workflow intentionally points `baseUrl` at `http://127.0.0.1:4142`
+ * (see `e2e/capture/codex-recorder.ts` and `e2e/README.md`).
+ *
+ * Exported so `buildDeps` can apply the same logic without duplication.
+ */
+export const isLoopbackHost = (hostname: string): boolean =>
+  hostname === "localhost" ||
+  hostname === "::1" ||
+  hostname === "127.0.0.1" ||
+  hostname.startsWith("127.");
+
+/**
+ * Zod refinement: a URL must use https, or http to a loopback address.
+ *
+ * Relies on `z.url()` having already validated the URL, so `new URL(url)` is safe.
+ */
+const requireHttpsOrLoopback = (url: string): boolean => {
+  const { protocol, hostname } = new URL(url);
+  return protocol === "https:" || isLoopbackHost(hostname);
+};
+
+const HTTPS_REQUIRED_MESSAGE =
+  "must use https:// (or http:// to 127.*/localhost/::1 for local dev); " +
+  "an http:// URL to a non-loopback host sends credentials in cleartext";
+
+// ---------------------------------------------------------------------------
 // Sub-schemas (FileConfig layer)
 // ---------------------------------------------------------------------------
 
 const AnthropicSchema = z
-  .object({
-    baseUrl: z.url().default("https://api.anthropic.com"),
+  .strictObject({
+    baseUrl: z
+      .url()
+      .refine(requireHttpsOrLoopback, { message: `anthropic.baseUrl ${HTTPS_REQUIRED_MESSAGE}` })
+      .default("https://api.anthropic.com"),
     /** Connection timeout for all upstream requests to the Anthropic leg. */
     connectTimeoutMs: z.number().int().positive().default(10_000),
     /** Stream idle timeout for the Anthropic passthrough. */
@@ -48,7 +84,7 @@ const AliasesSchema = z
   .default({});
 
 const CodexProviderSchema = z
-  .object({
+  .strictObject({
     /**
      * Discriminant for provider-type dispatch in resolveConfig.
      *
@@ -60,8 +96,14 @@ const CodexProviderSchema = z
      * the `providers` record key that already selects the slice.
      */
     kind: z.literal("codex"),
-    baseUrl: z.url().default("https://chatgpt.com/backend-api/codex"),
-    oauthTokenUrl: z.url().default("https://auth.openai.com/oauth/token"),
+    baseUrl: z
+      .url()
+      .refine(requireHttpsOrLoopback, { message: `providers.codex.baseUrl ${HTTPS_REQUIRED_MESSAGE}` })
+      .default("https://chatgpt.com/backend-api/codex"),
+    oauthTokenUrl: z
+      .url()
+      .refine(requireHttpsOrLoopback, { message: `providers.codex.oauthTokenUrl ${HTTPS_REQUIRED_MESSAGE}` })
+      .default("https://auth.openai.com/oauth/token"),
     authFile: z.string().min(1).default(DEFAULT_CODEX_AUTH_FILE),
     // default UA format verified from codex-cli 0.144.6 live capture 2026-07-22;
     // machine-telemetry (OS/arch/terminal) intentionally omitted — set providers.codex.userAgent
@@ -122,7 +164,7 @@ const PROVIDER_SCHEMAS = {
 const ProvidersSchema = z.object(PROVIDER_SCHEMAS).prefault({});
 
 const LimitsSchema = z
-  .object({
+  .strictObject({
     /** Maximum request body bytes buffered before the Codex routing decision. */
     maxBodyBytes: z.number().int().positive().default(32 * 1024 * 1024),
     /** Interval between SSE ping frames sent to clients during long Codex streams. */
@@ -132,7 +174,7 @@ const LimitsSchema = z
   })
   .prefault({});
 
-const FileConfigSchema = z.object({
+const FileConfigSchema = z.strictObject({
   port: z.number().int().min(1).max(65535).default(DEFAULT_PORT),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
   anthropic: AnthropicSchema,
@@ -241,6 +283,23 @@ export interface ProviderRuntimeConfig {
    * construction — one provider's default host can never be used to vet another's.
    */
   readonly defaultHost: string;
+  /**
+   * OAuth token endpoint for credential refresh, when applicable.
+   *
+   * Present only for providers that authenticate via OAuth (currently Codex). Absent
+   * for providers that use static API keys or other schemes. `buildDeps` vets this URL
+   * against `defaultOauthHost` and scheme with the same rules as `baseUrl`, because a
+   * compromised `oauthTokenUrl` leaks the long-lived refresh token — more damaging than
+   * leaking a short-lived access token via a misconfigured `baseUrl`.
+   */
+  readonly oauthTokenUrl?: string;
+  /**
+   * Hostname the OAuth token endpoint is expected to live on.
+   *
+   * Present when `oauthTokenUrl` is present. `buildDeps` warns at startup when the
+   * configured `oauthTokenUrl` points at a different host.
+   */
+  readonly defaultOauthHost?: string;
 }
 
 /**
@@ -258,6 +317,8 @@ const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) =>
     baseUrl: config.providers.codex.baseUrl,
     loginCommand: "codex login",
     defaultHost: "chatgpt.com",
+    oauthTokenUrl: config.providers.codex.oauthTokenUrl,
+    defaultOauthHost: "auth.openai.com",
   }),
 };
 
