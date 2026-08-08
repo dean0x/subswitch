@@ -31,7 +31,7 @@ outdated config layout in subswitch.config.json — move `codex` to `providers.c
 
 ### Breaking Changes
 
-#### Non-default base URL hosts now refused by default (SEC-04)
+#### Non-default base URL hosts now refused by default
 
 **`subswitch serve` now exits with an error** if `providers.codex.baseUrl`,
 `providers.codex.oauthTokenUrl`, or `anthropic.baseUrl` points at a host other than
@@ -82,7 +82,7 @@ is no automatic migration and no compatibility shim. A compatibility shim was no
 written because Zod's default behaviour strips unknown keys — a shim would have
 silently reverted any custom settings the old keys held to their defaults rather than
 carrying them forward, which is worse than a hard error. The change is enforced loudly
-at load instead (applies PF-010).
+at load instead.
 
 What moved and what was removed:
 
@@ -204,9 +204,10 @@ Such a block would otherwise be stripped by the schema and do nothing at all.
 - **Log event tokens are sanitized** the same way field values already were (newlines
   stripped, whitespace/`=` quoted). The closed `FIELD_KEYS` allow-list is untouched;
   this is a different axis. Every event name is a compile-time string literal, so a
-  config-supplied or request-supplied string cannot become an event name. Note the
-  narrower claim: the provider-scoped names are derived from the `ProviderId` union,
-  but six auth event names are not — see known limitations below.
+  config-supplied or request-supplied string cannot become an event name. All 19
+  provider-scoped names — including the 7 auth events previously hardcoded as `codex_*`
+  literals in `codex-auth.ts` — are derived from the `ProviderId` union via
+  `providerEvents`.
 - **Provider credentials are branded with the provider they belong to**: the auth seam
   is now `ProviderAuth<P>`/`ProviderCredential<P>`, and the handler's `providerId` and
   `auth` share one type parameter. Wiring one provider's credential into another
@@ -271,7 +272,6 @@ Such a block would otherwise be stripped by the schema and do nothing at all.
     502 instead of a 200 with `input: {}` — the client no longer acts on invented empty
     arguments. A genuinely empty argument string still yields `input: {}`, which is
     correct for a zero-argument call.
-  (avoids PF-008)
 - **A credential that cannot be refreshed is no longer refreshed anyway**: the 401
   retry guard read `attempt === 0` while the retry budget was `refreshable ? 2 : 1`, so
   a static-credential provider spent a refresh its budget of one attempt did not allow
@@ -282,10 +282,10 @@ Such a block would otherwise be stripped by the schema and do nothing at all.
   applied inside `toAnthropicErrorBody` — the chokepoint both upstream-text relay paths
   funnel through (the handler's body peek and `codex-response.ts`'s SSE `response.failed`
   interpolation). Bearer tokens and JWTs are stripped before the text reaches the client.
-- **Auth file written with O_EXCL and unlinked on failure**: `codex-auth.ts` temp write
-  now uses `open(tmp, "wx", 0o600)` (O_EXCL) — the file is created exclusively with
-  `0o600` permissions and the temp is unlinked on any write failure, closing the
-  predictable-temp-path and world-readable race conditions.
+- **Temp file writes use O_EXCL and are unlinked on failure**: `codex-auth.ts` and
+  `src/init.ts` temp writes now both use `open(tmp, "wx", 0o600)` (O_EXCL) — files are
+  created exclusively with `0o600` permissions and the temp is unlinked on any write
+  failure, closing the predictable-temp-path and world-readable race conditions.
 - **Case-variant header shadowing**: previously a credential that supplied a header name
   that matched a transport constant under a different case (e.g., `Content-Type` vs
   `content-type`) caused both to be emitted; undici comma-joins duplicate header names
@@ -302,22 +302,6 @@ before adding a second production provider:
   out-of-tree probe, but no in-suite test can distinguish them until a second id ships.
   The tests that touch these axes say so at the assertion site; do not read their green
   as coverage.
-- **Six auth log event names are hardcoded `codex_*` literals outside the
-  `ProviderEvents` table.** `src/codex-auth.ts` emits `codex_token_refreshed`,
-  `codex_refresh_token_rotated_externally`, `codex_token_refresh_failed`,
-  `codex_auth_file_newer_than_refresh`, `codex_auth_file_write_failed`, and
-  `codex_auth_file_unreadable_after_refresh` directly, rather than through
-  `providerEvents(providerId)` like the eleven provider-scoped names. They are still
-  compile-time string literals, so the log-injection control is intact — nothing
-  config-supplied or request-supplied can become an event name — but they are not
-  derived from the `ProviderId` union. A second provider's auth manager would either
-  emit `codex_*` events for its own credential or need its own hardcoded copies.
-  Moving them into the table is deliberately deferred: it renames operator-visible
-  log events and needs a decision, not a drive-by edit.
-- **`src/init.ts` shares the predictable-temp-path exposure that `codex-auth.ts` just
-  fixed**: it writes via `fsWriteFile` with no `O_EXCL` and no `0o600` mode. The
-  unlink-on-failure half is present, but the exclusive-create and restrictive-permissions
-  halves are not. Out of scope for this branch.
 - **`e2e/capture/codex-recorder.ts` cannot capture SSE from the live backend**: its
   detection gates on `contentType.includes("text/event-stream")`, but the production
   `/responses` stream sends no `Content-Type` header at all, so the recorder silently
@@ -326,10 +310,12 @@ before adding a second production provider:
   `|| contentType === ""` relaxation fixes it. Anyone repeating the live-capture protocol
   with the checked-in recorder will get empty event captures and may wrongly conclude the
   stream is broken. ([#21](https://github.com/dean0x/subswitch/issues/21))
-- **`e2e/README.md` contains a stale top-level `codex.*` config example**: the correct
-  shape is `providers.codex.*`; the stale example would now be rejected at load by
-  `detectLegacyConfigKeys`. The parity table in the same file is a separately scoped
-  known limitation (PF-005). Fixing the config example is out of scope for this branch.
+- **`e2e/README.md` parity-gaps table is derived from the wrong transport**: the
+  six-row table was measured against HTTP analytics REST calls from `codex exec`, which
+  routes AI inference over a WebSocket app-server transport — not the HTTP `/responses`
+  endpoint that subswitch emulates. Applying any of the listed "Fix" entries would
+  overwrite live-verified working header constants and break the Codex leg. The README
+  flags this with a warning box next to the table.
 - **No `Origin` / `Sec-Fetch-Site` check on `/v1/messages`**: a cross-origin
   `text/plain` POST from a page the user visits while the proxy is running can drive the
   proxy and consume Codex quota at the user's cost. CORS prevents the page from reading
