@@ -82,6 +82,53 @@ describe("redactCredentials", () => {
 });
 
 /**
+ * U3.1a — BEARER_PATTERN must NOT fire on short words that follow "Bearer" in prose.
+ *
+ * Regression guard for SEC-06/REGR-03: the pre-fix pattern had a one-character minimum,
+ * causing "bearer token" in error messages to be redacted and mangling 401/403 bodies.
+ *
+ * Mutation that MUST turn this red: drop the {12,} minimum (revert to `+`).
+ * PF-011: proven RED against the named mutation before trusting green.
+ */
+describe("redactCredentials — prose false-positive guard", () => {
+  it("U3.1a — short words after 'Bearer' in prose pass through unchanged", () => {
+    // The canonical SEC-06 repro: "bearer token" was being redacted, mangling 401/403 bodies.
+    assert.equal(
+      redactCredentials("Missing bearer token in Authorization header"),
+      "Missing bearer token in Authorization header",
+      "'bearer token' in prose must pass through — 'token' (5 chars) is below the 12-char minimum",
+    );
+    // Additional short words that should not trigger redaction
+    assert.equal(
+      redactCredentials("No valid Bearer auth provided"),
+      "No valid Bearer auth provided",
+      "'Bearer auth' in prose must pass through — 'auth' (4 chars) is below the 12-char minimum",
+    );
+  });
+
+  it("U3.1b — tokens of exactly 12+ chars are still redacted; 11 chars and below pass through", () => {
+    // Exactly 11 chars — just below boundary; must NOT be redacted
+    assert.equal(
+      redactCredentials("Bearer ABCDEFGHIJK"),
+      "Bearer ABCDEFGHIJK",
+      "11-char token must NOT be redacted (below 12-char minimum)",
+    );
+    // Exactly 12 chars — at boundary; MUST be redacted
+    assert.equal(
+      redactCredentials("Bearer ABCDEFGHIJKL"),
+      "Bearer <redacted>",
+      "12-char token MUST be redacted (at the minimum)",
+    );
+    // Realistic JWT bearer token — must still be redacted
+    assert.equal(
+      redactCredentials("Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signature"),
+      "Authorization: Bearer <redacted>",
+      "realistic JWT bearer token must still be redacted after the minimum-length fix",
+    );
+  });
+});
+
+/**
  * U3.2 — toAnthropicErrorBody strips credentials AND the envelope stays intact.
  *
  * Mutation that MUST turn this red: remove the redactCredentials call inside toAnthropicErrorBody.

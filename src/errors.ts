@@ -3,15 +3,27 @@
  * Applied BEFORE the JWT pattern so that a `Bearer eyJ….….…` is consumed whole and
  * does not leave a dangling `Bearer ` prefix for the JWT pattern to trip over.
  *
+ * The {12,} minimum prevents false positives: short words like "token" or "auth" that
+ * follow "Bearer" in ordinary prose (e.g. "Missing bearer token in Authorization header")
+ * are not redacted. Real credentials are always longer than 12 characters.
+ *
  * Both patterns are linear (no nested quantifiers) — inputs are already bounded
  * by the 2 KB body peek cap and maxSseEventBytes.
+ *
+ * /g flag safety: safe with String.replace (resets lastIndex after each call).
+ * Do NOT use these patterns with .test() or exec() without resetting lastIndex —
+ * the stateful lastIndex of /g patterns alternates results on repeated calls.
  */
-const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9\-._~+/]+=*/gi;
+const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9\-._~+/]{12,}=*/gi;
 
 /**
  * Match a standalone JWT (three dot-separated base64url segments, first starting with eyJ).
  * The `\b` word boundary prevents a partial match inside a longer token that the Bearer
  * pattern already consumed.
+ * The eyJ prefix (base64url for '{"') is structurally specific to JWTs — no minimum-length
+ * guard is needed here because false positives in ordinary prose are not plausible.
+ *
+ * /g flag safety: same note as BEARER_PATTERN above.
  */
 const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g;
 
