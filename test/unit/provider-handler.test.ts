@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createCodexHandler } from "../../src/codex-handler.js";
+import { createCodexHandler, buildHeaders, type CodexTransportConstants } from "../../src/codex-handler.js";
 import { noopLogger } from "../../src/logger.js";
 import { ReasoningCache } from "../../src/reasoning-cache.js";
 import { CodexAuthManager, type AuthFileStore } from "../../src/codex-auth.js";
@@ -748,5 +748,134 @@ describe("upstream 401 names the provider loginCommand in the client-visible mes
       /kimi login/,
       'synthesising `${providerId} login` would produce "kimi login" — must read from deps',
     );
+  });
+});
+
+/**
+ * Direct unit tests of the exported `buildHeaders` pure function (TEST-09).
+ *
+ * `buildHeaders` was previously a closure inside `createCodexHandler`, making its
+ * mixed-case `put()` branch reachable only through a full handler invocation. Lifting
+ * it to module-level makes the branch directly testable and removes the closure
+ * capture of `provider.userAgent`.
+ *
+ * These tests are companions to the handler-level U1.x tests above (which exercise the
+ * same logic through a full fetch cycle). Both are needed: U1.x proves the handler wires
+ * the right transport constants; these prove the pure function handles edge cases the
+ * handler tests cannot isolate.
+ *
+ * PF-005 scope: PF-005 forbids using the e2e/README.md wrong-transport capture table to
+ * change header NAMES or VALUES. It does NOT govern ORDER.
+ * PF-011/PF-012: each test is proven RED against its named mutation before trusting green.
+ *
+ * Before/after header-set proof (MANDATORY per TEST-09):
+ * The U1.1, U1.2, and U1.3 handler-level tests above drive the real `buildHeaders` call
+ * through `createCodexHandler`. They passed before the refactor (against the inline
+ * closure) and must pass after (against the module-level function). Any drift in name,
+ * value, or order would turn those tests red. The U1.1-direct test below provides an
+ * additional direct assertion on the same eight-name order.
+ */
+const STANDARD_TRANSPORT: CodexTransportConstants = {
+  "openai-beta": "responses=experimental",
+  originator: "codex_cli_rs",
+  accept: "text/event-stream",
+  "content-type": "application/json",
+  "user-agent": "test-ua/1.0",
+};
+
+describe("buildHeaders — direct unit tests of the exported pure function (TEST-09)", () => {
+  /**
+   * U1.1-direct: Object.keys matches the eight-name target order when called directly.
+   *
+   * This is the before/after parity assertion for TEST-09: if the module-level
+   * `buildHeaders` produces the same key order as the old inline closure, the
+   * refactoring is transparent to callers.
+   *
+   * Mutation that MUST turn it red: reorder the put() calls in buildHeaders so that
+   * session_id appears last (after user-agent). Proven red: "Expected values to be
+   * strictly deep-equal" — keys end with [..., "session_id"] instead of
+   * [..., "content-type", "user-agent"].
+   */
+  it("U1.1-direct — buildHeaders() emits keys in the eight-name live-verified order", () => {
+    const credential: ProviderCredential<"codex"> = {
+      provider: "codex",
+      authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" },
+    };
+    const result = buildHeaders(credential, "sess-abc", STANDARD_TRANSPORT);
+    assert.deepEqual(Object.keys(result), [
+      "authorization",
+      "chatgpt-account-id",
+      "openai-beta",
+      "originator",
+      "session_id",
+      "accept",
+      "content-type",
+      "user-agent",
+    ]);
+  });
+
+  /**
+   * U1.3-direct: a credential returning "User-Agent" (capital U, capital A) must yield
+   * exactly one key matching /^user-agent$/i — the credential's own casing wins via the
+   * spread, and `put("user-agent", ...)` is suppressed by the owned-set guard.
+   *
+   * This is the DIRECT test of the mixed-case put() branch (TEST-09). The handler-level
+   * U1.3 above reaches the same branch through a full fetch cycle; this test calls
+   * `buildHeaders` directly, making the branch independently testable.
+   *
+   * Mutation that MUST turn it red: drop `.toLowerCase()` from the owned Set construction
+   * in buildHeaders (change `k.toLowerCase()` → `k` in the map call). The put() call sites
+   * all pass lowercase literals, so only the construction-side normalisation detects the
+   * case mismatch — owned.has("user-agent") returns false against a set containing "User-Agent".
+   * Proven red: uaKeys.length equals 2 (both "User-Agent" from spread and "user-agent"
+   * from put), so assert.equal(uaKeys.length, 1) fails.
+   *
+   * Per PF-012: do NOT test by dropping .toLowerCase() from put() — all put() call sites
+   * pass lowercase literals, so that mutation is inert and the test would stay green.
+   * The real falsifier is the construction-side normalisation.
+   */
+  it("U1.3-direct — credential with capital User-Agent yields exactly one user-agent key", () => {
+    const credential: ProviderCredential<"codex"> = {
+      provider: "codex",
+      authHeaders: {
+        authorization: "Bearer tok",
+        "chatgpt-account-id": "acct_x",
+        "User-Agent": "capital-ua/1.0",
+      },
+    };
+    const result = buildHeaders(credential, "sess-123", STANDARD_TRANSPORT);
+    const uaKeys = Object.keys(result).filter((k) => /^user-agent$/i.test(k));
+    assert.equal(
+      uaKeys.length,
+      1,
+      `exactly one user-agent key must exist; got keys: ${JSON.stringify(Object.keys(result))}`,
+    );
+    // The credential's own key ("User-Agent") is in the spread, so it must be present.
+    assert.equal(result["User-Agent"], "capital-ua/1.0", "credential value must be preserved under its own casing");
+    // The transport constant's lowercase form must be absent (suppressed by the owned guard).
+    assert.equal(result["user-agent"], undefined, "transport put() must be suppressed when credential already owns the name");
+  });
+
+  /**
+   * U1.4-direct: values from transportConstants are emitted with their given values.
+   * Ensures transport constants are not silently dropped or overwritten when the
+   * credential does not own them.
+   *
+   * Mutation that MUST turn it red: drop a put() call for one of the transport constants
+   * (e.g. remove `put("originator", ...)`). Proven red: assert.equal fails for the
+   * missing key.
+   */
+  it("U1.4-direct — transport constant values are emitted with the given values", () => {
+    const credential: ProviderCredential<"codex"> = {
+      provider: "codex",
+      authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" },
+    };
+    const result = buildHeaders(credential, "my-session", STANDARD_TRANSPORT);
+    assert.equal(result["openai-beta"], "responses=experimental");
+    assert.equal(result["originator"], "codex_cli_rs");
+    assert.equal(result["session_id"], "my-session");
+    assert.equal(result["accept"], "text/event-stream");
+    assert.equal(result["content-type"], "application/json");
+    assert.equal(result["user-agent"], "test-ua/1.0");
   });
 });

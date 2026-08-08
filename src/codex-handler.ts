@@ -10,6 +10,7 @@ import type { Logger } from "./logger.js";
 import { providerEvents } from "./provider-events.js";
 import type { ProviderId } from "./models.js";
 import type { ProviderAuth, ProviderCredential } from "./provider-auth.js";
+import type { ProviderHandler } from "./provider-handler.js";
 import type { ReasoningCache } from "./reasoning-cache.js";
 import { estimateTokens, translateRequest } from "./codex-request.js";
 import { deriveConversationKey } from "./conversation-key.js";
@@ -19,10 +20,26 @@ import { AnthropicRequestSchema } from "./anthropic-wire-types.js";
 const ERROR_BODY_PEEK_BYTES = 2048;
 
 /**
- * `P` is the provider this handler speaks for, and it is one type parameter rather than
- * two independent fields on purpose: `providerId` fixes it and `auth` must then match.
- * A type parameter that constrained only `providerId` would be ceremony; it earns its
- * place precisely because a second field is checked against it.
+ * `P` ties `providerId` to `auth`, and that is all it does.
+ *
+ * `providerId: P` fixes the type; `auth: ProviderAuth<P>` must match — a compile
+ * error prevents wiring provider X's handler with provider Y's credential at the
+ * wiring site. Without `P`, the two fields would be independently typed and the
+ * compiler could not correlate them.
+ *
+ * `provider: CodexProviderConfig` is intentionally NOT parameterised by `P`.
+ * Expressing it as `Config["providers"][P]` would compile today only because
+ * `ProviderId` is a single-member union; it would break when a second provider lands,
+ * because `Config["providers"]["kimi"]` is not `CodexProviderConfig`. The handler
+ * works with the concrete Codex config slice — hardcoding the type is honest about
+ * what the code does.
+ *
+ * Codex-specific notes on the `handleMessages` contract (see also `ProviderHandler`):
+ * - `rawBody` is provided for interface completeness; Codex currently uses it only via
+ *   `estimateTokens` in `handleCountTokens`, not in `handleMessages`.
+ * - `canonicalModel` is the resolved canonical id (never an alias) so that
+ *   `deriveConversationKey` and `translateRequest` both see the same stable id.
+ *   Callers resolve once before routing (applies ADR-005).
  */
 export interface CodexHandlerDeps<P extends ProviderId> {
   /**
@@ -70,26 +87,70 @@ export interface CodexHandlerDeps<P extends ProviderId> {
   readonly newSessionId?: () => string;
 }
 
-export interface CodexHandler {
-  /**
-   * Handle a /v1/messages request.
-   *
-   * `parsed` is the body already JSON-parsed by the server (JSON.parse is called
-   * exactly once per request — the P4 contract). The handler applies its own schema
-   * to `parsed` without re-parsing `rawBody`.
-   *
-   * `rawBody` is still provided for providers that forward it untouched and for
-   * `estimateTokens` (rawBody.length). Codex currently uses neither in this method.
-   *
-   * `canonicalModel` is the resolved canonical id (never an alias) so that
-   * `deriveConversationKey` and `translateRequest` both see the same stable id.
-   * Callers resolve once before routing (applies ADR-005).
-   */
-  handleMessages(req: IncomingMessage, res: ServerResponse, rawBody: Buffer, parsed: unknown, canonicalModel: string): Promise<void>;
-  handleCountTokens(req: IncomingMessage, res: ServerResponse, rawBody: Buffer): void;
+/**
+ * The set of non-credential, non-session transport headers appended on every Codex
+ * /responses request. Values are compile-time constants except `user-agent`, which
+ * comes from provider config so deployments can report a meaningful client identifier.
+ *
+ * All names are lowercase because `buildHeaders` passes them directly to `put()`,
+ * which lowercases both sides of the owned-Set check; using lowercase literals here
+ * keeps the intent explicit and avoids any ambiguity at the call site.
+ */
+export interface CodexTransportConstants {
+  readonly "openai-beta": string;
+  readonly originator: string;
+  readonly accept: string;
+  readonly "content-type": string;
+  readonly "user-agent": string;
 }
 
-export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<P>): CodexHandler => {
+/**
+ * Build the outgoing header record for a Codex /responses request.
+ *
+ * Pure: no side effects, no closure captures. Credential headers land first so auth
+ * appears before transport constants on the wire, then protocol constants in the
+ * live-verified order, then the provider user-agent.
+ *
+ * Owned-set guard: both sides of the collision check are lowercased so a credential
+ * returning "User-Agent" (capital) and our put("user-agent", …) are correctly
+ * identified as the same name — exactly one key is emitted, the credential wins, and
+ * undici never comma-joins a duplicate pair into a malformed value. (avoids PF-005)
+ *
+ * Assumption at the spread site: `credential.authHeaders` contains no two keys that
+ * differ only in case. If it did, the spread would carry both past the owned guard and
+ * undici would comma-join them into one malformed value. (avoids PF-005, REGR-05)
+ *
+ * PF-005 scope: PF-005 forbids using the e2e/README.md wrong-transport capture table
+ * to change header NAMES or VALUES. It does NOT govern ORDER.
+ */
+export const buildHeaders = <P extends ProviderId>(
+  credential: ProviderCredential<P>,
+  sessionId: string,
+  transportConstants: CodexTransportConstants,
+): Record<string, string> => {
+  // Seed from credential so auth headers land first on the wire. Assumption: no two
+  // keys in credential.authHeaders differ only in case — if they did, the spread
+  // would carry both and the put() guard below would not catch them (it only guards
+  // against collisions between credential names and transport constant names).
+  const headers: Record<string, string> = { ...credential.authHeaders };
+  const owned = new Set(Object.keys(credential.authHeaders).map((k) => k.toLowerCase()));
+  // Both sides lowercased so the guard holds for any credential, including one that
+  // returns mixed-case names (e.g. "User-Agent"). The put() call sites use lowercase
+  // literals, but the lowercase here is what makes the guard semantically correct —
+  // without it, owned.has("user-agent") would miss a credential-supplied "User-Agent".
+  const put = (name: string, value: string): void => {
+    if (!owned.has(name.toLowerCase())) headers[name] = value;
+  };
+  put("openai-beta", transportConstants["openai-beta"]);
+  put("originator", transportConstants.originator);
+  put("session_id", sessionId);
+  put("accept", transportConstants.accept);
+  put("content-type", transportConstants["content-type"]);
+  put("user-agent", transportConstants["user-agent"]);
+  return headers;
+};
+
+export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<P>): ProviderHandler => {
   const { providerId, provider, logger, auth, cache, pingIntervalMs, loginCommand } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const newSessionId = deps.newSessionId ?? randomUUID;
@@ -97,45 +158,14 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
   // and there is exactly one place to audit that every name comes from `providerId`.
   const events = providerEvents(providerId);
   const responsesUrl = `${provider.baseUrl.replace(/\/$/, "")}/responses`;
-
-  const buildHeaders = (credential: ProviderCredential<P>, sessionId: string): Record<string, string> => {
-    // Seed from the credential so its headers (authorization, chatgpt-account-id) land
-    // first. Transport constants follow via put(), which refuses any name the credential
-    // already owns — comparison is lowercased so a credential returning "User-Agent" and
-    // our put("user-agent", …) collide: the credential wins and exactly one key is
-    // emitted, never a comma-joined pair that the server would reject.
-    //
-    // This is regression avoidance, not fingerprint parity. Parity is unreachable:
-    // undici injects accept-language and sec-fetch-mode that a Rust reqwest client never
-    // sends; no application-layer reordering closes that gap.
-    //
-    // PF-005 scope: PF-005 forbids using the e2e/README.md wrong-transport capture table
-    // to change header NAMES or VALUES. It does NOT govern ORDER. Restoring a
-    // previously-live-verified order is not a PF-005 violation.
-    //
-    // Both orders have been observed working against the live backend: the pre-fix build
-    // (auth headers at tail) returned HTTP 200 with a well-formed SSE stream and a usage
-    // object on 2026-08-07. Restoring auth-first is precautionary — it returns this leg to
-    // the configuration live-verified in the b337a75 era and hedges against upstream
-    // fingerprinting changes. It is not fixing an observed failure. The substantive
-    // correctness fix in this block is the owned shadowing guard, not the ordering. (avoids PF-005)
-    const headers: Record<string, string> = { ...credential.authHeaders };
-    const owned = new Set(Object.keys(credential.authHeaders).map((k) => k.toLowerCase()));
-    // Both sides of the comparison are lowercased so the guard holds for any caller, not
-    // only for callers that remembered the convention. All six call sites below already
-    // pass lowercase literals, so `name.toLowerCase()` is a no-op today and no test
-    // exercises a mixed-case name — it is here so that a future `put("Content-Type", …)`
-    // cannot silently reopen the duplicate-header hole that U1.3 pins.
-    const put = (name: string, value: string): void => {
-      if (!owned.has(name.toLowerCase())) headers[name] = value;
-    };
-    put("openai-beta", "responses=experimental");
-    put("originator", "codex_cli_rs");
-    put("session_id", sessionId);
-    put("accept", "text/event-stream");
-    put("content-type", "application/json");
-    put("user-agent", provider.userAgent);
-    return headers;
+  // Built once per handler instance — values are fixed for the lifetime of this provider
+  // slice, so there is no reason to rebuild on every request. (avoids PF-005)
+  const transportConstants: CodexTransportConstants = {
+    "openai-beta": "responses=experimental",
+    originator: "codex_cli_rs",
+    accept: "text/event-stream",
+    "content-type": "application/json",
+    "user-agent": provider.userAgent,
   };
 
   const handleMessages = async (_req: IncomingMessage, res: ServerResponse, _rawBody: Buffer, parsedBody: unknown, canonicalModel: string): Promise<void> => {
@@ -227,7 +257,7 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
         try {
           response = await fetchImpl(responsesUrl, {
             method: "POST",
-            headers: buildHeaders(credential, sessionId),
+            headers: buildHeaders(credential, sessionId, transportConstants),
             body: JSON.stringify(translated.value.body),
             signal: controller.signal,
           });
@@ -284,8 +314,9 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
         logger.log("warn", events.upstreamError, { model, status: upstream.status });
         const retryAfter = upstream.headers.get("retry-after");
         // Only 401s get a remediation hint — no other status code changes behaviour.
-        // The existing message remains a strict prefix of the new one so existing
-        // pattern matches (/codex upstream error/) continue to work unchanged.
+        // The error-type prefix ("${providerId} upstream error") is preserved so the
+        // pattern /codex upstream error/ continues to match. The full string is not a
+        // strict prefix because redactCredentials may rewrite the interior. (applies ADR-008)
         const remediation = upstream.status === 401 ? ` — run \`${loginCommand}\`` : "";
         respondJson(
           res,
