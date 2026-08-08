@@ -3,6 +3,7 @@ import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { Logger } from "./logger.js";
 import type { ProviderAuth, ProviderCredential } from "./provider-auth.js";
+import type { ProviderEvents } from "./provider-events.js";
 import { AuthFileSchema, TokenResponseSchema, type AuthFile, type TokenResponse } from "./wire-types.js";
 
 export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -165,6 +166,13 @@ export interface CodexAuthOptions {
   readonly store: AuthFileStore;
   readonly oauthTokenUrl: string;
   readonly logger: Logger;
+  /**
+   * Provider event names resolved at construction time from the closed `ProviderId`
+   * union.  Threading these through options rather than hardcoding `"codex_*"` literals
+   * ensures every auth event is table-derived — the same compile-time guarantee that
+   * `codex-handler.ts` and `codex-response.ts` enjoy via `providerEvents("codex")`.
+   */
+  readonly events: ProviderEvents<"codex">;
   readonly fetchImpl?: typeof fetch;
   readonly now?: () => number;
 }
@@ -186,6 +194,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
   private readonly store: AuthFileStore;
   private readonly oauthTokenUrl: string;
   private readonly logger: Logger;
+  private readonly events: ProviderEvents<"codex">;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private cached: CachedTokenMaterial | undefined;
@@ -197,6 +206,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
     this.store = options.store;
     this.oauthTokenUrl = options.oauthTokenUrl;
     this.logger = options.logger;
+    this.events = options.events;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? Date.now;
   }
@@ -271,7 +281,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const tokenResult = await this.callTokenEndpoint(refreshToken);
       if (tokenResult.ok) {
-        this.logger.log("info", "codex_token_refreshed");
+        this.logger.log("info", this.events.tokenRefreshed);
         return this.persistTokens(tokenResult.value, baselineLastRefresh);
       }
       if (tokenResult.error.invalidGrant && attempt === 0) {
@@ -279,14 +289,14 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
         if (reread.ok) {
           const rereadFile = parseAuthFile(reread.value);
           if (rereadFile.ok && rereadFile.value.tokens.refresh_token !== refreshToken) {
-            this.logger.log("warn", "codex_refresh_token_rotated_externally");
+            this.logger.log("warn", this.events.refreshTokenRotatedExternally);
             refreshToken = rereadFile.value.tokens.refresh_token;
             baselineLastRefresh = rereadFile.value.last_refresh;
             continue;
           }
         }
       }
-      this.logger.log("error", "codex_token_refresh_failed", { errorCode: tokenResult.error.invalidGrant ? "invalid_grant" : "token_endpoint_error" });
+      this.logger.log("error", this.events.tokenRefreshFailed, { errorCode: tokenResult.error.invalidGrant ? "invalid_grant" : "token_endpoint_error" });
       return err({ kind: "auth", message: `codex token refresh failed (${tokenResult.error.message}) — run \`codex login\`` });
     }
     // INVARIANT VIOLATION — this line is unreachable when the loop bound (attempt < 2) and
@@ -297,7 +307,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
     // Reaching here means these two have drifted apart in a later edit. This is a
     // programming error, not a credential condition — do not report it as one.
     // Match the idiom in codex-handler.ts lines 264-267 (events.retryBoundViolated).
-    this.logger.log("error", "codex_refresh_retry_bound_violated");
+    this.logger.log("error", this.events.refreshRetryBoundViolated);
     return err({ kind: "upstream", message: "codex internal error: refresh retry bound violated", status: 500 });
   }
 
@@ -361,7 +371,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
       if (fileIsNewer) {
         // Another process refreshed while we were refreshing; its rotated
         // refresh token must not be clobbered. Newer file wins.
-        this.logger.log("warn", "codex_auth_file_newer_than_refresh");
+        this.logger.log("warn", this.events.authFileNewerThanRefresh);
         const fromFile = materialFrom(fileNow);
         if (fromFile.ok) {
           this.cached = fromFile.value;
@@ -384,7 +394,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
         // in that case the token endpoint rotated the token and the on-disk copy is now stale.
         // The next OAuth call will use the dead on-disk token (invalid_grant) rather than the
         // live in-memory one. A warn-level log here would make this silent in most dashboards.
-        this.logger.log(tokens.refresh_token !== undefined ? "error" : "warn", "codex_auth_file_write_failed");
+        this.logger.log(tokens.refresh_token !== undefined ? "error" : "warn", this.events.authFileWriteFailed);
       }
       const fromMerged = materialFrom(merged);
       if (!fromMerged.ok) return fromMerged;
@@ -394,7 +404,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
 
     // File vanished or corrupted mid-refresh: serve the fresh token from memory
     // so this request still succeeds; the next cycle re-reads from disk.
-    this.logger.log("warn", "codex_auth_file_unreadable_after_refresh");
+    this.logger.log("warn", this.events.authFileUnreadableAfterRefresh);
     const accountId = jwtAccountId(tokens.access_token);
     if (accountId === undefined) {
       return err({ kind: "auth", message: "refreshed codex token has no account id — run `codex login`" });

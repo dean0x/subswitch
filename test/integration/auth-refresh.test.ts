@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAuthManager, createFsAuthFileStore } from "../../src/codex-auth.js";
 import { noopLogger } from "../../src/logger.js";
+import { providerEvents } from "../../src/provider-events.js";
 import { makeAccessToken, makeAuthFileContent, startFakeUpstream, type FakeUpstream } from "./fake-upstreams.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -33,6 +34,7 @@ describe("codex auth refresh against the real filesystem", () => {
       store: createFsAuthFileStore(authFilePath),
       oauthTokenUrl: `${oauth.url}/token`,
       logger: noopLogger,
+      events: providerEvents("codex"),
     });
 
     const result = await auth.getCredentials();
@@ -71,6 +73,7 @@ describe("codex auth refresh against the real filesystem", () => {
       store: createFsAuthFileStore(authFilePath),
       oauthTokenUrl: `${oauth.url}/token`,
       logger: noopLogger,
+      events: providerEvents("codex"),
     });
 
     assert.ok((await auth.getCredentials()).ok);

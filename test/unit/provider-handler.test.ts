@@ -7,6 +7,7 @@ import { noopLogger } from "../../src/logger.js";
 import { ReasoningCache } from "../../src/reasoning-cache.js";
 import { CodexAuthManager, type AuthFileStore } from "../../src/codex-auth.js";
 import type { ProviderAuth, ProviderCredential } from "../../src/provider-auth.js";
+import { providerEvents } from "../../src/provider-events.js";
 import { ok } from "../../src/result.js";
 import { loadConfig, providerConfigFor, type Config, type CodexProviderConfig } from "../../src/config.js";
 import type { ProviderId } from "../../src/models.js";
@@ -111,6 +112,7 @@ describe("P4 — ProviderHandler.handleMessages uses pre-parsed body, not rawBod
       store: stubStore,
       oauthTokenUrl: "http://localhost/fake-oauth",
       logger: noopLogger,
+      events: providerEvents("codex"),
     });
     const handler = createCodexHandler({
       ...codexDepsFrom(configResult.value.config),
@@ -185,6 +187,7 @@ describe("providerId is threaded into aggregateFrames at the handler call site",
       store: workingStore,
       oauthTokenUrl: "http://localhost/fake-oauth",
       logger: noopLogger,
+      events: providerEvents("codex"),
     });
 
     // A stream of only unknown events: the translator emits no frames at all, so
@@ -432,6 +435,7 @@ describe("handler reads its own provider config slice", () => {
         store: workingStore,
         oauthTokenUrl: "http://localhost/fake-oauth",
         logger: noopLogger,
+        events: providerEvents("codex"),
       }),
       cache: new ReasoningCache(4, 1024),
       fetchImpl,
@@ -499,6 +503,7 @@ describe("log event names derive from the handler's providerId", () => {
         store: workingStore,
         oauthTokenUrl: "http://localhost/fake-oauth",
         logger: noopLogger,
+        events: providerEvents("codex"),
       }),
       cache: new ReasoningCache(4, 1024),
       fetchImpl: upstream502,

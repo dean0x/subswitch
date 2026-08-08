@@ -62,6 +62,7 @@ const createCodexProvider = (config: Config, logger: Logger): ProviderHandler =>
     store: createFsAuthFileStore(provider.authFile),
     oauthTokenUrl: provider.oauthTokenUrl,
     logger,
+    events: providerEvents("codex"),
   });
   return createCodexHandler({
     providerId: "codex",

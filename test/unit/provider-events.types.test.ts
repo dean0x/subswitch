@@ -65,5 +65,27 @@ const eventNamesAreTiedToTheProviderTheyName = <P extends ProviderId>(providerId
   // insecureBaseUrlScheme is a template literal over P — same guarantee as every other event.
   const insecureScheme: `${P}_insecure_base_url_scheme` = events.insecureBaseUrlScheme;
   void insecureScheme;
+
+  // Auth manager events are template literals over P — same guarantee as handler events.
+  const tokenRefreshed: `${P}_token_refreshed` = events.tokenRefreshed;
+  void tokenRefreshed;
+
+  const refreshTokenRotatedExternally: `${P}_refresh_token_rotated_externally` = events.refreshTokenRotatedExternally;
+  void refreshTokenRotatedExternally;
+
+  const tokenRefreshFailed: `${P}_token_refresh_failed` = events.tokenRefreshFailed;
+  void tokenRefreshFailed;
+
+  const refreshRetryBoundViolated: `${P}_refresh_retry_bound_violated` = events.refreshRetryBoundViolated;
+  void refreshRetryBoundViolated;
+
+  const authFileNewerThanRefresh: `${P}_auth_file_newer_than_refresh` = events.authFileNewerThanRefresh;
+  void authFileNewerThanRefresh;
+
+  const authFileWriteFailed: `${P}_auth_file_write_failed` = events.authFileWriteFailed;
+  void authFileWriteFailed;
+
+  const authFileUnreadableAfterRefresh: `${P}_auth_file_unreadable_after_refresh` = events.authFileUnreadableAfterRefresh;
+  void authFileUnreadableAfterRefresh;
 };
 void eventNamesAreTiedToTheProviderTheyName;

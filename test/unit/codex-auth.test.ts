@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CodexAuthManager, createFsAuthFileStore, inspectAuthFile, type AuthFileStore } from "../../src/codex-auth.js";
 import { noopLogger } from "../../src/logger.js";
+import { providerEvents } from "../../src/provider-events.js";
 import { ok, err } from "../../src/result.js";
 
 const NOW_MS = 1_800_000_000_000;
@@ -78,6 +79,7 @@ const manager = (store: AuthFileStore, endpoint: FakeTokenEndpoint): CodexAuthMa
     store,
     oauthTokenUrl: "http://oauth.test/token",
     logger: noopLogger,
+    events: providerEvents("codex"),
     fetchImpl: endpoint.fetchImpl,
     now: () => NOW_MS,
   });
@@ -194,6 +196,7 @@ describe("CodexAuthManager", () => {
       store,
       oauthTokenUrl: "http://oauth.test/token",
       logger: noopLogger,
+      events: providerEvents("codex"),
       fetchImpl: endpoint.fetchImpl,
       now: () => NOW_MS,
     }).getCredentials();
@@ -223,6 +226,7 @@ describe("CodexAuthManager", () => {
       store,
       oauthTokenUrl: "http://oauth.test/token",
       logger: noopLogger,
+      events: providerEvents("codex"),
       fetchImpl: async (_url, init) => {
         capturedSignal = (init?.signal ?? undefined) as AbortSignal | undefined;
         // Return a valid token response so the refresh completes.
@@ -263,6 +267,7 @@ describe("CodexAuthManager", () => {
       store,
       oauthTokenUrl: "http://oauth.test/token",
       logger: noopLogger,
+      events: providerEvents("codex"),
       fetchImpl: endpoint.fetchImpl,
       now: () => nowMs,
     });
@@ -290,6 +295,159 @@ describe("CodexAuthManager", () => {
     assert.ok(
       endpoint.calls.length > callsAfterFirst,
       "forceRefresh after the cooldown window must call the token endpoint",
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Auth event names are table-derived (avoids ARCH-05 / CONS-01).
+  //
+  // These tests use a recording logger and assert the logged event name equals
+  // the events record's field value.  Because the events record is built from
+  // the closed ProviderId union via providerEvents(), a hardcoded string literal
+  // that happened to match today would become a tsc error the moment it was
+  // written inside a generic function — the type-level gate is the primary
+  // control.  The tests here are the runtime half: they confirm the manager
+  // actually READS from the events record it was handed, not from an internal
+  // constant, so a future addition of a second provider id cannot silently emit
+  // a misnamed event.
+  //
+  // PF-011 / PF-012: each control below has a named falsifier.
+  // -------------------------------------------------------------------------
+
+  /**
+   * tokenRefreshed is emitted on a successful refresh cycle.
+   *
+   * Falsifier: replace `this.events.tokenRefreshed` in doRefresh() with a
+   * hardcoded string that does not match the events record's value → the
+   * `events.includes(events.tokenRefreshed)` assertion fails.
+   */
+  it("emits events.tokenRefreshed after a successful token-endpoint call", async () => {
+    const loggedEvents: string[] = [];
+    const recordingLogger = { log: (_level: string, event: string) => { loggedEvents.push(event); } };
+    const events = providerEvents("codex");
+    const store = memoryStore(authFile(accessToken(60_000))); // near-expiry → triggers refresh
+    const endpoint = fakeTokenEndpoint(() => tokenResponse(accessToken(3_600_000)));
+
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: recordingLogger,
+      events,
+      fetchImpl: endpoint.fetchImpl,
+      now: () => NOW_MS,
+    });
+
+    const result = await auth.getCredentials();
+    assert.ok(result.ok, "refresh must succeed");
+    assert.ok(
+      loggedEvents.includes(events.tokenRefreshed),
+      `tokenRefreshed event must be logged via the events record; logged: ${loggedEvents.join(", ")}`,
+    );
+  });
+
+  /**
+   * tokenRefreshFailed is emitted when the token endpoint returns invalid_grant
+   * with no external rotation available (single attempt, no continue).
+   *
+   * Falsifier: replace `this.events.tokenRefreshFailed` with a hardcoded string
+   * → the includes() assertion fails.
+   */
+  it("emits events.tokenRefreshFailed when the token endpoint rejects the refresh", async () => {
+    const loggedEvents: string[] = [];
+    const recordingLogger = { log: (_level: string, event: string) => { loggedEvents.push(event); } };
+    const events = providerEvents("codex");
+    const store = memoryStore(authFile(accessToken(60_000)));
+    const endpoint = fakeTokenEndpoint(() => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 }));
+
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: recordingLogger,
+      events,
+      fetchImpl: endpoint.fetchImpl,
+      now: () => NOW_MS,
+    });
+
+    const result = await auth.getCredentials();
+    assert.ok(!result.ok, "refresh must fail");
+    assert.ok(
+      loggedEvents.includes(events.tokenRefreshFailed),
+      `tokenRefreshFailed event must be logged via the events record; logged: ${loggedEvents.join(", ")}`,
+    );
+  });
+
+  /**
+   * refreshTokenRotatedExternally is emitted when a concurrent process rotated
+   * the refresh token between our read and our call, and we re-read and retry.
+   *
+   * Falsifier: replace `this.events.refreshTokenRotatedExternally` with a
+   * hardcoded string → the includes() assertion fails.
+   */
+  it("emits events.refreshTokenRotatedExternally when a concurrent process rotated the token", async () => {
+    const loggedEvents: string[] = [];
+    const recordingLogger = { log: (_level: string, event: string) => { loggedEvents.push(event); } };
+    const events = providerEvents("codex");
+    const store = memoryStore(authFile(accessToken(60_000)));
+    const newToken = accessToken(3_600_000);
+    const endpoint = fakeTokenEndpoint((call) => {
+      if (call.refresh_token === "refresh-1") {
+        // Simulate external rotation — update store with a different refresh token.
+        const updated = JSON.parse(store.content) as { tokens: Record<string, unknown> };
+        updated.tokens["refresh_token"] = "refresh-rotated";
+        store.content = JSON.stringify(updated);
+        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      }
+      return tokenResponse(newToken);
+    });
+
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: recordingLogger,
+      events,
+      fetchImpl: endpoint.fetchImpl,
+      now: () => NOW_MS,
+    });
+
+    const result = await auth.getCredentials();
+    assert.ok(result.ok, "refresh must succeed after using the rotated token");
+    assert.ok(
+      loggedEvents.includes(events.refreshTokenRotatedExternally),
+      `refreshTokenRotatedExternally must be logged via the events record; logged: ${loggedEvents.join(", ")}`,
+    );
+  });
+
+  /**
+   * authFileWriteFailed is emitted when writeAtomic fails.
+   *
+   * Falsifier: replace `this.events.authFileWriteFailed` with a hardcoded string
+   * → the includes() assertion fails.
+   */
+  it("emits events.authFileWriteFailed when writeAtomic fails during token persistence", async () => {
+    const loggedEvents: string[] = [];
+    const recordingLogger = { log: (_level: string, event: string) => { loggedEvents.push(event); } };
+    const events = providerEvents("codex");
+    // A store whose read succeeds but write always fails.
+    const failingWriteStore: AuthFileStore = {
+      async read() { return ok(JSON.stringify(authFile(accessToken(60_000)))); },
+      async writeAtomic() { return err({ kind: "auth", message: "disk full" }); },
+    };
+    const endpoint = fakeTokenEndpoint(() => tokenResponse(accessToken(3_600_000)));
+
+    const auth = new CodexAuthManager({
+      store: failingWriteStore,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: recordingLogger,
+      events,
+      fetchImpl: endpoint.fetchImpl,
+      now: () => NOW_MS,
+    });
+
+    // The refresh itself still serves the fresh token even though persistence failed.
+    await auth.getCredentials();
+    assert.ok(
+      loggedEvents.includes(events.authFileWriteFailed),
+      `authFileWriteFailed must be logged via the events record; logged: ${loggedEvents.join(", ")}`,
     );
   });
 });

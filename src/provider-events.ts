@@ -59,6 +59,50 @@ export interface ProviderEvents<P extends ProviderId> {
    * reach the derivation, so it cannot inject a newline or `=` into the log line.
    */
   readonly insecureBaseUrlScheme: `${P}_insecure_base_url_scheme`;
+
+  // -------------------------------------------------------------------------
+  // Auth manager events (formerly hardcoded in codex-auth.ts).
+  //
+  // Moving them into this table gives a second provider's auth manager the same
+  // table-derived naming guarantee and removes the one place where a hardcoded
+  // `codex_*` literal lived outside the derivation.  The compile-time guarantee
+  // is identical to the fields above: every name is a template literal over
+  // `P extends ProviderId`, so a config-supplied string cannot reach it.
+  // -------------------------------------------------------------------------
+
+  /** OAuth access token was successfully refreshed via the token endpoint. */
+  readonly tokenRefreshed: `${P}_token_refreshed`;
+  /**
+   * A concurrent process (e.g. the Codex CLI) rotated the refresh token under
+   * us while our invalid_grant was in flight; we re-read the file and retry.
+   */
+  readonly refreshTokenRotatedExternally: `${P}_refresh_token_rotated_externally`;
+  /** Token refresh failed at the token endpoint (invalid_grant or network error). */
+  readonly tokenRefreshFailed: `${P}_token_refresh_failed`;
+  /**
+   * The auth refresh retry bound was violated — the loop exited without a return,
+   * meaning the loop bound and the continue guard have drifted apart.  This is a
+   * programming error, never a credential or upstream condition.
+   */
+  readonly refreshRetryBoundViolated: `${P}_refresh_retry_bound_violated`;
+  /**
+   * The on-disk auth file was written more recently than our own refresh result,
+   * meaning a concurrent process (e.g. the Codex CLI) won the race; the newer
+   * file's token is used instead of persisting ours.
+   */
+  readonly authFileNewerThanRefresh: `${P}_auth_file_newer_than_refresh`;
+  /**
+   * Writing the refreshed auth file failed.  Emitted at warn unless the response
+   * carried a new refresh_token (in which case the on-disk copy is now stale and
+   * the next OAuth call will fail with invalid_grant — emitted at error).
+   */
+  readonly authFileWriteFailed: `${P}_auth_file_write_failed`;
+  /**
+   * The auth file could not be read immediately after a successful token refresh
+   * (vanished or corrupted mid-refresh).  The fresh in-memory token is served
+   * for this request; the next cycle re-reads from disk.
+   */
+  readonly authFileUnreadableAfterRefresh: `${P}_auth_file_unreadable_after_refresh`;
 }
 
 /**
@@ -80,4 +124,11 @@ export const providerEvents = <P extends ProviderId>(providerId: P): ProviderEve
   sessionKey: `${providerId}_session_key`,
   baseUrlOverrideDetected: `${providerId}_base_url_override_detected`,
   insecureBaseUrlScheme: `${providerId}_insecure_base_url_scheme`,
+  tokenRefreshed: `${providerId}_token_refreshed`,
+  refreshTokenRotatedExternally: `${providerId}_refresh_token_rotated_externally`,
+  tokenRefreshFailed: `${providerId}_token_refresh_failed`,
+  refreshRetryBoundViolated: `${providerId}_refresh_retry_bound_violated`,
+  authFileNewerThanRefresh: `${providerId}_auth_file_newer_than_refresh`,
+  authFileWriteFailed: `${providerId}_auth_file_write_failed`,
+  authFileUnreadableAfterRefresh: `${providerId}_auth_file_unreadable_after_refresh`,
 });
