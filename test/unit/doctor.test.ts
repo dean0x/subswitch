@@ -8,6 +8,7 @@ import {
   probeTlsReachable,
   runDoctor,
   makeLiveListAgentFiles,
+  PROVIDER_AUTH_INSPECTORS,
   type HttpGetResult,
   type TlsStatus,
   type DoctorIO,
@@ -443,6 +444,51 @@ describe("runDoctor — agent model scan", () => {
     // codex is unconfigured → gpt-5.6-sol gets provider_unconfigured (info).
     // No other failures from enoentAuthIO + allPass TLS/subswitch.
     assert.equal(exitCode, 0, "provider_unconfigured finding must not cause failure");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PROVIDER_AUTH_INSPECTORS — totality anchor (ARCH-01)
+// ---------------------------------------------------------------------------
+// Mutation-proof control: removing a key from PROVIDER_AUTH_INSPECTORS is a
+// compile error (Record<ProviderId, …> requires all keys). This runtime test
+// additionally proves the harness can reach each entry — i.e. that the record
+// is not a Partial accidentally cast to Readonly<Record<…>>. (avoids PF-011)
+//
+describe("PROVIDER_AUTH_INSPECTORS", () => {
+  it("has an inspector function for every ProviderId", () => {
+    for (const id of PROVIDER_IDS) {
+      assert.equal(
+        typeof PROVIDER_AUTH_INSPECTORS[id],
+        "function",
+        `PROVIDER_AUTH_INSPECTORS must have an inspector function for provider "${id}"`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// credentialUsable → providersWithCredentials (CPLX-03 regression)
+// ---------------------------------------------------------------------------
+// Mutation-proof control: if credentialUsable is stuck at false, every resolved
+// codex model would produce a provider_unconfigured finding. (avoids PF-011)
+//
+describe("runDoctor — credentialUsable drives providersWithCredentials", () => {
+  it("a provider with a valid auth file is in providersWithCredentials — its agent models are not flagged as provider_unconfigured", async () => {
+    const lines: string[] = [];
+    // allPassIO returns a valid auth file → credentialUsable=true → codex in providersWithCredentials.
+    // gpt-5.6-sol resolves to codex; with codex in the set there must be no provider_unconfigured row.
+    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      listAgentFiles: async () => ["/project/.claude/agents/worker.md"],
+      readTextFile: async () => "---\nmodel: gpt-5.6-sol\n---\n",
+    });
+    assert.equal(exitCode, 0, "a provider with valid credentials must not trigger provider_unconfigured");
+    const output = lines.join("\n");
+    assert.ok(
+      !output.includes("not configured"),
+      "a provider whose auth file is valid must not produce a 'not configured' finding",
+    );
   });
 });
 

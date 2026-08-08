@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import { DEFAULT_PORT, DEFAULT_CODEX_AUTH_FILE, expandHome, detectLegacyConfigKeys } from "./config.js";
+import { isPlainObject } from "./plain-object.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,13 +30,6 @@ export type InitError =
 export const PortSchema = z.coerce.number().int().min(1).max(65535, { message: "port must be between 1 and 65535" });
 
 export const SettingsTargetSchema = z.enum(["local", "shared"]);
-
-// ---------------------------------------------------------------------------
-// Plain-object guard (used in all JSON object checks)
-// ---------------------------------------------------------------------------
-
-export const isPlainObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null && !Array.isArray(v);
 
 // ---------------------------------------------------------------------------
 // Init dispatch decision (pure — injectable for tests)

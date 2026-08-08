@@ -4,9 +4,26 @@ import { homedir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
 import { aliasesByProvider, providerConfigFor, type Config } from "./config.js";
-import { isPlainObject } from "./init.js";
+import { inspectAuthFile } from "./codex-auth.js";
+import { isPlainObject } from "./plain-object.js";
 import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
 import { checkAgentModels } from "./agent-scan.js";
+
+// ---------------------------------------------------------------------------
+// Per-provider auth inspector registry (totality anchor)
+//
+// Every ProviderId must have a corresponding inspector. Adding a ProviderId
+// without an entry here is a tsc error — the Record<ProviderId, …> annotation
+// requires all keys. Use the record in checkOneProvider instead of calling
+// inspectAuthFile directly so the same completeness check guards every future
+// provider.
+// ---------------------------------------------------------------------------
+
+type AuthInspector = typeof inspectAuthFile;
+
+export const PROVIDER_AUTH_INSPECTORS: Readonly<Record<ProviderId, AuthInspector>> = {
+  codex: inspectAuthFile,
+} as const;
 
 // ---------------------------------------------------------------------------
 // Discriminated-union result types
@@ -264,7 +281,7 @@ export const runDoctor = async (
   interface ProviderCheck {
     readonly lines: readonly string[];
     readonly failed: boolean;
-    readonly configured: boolean;
+    readonly credentialUsable: boolean;
   }
 
   const checkOneProvider = async (id: ProviderId): Promise<ProviderCheck> => {
@@ -274,21 +291,19 @@ export const runDoctor = async (
 
     try {
       const raw = await io.readAuthFile(authFile);
-      // Lazy import to avoid circular deps — inspectAuthFile lives in codex-auth.ts
-      const { inspectAuthFile } = await import("./codex-auth.js");
-      const inspection = inspectAuthFile(raw);
+      const inspection = PROVIDER_AUTH_INSPECTORS[id](raw);
       if (!inspection.ok) {
         // A credential file that exists but does not parse is broken regardless of
         // whether the provider block is in the config — the user clearly has one.
         lines.push(row(`${id} auth:`, failStr(`INVALID (${inspection.error.message})`)));
-        return { lines, failed: true, configured: false };
+        return { lines, failed: true, credentialUsable: false };
       }
       const info = inspection.value;
       lines.push(row(`${id} auth mode:`, passStr(info.authMode)));
       lines.push(row(`${id} account:`, info.accountIdSuffix));
       lines.push(row("token expires:", info.accessTokenExpiresAt ?? "(no exp claim)"));
       lines.push(row("last refresh:", info.lastRefresh ?? "(unknown)"));
-      return { lines, failed: false, configured: true };
+      return { lines, failed: false, credentialUsable: true };
     } catch (e) {
       const isEnoent =
         (e instanceof Error && (e as NodeJS.ErrnoException).code === "ENOENT") ||
@@ -299,14 +314,14 @@ export const runDoctor = async (
         lines.push(
           row(`${id} auth:`, pc.dim("unconfigured") + ` (run \`${loginCommand}\` to enable ${id} routing)`),
         );
-        return { lines, failed: false, configured: false };
+        return { lines, failed: false, credentialUsable: false };
       }
 
       // Explicitly configured but the credential is unusable — a real failure.
       const detail = isEnoent ? "no auth file" : "cannot read auth file";
       lines.push(row(`${id} auth:`, failStr("UNAVAILABLE") + ` (${detail} — run \`${loginCommand}\`)`));
       lines.push(`  note: the Anthropic leg works without ${id} auth; only ${id} models are affected`);
-      return { lines, failed: true, configured: false };
+      return { lines, failed: true, credentialUsable: false };
     }
   };
 
@@ -339,13 +354,13 @@ export const runDoctor = async (
   ]);
 
   // Fold provider auth results in PROVIDER_IDS order (deterministic).
-  const configuredProviders = new Set<string>();
+  const providersWithCredentials = new Set<string>();
   for (const [i, id] of PROVIDER_IDS.entries()) {
     const result = providerResults[i];
     if (result === undefined) continue;
     for (const line of result.lines) io.write(line);
     if (result.failed) failures++;
-    if (result.configured) configuredProviders.add(id);
+    if (result.credentialUsable) providersWithCredentials.add(id);
   }
 
   // Write subswitch probe result
@@ -408,7 +423,7 @@ export const runDoctor = async (
     }),
   );
 
-  const agentFindings = checkAgentModels(fileTexts, table, configuredProviders);
+  const agentFindings = checkAgentModels(fileTexts, table, providersWithCredentials);
 
   // Label the first finding row; blank-label subsequent rows to avoid N identical "agent model:"
   // labels in the columnar output when multiple agents are misconfigured.
