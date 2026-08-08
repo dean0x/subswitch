@@ -581,6 +581,10 @@ describe("codex leg", () => {
     const message = (await response.json()) as Record<string, unknown>;
     const content = message["content"] as unknown[];
     assert.deepEqual(content, [{ type: "text", text: "Partial text" }]);
+    // RELI-01: flush() must emit message_delta with stop_reason so aggregateFrames does not
+    // return stop_reason:null — a truncated turn must look like a max_tokens truncation,
+    // not a turn that simply never produced a stop reason.
+    assert.equal(message["stop_reason"], "max_tokens", "path b truncation must yield stop_reason max_tokens");
   });
 
   it("path c: returns 502 when a block has unmatched deltas (content unrecoverable)", async () => {

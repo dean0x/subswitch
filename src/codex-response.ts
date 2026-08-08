@@ -58,13 +58,13 @@ const CARRY_CHARS = 3;
  * — linear. A fixed-count trigger ("compact every N segments") would not be; it would
  * reintroduce O(len^2 / N) and must be rejected.
  *
- * What this does NOT do is give the segment count a tight bound, and the comment should not
- * pretend otherwise. Peak segments still scale with `pendingLen` (compaction roughly halves
- * the peak, it does not change the order) — and it cannot be otherwise, because compacting
- * often enough to hold segments under a constant is exactly the quadratic trigger above.
- * The explicit bound on the array is instead structural: empty segments are never pushed,
- * so every slot carries at least one char, so `pending.length <= pendingLen <=
- * maxEventBytes + one chunk`. Compaction's job here is the copy budget, not the slot count.
+ * What this does NOT do is tighten the copy budget — measured benchmarks show compaction
+ * adds copying relative to running without it (+50 % / +20 % / +23 % at 2 / 4 / 8 MiB),
+ * because the segment form is already linear. Compaction's actual payoff is bounding
+ * segment-array overhead in the small-chunk case: a 1 MiB event arriving in 1-byte chunks
+ * would build 1,048,583 segments without it; with it the peak is 524,288. Empty segments
+ * are never pushed, so `pending.length <= pendingLen <= maxEventBytes + one chunk` holds
+ * regardless — the copy overhead is the accepted cost of halving that peak.
  */
 const MIN_COMPACT_CHARS = 64 * 1024;
 
@@ -97,8 +97,11 @@ const MIN_COMPACT_CHARS = 64 * 1024;
  * `maxEventBytes` is measured in UTF-16 code units despite the name — that is what the
  * naive form's `buffer.length` measured, and it is preserved exactly. Changing it to byte
  * length would move the trip point for multi-byte payloads and is a separate decision. The
- * check runs per chunk against the undelivered residual, so it bounds live memory rather
- * than reporting on an overflow already buffered.
+ * check runs per chunk against the undelivered residual, so it bounds accumulated text
+ * length; segment-array object and header overhead is not counted — at the 4 MiB default
+ * with 1-byte chunks that is roughly 96 MiB of uncounted overhead before the guard trips.
+ * (The claim was exact for the naive single-string parser this replaced, where
+ * `buffer.length` genuinely was the live allocation.)
  */
 export const createSseParser = (maxEventBytes: number): Transform => {
   const decoder = new StringDecoder("utf8");
@@ -191,6 +194,19 @@ export const createSseParser = (maxEventBytes: number): Transform => {
 // ---------------------------------------------------------------------------
 // 2) Streaming state machine: Responses events in, Anthropic SSE frames out.
 // ---------------------------------------------------------------------------
+
+/**
+ * Maximum number of content blocks (text or tool_use) accepted per response.
+ *
+ * `blockIndexByKey` is intentionally NOT pruned on `content_block_stop` — a late delta
+ * for a closed block would otherwise become `sawUnmatchedDelta`, risking a spurious 502
+ * from `reconcileOpenBlocks` (see the `sawUnmatchedDelta && blocksWithContent.size === 0`
+ * guard). The map is bounded by capping the number of blocks we will ever register instead.
+ *
+ * 1024 is generous for any realistic response (typical: single digits) but bounded against
+ * an upstream-controlled loop.
+ */
+const MAX_CONTENT_BLOCKS = 1024;
 
 const frame = (event: string, data: unknown): string => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
@@ -360,6 +376,12 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
             // Skip a duplicate announcement: upstream sometimes re-sends the same
             // item id; creating a second block would orphan the first one.
             if (item.id !== undefined && blockIndexByKey.has(`id:${item.id}`)) break;
+            // RELI-03: cap upstream-controlled block count so blockIndexByKey cannot grow
+            // without bound. NOT capped by pruning on content_block_stop — see MAX_CONTENT_BLOCKS.
+            if (nextBlockIndex >= MAX_CONTENT_BLOCKS) {
+              emitError("api_error", `${providerId} stream exceeded maximum content block count (${MAX_CONTENT_BLOCKS})`);
+              break;
+            }
             const index = nextBlockIndex++;
             for (const key of blockKeys(item.id, parsed.data.output_index)) blockIndexByKey.set(key, index);
             this.push(
@@ -373,6 +395,11 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           } else if (item.type === "function_call") {
             // Skip a duplicate announcement (same guard as the message case above).
             if (item.id !== undefined && blockIndexByKey.has(`id:${item.id}`)) break;
+            // RELI-03: same cap as the message branch above.
+            if (nextBlockIndex >= MAX_CONTENT_BLOCKS) {
+              emitError("api_error", `${providerId} stream exceeded maximum content block count (${MAX_CONTENT_BLOCKS})`);
+              break;
+            }
             sawFunctionCall = true;
             const index = nextBlockIndex++;
             for (const key of blockKeys(item.id, parsed.data.output_index)) blockIndexByKey.set(key, index);
@@ -518,8 +545,20 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
       if (!finished) {
         if (blocksWithContent.size > 0) {
           // At least one block received content before truncation — reconcile open
-          // blocks that have content so the accumulated deltas are delivered.
-          reconcileOpenBlocks((frameText) => this.push(frameText));
+          // blocks that have content so the accumulated deltas are delivered, then
+          // emit terminal frames so neither streaming nor non-streaming callers see
+          // a turn with no terminal frame (avoids PF-008).
+          const hadError = reconcileOpenBlocks((frameText) => this.push(frameText));
+          if (!hadError) {
+            this.push(
+              frame("message_delta", {
+                type: "message_delta",
+                delta: { stop_reason: "max_tokens", stop_sequence: null },
+                usage: { input_tokens: inputTokens, output_tokens: 0 },
+              }),
+            );
+            this.push(frame("message_stop", { type: "message_stop" }));
+          }
         } else if (started) {
           // The stream opened (message_start was emitted) but no recoverable content
           // arrived and no terminal lifecycle event was received.  This is a truncated
@@ -537,7 +576,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
     const intervalMs = options.pingIntervalMs;
     lastActivityMs = Date.now();
     pingTimer = setInterval(() => {
-      if (started && !finished && Date.now() - lastActivityMs >= intervalMs) {
+      if (started && !finished && !translator.destroyed && Date.now() - lastActivityMs >= intervalMs) {
         translator.push(PING_FRAME);
       }
     }, intervalMs);

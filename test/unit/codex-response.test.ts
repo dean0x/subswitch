@@ -497,9 +497,12 @@ describe("createAnthropicSseTranslator", () => {
   });
 
   // W2: a block that was opened but never received any delta must not produce a spurious empty entry.
-  // Mutation target: remove the `blocksWithContent.has(index)` guard in reconcileOpenBlocks (emit
+  // Mutation target 1: remove the `blocksWithContent.has(index)` guard in reconcileOpenBlocks (emit
   // content_block_stop for ALL open blocks). The test must FAIL because block 1 now gets a stop,
   // and aggregateFrames appends {type:"text", text:""} to the content.
+  // Mutation target 2 (RELI-01): remove the message_delta/message_stop pushes from flush()'s
+  // reconcile branch. The test must FAIL because message_stop is absent from frames, and
+  // msg["stop_reason"] is null rather than "max_tokens".
   it("W2: no spurious empty block when a second block is opened but never delta'd before EOF", async () => {
     const sse = [
       'event: response.created',
@@ -521,12 +524,56 @@ describe("createAnthropicSseTranslator", () => {
     ].join('\n');
     const { frames } = await translate(sse);
     assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
+    // RELI-01: flush() must emit terminal frames so streaming callers see a complete turn.
+    assert.ok(frameTypes(frames).includes("message_stop"), `flush() truncation path must emit message_stop; got: ${frameTypes(frames).join(",")}`);
     const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
     const msg = result.value.kind === "message" ? result.value.message : {};
     // Exactly one content block with the real text; the zero-delta block must be discarded.
     assert.deepEqual(msg["content"], [{ type: "text", text: "real content" }]);
+    // RELI-01: aggregateFrames must see a message_delta with stop_reason so stop_reason is not null.
+    assert.equal(msg["stop_reason"], "max_tokens", "truncated flush() must produce stop_reason max_tokens");
+  });
+
+  // RELI-03: upstream-controlled content block count must be capped.
+  // Mutation target: remove the `if (nextBlockIndex >= MAX_CONTENT_BLOCKS)` guard in the
+  // response.output_item.added handler. The test must FAIL because: block 0 has content
+  // (blocksWithContent is non-empty), so the no-content error path in flush() does NOT fire.
+  // Without the guard, all 1025 items are accepted, flush() reconciles block 0 and produces
+  // message_delta + message_stop with no error — opposite of what this test asserts.
+  //
+  // The delta on block 0 is load-bearing: without it, blocksWithContent would be empty and
+  // the pre-existing flush() error path would fire anyway (masking the missing guard).
+  it("RELI-03: emits error frame when upstream sends more output items than MAX_CONTENT_BLOCKS (1024)", async () => {
+    const lines: string[] = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_cap","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      // Block 0: receives a delta so blocksWithContent is non-empty, preventing the
+      // started-but-no-content flush() branch from masking the absent cap guard.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg0","role":"assistant"}}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"msg0","output_index":0,"delta":"hi"}',
+      '',
+    ];
+    // Blocks 1..1024: the item at output_index 1024 pushes nextBlockIndex to 1024, which
+    // equals MAX_CONTENT_BLOCKS and fires the guard (error emitted, finished=true).
+    for (let i = 1; i <= 1024; i++) {
+      lines.push(
+        'event: response.output_item.added',
+        `data: {"type":"response.output_item.added","output_index":${i},"item":{"type":"message","id":"msg${i}","role":"assistant"}}`,
+        '',
+      );
+    }
+    lines.push('');
+    const { frames } = await translate(lines.join('\n'));
+    assert.ok(
+      frameTypes(frames).includes("error"),
+      `must produce error frame when content block cap (1024) is exceeded; got: ${frameTypes(frames).join(",")}`,
+    );
   });
 
   // W6: the output_index (oi:) fallback in lookupBlockIndex must be exercised for DELTA lookup.
