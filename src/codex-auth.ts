@@ -11,6 +11,14 @@ export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const REFRESH_MARGIN_MS = 120_000;
 
 /**
+ * Minimum interval between forced refreshes across requests. A persistent upstream
+ * 401 that survives a freshly-minted token must not trigger a full OAuth round-trip
+ * (token-endpoint call + fsync'd credential rewrite) on every subsequent request.
+ * RELI-05: apply this floor in forceRefresh() using the lastForcedRefreshMs field.
+ */
+const FORCE_REFRESH_COOLDOWN_MS = 30_000;
+
+/**
  * What this file parses out of `~/.codex/auth.json` — deliberately NOT exported.
  *
  * These two fields are the ChatGPT OAuth pair, not a shape any other provider owes.
@@ -56,18 +64,29 @@ export const createFsAuthFileStore = (path: string): AuthFileStore => ({
   },
   async writeAtomic(content) {
     const tmpPath = `${path}.subswitch-${process.pid}.tmp`;
+    // Helper: open tmpPath with O_EXCL; on EEXIST (stale temp from a prior crashed run),
+    // unlink the stale file and retry ONCE. If the retry also fails (e.g., because a
+    // concurrent process raced to recreate the path), the error propagates to the outer
+    // catch. This is a bounded, single-retry — not a loop.
+    //
+    // O_EXCL (the "x" in "wx") ensures the open fails if a file already exists at that
+    // path. Without it, an attacker who pre-creates this path keeps their own mode on the
+    // file and receives the token material before the rename places it over auth.json.
+    // 0o600 grants only the process owner read/write access on the freshly-created file.
+    // Cleanup idiom (unlink-in-catch) mirrors src/init.ts:288-295.
+    const openExclusive = async () => {
+      try {
+        return await open(tmpPath, "wx", 0o600);
+      } catch (e: unknown) {
+        if ((e as { code?: string }).code !== "EEXIST") throw e;
+        // Stale temp from a prior crash or another process that did not clean up.
+        // Unlink it (the unlink may silently fail if another process races) then retry.
+        await unlink(tmpPath).catch(() => undefined);
+        return open(tmpPath, "wx", 0o600);
+      }
+    };
     try {
-      // O_EXCL (the "x" in "wx") ensures the open fails if the temp path already exists.
-      // Without it, an attacker who pre-creates this path keeps their own mode on the file
-      // and receives the token material written into it before the rename places it over
-      // auth.json. Without the unlink in the catch block, a failure between open and rename
-      // leaves a complete credential set on disk at a predictable path.
-      // A stale or hostile temp now costs one failed refresh (self-healing on the next
-      // attempt) rather than being silently written through.
-      // Cleanup idiom (unlink-in-catch) mirrors src/init.ts:288-295; the O_EXCL flag and
-      // 0o600 mode are new here — init.ts uses plain fsWriteFile with no exclusive open
-      // and no permission hardening.
-      const handle = await open(tmpPath, "wx", 0o600);
+      const handle = await openExclusive();
       try {
         await handle.writeFile(content, "utf8");
         await handle.sync();
@@ -171,6 +190,8 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
   private readonly now: () => number;
   private cached: CachedTokenMaterial | undefined;
   private refreshInflight: Promise<Result<CodexTokenMaterial, ProxyError>> | undefined;
+  /** Timestamp of the last successful forceRefresh() call, for RELI-05 cooldown. */
+  private lastForcedRefreshMs: number | undefined;
 
   constructor(options: CodexAuthOptions) {
     this.store = options.store;
@@ -185,6 +206,24 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
   }
 
   async forceRefresh(): Promise<Result<ProviderCredential<"codex">, ProxyError>> {
+    const now = this.now();
+    // RELI-05: if we ran a full refresh very recently and still have a cached token,
+    // serve the cached credential rather than hammering the token endpoint again.
+    // A persistent upstream 401 that survives a freshly-minted token cannot be resolved
+    // by re-running the same OAuth cycle; each cycle costs one token-endpoint call and
+    // one fsync'd rewrite of auth.json. Without this floor, 32 concurrent requests all
+    // getting 401 would fill all concurrency slots with simultaneous refresh + fsync cycles.
+    //
+    // The cooldown only applies when we have a cached token — if the previous refresh
+    // produced no usable credential, we always try again.
+    if (
+      this.lastForcedRefreshMs !== undefined &&
+      now - this.lastForcedRefreshMs < FORCE_REFRESH_COOLDOWN_MS &&
+      this.cached !== undefined
+    ) {
+      return ok(toCredential(this.cached.material));
+    }
+    this.lastForcedRefreshMs = now;
     this.cached = undefined;
     return toCredentialResult(await this.refresh());
   }
@@ -250,12 +289,25 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
       this.logger.log("error", "codex_token_refresh_failed", { errorCode: tokenResult.error.invalidGrant ? "invalid_grant" : "token_endpoint_error" });
       return err({ kind: "auth", message: `codex token refresh failed (${tokenResult.error.message}) — run \`codex login\`` });
     }
-    return err({ kind: "auth", message: "codex token refresh exhausted retries — run `codex login`" });
+    // INVARIANT VIOLATION — this line is unreachable when the loop bound (attempt < 2) and
+    // the continue guard (attempt === 0) are in sync. The loop always exits via a return:
+    //   - success → persistTokens (inside loop)
+    //   - attempt 0 + invalidGrant + no rotation → error return (inside loop)
+    //   - attempt 1 (any failure) → error return (inside loop, because attempt===0 is false)
+    // Reaching here means these two have drifted apart in a later edit. This is a
+    // programming error, not a credential condition — do not report it as one.
+    // Match the idiom in codex-handler.ts lines 264-267 (events.retryBoundViolated).
+    this.logger.log("error", "codex_refresh_retry_bound_violated");
+    return err({ kind: "upstream", message: "codex internal error: refresh retry bound violated", status: 500 });
   }
 
   private async callTokenEndpoint(refreshToken: string): Promise<Result<TokenResponse, TokenCallFailure>> {
     let response: Response;
     try {
+      // RELI-04: bound the token-endpoint call to 15 s. Without a timeout, a hung OAuth
+      // server holds the single-flight promise open indefinitely — all concurrent requests
+      // share the one refreshInflight promise, so all 32 concurrency slots fill and
+      // everything else 503s until undici's ~300 s default finally fires.
       response = await this.fetchImpl(this.oauthTokenUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -265,6 +317,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
           refresh_token: refreshToken,
           scope: "openid profile email",
         }),
+        signal: AbortSignal.timeout(15_000),
       });
     } catch {
       return err({ invalidGrant: false, message: "token endpoint unreachable" });
@@ -327,7 +380,11 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
       };
       const written = await this.store.writeAtomic(`${JSON.stringify(merged, null, 2)}\n`);
       if (!written.ok) {
-        this.logger.log("warn", "codex_auth_file_write_failed");
+        // RELI-02: escalate to error when the response carried a new refresh_token, because
+        // in that case the token endpoint rotated the token and the on-disk copy is now stale.
+        // The next OAuth call will use the dead on-disk token (invalid_grant) rather than the
+        // live in-memory one. A warn-level log here would make this silent in most dashboards.
+        this.logger.log(tokens.refresh_token !== undefined ? "error" : "warn", "codex_auth_file_write_failed");
       }
       const fromMerged = materialFrom(merged);
       if (!fromMerged.ok) return fromMerged;

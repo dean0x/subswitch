@@ -178,13 +178,18 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
       logger.log("info", events.effortApplied, { model, effort: translated.value.effort });
     }
 
-    const credentialResult = await auth.getCredentials();
-    if (!credentialResult.ok) {
-      respondProxyError(res, credentialResult.error);
-      return;
-    }
-    let credential = credentialResult.value;
-
+    // RELI-04: construct the controller, total-timer, and close-listener BEFORE calling
+    // auth.getCredentials() so credential loading shares the request's lifetime. Without
+    // this, a hung getCredentials() (e.g., from a single-flight refresh on a slow OAuth
+    // endpoint) runs outside every bound the handler establishes: the client-close signal
+    // is not wired up yet, the total timer has not started, and cleanup never runs if
+    // getCredentials() returns an error.  With the controller set up here, getCredentials()
+    // is covered by both the close listener and the requestTimeoutMs total timer, and the
+    // finally{} block's cleanup() runs on every exit path including credential failure.
+    //
+    // Note: sessionId is still derived ABOVE this block (before the retry loop), so the
+    // ADR-003 invariant is preserved — both the initial attempt and the 401-refresh retry
+    // reuse the same sessionId value.
     const controller = new AbortController();
     const onClientClose = (): void => {
       if (!res.writableFinished) controller.abort();
@@ -206,6 +211,12 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
     };
 
     try {
+      const credentialResult = await auth.getCredentials();
+      if (!credentialResult.ok) {
+        respondProxyError(res, credentialResult.error);
+        return;
+      }
+      let credential = credentialResult.value;
       let upstream: Response | undefined;
       // Bounded retry: the initial attempt, plus one more only if the credential can
       // actually be refreshed. A provider whose credential is static gets a single

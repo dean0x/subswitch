@@ -201,6 +201,97 @@ describe("CodexAuthManager", () => {
     assert.equal(result.error.kind, "auth");
     assert.equal(endpoint.calls.length, 0);
   });
+
+  /**
+   * RELI-04: callTokenEndpoint must pass a timeout signal to the fetch implementation.
+   *
+   * Without AbortSignal.timeout(15_000), a hung OAuth server holds the single-flight
+   * refreshInflight promise open indefinitely — all 32 concurrent requests share one
+   * hung promise, filling all concurrency slots and returning 503 until undici's ~300 s
+   * default fires.
+   *
+   * Mutation that MUST turn this RED: remove `signal: AbortSignal.timeout(15_000)` from
+   * the callTokenEndpoint fetch call → capturedSignal is undefined → assertion fails.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("RELI-04 — callTokenEndpoint passes a timeout signal to the fetch implementation", async () => {
+    const store = memoryStore(authFile(accessToken(60_000))); // near-expiry → triggers refresh
+    let capturedSignal: AbortSignal | undefined;
+
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: noopLogger,
+      fetchImpl: async (_url, init) => {
+        capturedSignal = (init?.signal ?? undefined) as AbortSignal | undefined;
+        // Return a valid token response so the refresh completes.
+        return new Response(
+          JSON.stringify({ access_token: accessToken(3_600_000) }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+      now: () => NOW_MS,
+    });
+
+    await auth.getCredentials();
+
+    assert.ok(capturedSignal !== undefined, "callTokenEndpoint must pass a signal to fetch");
+    assert.ok(!capturedSignal.aborted, "signal must not be pre-aborted when the request starts");
+  });
+
+  /**
+   * RELI-05: forceRefresh() must honour a 30-second cooldown window.
+   *
+   * A persistent upstream 401 that survives a freshly-minted token cannot be resolved by
+   * re-running the same OAuth cycle. Without this floor, each request in a 401 storm runs
+   * its own token-endpoint call + fsync'd credential rewrite, permanently degrading the
+   * server once all concurrency slots fill.
+   *
+   * Mutation that MUST turn this RED: remove the cooldown guard (always refresh).
+   * Without it the second forceRefresh() within the window calls the token endpoint;
+   * endpoint.calls.length increases → assert.equal(endpoint.calls.length, callsAfterFirst)
+   * fails.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("RELI-05 — forceRefresh skips the token endpoint within the 30-second cooldown window", async () => {
+    let nowMs = NOW_MS;
+    const store = memoryStore(authFile(accessToken(60_000))); // near-expiry → triggers refresh
+    const endpoint = fakeTokenEndpoint(() => tokenResponse(accessToken(3_600_000)));
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: noopLogger,
+      fetchImpl: endpoint.fetchImpl,
+      now: () => nowMs,
+    });
+
+    // First forceRefresh: no prior lastForcedRefreshMs, so it runs a real refresh.
+    const first = await auth.forceRefresh();
+    assert.ok(first.ok, "first forceRefresh must succeed");
+    const callsAfterFirst = endpoint.calls.length;
+    assert.ok(callsAfterFirst >= 1, "first forceRefresh must have called the token endpoint");
+
+    // Second forceRefresh within the cooldown window must NOT hit the token endpoint.
+    nowMs += 10_000; // 10 seconds later — still within the 30-second window
+    const second = await auth.forceRefresh();
+    assert.ok(second.ok, "second forceRefresh (within cooldown) must return a credential");
+    assert.equal(
+      endpoint.calls.length,
+      callsAfterFirst,
+      "forceRefresh within the cooldown window must not call the token endpoint",
+    );
+
+    // After the cooldown expires, forceRefresh must run a real refresh again.
+    nowMs += 25_000; // 35 seconds total — past the 30-second window
+    const third = await auth.forceRefresh();
+    assert.ok(third.ok, "third forceRefresh (after cooldown expiry) must succeed");
+    assert.ok(
+      endpoint.calls.length > callsAfterFirst,
+      "forceRefresh after the cooldown window must call the token endpoint",
+    );
+  });
 });
 
 describe("inspectAuthFile", () => {
@@ -238,39 +329,42 @@ describe("createFsAuthFileStore — O_EXCL and cleanup", () => {
   };
 
   /**
-   * T4a: pre-creating the temp path must cause the write to fail (O_EXCL enforcement).
-   * auth.json must be unchanged, and no .tmp file may be left behind.
+   * T4a: a stale temp file (EEXIST) must be detected, unlinked, and the open retried — so
+   * a previous crash does not permanently block credential rotation.
    *
-   * Mutation that MUST turn this red: change "wx" back to "w".
-   * Under "w", open succeeds on the pre-existing file, writes through it, renames it to
-   * auth.json, and returns ok — so `!result.ok` fails.
+   * The "stale crash temp" scenario: process P crashed between open() and rename(), leaving
+   * `auth.json.subswitch-<pid>.tmp` on disk. When we next call writeAtomic(), we get EEXIST
+   * on the "wx" open. The fix: unlink the stale file and retry once (RELI-02).
+   *
+   * Mutation that MUST turn this RED: remove the EEXIST unlink-and-retry handler.
+   * Without it, EEXIST propagates to the outer catch, returning err({ kind: "auth" });
+   * the assertion assert.ok(result.ok) fails.
    *
    * PF-011: proven RED against the named mutation before trusting green.
    */
-  it("T4a — pre-created temp path causes write to fail with O_EXCL; no .tmp is left behind", async () => {
+  it("T4a — stale temp (EEXIST) is unlinked and write retried; auth.json created, no .tmp survives", async () => {
     const { authFilePath, tmpPath } = await makePaths("croxy-t4a-");
 
-    // Pre-create the temp file with a permissive mode — an attacker who owns the slot.
-    const preCreated = await open(tmpPath, "w", 0o666);
-    await preCreated.close();
+    // Pre-create the temp file to simulate a stale crash artifact.
+    const stale = await open(tmpPath, "w", 0o666);
+    await stale.close();
 
     const store = createFsAuthFileStore(authFilePath);
     const result = await store.writeAtomic('{"replaced": true}');
 
-    // Write must fail (O_EXCL prevents open on existing temp).
-    assert.ok(!result.ok, "writeAtomic must fail when the temp path is pre-created");
-    assert.equal(result.error.kind, "auth");
+    // The stale temp must be detected (EEXIST), unlinked, and the open retried — succeeding.
+    assert.ok(result.ok, "writeAtomic must recover from a stale temp via EEXIST → unlink → retry");
 
-    // auth.json must not exist (was never the rename target).
-    await assert.rejects(
+    // auth.json must now exist (write succeeded and temp was renamed).
+    await assert.doesNotReject(
       access(authFilePath),
-      "auth.json must not be created when the write fails",
+      "auth.json must be created after self-healing from a stale temp",
     );
 
-    // No .tmp file may survive — catch block must have unlinked it.
+    // The temp file must not survive (renamed to auth.json on success).
     await assert.rejects(
       access(tmpPath),
-      "temp file must be removed when writeAtomic fails",
+      "no .tmp must survive after a successful writeAtomic",
     );
   });
 
