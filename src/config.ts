@@ -5,7 +5,7 @@ import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { LogLevel } from "./logger.js";
-import { isReservedAnthropicName, PROVIDER_IDS, type ProviderId } from "./models.js";
+import { isReservedAnthropicName, PROVIDER_IDS, type ProviderId, type AliasesByProvider } from "./models.js";
 
 export const DEFAULT_PORT = 4141 as const;
 
@@ -340,11 +340,51 @@ export const providerConfigFor = (config: Config, id: ProviderId): ProviderRunti
  * The routing table and the displayed alias table must agree on that answer, so they
  * read the same function rather than each assembling the record at their call site.
  */
-export const aliasesByProvider = (
-  config: Config,
-): Readonly<Record<ProviderId, Readonly<Record<string, string>>>> => ({
+export const aliasesByProvider = (config: Config): AliasesByProvider => ({
   codex: config.providers.codex.aliases,
 });
+
+// ---------------------------------------------------------------------------
+// Routing topology enumeration
+// ---------------------------------------------------------------------------
+
+/**
+ * One routing destination that subswitch can forward requests to.
+ *
+ * Discriminated by `routing`:
+ *   - "passthrough" — requests are forwarded verbatim (Anthropic leg; no auth file).
+ *   - "registry"    — routing is governed by MODEL_REGISTRY; has an auth file.
+ */
+export type RoutingDestination =
+  | {
+      readonly routing: "passthrough";
+      readonly id: "anthropic";
+      readonly displayName: "Anthropic";
+    }
+  | {
+      readonly routing: "registry";
+      readonly id: ProviderId;
+      readonly displayName: string;
+      /** Tilde-expanded credential file path (from providerConfigFor). */
+      readonly authFile: string;
+    };
+
+/**
+ * All routing destinations in topology order: Anthropic (passthrough) first,
+ * then each registered provider in PROVIDER_IDS order.
+ *
+ * Used by both `buildHealthBody` (server.ts) and `modelsJson` (cli.ts) so the
+ * two surfaces cannot disagree on what "all routing destinations" means.
+ * Before this helper, each site assembled its own providers list and they drifted:
+ * health omitted Anthropic while models --json included it.  (ARCH-04)
+ */
+export const enumerateDestinations = (config: Config): readonly RoutingDestination[] => [
+  { routing: "passthrough", id: "anthropic", displayName: "Anthropic" },
+  ...PROVIDER_IDS.map((id): RoutingDestination => {
+    const { displayName, authFile } = providerConfigFor(config, id);
+    return { routing: "registry", id, displayName, authFile };
+  }),
+];
 
 // ---------------------------------------------------------------------------
 // Path helpers

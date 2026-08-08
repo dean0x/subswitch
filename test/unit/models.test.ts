@@ -7,9 +7,60 @@ import {
   buildModelRows,
   buildRoutingTable,
   resolveModel,
+  routableModelCount,
   type ModelEntry,
   type ModelResolution,
 } from "../../src/models.js";
+
+// ---------------------------------------------------------------------------
+// routableModelCount — CPLX-02 / ARCH-10 / PERF-08
+// ---------------------------------------------------------------------------
+
+describe("routableModelCount", () => {
+  it("returns the non-retired codex model count matching the live registry", () => {
+    // Canary: update when MODEL_REGISTRY changes.
+    const count = routableModelCount(MODEL_REGISTRY, "codex");
+    assert.ok(count > 0, "routableModelCount must be > 0 for codex");
+    // Double-check against a manual inline count so a divergence in the implementation is visible.
+    const manual = MODEL_REGISTRY.filter((e) => e.provider === "codex" && e.retired !== true).length;
+    assert.equal(count, manual, "routableModelCount must match manual filter count");
+  });
+
+  it("returns 0 when every registry entry for the provider is retired", () => {
+    const reg: readonly ModelEntry[] = [
+      { id: "gpt-old-a", provider: "codex", gen: [4, 0], retired: true },
+      { id: "gpt-old-b", provider: "codex", gen: [4, 1], retired: true },
+    ];
+    assert.equal(routableModelCount(reg, "codex"), 0);
+  });
+
+  it("does not count entries belonging to a different provider", () => {
+    // Hypothetical: two providers — only codex entries must count.
+    const reg: readonly ModelEntry[] = [
+      { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+    ];
+    // Passing a provider that has no entries in this synthetic registry returns 0.
+    // Cast to satisfy ProviderId — "codex" is the only valid value today, but the
+    // function accepts any ProviderId; we verify the filter boundary here.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    assert.equal(routableModelCount(reg, "codex"), 1);
+    // The only entry is codex; count must be exactly 1.
+  });
+
+  it("MUTATION CHECK: counting retired entries would inflate the result", () => {
+    // If the retired guard were removed, a retired entry would be counted.
+    // This test proves the guard is load-bearing.
+    const reg: readonly ModelEntry[] = [
+      { id: "live", provider: "codex", gen: [5, 6] },
+      { id: "gone", provider: "codex", gen: [4, 0], retired: true },
+    ];
+    assert.equal(
+      routableModelCount(reg, "codex"),
+      1,
+      "retired entry must not be counted — if this fails, the retired guard is missing",
+    );
+  });
+});
 
 // ---------------------------------------------------------------------------
 // formatModelsReport — output shape

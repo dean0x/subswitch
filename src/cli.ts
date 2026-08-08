@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
-import { type Config, type LoadConfigResult, aliasesByProvider, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
+import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
@@ -15,7 +15,7 @@ import {
   PortSchema,
   type InitFlags,
 } from "./init.js";
-import { MODEL_REGISTRY, formatModelsReport, buildModelRows, PROVIDER_IDS } from "./models.js";
+import { MODEL_REGISTRY, formatModelsReport, buildModelRows, routableModelCount, PROVIDER_IDS } from "./models.js";
 import { resolveColorEnabled } from "./tty.js";
 import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 
@@ -281,7 +281,7 @@ const serve = async (
   // Human-readable ready banner — one line per provider (7d).
   errOut(`\nsubswitch ready — http://127.0.0.1:${effectiveConfig.port}`);
   for (const id of PROVIDER_IDS) {
-    const modelCount = MODEL_REGISTRY.filter((e) => e.provider === id && e.retired !== true).length;
+    const modelCount = routableModelCount(MODEL_REGISTRY, id);
     const { baseUrl } = providerConfigFor(effectiveConfig, id);
     let host: string;
     try {
@@ -358,17 +358,13 @@ const modelsJson = (result: LoadConfigResult): void => {
     // Reported straight from the load that produced `models`, so the flag always
     // describes the config those rows were actually built from.
     configFileFound: fileFound,
-    providers: [
-      // Anthropic is a real routing destination — everything unresolved falls through
-      // to it — so it belongs in `providers` even though it contributes no model rows.
-      // A consumer enumerating destinations must not have to special-case it.
-      { id: "anthropic", displayName: "Anthropic", routing: "passthrough" },
-      ...PROVIDER_IDS.map((id) => ({
-        id,
-        displayName: providerConfigFor(config, id).displayName,
-        routing: "registry",
-      })),
-    ],
+    // enumerateDestinations provides the single topology source shared with the health
+    // endpoint — Anthropic (passthrough) first, then registered providers.  (ARCH-04)
+    providers: enumerateDestinations(config).map((d) => ({
+      id: d.id,
+      displayName: d.displayName,
+      routing: d.routing,
+    })),
     models: rows,
   };
 

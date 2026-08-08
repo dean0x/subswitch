@@ -4,7 +4,7 @@ import type { IncomingMessage, Server } from "node:http";
 import { toAnthropicErrorBody } from "./errors.js";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
-import { aliasesByProvider, isLoopbackHost, providerConfigFor, type Config } from "./config.js";
+import { aliasesByProvider, enumerateDestinations, isLoopbackHost, providerConfigFor, type Config } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
 import { providerEvents } from "./provider-events.js";
 import { decideRoute } from "./router.js";
@@ -19,6 +19,7 @@ import {
   resolveModel as resolveModelFromTable,
   MODEL_REGISTRY,
   PROVIDER_IDS,
+  routableModelCount,
   type ModelResolution,
   type ProviderId,
 } from "./models.js";
@@ -209,20 +210,27 @@ export const listenServer = (
 
 /**
  * Build the health response body for a given config.
- * Dynamic: includes per-provider status (configured + model count).
+ * Dynamic: includes per-destination status (configured + model count).
  * Never includes credentials, tokens, or secrets — only structural metadata. [compliance]
+ *
+ * Uses enumerateDestinations so the topology (Anthropic passthrough + registry
+ * providers) is the single source of truth shared with models --json.  (ARCH-04)
  */
 const buildHealthBody = (config: Config): string =>
   JSON.stringify({
     name: SUBSWITCH_NAME,
     version: SUBSWITCH_VERSION,
-    providers: PROVIDER_IDS.map((id) => {
-      // Each provider has its auth file in config — check presence without reading content.
+    providers: enumerateDestinations(config).map((d) => {
+      if (d.routing === "passthrough") {
+        // Anthropic is always reachable — no auth file, no model list. (applies ADR-002)
+        return { id: d.id, configured: true, modelCount: 0 };
+      }
       // existsSync is sync and acceptable here (health endpoint, not hot path).
-      const { authFile } = providerConfigFor(config, id);
-      const configured = existsSync(authFile);
-      const modelCount = MODEL_REGISTRY.filter((e) => e.provider === id && e.retired !== true).length;
-      return { id, configured, modelCount };
+      return {
+        id: d.id,
+        configured: existsSync(d.authFile),
+        modelCount: routableModelCount(MODEL_REGISTRY, d.id),
+      };
     }),
   });
 

@@ -7,6 +7,8 @@ import {
   detectLegacyConfigKeys,
   detectUnknownProviderKeys,
   aliasesByProvider,
+  enumerateDestinations,
+  type RoutingDestination,
 } from "../../src/config.js";
 import { PROVIDER_IDS } from "../../src/models.js";
 
@@ -713,5 +715,65 @@ describe("SEC-01: HTTPS-only refinements for credential URLs", () => {
         JSON.stringify({ anthropic: { baseUrl: "http://127.0.0.1:8080" } }),
     });
     assert.ok(result.ok, `http://127.0.0.1 anthropic.baseUrl must be accepted; got: ${!result.ok ? result.error.message : ""}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enumerateDestinations — ARCH-04
+// ---------------------------------------------------------------------------
+
+describe("enumerateDestinations", () => {
+  const defaultConfig = (() => {
+    const r = loadConfig({ readFile: () => { throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); }, env: {} });
+    assert.ok(r.ok);
+    return r.value.config;
+  })();
+
+  it("first destination is Anthropic with routing='passthrough'", () => {
+    const destinations = enumerateDestinations(defaultConfig);
+    assert.ok(destinations.length > 0, "must return at least one destination");
+    const first = destinations[0] as RoutingDestination;
+    assert.equal(first.routing, "passthrough");
+    assert.equal(first.id, "anthropic");
+    assert.equal(first.displayName, "Anthropic");
+  });
+
+  it("includes an entry for every PROVIDER_ID with routing='registry'", () => {
+    const destinations = enumerateDestinations(defaultConfig);
+    for (const id of PROVIDER_IDS) {
+      const entry = destinations.find((d) => d.id === id);
+      assert.ok(entry !== undefined, `enumerateDestinations must include provider '${id}'`);
+      assert.equal(entry.routing, "registry", `provider '${id}' must have routing='registry'`);
+    }
+  });
+
+  it("total destination count equals 1 (Anthropic) + PROVIDER_IDS.length", () => {
+    const destinations = enumerateDestinations(defaultConfig);
+    assert.equal(
+      destinations.length,
+      1 + PROVIDER_IDS.length,
+      "total count must be Anthropic (1) + all registry providers",
+    );
+  });
+
+  it("registry destinations carry an authFile field", () => {
+    const destinations = enumerateDestinations(defaultConfig);
+    for (const d of destinations) {
+      if (d.routing === "registry") {
+        assert.ok(
+          typeof d.authFile === "string" && d.authFile.length > 0,
+          `registry destination '${d.id}' must have a non-empty authFile`,
+        );
+      }
+    }
+  });
+
+  it("MUTATION CHECK: Anthropic must be first — omitting it would shrink destinations by 1", () => {
+    // If the passthrough entry were removed, length would equal PROVIDER_IDS.length only.
+    const destinations = enumerateDestinations(defaultConfig);
+    assert.ok(
+      destinations.length > PROVIDER_IDS.length,
+      "destinations must outnumber PROVIDER_IDS alone — Anthropic must be present",
+    );
   });
 });

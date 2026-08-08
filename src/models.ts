@@ -16,6 +16,17 @@ export const PROVIDER_IDS = ["codex"] as const;
  */
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
+/**
+ * Per-provider alias record: provider id → alias name → canonical model id.
+ *
+ * Aliased here to eliminate the triple-nested spelling
+ * `Readonly<Record<ProviderId, Readonly<Record<string, string>>>>` that appeared
+ * verbatim at six call sites — a depth violation of the project's "limit indirection
+ * depth" rule (CPLX-04). Exported so config.ts can use the same alias for its
+ * `aliasesByProvider()` return type without a secondary spelling.
+ */
+export type AliasesByProvider = Readonly<Record<ProviderId, Readonly<Record<string, string>>>>;
+
 export interface ModelEntry {
   readonly id: string;
   /**
@@ -157,6 +168,19 @@ const ANTHROPIC_NAME_RE = /^(inherit|sonnet|opus|haiku|claude-)/i;
  * - `agent-scan.ts` SKIPS such a name so doctor never flags a Claude subagent.
  */
 export const isReservedAnthropicName = (name: string): boolean => ANTHROPIC_NAME_RE.test(name);
+
+/**
+ * Number of routable (non-retired) models for the given provider in a registry.
+ *
+ * Extracted from two byte-identical inline filter expressions that previously
+ * appeared in server.ts (health endpoint) and cli.ts (serve banner) — applies
+ * ADR-006 exactly once rather than two independent spellings. (CPLX-02/ARCH-10/PERF-08)
+ *
+ * Hoisted to module scope: MODEL_REGISTRY is compiled-in data, so callers that
+ * always pass MODEL_REGISTRY get a deterministic result with no per-call allocation.
+ */
+export const routableModelCount = (registry: readonly ModelEntry[], provider: ProviderId): number =>
+  registry.filter((e) => e.provider === provider && e.retired !== true).length;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -311,7 +335,7 @@ interface AliasDeclaration {
  * still a distinct rejection worth reporting.
  */
 const collectAliasDeclarations = (
-  aliasesByProvider: Readonly<Record<ProviderId, Readonly<Record<string, string>>>>,
+  aliasesByProvider: AliasesByProvider,
 ): readonly AliasDeclaration[] => {
   const declarations: AliasDeclaration[] = [];
   const bound = new Set<string>();
@@ -355,7 +379,7 @@ const collectAliasDeclarations = (
  */
 export const buildRoutingTable = (
   registry: readonly ModelEntry[],
-  aliasesByProvider: Readonly<Record<ProviderId, Readonly<Record<string, string>>>>,
+  aliasesByProvider: AliasesByProvider,
 ): RoutingTableBuild => {
   // --- 1. Registry self-check ---
   // Any entry whose id or family is a reserved Anthropic name is reported.
@@ -609,7 +633,7 @@ export interface AliasTableRow {
  */
 export const buildAliasRows = (
   registry: readonly ModelEntry[],
-  aliasesByProvider: Readonly<Record<ProviderId, Readonly<Record<string, string>>>>,
+  aliasesByProvider: AliasesByProvider,
 ): readonly AliasTableRow[] => {
   // Same rule, same claims, same declaration list the router reads — see buildRoutingTable.
   const familyWinners = flattenUniqueFamilies(selectFamilyWinners(registry).claims);
@@ -686,7 +710,7 @@ export const buildAliasRows = (
  */
 export const buildModelRows = (
   registry: readonly ModelEntry[],
-  aliasesByProvider: Readonly<Record<ProviderId, Readonly<Record<string, string>>>>,
+  aliasesByProvider: AliasesByProvider,
 ): readonly ModelRow[] => {
   // Same rule, same claims, same declaration list the router reads — see buildRoutingTable.
   const familyWinners = flattenUniqueFamilies(selectFamilyWinners(registry).claims);
@@ -734,7 +758,7 @@ export const buildModelRows = (
 /** Input for formatModelsReport. Config-free so cli.ts and doctor.ts can call without circular imports. */
 export interface FormatModelsReportInput {
   readonly registry: readonly ModelEntry[];
-  readonly aliasesByProvider: Readonly<Record<ProviderId, Readonly<Record<string, string>>>>;
+  readonly aliasesByProvider: AliasesByProvider;
 }
 
 /**
@@ -747,11 +771,11 @@ export const formatModelsReport = (input: FormatModelsReportInput): readonly str
   const rows = buildAliasRows(input.registry, input.aliasesByProvider);
   if (rows.length === 0) return [];
 
-  const aliasWidth = Math.max(...rows.map((r) => r.alias.length));
-  const canonWidth = Math.max(...rows.map((r) => r.canonical.length));
-  const providerWidth = Math.max(...rows.map((r) => r.provider.length));
-  const genWidth = Math.max(...rows.map((r) => `gen:${r.gen}`.length));
-  const statusWidth = Math.max(...rows.map((r) => (r.enabled ? "enabled" : "disabled").length));
+  const aliasWidth = rows.reduce((acc, r) => Math.max(acc, r.alias.length), 0);
+  const canonWidth = rows.reduce((acc, r) => Math.max(acc, r.canonical.length), 0);
+  const providerWidth = rows.reduce((acc, r) => Math.max(acc, r.provider.length), 0);
+  const genWidth = rows.reduce((acc, r) => Math.max(acc, `gen:${r.gen}`.length), 0);
+  const statusWidth = rows.reduce((acc, r) => Math.max(acc, (r.enabled ? "enabled" : "disabled").length), 0);
 
   return rows.map((r) => {
     const alias = r.alias.padEnd(aliasWidth);

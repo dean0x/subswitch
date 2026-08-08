@@ -98,4 +98,57 @@ describe("__subswitch health namespace", () => {
     // a specific value here because the test machine's state varies (auth file may or may not exist).
     // The shape assertion above is sufficient: configured must be a boolean.
   });
+
+  // ARCH-04: Anthropic passthrough must appear in health providers[]
+  it("GET /__subswitch/health providers[] includes Anthropic with configured=true and modelCount=0", async () => {
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    const subswitch = await startSubswitch({ anthropic: { baseUrl: anthropic.url } });
+    cleanups.push(subswitch.close, anthropic.close);
+
+    const response = await fetch(`${subswitch.url}/__subswitch/health`);
+    assert.equal(response.status, 200);
+
+    const body = (await response.json()) as {
+      providers: Array<{ id: string; configured: boolean; modelCount: number }>;
+    };
+
+    const anthropicEntry = body.providers.find((p) => p.id === "anthropic");
+    assert.ok(
+      anthropicEntry !== undefined,
+      "providers[] must include 'anthropic' — health endpoint must match models --json topology (ARCH-04)",
+    );
+    assert.equal(
+      anthropicEntry.configured,
+      true,
+      "Anthropic passthrough is always configured (no auth file required)",
+    );
+    assert.equal(
+      anthropicEntry.modelCount,
+      0,
+      "Anthropic passthrough carries modelCount=0 (routing is passthrough, not registry-governed)",
+    );
+  });
+
+  // MUTATION CHECK: if Anthropic were omitted from enumerateDestinations, the test above would fail
+  it("MUTATION CHECK: providers[] must not be empty and must contain more than just codex", async () => {
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    const subswitch = await startSubswitch({ anthropic: { baseUrl: anthropic.url } });
+    cleanups.push(subswitch.close, anthropic.close);
+
+    const response = await fetch(`${subswitch.url}/__subswitch/health`);
+    const body = (await response.json()) as {
+      providers: Array<{ id: string }>;
+    };
+
+    assert.ok(
+      body.providers.length > 1,
+      "providers[] must have more than one entry — Anthropic + at least one registry provider",
+    );
+  });
 });
