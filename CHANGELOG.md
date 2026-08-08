@@ -4,9 +4,34 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-09
 
-### Breaking change — non-default base URL hosts now refused by default (SEC-04)
+### Upgrading from 0.1.0
+
+**A 0.1.0 `subswitch.config.json` will not start the server.** If you copied the
+example config shipped with 0.1.0, or wrote a config in the old layout, the process
+exits immediately with:
+
+```
+outdated config layout in subswitch.config.json — move `codex` to `providers.codex`; move `reasoningCache` to `providers.codex.reasoningCache`; move `limits.connectTimeoutMs` to `anthropic.connectTimeoutMs`; move `limits.maxUpstreamSockets` to `anthropic.maxUpstreamSockets`; move `limits.streamIdleTimeoutMs` to `anthropic.streamIdleTimeoutMs and/or providers.codex.streamIdleTimeoutMs`; move `limits.requestTimeoutMs` to `providers.codex.requestTimeoutMs`; move `limits.maxSseEventBytes` to `providers.codex.maxSseEventBytes`; move `codex.models` to `(removed — routing now follows the built-in model registry; use providers.codex.aliases for custom names)`. Edit the file to match subswitch.config.example.json, or delete it to run on defaults.
+```
+
+**Two ways forward:**
+
+1. Edit `subswitch.config.json` to match the new `subswitch.config.example.json` layout
+   (the migration table in the Breaking Changes section below lists every key that moved).
+2. Delete `subswitch.config.json` and run on defaults — the proxy works out of the box
+   once Codex auth is in place.
+
+> **Warning — migrating the `codex` block wholesale:** The migration table's first row
+> says `codex.*` moves to `providers.codex.*`. Copying the entire old `codex` block
+> as-is carries the removed `codex.models` key along with it. The schema uses strict
+> key checking, so `providers.codex.models` produces a second, less helpful error rather
+> than the guided migration message above. Drop `models` from the block before copying.
+
+### Breaking Changes
+
+#### Non-default base URL hosts now refused by default (SEC-04)
 
 **`subswitch serve` now exits with an error** if `providers.codex.baseUrl`,
 `providers.codex.oauthTokenUrl`, or `anthropic.baseUrl` points at a host other than
@@ -50,6 +75,44 @@ wire-recorder workflow (`http://127.0.0.1:4142`) continues to work without the o
 `oauthTokenUrl` is also gated because it carries the long-lived OAuth refresh token —
 more damaging to expose than the short-lived access token in `baseUrl`.
 
+#### Config file format restructured
+
+**This is a breaking change if you have an existing `subswitch.config.json`.** There
+is no automatic migration and no compatibility shim. A compatibility shim was not
+written because Zod's default behaviour strips unknown keys — a shim would have
+silently reverted any custom settings the old keys held to their defaults rather than
+carrying them forward, which is worse than a hard error. The change is enforced loudly
+at load instead (applies PF-010).
+
+What moved and what was removed:
+
+| Old key | New location |
+|---------|-------------|
+| `codex.*` (entire block) | `providers.codex.*` |
+| `reasoningCache.*` (top-level) | `providers.codex.reasoningCache.*` |
+| `limits.connectTimeoutMs` | `anthropic.connectTimeoutMs` |
+| `limits.maxUpstreamSockets` | `anthropic.maxUpstreamSockets` |
+| `limits.streamIdleTimeoutMs` | `anthropic.streamIdleTimeoutMs` and/or `providers.codex.streamIdleTimeoutMs` |
+| `limits.requestTimeoutMs` | `providers.codex.requestTimeoutMs` |
+| `limits.maxSseEventBytes` | `providers.codex.maxSseEventBytes` |
+| `codex.models` | **Removed** — routing now follows the built-in model registry; use `providers.codex.aliases` for custom names |
+
+Two `subswitch init` flags were also removed:
+
+| Old flag | Replacement |
+|----------|-------------|
+| `--codex-model <name>` | **Removed** — use `providers.codex.aliases` in config to map custom model names |
+| `--codex-models <csv>` | **Removed** — use `providers.codex.aliases` in config to map custom model names |
+
+An old config file is **rejected at load** with an error that names each key and its
+replacement. This is intentional: Zod's default behaviour strips unknown keys, so
+without the detection gate every custom setting would silently revert to defaults.
+
+For the same reason, a `providers.<id>` block written under an id subswitch does not
+ship — a typo like `providers.codexx`, or a provider from a future release — is also
+**rejected at load**, naming the offending key and listing the known provider ids.
+Such a block would otherwise be stripped by the schema and do nothing at all.
+
 ### Added
 
 - **`providers.codex.allowInsecureBaseUrl`** (default `false`): opt-in that permits
@@ -58,12 +121,14 @@ more damaging to expose than the short-lived access token in `baseUrl`.
   the config key, and this opt-in key.
 - **`anthropic.allowInsecureBaseUrl`** (default `false`): same gate for the Anthropic
   passthrough leg.
+- **`providers.codex.maxAggregateBytes`** (default `67108864`, 64 MiB): maximum total
+  byte budget for a non-streaming Codex response. Responses that exceed this limit are
+  rejected with a 502 rather than accumulating unbounded memory.
 - **`codex_base_url_host_rejected`** log event (error level): emitted when the
   host-rejection gate fires for a Codex URL. Event name is a compile-time template
   literal over the `ProviderId` union — part of the log-injection barrier.
 - **`anthropic_base_url_host_rejected`** log event (error level): emitted when the
   gate fires for the Anthropic leg.
-
 - **Model family aliases**: `sol`, `terra`, and `luna` are now valid `model:` values
   in agent frontmatter. Each alias resolves to the highest-generation canonical id
   for that family (e.g. `sol` → `gpt-5.6-sol`). Resolution follows five rules in
@@ -103,41 +168,6 @@ more damaging to expose than the short-lived access token in `baseUrl`.
   `provider-transport.ts`, `provider-handler.ts`, `provider-auth.ts`,
   `provider-events.ts`, `models.ts`, `agent-scan.ts` — provider-neutral seams,
   the pure model registry, and the agent frontmatter scanner.
-
-### Breaking change — config file format restructured
-
-**This is a breaking change if you have an existing `subswitch.config.json`.** There
-is no automatic migration and no compatibility shim. At the time of this release there
-are zero published users, which is exactly why no shim was written.
-
-What moved and what was removed:
-
-| Old key | New location |
-|---------|-------------|
-| `codex.*` (entire block) | `providers.codex.*` |
-| `reasoningCache.*` (top-level) | `providers.codex.reasoningCache.*` |
-| `limits.connectTimeoutMs` | `anthropic.connectTimeoutMs` |
-| `limits.maxUpstreamSockets` | `anthropic.maxUpstreamSockets` |
-| `limits.streamIdleTimeoutMs` | `anthropic.streamIdleTimeoutMs` and/or `providers.codex.streamIdleTimeoutMs` |
-| `limits.requestTimeoutMs` | `providers.codex.requestTimeoutMs` |
-| `limits.maxSseEventBytes` | `providers.codex.maxSseEventBytes` |
-| `codex.models` | **Removed** — routing now follows the built-in model registry; use `providers.codex.aliases` for custom names |
-
-Two `subswitch init` flags were also removed:
-
-| Old flag | Replacement |
-|----------|-------------|
-| `--codex-model <name>` | **Removed** — use `providers.codex.aliases` in config to map custom model names |
-| `--codex-models <csv>` | **Removed** — use `providers.codex.aliases` in config to map custom model names |
-
-An old config file is **rejected at load** with an error that names each key and its
-replacement. This is intentional: Zod's default behaviour strips unknown keys, so
-without the detection gate every custom setting would silently revert to defaults.
-
-For the same reason, a `providers.<id>` block written under an id subswitch does not
-ship — a typo like `providers.codexx`, or a provider from a future release — is also
-**rejected at load**, naming the offending key and listing the known provider ids.
-Such a block would otherwise be stripped by the schema and do nothing at all.
 
 ### Changed / Behavior
 
@@ -295,11 +325,18 @@ before adding a second production provider:
   only against local fixture upstreams, which do set the header. A one-line
   `|| contentType === ""` relaxation fixes it. Anyone repeating the live-capture protocol
   with the checked-in recorder will get empty event captures and may wrongly conclude the
-  stream is broken.
+  stream is broken. ([#21](https://github.com/dean0x/subswitch/issues/21))
 - **`e2e/README.md` contains a stale top-level `codex.*` config example**: the correct
   shape is `providers.codex.*`; the stale example would now be rejected at load by
   `detectLegacyConfigKeys`. The parity table in the same file is a separately scoped
   known limitation (PF-005). Fixing the config example is out of scope for this branch.
+- **No `Origin` / `Sec-Fetch-Site` check on `/v1/messages`**: a cross-origin
+  `text/plain` POST from a page the user visits while the proxy is running can drive the
+  proxy and consume Codex quota at the user's cost. CORS prevents the page from reading
+  the response, and the server binds to loopback only, so there is no credential exposure
+  or data exfiltration risk — but quota and cost abuse is possible. Pre-existing since
+  0.1.0, not a regression from this release.
+  ([#20](https://github.com/dean0x/subswitch/issues/20))
 - **Kimi provider leg** is a separate branch, gated on a five-question live probe
   requiring a real subscription.
 
