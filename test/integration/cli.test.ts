@@ -33,8 +33,41 @@ interface SpawnResult {
 }
 
 /**
+ * Compute a compact, stable cache key for a user-supplied env option.
+ *
+ * We record only the DELTA from `process.env` so the key stays small even when the
+ * caller spreads the entire environment. The common case (no env override) serialises
+ * to an empty string. Tests that pass a different env object (e.g. FORCE_COLOR) always
+ * get a non-empty key that is distinct from the default. (Fixes TEST-04 / TEST-12.)
+ */
+const envDeltaKey = (env: NodeJS.ProcessEnv | undefined): string => {
+  if (env === undefined || env === process.env) return "";
+  const delta: [string, string | undefined][] = [];
+  for (const k of Object.keys(env)) {
+    if (env[k] !== process.env[k]) delta.push([k, env[k]]);
+  }
+  for (const k of Object.keys(process.env)) {
+    if (!(k in env)) delta.push([k, undefined]);
+  }
+  delta.sort((a, b) => a[0].localeCompare(b[0]));
+  return JSON.stringify(delta);
+};
+
+/**
+ * Module-level cache: collapsed (args, cwd, env-delta) tuples → their single spawn.
+ *
+ * Tests that use unique mkdtemp directories or non-default env objects always get
+ * distinct keys, so they are never aliased to a previous result. Parallel suites
+ * therefore share at most one live process per unique invocation tuple.
+ */
+const runCliCache = new Map<string, Promise<SpawnResult>>();
+
+/**
  * Spawn the CLI with the given args. `cwd` defaults to a caller-supplied temp
  * dir. Bounced by a 10 s timeout so a hanging serve never blocks the suite.
+ *
+ * Identical invocations (same args, cwd, env) are memoised to a single spawn so
+ * repeated `it()` blocks over the same command do not each pay a tsx start-up cost.
  */
 const runCli = async (
   args: string[],
@@ -42,7 +75,11 @@ const runCli = async (
 ): Promise<SpawnResult> => {
   const { cwd = repoRoot, env = process.env, timeoutMs = 10_000 } = options;
 
-  return new Promise<SpawnResult>((resolve, reject) => {
+  const key = JSON.stringify([args, cwd, envDeltaKey(options.env)]);
+  const cached = runCliCache.get(key);
+  if (cached !== undefined) return cached;
+
+  const promise = new Promise<SpawnResult>((resolve, reject) => {
     const proc = spawn(tsxBin, [cliEntry, ...args], {
       cwd,
       // NO_COLOR defaults to "1" (colour off) but caller-supplied env wins,
@@ -71,6 +108,9 @@ const runCli = async (
       reject(e);
     });
   });
+
+  runCliCache.set(key, promise);
+  return promise;
 };
 
 // ---------------------------------------------------------------------------

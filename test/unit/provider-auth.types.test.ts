@@ -91,12 +91,12 @@ void wiringOwnCredentialCompiles;
 const credentialsAreNotInterchangeable = <P extends ProviderId, Q extends ProviderId>(): void => {
   // @ts-expect-error the seam itself, independent of the handler: one provider's auth is
   // not another's, even though `refreshable` and `authHeaders` are structurally identical.
-  const swappedAuth: ProviderAuth<P> = declare2<ProviderAuth<Q>>();
+  const swappedAuth: ProviderAuth<P> = anyValue<ProviderAuth<Q>>();
   void swappedAuth;
 
   // @ts-expect-error and neither is a single credential, which is what actually reaches
   // the outbound request headers.
-  const swappedCredential: ProviderCredential<P> = declare2<ProviderCredential<Q>>();
+  const swappedCredential: ProviderCredential<P> = anyValue<ProviderCredential<Q>>();
   void swappedCredential;
 };
 void credentialsAreNotInterchangeable;
@@ -118,4 +118,4 @@ void wideningToTheUnionIsAllowed;
 // pin the cast, not the brand.
 
 /** Stand-in for a value of an arbitrary type, so the cases above need no fixtures. */
-declare function declare2<T>(): T;
+declare function anyValue<T>(): T;

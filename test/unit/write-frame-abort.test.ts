@@ -59,8 +59,12 @@ describe("writeFrame abort-signal drain race", () => {
     // Patch write to succeed
     res.write = () => true;
     const writeFrame = makeWriteFrame(res, controller.signal);
-    await writeFrame("data: test\n\n");
-    // If we get here without hanging, the fast path works.
+    // Guarded with Promise.race so a broken fast path fails rather than hangs.
+    const settled = await Promise.race([
+      writeFrame("data: test\n\n").then(() => "resolved" as const),
+      new Promise<"hung">((r) => setTimeout(() => r("hung"), 200).unref()),
+    ]);
+    assert.equal(settled, "resolved", "writeFrame must not hang when res.write returns true");
   });
 
   it("resolves when the abort signal fires while waiting for drain", async () => {
