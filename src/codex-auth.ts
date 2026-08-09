@@ -1,7 +1,9 @@
-import { open, readFile, rename } from "node:fs/promises";
+import { open, readFile, rename, unlink } from "node:fs/promises";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { Logger } from "./logger.js";
+import type { ProviderAuth, ProviderCredential } from "./provider-auth.js";
+import type { ProviderEvents } from "./provider-events.js";
 import { AuthFileSchema, TokenResponseSchema, type AuthFile, type TokenResponse } from "./wire-types.js";
 
 export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -9,10 +11,44 @@ export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 /** Refresh proactively when the access token expires within this margin. */
 const REFRESH_MARGIN_MS = 120_000;
 
-export interface CodexCredentials {
+/**
+ * Minimum interval between forced refreshes across requests. A persistent upstream
+ * 401 that survives a freshly-minted token must not trigger a full OAuth round-trip
+ * (token-endpoint call + fsync'd credential rewrite) on every subsequent request.
+ * RELI-05: apply this floor in forceRefresh() using the lastForcedRefreshMs field.
+ */
+const FORCE_REFRESH_COOLDOWN_MS = 30_000;
+
+/**
+ * What this file parses out of `~/.codex/auth.json` — deliberately NOT exported.
+ *
+ * These two fields are the ChatGPT OAuth pair, not a shape any other provider owes.
+ * The seam this class publishes is `ProviderCredential<"codex">`; this is the private
+ * material that seam is derived from, and keeping it unexported is what stops the
+ * ChatGPT-specific pair from becoming the de facto cross-provider credential type again.
+ */
+interface CodexTokenMaterial {
   readonly accessToken: string;
   readonly accountId: string;
 }
+
+/**
+ * Project the private token material onto the branded credential the handler consumes.
+ *
+ * Called per request rather than cached: `this.cached` holds material, so the
+ * interpolated `Bearer …` string is never given the cache's lifetime.
+ */
+const toCredential = (material: CodexTokenMaterial): ProviderCredential<"codex"> => ({
+  provider: "codex",
+  authHeaders: {
+    authorization: `Bearer ${material.accessToken}`,
+    "chatgpt-account-id": material.accountId,
+  },
+});
+
+const toCredentialResult = (
+  result: Result<CodexTokenMaterial, ProxyError>,
+): Result<ProviderCredential<"codex">, ProxyError> => (result.ok ? ok(toCredential(result.value)) : result);
 
 export interface AuthFileStore {
   read(): Promise<Result<string, ProxyError>>;
@@ -29,8 +65,29 @@ export const createFsAuthFileStore = (path: string): AuthFileStore => ({
   },
   async writeAtomic(content) {
     const tmpPath = `${path}.subswitch-${process.pid}.tmp`;
+    // Helper: open tmpPath with O_EXCL; on EEXIST (stale temp from a prior crashed run),
+    // unlink the stale file and retry ONCE. If the retry also fails (e.g., because a
+    // concurrent process raced to recreate the path), the error propagates to the outer
+    // catch. This is a bounded, single-retry — not a loop.
+    //
+    // O_EXCL (the "x" in "wx") ensures the open fails if a file already exists at that
+    // path. Without it, an attacker who pre-creates this path keeps their own mode on the
+    // file and receives the token material before the rename places it over auth.json.
+    // 0o600 grants only the process owner read/write access on the freshly-created file.
+    // Cleanup idiom (unlink-in-catch) mirrors the makeRealFsDeps.writeFile in src/init.ts.
+    const openExclusive = async () => {
+      try {
+        return await open(tmpPath, "wx", 0o600);
+      } catch (e: unknown) {
+        if ((e as { code?: string }).code !== "EEXIST") throw e;
+        // Stale temp from a prior crash or another process that did not clean up.
+        // Unlink it (the unlink may silently fail if another process races) then retry.
+        await unlink(tmpPath).catch(() => undefined);
+        return open(tmpPath, "wx", 0o600);
+      }
+    };
     try {
-      const handle = await open(tmpPath, "w", 0o600);
+      const handle = await openExclusive();
       try {
         await handle.writeFile(content, "utf8");
         await handle.sync();
@@ -40,6 +97,7 @@ export const createFsAuthFileStore = (path: string): AuthFileStore => ({
       await rename(tmpPath, path);
       return ok(undefined);
     } catch {
+      await unlink(tmpPath).catch(() => undefined);
       return err({ kind: "auth", message: `cannot write codex auth file at ${path}` });
     }
   },
@@ -82,19 +140,19 @@ const parseAuthFile = (raw: string): Result<AuthFile, ProxyError> => {
   return ok(parsed.data);
 };
 
-interface FileCredentials {
-  readonly credentials: CodexCredentials;
+interface CachedTokenMaterial {
+  readonly material: CodexTokenMaterial;
   readonly expiresAtMs: number;
 }
 
-const credentialsFrom = (file: AuthFile): Result<FileCredentials, ProxyError> => {
+const materialFrom = (file: AuthFile): Result<CachedTokenMaterial, ProxyError> => {
   const accessToken = file.tokens.access_token;
   const accountId = file.tokens.account_id ?? jwtAccountId(accessToken);
   if (accountId === undefined) {
     return err({ kind: "auth", message: "codex account id not found in auth file or token — run `codex login`" });
   }
   return ok({
-    credentials: { accessToken, accountId },
+    material: { accessToken, accountId },
     expiresAtMs: jwtExpiryMs(accessToken) ?? Number.POSITIVE_INFINITY,
   });
 };
@@ -108,57 +166,107 @@ export interface CodexAuthOptions {
   readonly store: AuthFileStore;
   readonly oauthTokenUrl: string;
   readonly logger: Logger;
+  /**
+   * Provider event names resolved at construction time from the closed `ProviderId`
+   * union.  Threading these through options rather than hardcoding `"codex_*"` literals
+   * ensures every auth event is table-derived — the same compile-time guarantee that
+   * `codex-handler.ts` and `codex-response.ts` enjoy via `providerEvents("codex")`.
+   */
+  readonly events: ProviderEvents<"codex">;
   readonly fetchImpl?: typeof fetch;
   readonly now?: () => number;
 }
 
-export class CodexAuthManager {
+/**
+ * `implements` is load-bearing, not decorative: it makes the compiler check conformance
+ * here, at the definition, instead of only where the manager is injected. An edit that
+ * broke the branded shape would otherwise surface as a puzzling error in `server.ts`.
+ */
+export class CodexAuthManager implements ProviderAuth<"codex"> {
+  /**
+   * Codex credentials are subscription OAuth tokens that rotate, so a pre-stream
+   * 401 is worth exactly one forced refresh. Read by the handler to size its retry
+   * bound; a static-key provider would set this false and get a single attempt.
+   * (applies ADR-002)
+   */
+  readonly refreshable = true;
+
   private readonly store: AuthFileStore;
   private readonly oauthTokenUrl: string;
   private readonly logger: Logger;
+  private readonly events: ProviderEvents<"codex">;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
-  private cached: FileCredentials | undefined;
-  private refreshInflight: Promise<Result<CodexCredentials, ProxyError>> | undefined;
+  private cached: CachedTokenMaterial | undefined;
+  private refreshInflight: Promise<Result<CodexTokenMaterial, ProxyError>> | undefined;
+  /** Timestamp of the last successful forceRefresh() call, for RELI-05 cooldown. */
+  private lastForcedRefreshMs: number | undefined;
 
   constructor(options: CodexAuthOptions) {
     this.store = options.store;
     this.oauthTokenUrl = options.oauthTokenUrl;
     this.logger = options.logger;
+    this.events = options.events;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? Date.now;
   }
 
-  async getCredentials(): Promise<Result<CodexCredentials, ProxyError>> {
+  async getCredentials(): Promise<Result<ProviderCredential<"codex">, ProxyError>> {
+    return toCredentialResult(await this.loadMaterial());
+  }
+
+  async forceRefresh(): Promise<Result<ProviderCredential<"codex">, ProxyError>> {
+    const now = this.now();
+    // RELI-05: if we ran a full refresh very recently and still have a cached token,
+    // serve the cached credential rather than hammering the token endpoint again.
+    // A persistent upstream 401 that survives a freshly-minted token cannot be resolved
+    // by re-running the same OAuth cycle; each cycle costs one token-endpoint call and
+    // one fsync'd rewrite of auth.json. Without this floor, 32 concurrent requests all
+    // getting 401 would fill all concurrency slots with simultaneous refresh + fsync cycles.
+    //
+    // The cooldown only applies when we have a cached token — if the previous refresh
+    // produced no usable credential, we always try again.
+    if (
+      this.lastForcedRefreshMs !== undefined &&
+      now - this.lastForcedRefreshMs < FORCE_REFRESH_COOLDOWN_MS &&
+      this.cached !== undefined
+    ) {
+      return ok(toCredential(this.cached.material));
+    }
+    this.lastForcedRefreshMs = now;
+    this.cached = undefined;
+    return toCredentialResult(await this.refresh());
+  }
+
+  /**
+   * Cached-or-loaded token material. Everything below this line works in material;
+   * only the two public methods above cross the branded seam.
+   */
+  private async loadMaterial(): Promise<Result<CodexTokenMaterial, ProxyError>> {
     if (this.cached !== undefined && this.cached.expiresAtMs - this.now() > REFRESH_MARGIN_MS) {
-      return ok(this.cached.credentials);
+      return ok(this.cached.material);
     }
     const raw = await this.store.read();
     if (!raw.ok) return raw;
     const file = parseAuthFile(raw.value);
     if (!file.ok) return file;
-    const fromFile = credentialsFrom(file.value);
+    const fromFile = materialFrom(file.value);
     if (fromFile.ok && fromFile.value.expiresAtMs - this.now() > REFRESH_MARGIN_MS) {
       this.cached = fromFile.value;
-      return ok(fromFile.value.credentials);
+      return ok(fromFile.value.material);
     }
     return this.refresh();
   }
 
-  async forceRefresh(): Promise<Result<CodexCredentials, ProxyError>> {
-    this.cached = undefined;
-    return this.refresh();
-  }
-
   /** Single-flight: concurrent callers share one refresh cycle. */
-  private refresh(): Promise<Result<CodexCredentials, ProxyError>> {
+  private refresh(): Promise<Result<CodexTokenMaterial, ProxyError>> {
     this.refreshInflight ??= this.doRefresh().finally(() => {
       this.refreshInflight = undefined;
     });
     return this.refreshInflight;
   }
 
-  private async doRefresh(): Promise<Result<CodexCredentials, ProxyError>> {
+  private async doRefresh(): Promise<Result<CodexTokenMaterial, ProxyError>> {
     const initialRead = await this.store.read();
     if (!initialRead.ok) return initialRead;
     const initialFile = parseAuthFile(initialRead.value);
@@ -173,7 +281,7 @@ export class CodexAuthManager {
     for (let attempt = 0; attempt < 2; attempt++) {
       const tokenResult = await this.callTokenEndpoint(refreshToken);
       if (tokenResult.ok) {
-        this.logger.log("info", "codex_token_refreshed");
+        this.logger.log("info", this.events.tokenRefreshed);
         return this.persistTokens(tokenResult.value, baselineLastRefresh);
       }
       if (tokenResult.error.invalidGrant && attempt === 0) {
@@ -181,22 +289,35 @@ export class CodexAuthManager {
         if (reread.ok) {
           const rereadFile = parseAuthFile(reread.value);
           if (rereadFile.ok && rereadFile.value.tokens.refresh_token !== refreshToken) {
-            this.logger.log("warn", "codex_refresh_token_rotated_externally");
+            this.logger.log("warn", this.events.refreshTokenRotatedExternally);
             refreshToken = rereadFile.value.tokens.refresh_token;
             baselineLastRefresh = rereadFile.value.last_refresh;
             continue;
           }
         }
       }
-      this.logger.log("error", "codex_token_refresh_failed", { errorCode: tokenResult.error.invalidGrant ? "invalid_grant" : "token_endpoint_error" });
+      this.logger.log("error", this.events.tokenRefreshFailed, { errorCode: tokenResult.error.invalidGrant ? "invalid_grant" : "token_endpoint_error" });
       return err({ kind: "auth", message: `codex token refresh failed (${tokenResult.error.message}) — run \`codex login\`` });
     }
-    return err({ kind: "auth", message: "codex token refresh exhausted retries — run `codex login`" });
+    // INVARIANT VIOLATION — this line is unreachable when the loop bound (attempt < 2) and
+    // the continue guard (attempt === 0) are in sync. The loop always exits via a return:
+    //   - success → persistTokens (inside loop)
+    //   - attempt 0 + invalidGrant + no rotation → error return (inside loop)
+    //   - attempt 1 (any failure) → error return (inside loop, because attempt===0 is false)
+    // Reaching here means these two have drifted apart in a later edit. This is a
+    // programming error, not a credential condition — do not report it as one.
+    // Match the idiom in codex-handler.ts (events.retryBoundViolated in the retry loop).
+    this.logger.log("error", this.events.refreshRetryBoundViolated);
+    return err({ kind: "upstream", message: "codex internal error: refresh retry bound violated", status: 500 });
   }
 
   private async callTokenEndpoint(refreshToken: string): Promise<Result<TokenResponse, TokenCallFailure>> {
     let response: Response;
     try {
+      // RELI-04: bound the token-endpoint call to 15 s. Without a timeout, a hung OAuth
+      // server holds the single-flight promise open indefinitely — all concurrent requests
+      // share the one refreshInflight promise, so all 32 concurrency slots fill and
+      // everything else 503s until undici's ~300 s default finally fires.
       response = await this.fetchImpl(this.oauthTokenUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -206,6 +327,7 @@ export class CodexAuthManager {
           refresh_token: refreshToken,
           scope: "openid profile email",
         }),
+        signal: AbortSignal.timeout(15_000),
       });
     } catch {
       return err({ invalidGrant: false, message: "token endpoint unreachable" });
@@ -237,7 +359,7 @@ export class CodexAuthManager {
   private async persistTokens(
     tokens: TokenResponse,
     baselineLastRefresh: string | undefined,
-  ): Promise<Result<CodexCredentials, ProxyError>> {
+  ): Promise<Result<CodexTokenMaterial, ProxyError>> {
     const reread = await this.store.read();
     const rereadFile = reread.ok ? parseAuthFile(reread.value) : reread;
 
@@ -249,11 +371,11 @@ export class CodexAuthManager {
       if (fileIsNewer) {
         // Another process refreshed while we were refreshing; its rotated
         // refresh token must not be clobbered. Newer file wins.
-        this.logger.log("warn", "codex_auth_file_newer_than_refresh");
-        const fromFile = credentialsFrom(fileNow);
+        this.logger.log("warn", this.events.authFileNewerThanRefresh);
+        const fromFile = materialFrom(fileNow);
         if (fromFile.ok) {
           this.cached = fromFile.value;
-          return ok(fromFile.value.credentials);
+          return ok(fromFile.value.material);
         }
       }
       const merged: AuthFile = {
@@ -268,27 +390,31 @@ export class CodexAuthManager {
       };
       const written = await this.store.writeAtomic(`${JSON.stringify(merged, null, 2)}\n`);
       if (!written.ok) {
-        this.logger.log("warn", "codex_auth_file_write_failed");
+        // RELI-02: escalate to error when the response carried a new refresh_token, because
+        // in that case the token endpoint rotated the token and the on-disk copy is now stale.
+        // The next OAuth call will use the dead on-disk token (invalid_grant) rather than the
+        // live in-memory one. A warn-level log here would make this silent in most dashboards.
+        this.logger.log(tokens.refresh_token !== undefined ? "error" : "warn", this.events.authFileWriteFailed);
       }
-      const fromMerged = credentialsFrom(merged);
+      const fromMerged = materialFrom(merged);
       if (!fromMerged.ok) return fromMerged;
       this.cached = fromMerged.value;
-      return ok(fromMerged.value.credentials);
+      return ok(fromMerged.value.material);
     }
 
     // File vanished or corrupted mid-refresh: serve the fresh token from memory
     // so this request still succeeds; the next cycle re-reads from disk.
-    this.logger.log("warn", "codex_auth_file_unreadable_after_refresh");
+    this.logger.log("warn", this.events.authFileUnreadableAfterRefresh);
     const accountId = jwtAccountId(tokens.access_token);
     if (accountId === undefined) {
       return err({ kind: "auth", message: "refreshed codex token has no account id — run `codex login`" });
     }
-    const fresh: FileCredentials = {
-      credentials: { accessToken: tokens.access_token, accountId },
+    const fresh: CachedTokenMaterial = {
+      material: { accessToken: tokens.access_token, accountId },
       expiresAtMs: jwtExpiryMs(tokens.access_token) ?? Number.POSITIVE_INFINITY,
     };
     this.cached = fresh;
-    return ok(fresh.credentials);
+    return ok(fresh.material);
   }
 }
 

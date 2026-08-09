@@ -14,8 +14,20 @@ import {
   type FakeUpstream,
   type UpstreamHandler,
 } from "./fake-upstreams.js";
+import { PROVIDER_IDS } from "../../src/models.js";
 
 const FAR_FUTURE_MS = Date.now() + 24 * 3600 * 1000;
+
+/**
+ * Provider name rendered in this leg's client-visible messages.
+ *
+ * The handler names itself from its own `providerId`, so this is the id `buildDeps`
+ * wires. Deriving it from `PROVIDER_IDS` rather than pinning the literal "codex" keeps
+ * these assertions honest: they are correct today only because `PROVIDER_IDS.length === 1`,
+ * and a literal would silently keep passing against the wrong name the moment this rig
+ * wires a different provider.
+ */
+const codexProviderName = PROVIDER_IDS[0];
 
 const loadSse = (name: string): string => readFileSync(new URL(`../fixtures/response/${name}`, import.meta.url), "utf8");
 const loadRequest = (name: string): string => readFileSync(new URL(`../fixtures/request/${name}`, import.meta.url), "utf8");
@@ -33,7 +45,10 @@ interface Rig {
   readonly authFilePath: string;
 }
 
-const setupRig = async (codexHandler: UpstreamHandler, options: { authFileContent?: string } = {}): Promise<Rig> => {
+const setupRig = async (
+  codexHandler: UpstreamHandler,
+  options: { authFileContent?: string; codexConfig?: Record<string, unknown> } = {},
+): Promise<Rig> => {
   const codex = await startFakeUpstream(codexHandler);
   const anthropic = await startFakeUpstream((_req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
@@ -56,7 +71,7 @@ const setupRig = async (codexHandler: UpstreamHandler, options: { authFileConten
 
   const subswitch = await startSubswitch({
     anthropic: { baseUrl: anthropic.url },
-    codex: { baseUrl: codex.url, oauthTokenUrl: `${oauth.url}/token`, authFile: authFilePath },
+    providers: { codex: { baseUrl: codex.url, oauthTokenUrl: `${oauth.url}/token`, authFile: authFilePath, ...options.codexConfig } },
   });
   cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
   return { subswitch, codex, anthropic, oauth, authFilePath };
@@ -189,7 +204,47 @@ describe("codex leg", () => {
     assert.deepEqual(authFile["future_cli_key"], { must: "survive" });
   });
 
-  it("passes 429 through with retry-after and a rate_limit_error body", async () => {
+  /**
+   * I2.1: upstream 401s on every request, body contains no "login" text.
+   * Assert /codex login/ in client message AND rig.oauth.requests.length === 1.
+   *
+   * The upstream body deliberately omits the word "login" so /codex login/ can only
+   * match the remediation suffix we add — not text forwarded from upstream.
+   *
+   * Mutation that MUST turn it red: delete the remediation suffix (set remediation = "").
+   * Proven red: assert.match(body.error.message, /codex login/) fails — "codex login"
+   * is absent from the base message "codex upstream error (401): ...".
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("I2.1 — a persistent 401 after refresh includes the loginCommand in the client-visible message", async () => {
+    // Codex upstream 401s on every request — the refresh+retry path runs fully.
+    // Body contains no "login" text so the assertion targets our suffix only.
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "token expired, no login hint here" } }));
+    });
+
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
+    assert.equal(response.status, 401);
+    const body = (await response.json()) as { error: { type: string; message: string } };
+    assert.equal(body.error.type, "authentication_error");
+    assert.match(body.error.message, /codex login/, "remediation suffix must name the login command");
+    // Exactly one token refresh must have been attempted (the retry path was exercised).
+    assert.equal(rig.oauth.requests.length, 1, "exactly one token refresh must be attempted before reporting 401");
+  });
+
+  /**
+   * I2.2: the existing 429 test gains assert.doesNotMatch(msg, /run `/).
+   * Remediation suffix must ONLY appear on 401, never on other status codes.
+   *
+   * Mutation that MUST turn it red: drop the `status === 401` condition so every
+   * upstream error gets a remediation suffix.
+   * Proven red: doesNotMatch(/run `/) fails because the suffix is now present on 429.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("passes 429 through with retry-after and a rate_limit_error body (I2.2: no remediation suffix)", async () => {
     const rig = await setupRig((_req, res) => {
       res.writeHead(429, { "content-type": "application/json", "retry-after": "7" });
       res.end(JSON.stringify({ error: { message: "rate limited" } }));
@@ -198,8 +253,43 @@ describe("codex leg", () => {
     const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     assert.equal(response.status, 429);
     assert.equal(response.headers.get("retry-after"), "7");
-    const body = (await response.json()) as { error: { type: string } };
+    const body = (await response.json()) as { error: { type: string; message: string } };
     assert.equal(body.error.type, "rate_limit_error");
+    // The remediation suffix must ONLY appear on 401 — never on other status codes.
+    assert.doesNotMatch(body.error.message, /run `/, "remediation suffix must not appear on 429");
+  });
+
+  /**
+   * I3.1 — upstream returns 500 with a body containing a JWT.
+   * The client-visible body must contain no `eyJ…` prefix but MUST retain
+   * the surrounding words — proving surgical redaction, not message erasure.
+   *
+   * Mutation that MUST turn this red: remove the redactCredentials call from
+   * toAnthropicErrorBody (or from wherever it lives after the fix).
+   * Proven red: the !includes("eyJ") assertion fails because the raw JWT appears.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("I3.1 — upstream 500 body containing a JWT is redacted but surrounding words are kept", async () => {
+    const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIn0.sig";
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(500, { "content-type": "text/plain" });
+      res.end(`token ${jwt} was rejected by the server`);
+    });
+
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
+    assert.equal(response.status, 500);
+    const body = (await response.json()) as { error: { type: string; message: string } };
+    // JWT must be redacted
+    assert.ok(
+      !body.error.message.includes("eyJ"),
+      `JWT must not appear in client-visible message, got: ${body.error.message}`,
+    );
+    // Surrounding context must be preserved (surgical redaction, not nuke)
+    assert.ok(
+      body.error.message.includes("token") && body.error.message.includes("rejected"),
+      `surrounding context must be preserved, got: ${body.error.message}`,
+    );
   });
 
   it("answers count_tokens locally with the chars/4 estimate", async () => {
@@ -255,6 +345,94 @@ describe("codex leg", () => {
     assert.deepEqual(await anthropicResponse.json(), { id: "msg_from_anthropic" });
   });
 
+  // F10: auth file ENOENT — the error message must include `codex login` so the
+  // user knows how to recover (not just "cannot read file" with no action).
+  it("F10 — returns 401 with 'codex login' instruction when auth file does not exist", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-f10-test-"));
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
+    });
+    const subswitch = await startSubswitch(
+      {
+        anthropic: { baseUrl: anthropic.url },
+        // Point authFile at a path that does not exist — ENOENT scenario.
+        providers: { codex: { authFile: join(dir, "auth-does-not-exist.json") } },
+      },
+    );
+    try {
+      const codexResponse = await postMessages(
+        subswitch,
+        // gpt-5.6-sol routes to codex; auth failure surfaces there.
+        JSON.stringify({ model: "gpt-5.6-sol", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+      );
+      assert.equal(codexResponse.status, 401, "ENOENT auth file must return 401");
+      const body = (await codexResponse.json()) as { error: { type: string; message: string } };
+      assert.equal(body.error.type, "authentication_error");
+      assert.match(body.error.message, /codex login/, "error message must instruct user to run 'codex login'");
+
+      // Anthropic fallback must still work (codex leg degradation, not full outage).
+      const anthropicResponse = await postMessages(
+        subswitch,
+        JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+      );
+      assert.equal(anthropicResponse.status, 200, "Anthropic fallback must still work after codex auth failure");
+    } finally {
+      await subswitch.close();
+      await anthropic.close();
+    }
+  });
+
+  /**
+   * I1.1: rawHeaders name sequence has auth-first, then transport constants.
+   *
+   * undici preserves the relative order of the eight application headers onto the wire
+   * (verified live 2026-08-07, Node 22.22.3 / undici 6.24.1, HTTP/1.1 only).
+   * We filter rawHeaders to only the eight application names to tolerate undici-injected
+   * headers (host, connection, accept-language, sec-fetch-mode, accept-encoding,
+   * content-length) — that filtering is what keeps the assertion non-brittle across
+   * undici version bumps while remaining fully falsifiable by the U1.1 mutation.
+   *
+   * Mutation that MUST turn it red: move the auth spread back to last (same as U1.1).
+   * Proven red: deepEqual fails — first two names are openai-beta/originator, not authorization/chatgpt-account-id.
+   *
+   * PF-005 scope: PF-005 forbids using the e2e/README.md wrong-transport capture table
+   * to change header names or values. It does NOT govern order. (avoids PF-005)
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("I1.1 — outgoing rawHeaders name sequence is auth-first, then transport constants", async () => {
+    const APPLICATION_HEADERS = new Set([
+      "authorization",
+      "chatgpt-account-id",
+      "openai-beta",
+      "originator",
+      "session_id",
+      "accept",
+      "content-type",
+      "user-agent",
+    ]);
+
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
+    assert.equal(response.status, 200);
+    await response.text();
+
+    const rawHeaders = rig.codex.requests[0]!.rawHeaders;
+    // rawHeaders is flat [name, value, name, value, ...].
+    // Even indices are names; odd indices are values.
+    // Filter to the eight application-level headers to tolerate undici-injected ones.
+    const appNames = rawHeaders
+      .filter((_entry, i) => i % 2 === 0)
+      .filter((name) => APPLICATION_HEADERS.has(name.toLowerCase()))
+      .map((name) => name.toLowerCase());
+
+    assert.deepEqual(
+      appNames,
+      ["authorization", "chatgpt-account-id", "openai-beta", "originator", "session_id", "accept", "content-type", "user-agent"],
+      "auth headers must come first on the wire, then transport constants (live-verified 2026-08-07)",
+    );
+  });
+
   it("sets the user-agent header from codex.userAgent config", async () => {
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
     const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
@@ -289,12 +467,12 @@ describe("codex leg", () => {
 
     const subswitch = await startSubswitch({
       anthropic: { baseUrl: anthropic.url },
-      codex: {
+      providers: { codex: {
         baseUrl: codex.url,
         oauthTokenUrl: `${oauth.url}/token`,
         authFile: authFilePath,
         userAgent: "my-custom-agent/1.0",
-      },
+      } },
     });
     cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
 
@@ -377,6 +555,207 @@ describe("codex leg", () => {
     assert.notEqual(id1, id2, "distinct conversations must produce distinct session_ids");
   });
 
+  // ---------------------------------------------------------------------------
+  // Unclosed content-block regression tests (paths a, b, c/d).
+  // These run on the NON-STREAMING path so they exercise aggregateFrames.
+  // ---------------------------------------------------------------------------
+
+  it("path a: recovers content when response.completed fires before output_item.done (flush synthesis)", async () => {
+    const rig = await setupRig(sseHandler(loadSse("completed-before-done.sse")));
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    // Must be 200 with non-empty content — never a 200 with empty content.
+    assert.equal(response.status, 200);
+    const message = (await response.json()) as Record<string, unknown>;
+    const content = message["content"] as unknown[];
+    assert.deepEqual(content, [{ type: "text", text: "Hello" }]);
+  });
+
+  it("path b: recovers content when stream ends with no response.completed (flush synthesis)", async () => {
+    const rig = await setupRig(sseHandler(loadSse("eof-mid-block.sse")));
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    // Must be 200 with non-empty content — the synthesised stop preserves accumulated deltas.
+    assert.equal(response.status, 200);
+    const message = (await response.json()) as Record<string, unknown>;
+    const content = message["content"] as unknown[];
+    assert.deepEqual(content, [{ type: "text", text: "Partial text" }]);
+    // RELI-01: flush() must emit message_delta with stop_reason so aggregateFrames does not
+    // return stop_reason:null — a truncated turn must look like a max_tokens truncation,
+    // not a turn that simply never produced a stop reason.
+    assert.equal(message["stop_reason"], "max_tokens", "path b truncation must yield stop_reason max_tokens");
+  });
+
+  it("path c: returns 502 when a block has unmatched deltas (content unrecoverable)", async () => {
+    // done-without-id.sse: output_item.added has neither item.id nor output_index;
+    // all deltas are unmatched; flush() must emit an error frame instead of empty content.
+    const rig = await setupRig(sseHandler(loadSse("done-without-id.sse")));
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    // Must be 502 — a 200 with empty content is the data-loss bug we are preventing.
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "api_error");
+  });
+
+  // P1-4 path (d): done.item.id differs from added.item.id but output_index matches.
+  // Current behaviour (verified by probing): content is preserved via the output_index
+  // fallback lookup.  This test closes a test gap, not a behaviour gap.
+  it("path d: returns 200 with content when output_item.done carries a different id than added", async () => {
+    const rig = await setupRig(sseHandler(loadSse("done-id-mismatch.sse")));
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 200);
+    const message = (await response.json()) as Record<string, unknown>;
+    assert.deepEqual(message["content"], [{ type: "text", text: "hello world" }]);
+  });
+
+  // P0-1: function_call block with truncated arguments must return 502, not 200 with input:{}.
+  it("returns 502 when a function_call block has truncated (unparseable) arguments", async () => {
+    const truncatedToolArgs = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"r6","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc1","call_id":"call_x","name":"write_file"}}',
+      '',
+      'event: response.function_call_arguments.delta',
+      'data: {"type":"response.function_call_arguments.delta","item_id":"fc1","output_index":0,"delta":"{\\"path\\":\\"/etc/hosts\\",\\"content\\":\\"DAN"}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"r6","model":"gpt-5.5","status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}',
+      '',
+      '',
+    ].join('\n');
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(truncatedToolArgs);
+    });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "api_error");
+  });
+
+  // P0-2 Variant A: block opened, no delta, EOF before terminal event → 502, not 200 with empty content.
+  it("returns 502 when a block is opened but EOF arrives before any delta or terminal event", async () => {
+    const truncatedNoContent = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"r7","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m7","role":"assistant"}}',
+      '',
+      '',
+    ].join('\n');
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(truncatedNoContent);
+    });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "api_error");
+  });
+
+  // P0-2 Variant B: response.created only, no blocks, EOF before terminal event → 502, not 200 with content:[].
+  it("returns 502 when stream ends after response.created with no output blocks and no terminal event", async () => {
+    const truncatedNoBlocks = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"r9","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      '',
+    ].join('\n');
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(truncatedNoBlocks);
+    });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "api_error");
+  });
+
+  // P1-5: mid-stream upstream destroy on the non-streaming path must return 502.
+  it("shapes mid-stream upstream failures as a 502 on the non-streaming path", async () => {
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write('event: response.created\ndata: {"type":"response.created","response":{"id":"resp_x","model":"gpt-5.5"}}\n\n');
+      setTimeout(() => res.destroy(), 30);
+    });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string; message: string } };
+    assert.equal(body.error.type, "api_error");
+    assert.equal(body.error.message, `${codexProviderName} stream interrupted`);
+  });
+
+  it("aggregation !ok maps to 502 (no message_start in stream)", async () => {
+    // A stream with only unknown events produces no message_start; aggregateFrames
+    // returns err(...), which the handler must map to 502 api_error.
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end('event: unknown.event\ndata: {"type":"unknown.event"}\n\n');
+    });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "api_error");
+  });
+
+  /**
+   * RELI-06: the non-streaming frame accumulation buffer must be bounded.
+   *
+   * All other buffers on the non-streaming path are bounded (SSE parser: maxSseEventBytes,
+   * request body: maxBodyBytes, translator: MAX_CONTENT_BLOCKS). The accumulation loop
+   * was the only remaining upstream-controlled, unbounded buffer.
+   *
+   * When the cap is exceeded the handler must return 502, not a 200 with empty or
+   * partial content. Returning a truncated frames array to aggregateFrames would
+   * produce the silent-loss shape PF-008 exists to prevent.
+   *
+   * Mutation proof (PF-011/PF-012): raising maxAggregateBytes to Number.MAX_SAFE_INTEGER
+   * in the implementation causes this test to fail — the cap is never exceeded, the
+   * pipeline completes normally, and aggregateFrames returns a 200. Verified RED against
+   * that mutation before trusting green. Restored cap to provider.maxAggregateBytes.
+   */
+  it("RELI-06 — returns 502 when non-streaming frames exceed maxAggregateBytes", async () => {
+    // Cap set to 1 byte so the very first translated frame triggers the limit.
+    // Non-streaming request (no stream:true) so frames accumulate before aggregation.
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")), { codexConfig: { maxAggregateBytes: 1 } });
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 502);
+    const body = (await response.json()) as { error: { type: string; message: string } };
+    assert.equal(body.error.type, "api_error");
+    assert.match(body.error.message, /stream interrupted/);
+  });
+
   it("shapes mid-stream upstream failures as an SSE error event", async () => {
     const rig = await setupRig((_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -389,7 +768,150 @@ describe("codex leg", () => {
     const text = await response.text();
     assert.match(text, /event: message_start/);
     assert.match(text, /event: error/);
-    assert.match(text, /codex stream interrupted/);
+    assert.ok(
+      text.includes(`${codexProviderName} stream interrupted`),
+      `error frame must name the resolved provider; got: ${text}`,
+    );
     assert.equal(rig.codex.requests.length, 1, "mid-stream failures must not be retried");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Phase B: alias resolution — model string no longer does double duty
+  // ---------------------------------------------------------------------------
+
+  it("sends the canonical model id upstream when a derived family alias is used in the request", async () => {
+    // Default config uses the built-in model registry — all non-retired registry ids are routable.
+    // "sol" is a derived family alias for "gpt-5.6-sol".
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const body = JSON.stringify({ model: "sol", stream: true, messages: [{ role: "user", content: "hi" }] });
+    const response = await postMessages(rig.subswitch, body);
+    assert.equal(response.status, 200);
+    await response.text();
+    const sent = JSON.parse(rig.codex.requests[0]!.body.toString("utf8")) as Record<string, unknown>;
+    assert.equal(sent["model"], "gpt-5.6-sol", "alias must be resolved to canonical before going upstream");
+    assert.equal(rig.anthropic.requests.length, 0, "alias for a codex model must not leak to Anthropic");
+  });
+
+  it("routes a derived family alias to the Codex leg (not Anthropic)", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const body = JSON.stringify({ model: "sol", stream: true, messages: [{ role: "user", content: "hi" }] });
+    const response = await postMessages(rig.subswitch, body);
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.equal(rig.codex.requests.length, 1, "request with alias must reach the Codex upstream");
+    assert.equal(rig.anthropic.requests.length, 0);
+  });
+
+  it("answers count_tokens for a derived alias via the Codex leg (handled locally)", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const body = JSON.stringify({ model: "sol", messages: [{ role: "user", content: "estimate me" }] });
+    const response = await postMessages(rig.subswitch, body, "/v1/messages/count_tokens");
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { input_tokens: Math.ceil(body.length / 4) });
+    assert.equal(rig.anthropic.requests.length, 0, "count_tokens alias must not leak to Anthropic");
+  });
+
+  it("alias and its canonical produce the same session_id and prompt_cache_key", async () => {
+    // This test is the critical invariant of Phase B: canonical threading ensures that
+    // a user sending "sol" and a user sending "gpt-5.6-sol" share a conversation id.
+    const scripts = [loadSse("text-only.sse"), loadSse("text-only.sse")];
+    const rig = await setupRig((_req, res, _body, index) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(scripts[index]);
+    });
+
+    const userMsg = [{ role: "user", content: "same conversation content" }];
+    const reqAlias = JSON.stringify({ model: "sol", stream: true, messages: userMsg });
+    const reqCanonical = JSON.stringify({ model: "gpt-5.6-sol", stream: true, messages: userMsg });
+
+    const r1 = await postMessages(rig.subswitch, reqAlias);
+    await r1.text();
+    const r2 = await postMessages(rig.subswitch, reqCanonical);
+    await r2.text();
+
+    const req1 = rig.codex.requests[0]!;
+    const req2 = rig.codex.requests[1]!;
+
+    const sid1 = req1.headers["session_id"];
+    const sid2 = req2.headers["session_id"];
+    assert.ok(typeof sid1 === "string" && sid1.length > 0, "session_id must be present");
+    assert.equal(sid1, sid2, "alias and canonical must produce the same session_id");
+
+    const body1 = JSON.parse(req1.body.toString("utf8")) as Record<string, unknown>;
+    const body2 = JSON.parse(req2.body.toString("utf8")) as Record<string, unknown>;
+    assert.ok(typeof body1["prompt_cache_key"] === "string", "prompt_cache_key must be present for canonical request");
+    assert.equal(
+      body1["prompt_cache_key"],
+      body2["prompt_cache_key"],
+      "alias and canonical must produce the same prompt_cache_key",
+    );
+  });
+
+  it("message_start falls back to the canonical model id when upstream omits model in response.created", async () => {
+    // When response.created carries no model, options.model (which must be canonical) is the fallback.
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(
+        [
+          'event: response.created',
+          'data: {"type":"response.created","response":{"id":"resp_alias_test","status":"in_progress"}}',
+          '',
+          'event: response.completed',
+          'data: {"type":"response.completed","response":{"id":"resp_alias_test","status":"completed","usage":{"input_tokens":1,"output_tokens":0}}}',
+          '',
+        ].join('\n'),
+      );
+    });
+    const body = JSON.stringify({ model: "sol", stream: true, messages: [{ role: "user", content: "hi" }] });
+    const response = await postMessages(rig.subswitch, body);
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    const startFrame = text.split("\n\n").find((f) => f.includes('"type":"message_start"'));
+    assert.ok(startFrame !== undefined, "message_start frame must be present");
+    const startLine = startFrame.split("\n").find((l) => l.startsWith("data: "));
+    assert.ok(startLine !== undefined);
+    const startData = JSON.parse(startLine.slice(6)) as { message: { model: string } };
+    assert.equal(startData.message.model, "gpt-5.6-sol", "options.model fallback must be the canonical, not the alias");
+  });
+
+  it("a codex.aliases config override routes a non-registry id upstream and proves override precedence", async () => {
+    // Overriding 'sol' to 'gpt-9-sol' (not in registry) verifies:
+    //   1. config override takes precedence over the derived family alias
+    //   2. the override target becomes routable via the alias map
+    //   3. the upstream receives the exact override target
+    const codex = await startFakeUpstream(sseHandler(loadSse("text-only.sse")));
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
+    });
+    const oauth = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ access_token: makeAccessToken(Date.now() + 3_600_000) }));
+    });
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-test-alias-override-"));
+    const authFilePath = join(dir, "auth.json");
+    await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(FAR_FUTURE_MS)), "utf8");
+
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: anthropic.url },
+      providers: { codex: {
+        baseUrl: codex.url,
+        oauthTokenUrl: `${oauth.url}/token`,
+        authFile: authFilePath,
+        aliases: { sol: "gpt-9-sol" },
+      } },
+    });
+    cleanups.push(subswitch.close, codex.close, anthropic.close, oauth.close);
+
+    const response = await fetch(`${subswitch.url}/v1/messages?beta=true`, {
+      method: "POST",
+      headers: { authorization: "Bearer sk-ant", "anthropic-beta": "oauth-2025-04-20", "content-type": "application/json" },
+      body: JSON.stringify({ model: "sol", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    });
+    assert.equal(response.status, 200);
+    await response.text();
+    const sent = JSON.parse(codex.requests[0]!.body.toString("utf8")) as Record<string, unknown>;
+    assert.equal(sent["model"], "gpt-9-sol", "config override target must be sent upstream");
+    assert.equal(anthropic.requests.length, 0, "config override must route to Codex, not Anthropic");
   });
 });

@@ -1,0 +1,14 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_did1","model":"gpt-5.5","status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_added1","role":"assistant"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_added1","output_index":0,"delta":"hello world"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_done_other","role":"assistant"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_did1","model":"gpt-5.5","status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}

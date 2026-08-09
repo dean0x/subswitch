@@ -1,7 +1,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { CodexAuthManager, inspectAuthFile, type AuthFileStore } from "../../src/codex-auth.js";
+import { mkdtemp, open, mkdir, stat, access } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { CodexAuthManager, createFsAuthFileStore, inspectAuthFile, type AuthFileStore } from "../../src/codex-auth.js";
 import { noopLogger } from "../../src/logger.js";
+import { providerEvents } from "../../src/provider-events.js";
 import { ok, err } from "../../src/result.js";
 
 const NOW_MS = 1_800_000_000_000;
@@ -75,6 +79,7 @@ const manager = (store: AuthFileStore, endpoint: FakeTokenEndpoint): CodexAuthMa
     store,
     oauthTokenUrl: "http://oauth.test/token",
     logger: noopLogger,
+    events: providerEvents("codex"),
     fetchImpl: endpoint.fetchImpl,
     now: () => NOW_MS,
   });
@@ -85,7 +90,12 @@ describe("CodexAuthManager", () => {
     const endpoint = fakeTokenEndpoint(() => tokenResponse(accessToken(3_600_000)));
     const result = await manager(store, endpoint).getCredentials();
     assert.ok(result.ok);
-    assert.equal(result.value.accountId, "acct_1234567890");
+    // The manager's public contract is a branded credential carrying auth headers, not
+    // the ChatGPT token pair: the pair stays private to codex-auth.ts. These are the two
+    // headers the Codex leg has always sent, asserted at the boundary that now produces them.
+    assert.equal(result.value.provider, "codex", "the brand must name the provider these headers belong to");
+    assert.deepEqual(Object.keys(result.value.authHeaders).sort(), ["authorization", "chatgpt-account-id"]);
+    assert.equal(result.value.authHeaders["chatgpt-account-id"], "acct_1234567890");
     assert.equal(endpoint.calls.length, 0);
     assert.equal(store.writes.length, 0);
   });
@@ -96,7 +106,7 @@ describe("CodexAuthManager", () => {
     const endpoint = fakeTokenEndpoint(() => tokenResponse(newToken, "refresh-2"));
     const result = await manager(store, endpoint).getCredentials();
     assert.ok(result.ok);
-    assert.equal(result.value.accessToken, newToken);
+    assert.equal(result.value.authHeaders["authorization"], `Bearer ${newToken}`);
     assert.equal(endpoint.calls.length, 1);
     assert.equal(endpoint.calls[0]!.refresh_token, "refresh-1");
 
@@ -125,7 +135,7 @@ describe("CodexAuthManager", () => {
     });
     const result = await manager(store, endpoint).getCredentials();
     assert.ok(result.ok);
-    assert.equal(result.value.accessToken, newToken);
+    assert.equal(result.value.authHeaders["authorization"], `Bearer ${newToken}`);
     assert.deepEqual(
       endpoint.calls.map((call) => call.refresh_token),
       ["refresh-1", "refresh-rotated"],
@@ -168,7 +178,11 @@ describe("CodexAuthManager", () => {
     }));
     const result = await manager(store, endpoint).getCredentials();
     assert.ok(result.ok);
-    assert.equal(result.value.accessToken, cliToken, "credentials should come from the newer file");
+    assert.equal(
+      result.value.authHeaders["authorization"],
+      `Bearer ${cliToken}`,
+      "credentials should come from the newer file",
+    );
     assert.equal(store.writes.length, 0, "the CLI's rotated refresh token must not be clobbered");
   });
 
@@ -182,12 +196,259 @@ describe("CodexAuthManager", () => {
       store,
       oauthTokenUrl: "http://oauth.test/token",
       logger: noopLogger,
+      events: providerEvents("codex"),
       fetchImpl: endpoint.fetchImpl,
       now: () => NOW_MS,
     }).getCredentials();
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "auth");
     assert.equal(endpoint.calls.length, 0);
+  });
+
+  /**
+   * RELI-04: callTokenEndpoint must pass a timeout signal to the fetch implementation.
+   *
+   * Without AbortSignal.timeout(15_000), a hung OAuth server holds the single-flight
+   * refreshInflight promise open indefinitely — all 32 concurrent requests share one
+   * hung promise, filling all concurrency slots and returning 503 until undici's ~300 s
+   * default fires.
+   *
+   * Mutation that MUST turn this RED: remove `signal: AbortSignal.timeout(15_000)` from
+   * the callTokenEndpoint fetch call → capturedSignal is undefined → assertion fails.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("RELI-04 — callTokenEndpoint passes a timeout signal to the fetch implementation", async () => {
+    const store = memoryStore(authFile(accessToken(60_000))); // near-expiry → triggers refresh
+    let capturedSignal: AbortSignal | undefined;
+
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: noopLogger,
+      events: providerEvents("codex"),
+      fetchImpl: async (_url, init) => {
+        capturedSignal = (init?.signal ?? undefined) as AbortSignal | undefined;
+        // Return a valid token response so the refresh completes.
+        return new Response(
+          JSON.stringify({ access_token: accessToken(3_600_000) }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      },
+      now: () => NOW_MS,
+    });
+
+    await auth.getCredentials();
+
+    assert.ok(capturedSignal !== undefined, "callTokenEndpoint must pass a signal to fetch");
+    assert.ok(!capturedSignal.aborted, "signal must not be pre-aborted when the request starts");
+  });
+
+  /**
+   * RELI-05: forceRefresh() must honour a 30-second cooldown window.
+   *
+   * A persistent upstream 401 that survives a freshly-minted token cannot be resolved by
+   * re-running the same OAuth cycle. Without this floor, each request in a 401 storm runs
+   * its own token-endpoint call + fsync'd credential rewrite, permanently degrading the
+   * server once all concurrency slots fill.
+   *
+   * Mutation that MUST turn this RED: remove the cooldown guard (always refresh).
+   * Without it the second forceRefresh() within the window calls the token endpoint;
+   * endpoint.calls.length increases → assert.equal(endpoint.calls.length, callsAfterFirst)
+   * fails.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("RELI-05 — forceRefresh skips the token endpoint within the 30-second cooldown window", async () => {
+    let nowMs = NOW_MS;
+    const store = memoryStore(authFile(accessToken(60_000))); // near-expiry → triggers refresh
+    const endpoint = fakeTokenEndpoint(() => tokenResponse(accessToken(3_600_000)));
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: noopLogger,
+      events: providerEvents("codex"),
+      fetchImpl: endpoint.fetchImpl,
+      now: () => nowMs,
+    });
+
+    // First forceRefresh: no prior lastForcedRefreshMs, so it runs a real refresh.
+    const first = await auth.forceRefresh();
+    assert.ok(first.ok, "first forceRefresh must succeed");
+    const callsAfterFirst = endpoint.calls.length;
+    assert.ok(callsAfterFirst >= 1, "first forceRefresh must have called the token endpoint");
+
+    // Second forceRefresh within the cooldown window must NOT hit the token endpoint.
+    nowMs += 10_000; // 10 seconds later — still within the 30-second window
+    const second = await auth.forceRefresh();
+    assert.ok(second.ok, "second forceRefresh (within cooldown) must return a credential");
+    assert.equal(
+      endpoint.calls.length,
+      callsAfterFirst,
+      "forceRefresh within the cooldown window must not call the token endpoint",
+    );
+
+    // After the cooldown expires, forceRefresh must run a real refresh again.
+    nowMs += 25_000; // 35 seconds total — past the 30-second window
+    const third = await auth.forceRefresh();
+    assert.ok(third.ok, "third forceRefresh (after cooldown expiry) must succeed");
+    assert.ok(
+      endpoint.calls.length > callsAfterFirst,
+      "forceRefresh after the cooldown window must call the token endpoint",
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // Auth event names are table-derived (avoids ARCH-05 / CONS-01).
+  //
+  // These tests use a recording logger and assert the logged event name equals
+  // the events record's field value.  Because the events record is built from
+  // the closed ProviderId union via providerEvents(), a hardcoded string literal
+  // that happened to match today would become a tsc error the moment it was
+  // written inside a generic function — the type-level gate is the primary
+  // control.  The tests here are the runtime half: they confirm the manager
+  // actually READS from the events record it was handed, not from an internal
+  // constant, so a future addition of a second provider id cannot silently emit
+  // a misnamed event.
+  //
+  // PF-011 / PF-012: each control below has a named falsifier.
+  // -------------------------------------------------------------------------
+
+  /**
+   * tokenRefreshed is emitted on a successful refresh cycle.
+   *
+   * Falsifier: replace `this.events.tokenRefreshed` in doRefresh() with a
+   * hardcoded string that does not match the events record's value → the
+   * `events.includes(events.tokenRefreshed)` assertion fails.
+   */
+  it("emits events.tokenRefreshed after a successful token-endpoint call", async () => {
+    const loggedEvents: string[] = [];
+    const recordingLogger = { log: (_level: string, event: string) => { loggedEvents.push(event); } };
+    const events = providerEvents("codex");
+    const store = memoryStore(authFile(accessToken(60_000))); // near-expiry → triggers refresh
+    const endpoint = fakeTokenEndpoint(() => tokenResponse(accessToken(3_600_000)));
+
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: recordingLogger,
+      events,
+      fetchImpl: endpoint.fetchImpl,
+      now: () => NOW_MS,
+    });
+
+    const result = await auth.getCredentials();
+    assert.ok(result.ok, "refresh must succeed");
+    assert.ok(
+      loggedEvents.includes(events.tokenRefreshed),
+      `tokenRefreshed event must be logged via the events record; logged: ${loggedEvents.join(", ")}`,
+    );
+  });
+
+  /**
+   * tokenRefreshFailed is emitted when the token endpoint returns invalid_grant
+   * with no external rotation available (single attempt, no continue).
+   *
+   * Falsifier: replace `this.events.tokenRefreshFailed` with a hardcoded string
+   * → the includes() assertion fails.
+   */
+  it("emits events.tokenRefreshFailed when the token endpoint rejects the refresh", async () => {
+    const loggedEvents: string[] = [];
+    const recordingLogger = { log: (_level: string, event: string) => { loggedEvents.push(event); } };
+    const events = providerEvents("codex");
+    const store = memoryStore(authFile(accessToken(60_000)));
+    const endpoint = fakeTokenEndpoint(() => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 }));
+
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: recordingLogger,
+      events,
+      fetchImpl: endpoint.fetchImpl,
+      now: () => NOW_MS,
+    });
+
+    const result = await auth.getCredentials();
+    assert.ok(!result.ok, "refresh must fail");
+    assert.ok(
+      loggedEvents.includes(events.tokenRefreshFailed),
+      `tokenRefreshFailed event must be logged via the events record; logged: ${loggedEvents.join(", ")}`,
+    );
+  });
+
+  /**
+   * refreshTokenRotatedExternally is emitted when a concurrent process rotated
+   * the refresh token between our read and our call, and we re-read and retry.
+   *
+   * Falsifier: replace `this.events.refreshTokenRotatedExternally` with a
+   * hardcoded string → the includes() assertion fails.
+   */
+  it("emits events.refreshTokenRotatedExternally when a concurrent process rotated the token", async () => {
+    const loggedEvents: string[] = [];
+    const recordingLogger = { log: (_level: string, event: string) => { loggedEvents.push(event); } };
+    const events = providerEvents("codex");
+    const store = memoryStore(authFile(accessToken(60_000)));
+    const newToken = accessToken(3_600_000);
+    const endpoint = fakeTokenEndpoint((call) => {
+      if (call.refresh_token === "refresh-1") {
+        // Simulate external rotation — update store with a different refresh token.
+        const updated = JSON.parse(store.content) as { tokens: Record<string, unknown> };
+        updated.tokens["refresh_token"] = "refresh-rotated";
+        store.content = JSON.stringify(updated);
+        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      }
+      return tokenResponse(newToken);
+    });
+
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: recordingLogger,
+      events,
+      fetchImpl: endpoint.fetchImpl,
+      now: () => NOW_MS,
+    });
+
+    const result = await auth.getCredentials();
+    assert.ok(result.ok, "refresh must succeed after using the rotated token");
+    assert.ok(
+      loggedEvents.includes(events.refreshTokenRotatedExternally),
+      `refreshTokenRotatedExternally must be logged via the events record; logged: ${loggedEvents.join(", ")}`,
+    );
+  });
+
+  /**
+   * authFileWriteFailed is emitted when writeAtomic fails.
+   *
+   * Falsifier: replace `this.events.authFileWriteFailed` with a hardcoded string
+   * → the includes() assertion fails.
+   */
+  it("emits events.authFileWriteFailed when writeAtomic fails during token persistence", async () => {
+    const loggedEvents: string[] = [];
+    const recordingLogger = { log: (_level: string, event: string) => { loggedEvents.push(event); } };
+    const events = providerEvents("codex");
+    // A store whose read succeeds but write always fails.
+    const failingWriteStore: AuthFileStore = {
+      async read() { return ok(JSON.stringify(authFile(accessToken(60_000)))); },
+      async writeAtomic() { return err({ kind: "auth", message: "disk full" }); },
+    };
+    const endpoint = fakeTokenEndpoint(() => tokenResponse(accessToken(3_600_000)));
+
+    const auth = new CodexAuthManager({
+      store: failingWriteStore,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: recordingLogger,
+      events,
+      fetchImpl: endpoint.fetchImpl,
+      now: () => NOW_MS,
+    });
+
+    // The refresh itself still serves the fresh token even though persistence failed.
+    await auth.getCredentials();
+    assert.ok(
+      loggedEvents.includes(events.authFileWriteFailed),
+      `authFileWriteFailed must be logged via the events record; logged: ${loggedEvents.join(", ")}`,
+    );
   });
 });
 
@@ -205,5 +466,121 @@ describe("inspectAuthFile", () => {
   it("rejects corrupt files", () => {
     assert.ok(!inspectAuthFile("not json").ok);
     assert.ok(!inspectAuthFile('{"tokens":{}}').ok);
+  });
+});
+
+/**
+ * createFsAuthFileStore — O_EXCL and cleanup tests.
+ *
+ * These test the REAL file-system implementation, not the in-memory stub, so they can
+ * verify the security properties of the atomic write path.
+ *
+ * The temp path the store constructs is: `${path}.subswitch-${process.pid}.tmp`.
+ * Tests derive this the same way so they can set up preconditions and inspect residue.
+ */
+describe("createFsAuthFileStore — O_EXCL and cleanup", () => {
+  /** Returns authFilePath (auth.json inside a fresh temp dir) and the derived tmpPath. */
+  const makePaths = async (prefix: string): Promise<{ authFilePath: string; tmpPath: string }> => {
+    const dir = await mkdtemp(join(tmpdir(), prefix));
+    const authFilePath = join(dir, "auth.json");
+    return { authFilePath, tmpPath: `${authFilePath}.subswitch-${process.pid}.tmp` };
+  };
+
+  /**
+   * T4a: a stale temp file (EEXIST) must be detected, unlinked, and the open retried — so
+   * a previous crash does not permanently block credential rotation.
+   *
+   * The "stale crash temp" scenario: process P crashed between open() and rename(), leaving
+   * `auth.json.subswitch-<pid>.tmp` on disk. When we next call writeAtomic(), we get EEXIST
+   * on the "wx" open. The fix: unlink the stale file and retry once (RELI-02).
+   *
+   * Mutation that MUST turn this RED: remove the EEXIST unlink-and-retry handler.
+   * Without it, EEXIST propagates to the outer catch, returning err({ kind: "auth" });
+   * the assertion assert.ok(result.ok) fails.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("T4a — stale temp (EEXIST) is unlinked and write retried; auth.json created, no .tmp survives", async () => {
+    const { authFilePath, tmpPath } = await makePaths("croxy-t4a-");
+
+    // Pre-create the temp file to simulate a stale crash artifact.
+    const stale = await open(tmpPath, "w", 0o666);
+    await stale.close();
+
+    const store = createFsAuthFileStore(authFilePath);
+    const result = await store.writeAtomic('{"replaced": true}');
+
+    // The stale temp must be detected (EEXIST), unlinked, and the open retried — succeeding.
+    assert.ok(result.ok, "writeAtomic must recover from a stale temp via EEXIST → unlink → retry");
+
+    // auth.json must now exist (write succeeded and temp was renamed).
+    await assert.doesNotReject(
+      access(authFilePath),
+      "auth.json must be created after self-healing from a stale temp",
+    );
+
+    // The temp file must not survive (renamed to auth.json on success).
+    await assert.rejects(
+      access(tmpPath),
+      "no .tmp must survive after a successful writeAtomic",
+    );
+  });
+
+  /**
+   * T4b: when rename fails (auth path is a directory → EISDIR), no .tmp must survive.
+   *
+   * Mutation that MUST turn this red: delete the unlink(tmpPath) in the catch block.
+   * Under the mutation, the temp file is left at tmpPath after the rename fails.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("T4b — rename failure (EISDIR) leaves no .tmp file behind", async () => {
+    const { authFilePath, tmpPath } = await makePaths("croxy-t4b-");
+
+    // Place a directory at the auth path so rename(tmpPath, authFilePath) fails with EISDIR.
+    await mkdir(authFilePath);
+
+    const store = createFsAuthFileStore(authFilePath);
+    const result = await store.writeAtomic('{"data": "irrelevant"}');
+
+    // Write must fail (rename over a directory is rejected on all platforms).
+    assert.ok(!result.ok, "writeAtomic must fail when rename target is a directory");
+    assert.equal(result.error.kind, "auth");
+
+    // The temp file must have been cleaned up by the catch block's unlink.
+    await assert.rejects(
+      access(tmpPath),
+      "temp file must be removed even when rename fails",
+    );
+  });
+
+  /**
+   * T4c — mode pin: auth.json must be created with mode 0o600 (no group/other bits).
+   *
+   * NOTE — SCOPE LIMIT: this test pins the mode argument and does NOT prove the O_EXCL
+   * behaviour. It is green on the pre-fix code (which already passed 0o600) and on the
+   * fixed code. Its mutation target (dropping the mode argument) is orthogonal to T4a.
+   * Do not read it as a security proof for O_EXCL.
+   *
+   * Mutation that MUST turn this red: drop the 0o600 argument from open().
+   * Without an explicit mode the OS applies the default (0o666 masked by umask, typically
+   * 0o644), which leaks read permission to the group — mode & 0o077 becomes non-zero.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("T4c [mode-only, does NOT prove O_EXCL] — auth.json is created with mode 0o600", async () => {
+    const { authFilePath } = await makePaths("croxy-t4c-");
+
+    const store = createFsAuthFileStore(authFilePath);
+    const result = await store.writeAtomic('{"tokens": {"access_token": "tok"}}');
+    assert.ok(result.ok, "writeAtomic must succeed on a fresh path");
+
+    const fileStat = await stat(authFilePath);
+    // S_IRWXG and S_IRWXO bits must be zero — no permissions for group or other.
+    assert.equal(
+      fileStat.mode & 0o077,
+      0,
+      `auth.json must have mode 0o600, got 0o${(fileStat.mode & 0o777).toString(8)}`,
+    );
   });
 });

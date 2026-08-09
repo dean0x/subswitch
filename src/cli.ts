@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { type Config, loadConfig, DEFAULT_PORT } from "./config.js";
+import { createColors } from "picocolors";
+import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
-import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect } from "./doctor.js";
+import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
   runInitInteractive,
   runInitNonInteractive,
@@ -14,8 +15,9 @@ import {
   PortSchema,
   type InitFlags,
 } from "./init.js";
+import { MODEL_REGISTRY, formatModelsReport, buildModelRows, routableModelCount, PROVIDER_IDS } from "./models.js";
 import { resolveColorEnabled } from "./tty.js";
-import { SUBSWITCH_VERSION } from "./version.js";
+import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
 
@@ -46,6 +48,8 @@ Commands:
   serve     Start the proxy (default command)
   doctor    Check config, codex auth, and network reachability
   init      Interactive setup — writes config + wires Claude Code
+  models    Show effective alias table (registry × aliases)
+            --json   Output model registry as JSON (no color, no TTY check)
 
 Flags (global):
   -h, --help       Show this help message
@@ -60,8 +64,6 @@ Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
       --dry-run              Show what would be written; writes nothing
       --port <n>             Proxy port (default: ${DEFAULT_PORT})
-      --codex-model <name>   Include this Codex model (repeatable)
-      --codex-models <csv>   Comma-separated list of Codex models
       --settings-target <t>  "local" (.claude/settings.local.json, default)
                              or "shared" (.claude/settings.json)
 
@@ -72,6 +74,7 @@ Examples:
   subswitch init --yes                 # non-interactive with defaults
   subswitch init --dry-run             # preview what would be written
   subswitch doctor                     # check config + auth health
+  subswitch models                     # show alias table (registry × aliases)
 
 Environment:
   NO_COLOR      Disable color output (also respected as standard)
@@ -88,13 +91,15 @@ type CliCommand =
   | { readonly kind: "version" }
   | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly port?: string }
   | { readonly kind: "doctor" }
+  | { readonly kind: "models"; readonly json: boolean }
   | { readonly kind: "init"; readonly yes: boolean; readonly dryRun: boolean; readonly flags: InitFlags };
 
 // Flag sets per command — used for per-command validation (A3.19)
 const GLOBAL_FLAGS = new Set(["help", "version"]);
 const SERVE_FLAGS = new Set(["verbose", "quiet", "port"]);
 const DOCTOR_FLAGS = new Set<string>();
-const INIT_FLAGS = new Set(["yes", "dry-run", "port", "codex-model", "codex-models", "settings-target"]);
+const MODELS_FLAGS = new Set(["json"]);
+const INIT_FLAGS = new Set(["yes", "dry-run", "port", "settings-target"]);
 
 /**
  * Pure: parse process.argv slice into a typed CliCommand.
@@ -115,9 +120,9 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
         yes:               { type: "boolean", short: "y" },
         "dry-run":         { type: "boolean" },
         port:              { type: "string" },
-        "codex-models":    { type: "string" },
-        "codex-model":     { type: "string", multiple: true },
         "settings-target": { type: "string" },
+        // models flags
+        json:              { type: "boolean" },
       },
       allowPositionals: true,
       strict: true,
@@ -133,7 +138,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     const command = positionals[0] ?? "serve";
 
     // Unknown command
-    if (command !== "serve" && command !== "doctor" && command !== "init") {
+    if (command !== "serve" && command !== "doctor" && command !== "init" && command !== "models") {
       return {
         ok: false,
         error: { message: `unknown command "${command}" — run \`subswitch --help\` for usage` },
@@ -146,6 +151,8 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
       allowedFlags = SERVE_FLAGS;
     } else if (command === "doctor") {
       allowedFlags = DOCTOR_FLAGS;
+    } else if (command === "models") {
+      allowedFlags = MODELS_FLAGS;
     } else {
       allowedFlags = INIT_FLAGS;
     }
@@ -175,10 +182,6 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
           dryRun: values["dry-run"] === true,
           flags: {
             ...(typeof values.port === "string" ? { port: values.port } : {}),
-            ...(Array.isArray(values["codex-model"])
-              ? { codexModel: values["codex-model"] }
-              : {}),
-            ...(typeof values["codex-models"] === "string" ? { codexModels: values["codex-models"] } : {}),
             ...(typeof values["settings-target"] === "string"
               ? { settingsTarget: values["settings-target"] }
               : {}),
@@ -199,8 +202,12 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
       };
     }
 
-    // command === "doctor"
-    return { ok: true, value: { kind: "doctor" } };
+    if (command === "doctor") {
+      return { ok: true, value: { kind: "doctor" } };
+    }
+
+    // command === "models"
+    return { ok: true, value: { kind: "models", json: values.json === true } };
   } catch (e) {
     // Translate parseArgs throw to Result err (A3.21)
     if (e instanceof Error) {
@@ -254,7 +261,12 @@ const serve = async (
 
   const effectiveConfig = { ...config, logLevel, port: effectivePort };
 
-  const deps = buildDeps(effectiveConfig);
+  const depsResult = buildDeps(effectiveConfig);
+  if (!depsResult.ok) {
+    fail(depsResult.error);
+    return;
+  }
+  const deps = depsResult.value;
   const server = createProxyServer(deps);
   const listenResult = await listenServer(server, effectiveConfig.port, "127.0.0.1");
   if (!listenResult.ok) {
@@ -271,10 +283,20 @@ const serve = async (
   });
   deps.logger.log("info", "listening", { path: `http://127.0.0.1:${effectiveConfig.port}` });
 
-  // Human-readable ready banner (one-shot startup moment, safe to use a distinct format).
-  const modelsStr = effectiveConfig.codex.models.join(", ");
+  // Human-readable ready banner — one line per provider (7d).
   errOut(`\nsubswitch ready — http://127.0.0.1:${effectiveConfig.port}`);
-  errOut(`  routing: ${modelsStr} → Codex`);
+  for (const id of PROVIDER_IDS) {
+    const modelCount = routableModelCount(MODEL_REGISTRY, id);
+    const { baseUrl } = providerConfigFor(effectiveConfig, id);
+    let host: string;
+    try {
+      host = new URL(baseUrl).hostname;
+    } catch {
+      host = baseUrl;
+    }
+    const hostSuffix = host !== "" ? `  → ${host}` : "";
+    errOut(`  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${hostSuffix}`);
+  }
   errOut(`  run \`subswitch doctor\` to verify setup\n`);
 
   const shutdown = (): void => {
@@ -291,19 +313,97 @@ const serve = async (
 // doctor
 // ---------------------------------------------------------------------------
 
-const doctor = async (config: Config, configPath: string, fileFound: boolean): Promise<void> => {
+const doctor = async (result: LoadConfigResult): Promise<void> => {
   const color = resolveColorEnabled(
     process.env as Record<string, string | undefined>,
     process.stdout.isTTY === true,
   );
 
-  process.exitCode = await runDoctor(config, configPath, fileFound, {
-    write: out,
-    readAuthFile: (path) => readFile(path, "utf8"),
-    httpGet: makeLiveHttpGet(),
-    tlsConnect: makeLiveTlsConnect(),
-    color,
+  process.exitCode = await runDoctor(
+    result.config,
+    result.configPath,
+    result.fileFound,
+    {
+      write: out,
+      readAuthFile: (path) => readFile(path, "utf8"),
+      httpGet: makeLiveHttpGet(),
+      tlsConnect: makeLiveTlsConnect(),
+      color,
+      listAgentFiles: makeLiveListAgentFiles(),
+      readTextFile: makeLiveReadTextFile(),
+    },
+    // Only providers the user wrote into the config file can fail the exit code. (avoids PF-006)
+    result.configuredProviders,
+  );
+};
+
+// ---------------------------------------------------------------------------
+// models — print effective alias table or JSON output
+// ---------------------------------------------------------------------------
+
+/**
+ * Output model registry as machine-readable JSON.
+ *
+ * This function returns BEFORE resolveColorEnabled is called so that FORCE_COLOR
+ * in the environment never affects JSON output (structural: not conditional). [7b]
+ *
+ * Never writes credentials, tokens, PII, or secrets. [compliance]
+ */
+const modelsJson = (result: LoadConfigResult): void => {
+  const { config, configPath, fileFound } = result;
+  const rows = buildModelRows(MODEL_REGISTRY, aliasesByProvider(config));
+
+  const payload = {
+    kind: "models",
+    schemaVersion: 1,
+    subswitchVersion: SUBSWITCH_VERSION,
+    name: SUBSWITCH_NAME,
+    fallbackProvider: "anthropic",
+    configPath,
+    // Reported straight from the load that produced `models`, so the flag always
+    // describes the config those rows were actually built from.
+    configFileFound: fileFound,
+    // enumerateDestinations provides the single topology source shared with the health
+    // endpoint — Anthropic (passthrough) first, then registered providers.  (ARCH-04)
+    providers: enumerateDestinations(config).map((d) => ({
+      id: d.id,
+      displayName: d.displayName,
+      routing: d.routing,
+    })),
+    models: rows,
+  };
+
+  out(JSON.stringify(payload));
+};
+
+const models = (config: Config): void => {
+  const color = resolveColorEnabled(
+    process.env as Record<string, string | undefined>,
+    process.stdout.isTTY === true,
+  );
+  const pc = createColors(color);
+
+  const lines = formatModelsReport({
+    registry: MODEL_REGISTRY,
+    aliasesByProvider: aliasesByProvider(config),
   });
+
+  if (lines.length === 0) {
+    out("  (no aliases configured)");
+    return;
+  }
+
+  out("subswitch models");
+  for (const line of lines) {
+    // Colorize the status and source columns while keeping the already-aligned text intact.
+    const colorized = line
+      .replace("enabled", pc.green("enabled"))
+      .replace("disabled", pc.dim("disabled"))
+      .replace("(config)", pc.yellow("(config)"))
+      .replace("(derived)", pc.dim("(derived)"))
+      .replace("(direct)", pc.dim("(direct)"));
+    out(`  ${colorized}`);
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -338,7 +438,7 @@ const runInit = async (command: Extract<CliCommand, { kind: "init" }>): Promise<
     // refuse: non-TTY / CI without --yes — fail closed, no files written [F18]
     fail(
       "no interactive terminal detected. Re-run with --yes to accept defaults " +
-        "(optionally with --port / --settings-target / --codex-models), or run in an interactive shell.",
+        "(optionally with --port / --settings-target), or run in an interactive shell.",
     );
   }
 };
@@ -386,8 +486,22 @@ const main = async (): Promise<void> => {
         fail(configResult.error.message);
         return;
       }
-      const { config, configPath, fileFound } = configResult.value;
-      await doctor(config, configPath, fileFound);
+      await doctor(configResult.value);
+      return;
+    }
+
+    case "models": {
+      const configResult = loadConfig();
+      if (!configResult.ok) {
+        fail(configResult.error.message);
+        return;
+      }
+      // JSON branch returns before resolveColorEnabled — FORCE_COLOR cannot bleed into JSON. [7b]
+      if (command.json) {
+        modelsJson(configResult.value);
+        return;
+      }
+      models(configResult.value.config);
       return;
     }
 
@@ -398,4 +512,8 @@ const main = async (): Promise<void> => {
   }
 };
 
-void main();
+// Any escaped rejection must still produce the clean `subswitch: <message>` contract
+// on stderr rather than a raw Node stack trace.
+void main().catch((cause: unknown) => {
+  fail(cause instanceof Error ? cause.message : String(cause));
+});

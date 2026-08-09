@@ -101,60 +101,78 @@ describe("planSettingsWrite", () => {
 // ---------------------------------------------------------------------------
 
 describe("planConfigWrite", () => {
-  it("fresh file: writes port and codex.models", () => {
-    const result = planConfigWrite(null, 4141, ["gpt-5.6-sol", "gpt-5.5"], "/project");
+  it("fresh file: writes port only", () => {
+    const result = planConfigWrite(null, 4141, "/project");
     assert.ok(result.ok);
     assert.equal(result.value.path, join("/project", "subswitch.config.json"));
-    const parsed = JSON.parse(result.value.content) as { port: number; codex: { models: string[] } };
+    const parsed = JSON.parse(result.value.content) as { port: number };
     assert.equal(parsed.port, 4141);
-    assert.deepEqual(parsed.codex.models, ["gpt-5.6-sol", "gpt-5.5"]);
   });
 
   it("preserves unknown top-level keys", () => {
-    const existing = JSON.stringify({ port: 4141, codex: { models: ["gpt-5.6-sol"] }, logLevel: "debug" });
-    const result = planConfigWrite(existing, 9090, ["gpt-5.5"], "/project");
+    const existing = JSON.stringify({ port: 4141, logLevel: "debug" });
+    const result = planConfigWrite(existing, 9090, "/project");
     assert.ok(result.ok);
-    const parsed = JSON.parse(result.value.content) as {
-      port: number;
-      codex: { models: string[] };
-      logLevel: string;
-    };
+    const parsed = JSON.parse(result.value.content) as { port: number; logLevel: string };
     assert.equal(parsed.port, 9090, "port should be updated");
-    assert.deepEqual(parsed.codex.models, ["gpt-5.5"], "models should be updated");
     assert.equal(parsed.logLevel, "debug", "unknown top-level key must be preserved");
   });
 
-  it("preserves unknown codex.* keys (deep merge within codex)", () => {
+  it("preserves existing providers.codex.* keys (deep merge)", () => {
     const existing = JSON.stringify({
-      codex: { models: ["gpt-5.6-sol"], userAgent: "custom-ua", baseUrl: "https://example.com" },
+      providers: { codex: { userAgent: "custom-ua", baseUrl: "https://example.com" } },
     });
-    const result = planConfigWrite(existing, 4141, ["gpt-5.5"], "/project");
+    const result = planConfigWrite(existing, 4141, "/project");
     assert.ok(result.ok);
     const parsed = JSON.parse(result.value.content) as {
-      codex: { models: string[]; userAgent: string; baseUrl: string };
+      providers: { codex: { userAgent: string; baseUrl: string } };
     };
-    assert.deepEqual(parsed.codex.models, ["gpt-5.5"], "models should be updated");
-    assert.equal(parsed.codex.userAgent, "custom-ua", "codex.userAgent must be preserved");
-    assert.equal(parsed.codex.baseUrl, "https://example.com", "codex.baseUrl must be preserved");
+    assert.equal(parsed.providers.codex.userAgent, "custom-ua", "providers.codex.userAgent must be preserved");
+    assert.equal(parsed.providers.codex.baseUrl, "https://example.com", "providers.codex.baseUrl must be preserved");
   });
 
   it("returns error on malformed JSON input", () => {
-    const result = planConfigWrite("{bad", 4141, ["gpt-5.6-sol"], "/project");
+    const result = planConfigWrite("{bad", 4141, "/project");
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "malformed_json");
     assert.ok(result.error.message.includes("malformed JSON"));
   });
 
   it("returns error on non-object JSON input", () => {
-    const result = planConfigWrite(JSON.stringify([1, 2, 3]), 4141, ["gpt-5.6-sol"], "/project");
+    const result = planConfigWrite(JSON.stringify([1, 2, 3]), 4141, "/project");
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "malformed_json");
   });
 
   it("produces valid JSON output", () => {
-    const result = planConfigWrite(null, 5555, ["gpt-5.6-luna"], "/project");
+    const result = planConfigWrite(null, 5555, "/project");
     assert.ok(result.ok);
     assert.doesNotThrow(() => JSON.parse(result.value.content));
+  });
+
+  // REGR-02: init runs before loadConfig, so it is the only repair path for a user
+  // blocked by the legacy-key gate. Without this check planConfigWrite would write
+  // { ...legacy, port } back to disk and leave the user in an infinite loop: init
+  // reports success but the next `serve` rejects the config identically.
+  //
+  // RED proof: current code (without detection) returns ok() for a legacy input, so
+  // assert.ok(!result.ok) fails. After the fix, detectLegacyConfigKeys finds the key
+  // and planConfigWrite returns err({ kind: "legacy_config" }) → GREEN.
+  it("rejects a legacy config with a top-level `codex` block — init cannot write over a legacy layout", () => {
+    const legacy = JSON.stringify({ codex: { userAgent: "old-agent" }, port: 4141 });
+    const result = planConfigWrite(legacy, 9090, "/project");
+    assert.ok(!result.ok, "should return an error for a legacy config layout");
+    assert.equal(result.error.kind, "legacy_config");
+    assert.ok(result.error.message.includes("`codex`"), "error should name the legacy key");
+    assert.ok(result.error.message.includes("`providers.codex`"), "error should name the replacement path");
+  });
+
+  it("rejects a legacy config with a top-level `reasoningCache` key", () => {
+    const legacy = JSON.stringify({ reasoningCache: { enabled: true } });
+    const result = planConfigWrite(legacy, 4141, "/project");
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "legacy_config");
+    assert.ok(result.error.message.includes("`reasoningCache`"), "error should name the legacy key");
   });
 });
 
@@ -168,7 +186,6 @@ describe("resolveOptionsFromFlags", () => {
     assert.ok(result.ok);
     assert.equal(result.value.port, 4141);
     assert.equal(result.value.settingsTarget, "local");
-    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
   });
 
   it("parses a valid --port flag", () => {
@@ -208,57 +225,6 @@ describe("resolveOptionsFromFlags", () => {
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "invalid_input");
     assert.match(result.error.message, /invalid --settings-target "global":/);
-  });
-
-  // Merged-flag matrix [F16/F17/F35]
-
-  it("no model flags → uses default model list (no model flags = defaults)", () => {
-    const result = resolveOptionsFromFlags({});
-    assert.ok(result.ok);
-    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]);
-  });
-
-  it("--codex-model (repeatable) sets models", () => {
-    const result = resolveOptionsFromFlags({ codexModel: ["gpt-5.6-sol", "gpt-5.5"] });
-    assert.ok(result.ok);
-    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.5"]);
-  });
-
-  it("--codex-models CSV string sets models", () => {
-    const result = resolveOptionsFromFlags({ codexModels: "gpt-5.6-sol,gpt-5.5" });
-    assert.ok(result.ok);
-    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.5"]);
-  });
-
-  it("--codex-model and --codex-models are merged", () => {
-    const result = resolveOptionsFromFlags({ codexModel: ["gpt-5.6-sol"], codexModels: "gpt-5.5" });
-    assert.ok(result.ok);
-    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.5"]);
-  });
-
-  it("merged models are deduplicated, preserving first-occurrence order", () => {
-    // README documents the two model flags as "combined and deduplicated".
-    const result = resolveOptionsFromFlags({
-      codexModel: ["gpt-5.6-sol", "gpt-5.5"],
-      codexModels: "gpt-5.5,gpt-5.6-sol,gpt-5.6-luna",
-    });
-    assert.ok(result.ok);
-    assert.deepEqual(result.value.codexModels, ["gpt-5.6-sol", "gpt-5.5", "gpt-5.6-luna"]);
-  });
-
-  it("--codex-models \"\" (empty string) → error (model flags given but resolve to empty)", () => {
-    const result = resolveOptionsFromFlags({ codexModels: "" });
-    assert.ok(!result.ok);
-    assert.equal(result.error.kind, "invalid_input");
-    // Unified error shape: invalid --flag "value": reason [F14/F15]
-    assert.match(result.error.message, /invalid --codex-models "":/);
-    assert.ok(result.error.message.includes("at least one model is required"));
-  });
-
-  it("--codex-models CSV with whitespace-only entries → error", () => {
-    const result = resolveOptionsFromFlags({ codexModels: " , , " });
-    assert.ok(!result.ok);
-    assert.equal(result.error.kind, "invalid_input");
   });
 });
 
@@ -308,7 +274,7 @@ describe("executeInit", () => {
   it("writes subswitch.config.json and settings.local.json for target=local", async () => {
     const deps = makeFakeDeps();
     const result = await executeInit(
-      { port: 4141, codexModels: ["gpt-5.6-sol", "gpt-5.5"], settingsTarget: "local" },
+      { port: 4141, settingsTarget: "local" },
       deps,
       "/project",
     );
@@ -325,18 +291,14 @@ describe("executeInit", () => {
     // Config file
     const configPath = join("/project", "subswitch.config.json");
     assert.ok(deps.written[configPath] !== undefined, "subswitch.config.json should be written");
-    const config = JSON.parse(deps.written[configPath] as string) as {
-      port: number;
-      codex: { models: string[] };
-    };
+    const config = JSON.parse(deps.written[configPath] as string) as { port: number };
     assert.equal(config.port, 4141);
-    assert.deepEqual(config.codex.models, ["gpt-5.6-sol", "gpt-5.5"]);
   });
 
   it("writes settings.json for target=shared", async () => {
     const deps = makeFakeDeps();
     const result = await executeInit(
-      { port: 4141, codexModels: ["gpt-5.6-sol"], settingsTarget: "shared" },
+      { port: 4141, settingsTarget: "shared" },
       deps,
       "/project",
     );
@@ -351,7 +313,7 @@ describe("executeInit", () => {
       [settingsPath]: JSON.stringify({ env: { MY_TOKEN: "keep" }, mcpServers: {} }),
     });
     const result = await executeInit(
-      { port: 4141, codexModels: ["gpt-5.6-sol"], settingsTarget: "local" },
+      { port: 4141, settingsTarget: "local" },
       deps,
       "/project",
     );
@@ -369,7 +331,7 @@ describe("executeInit", () => {
     const settingsPath = join("/project", ".claude/settings.local.json");
     const deps = makeFakeDeps({ [settingsPath]: "{bad json" });
     const result = await executeInit(
-      { port: 4141, codexModels: ["gpt-5.6-sol"], settingsTarget: "local" },
+      { port: 4141, settingsTarget: "local" },
       deps,
       "/project",
     );
@@ -382,7 +344,7 @@ describe("executeInit", () => {
   it("writes config BEFORE settings (config-first order) [F6]", async () => {
     const deps = makeFakeDeps();
     const result = await executeInit(
-      { port: 4141, codexModels: ["gpt-5.6-sol"], settingsTarget: "local" },
+      { port: 4141, settingsTarget: "local" },
       deps,
       "/project",
     );
@@ -396,7 +358,7 @@ describe("executeInit", () => {
   it("returns [configPath, settingsPath] tuple on success", async () => {
     const deps = makeFakeDeps();
     const result = await executeInit(
-      { port: 4141, codexModels: ["gpt-5.6-sol"], settingsTarget: "local" },
+      { port: 4141, settingsTarget: "local" },
       deps,
       "/project",
     );
@@ -410,7 +372,7 @@ describe("executeInit", () => {
     const configPath = join("/project", "subswitch.config.json");
     const deps = makeFakeDeps({ [configPath]: "{bad json" });
     const result = await executeInit(
-      { port: 4141, codexModels: ["gpt-5.6-sol"], settingsTarget: "local" },
+      { port: 4141, settingsTarget: "local" },
       deps,
       "/project",
     );
@@ -499,20 +461,6 @@ describe("runInitNonInteractive", () => {
     const exitCode = await runInitNonInteractive({}, "/project", deps, () => undefined, () => undefined);
     assert.equal(exitCode, 0);
     assert.ok(Object.keys(deps.written).length > 0, "files must be written on the --yes path");
-  });
-
-  it("--codex-models empty string → error", async () => {
-    const deps = makeFakeDeps();
-    const errLines: string[] = [];
-    const exitCode = await runInitNonInteractive(
-      { codexModels: "" },
-      "/project",
-      deps,
-      () => undefined,
-      (l) => errLines.push(l),
-    );
-    assert.equal(exitCode, 1);
-    assert.ok(errLines.some((l) => l.includes("codex-models")), "should mention codex-models in error");
   });
 });
 
@@ -609,26 +557,6 @@ describe("runInitDryRun", () => {
     assert.ok(
       outLines.some((l) => l.toLowerCase().includes("dry-run") || l.toLowerCase().includes("no files")),
       "output should label itself as dry-run",
-    );
-  });
-
-  it("emits unknown-model warning to stderr — parity with non-interactive [self-review P2]", async () => {
-    const deps = makeFakeDeps();
-    const outLines: string[] = [];
-    const errLines: string[] = [];
-    const exitCode = await runInitDryRun(
-      { codexModel: ["my-custom-model"] },
-      "/project",
-      deps,
-      (l) => outLines.push(l),
-      (l) => errLines.push(l),
-    );
-
-    assert.equal(exitCode, 0, "exit 0 even with an unknown model name");
-    assert.equal(Object.keys(deps.written).length, 0, "dry-run must write no files");
-    assert.ok(
-      errLines.some((l) => l.includes("warning") && l.includes("my-custom-model")),
-      "should emit warning mentioning the unknown model name to stderr",
     );
   });
 });

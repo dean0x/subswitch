@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { deriveConversationKey } from "../../src/conversation-key.js";
-import { AnthropicRequestSchema } from "../../src/wire-types.js";
+import { AnthropicRequestSchema } from "../../src/anthropic-wire-types.js";
 
 const makeRequest = (overrides: Record<string, unknown>) =>
   AnthropicRequestSchema.parse({
@@ -62,6 +62,22 @@ describe("deriveConversationKey", () => {
     const key = deriveConversationKey(req);
     assert.ok(key !== undefined);
     assert.match(key, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  it("pins the key value for a known input (algorithm stability guard)", () => {
+    // The key drives BOTH prompt_cache_key and session_id. Any change to the
+    // derivation algorithm would silently destroy the 76% prompt-cache hit rate
+    // and break backend session correlation. This test will fail immediately
+    // if the hash input, UUID encoding, or capBytes logic is inadvertently changed.
+    //
+    // Input:  model="gpt-5.5", no system, first user message={role:"user",content:"hello"}
+    // Formula: sha256("gpt-5.5" + " " + "" + " " + '{"role":"user","content":"hello"}')
+    //          → first 16 bytes → UUID v7 encoding (version nibble=7, variant=10xx)
+    const req = AnthropicRequestSchema.parse({
+      model: "gpt-5.5",
+      messages: [{ role: "user", content: "hello" }],
+    });
+    assert.equal(deriveConversationKey(req), "5002ec0c-e01d-789b-8070-b44a7563fae2");
   });
 
   it("uses the first user message even when earlier messages exist", () => {

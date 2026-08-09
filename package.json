@@ -1,6 +1,6 @@
 {
   "name": "subswitch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Local subscription-routing proxy for Claude Code — route a single subagent to a different model (OpenAI Codex) while every other request stays on Claude. Per-subagent routing, no API keys.",
   "bin": {
@@ -41,7 +41,8 @@
     "serve": "tsx src/cli.ts serve",
     "doctor": "tsx src/cli.ts doctor",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test \"test/unit/*.test.ts\" \"test/integration/*.test.ts\"",
+    "test": "node --import tsx --test --test-timeout=30000 \"test/unit/*.test.ts\" \"test/integration/*.test.ts\"",
+    "bench:sse": "node --import tsx test/tools/sse-parser.bench.ts",
     "check": "npm run typecheck && npm run test",
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",

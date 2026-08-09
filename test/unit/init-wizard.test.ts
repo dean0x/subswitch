@@ -4,6 +4,8 @@
  * We never import or call makeClackPrompts here, keeping @clack/prompts unloaded.
  * All tests verify BEHAVIOUR: what exit code is returned, what files are written,
  * what initialValues seeds were passed to each prompt.
+ *
+ * Wizard flow (Phase 6f): port (text) → settings target (select). Two prompts only.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -14,7 +16,7 @@ import {
   type InitPrompts,
   type InitFlags,
 } from "../../src/init.js";
-import { DEFAULT_PORT, DEFAULT_CODEX_MODELS } from "../../src/config.js";
+import { DEFAULT_PORT } from "../../src/config.js";
 import { makeFakeDeps } from "./init-test-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -29,11 +31,6 @@ interface TextCall {
   message: string;
   initialValue?: string;
 }
-interface MultiselectCall {
-  message: string;
-  options: ReadonlyArray<{ value: string; label: string; hint?: string }>;
-  initialValues?: readonly string[];
-}
 interface SelectCall {
   message: string;
   initialValue?: string;
@@ -41,7 +38,6 @@ interface SelectCall {
 
 interface ScriptedPromptsConfig {
   textResponse: string | symbol;
-  multiselectResponse: readonly string[] | symbol;
   selectResponse: string | symbol;
 }
 
@@ -55,7 +51,6 @@ const makeScriptedPrompts = (
   outroArgs: string[];
   noteArgs: Array<{ message: string; title?: string }>;
   textCalls: TextCall[];
-  multiselectCalls: MultiselectCall[];
   selectCalls: SelectCall[];
   spinnerStarts: string[];
   spinnerStops: string[];
@@ -66,7 +61,6 @@ const makeScriptedPrompts = (
   const outroArgs: string[] = [];
   const noteArgs: Array<{ message: string; title?: string }> = [];
   const textCalls: TextCall[] = [];
-  const multiselectCalls: MultiselectCall[] = [];
   const selectCalls: SelectCall[] = [];
   const spinnerStarts: string[] = [];
   const spinnerStops: string[] = [];
@@ -87,14 +81,6 @@ const makeScriptedPrompts = (
       });
       return Promise.resolve(config.textResponse);
     },
-    multiselect: (opts) => {
-      multiselectCalls.push({
-        message: opts.message,
-        options: [...opts.options],
-        ...(opts.initialValues !== undefined ? { initialValues: opts.initialValues } : {}),
-      });
-      return Promise.resolve(config.multiselectResponse);
-    },
     select: (opts) => {
       selectCalls.push({
         message: opts.message,
@@ -112,7 +98,6 @@ const makeScriptedPrompts = (
     outroArgs,
     noteArgs,
     textCalls,
-    multiselectCalls,
     selectCalls,
     spinnerStarts,
     spinnerStops,
@@ -128,7 +113,6 @@ describe("runInitInteractive — happy path", () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol", "gpt-5.5"],
       selectResponse: "local",
     });
 
@@ -143,7 +127,6 @@ describe("runInitInteractive — happy path", () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -160,7 +143,6 @@ describe("runInitInteractive — happy path", () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -174,7 +156,6 @@ describe("runInitInteractive — happy path", () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -187,7 +168,6 @@ describe("runInitInteractive — happy path", () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -204,7 +184,6 @@ describe("runInitInteractive — happy path", () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: "7777",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -221,7 +200,6 @@ describe("runInitInteractive — happy path", () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "shared",
     });
 
@@ -231,6 +209,19 @@ describe("runInitInteractive — happy path", () => {
       Object.keys(deps.written).some((p) => p.endsWith("settings.json") && !p.endsWith("settings.local.json")),
       "should write .claude/settings.json for target=shared",
     );
+  });
+
+  it("wizard calls exactly one text prompt and one select prompt", async () => {
+    const deps = makeFakeDeps();
+    const prompts = makeScriptedPrompts({
+      textResponse: "4141",
+      selectResponse: "local",
+    });
+
+    await runInitInteractive("/project", deps, {}, prompts);
+
+    assert.equal(prompts.textCalls.length, 1, "exactly one text prompt (port)");
+    assert.equal(prompts.selectCalls.length, 1, "exactly one select prompt (settings target)");
   });
 });
 
@@ -243,7 +234,6 @@ describe("runInitInteractive — cancel at port prompt", () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: CANCEL,
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -254,42 +244,10 @@ describe("runInitInteractive — cancel at port prompt", () => {
     assert.equal(prompts.cancelArgs.length, 1, "cancel message should be emitted");
   });
 
-  it("does not call multiselect or select after port cancel", async () => {
+  it("does not call select after port cancel", async () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: CANCEL,
-      multiselectResponse: ["gpt-5.6-sol"],
-      selectResponse: "local",
-    });
-
-    await runInitInteractive("/project", deps, {}, prompts);
-
-    assert.equal(prompts.multiselectCalls.length, 0, "multiselect should not be called");
-    assert.equal(prompts.selectCalls.length, 0, "select should not be called");
-  });
-});
-
-describe("runInitInteractive — cancel at models (multiselect) prompt", () => {
-  it("returns exit code 1 when cancel at multiselect prompt", async () => {
-    const deps = makeFakeDeps();
-    const prompts = makeScriptedPrompts({
-      textResponse: "4141",
-      multiselectResponse: CANCEL,
-      selectResponse: "local",
-    });
-
-    const exitCode = await runInitInteractive("/project", deps, {}, prompts);
-
-    assert.equal(exitCode, 1);
-    assert.equal(Object.keys(deps.written).length, 0, "zero files written on cancel");
-    assert.equal(prompts.cancelArgs.length, 1, "cancel message should be emitted");
-  });
-
-  it("does not call select after multiselect cancel", async () => {
-    const deps = makeFakeDeps();
-    const prompts = makeScriptedPrompts({
-      textResponse: "4141",
-      multiselectResponse: CANCEL,
       selectResponse: "local",
     });
 
@@ -304,7 +262,6 @@ describe("runInitInteractive — cancel at settings target (select) prompt", () 
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: CANCEL,
     });
 
@@ -312,27 +269,6 @@ describe("runInitInteractive — cancel at settings target (select) prompt", () 
 
     assert.equal(exitCode, 1);
     assert.equal(Object.keys(deps.written).length, 0, "zero files written on cancel");
-    assert.equal(prompts.cancelArgs.length, 1, "cancel message should be emitted");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Empty multiselect → exit 1 + zero writes
-// ---------------------------------------------------------------------------
-
-describe("runInitInteractive — empty multiselect", () => {
-  it("returns exit code 1 when no models selected", async () => {
-    const deps = makeFakeDeps();
-    const prompts = makeScriptedPrompts({
-      textResponse: "4141",
-      multiselectResponse: [],  // empty — not a cancel symbol, but empty array
-      selectResponse: "local",
-    });
-
-    const exitCode = await runInitInteractive("/project", deps, {}, prompts);
-
-    assert.equal(exitCode, 1);
-    assert.equal(Object.keys(deps.written).length, 0, "zero files written on empty selection");
     assert.equal(prompts.cancelArgs.length, 1, "cancel message should be emitted");
   });
 });
@@ -346,7 +282,6 @@ describe("runInitInteractive — write failure", () => {
     const deps = makeFakeDeps({}, /* failOnWrite */ true);
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -359,7 +294,6 @@ describe("runInitInteractive — write failure", () => {
     const deps = makeFakeDeps({}, /* failOnWrite */ true);
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -381,7 +315,6 @@ describe("runInitInteractive — seeding", () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: String(DEFAULT_PORT),
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -396,11 +329,10 @@ describe("runInitInteractive — seeding", () => {
 
   it("seeds port initialValue from existing config when no port flag", async () => {
     const configPath = join("/project", "subswitch.config.json");
-    const existingConfig = JSON.stringify({ port: 9090, codex: { models: ["gpt-5.6-sol"] } });
+    const existingConfig = JSON.stringify({ port: 9090 });
     const deps = makeFakeDeps({ [configPath]: existingConfig });
     const prompts = makeScriptedPrompts({
       textResponse: "9090",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -415,12 +347,11 @@ describe("runInitInteractive — seeding", () => {
 
   it("seeds port initialValue from --port flag (flag beats existing config)", async () => {
     const configPath = join("/project", "subswitch.config.json");
-    const existingConfig = JSON.stringify({ port: 9090, codex: { models: ["gpt-5.6-sol"] } });
+    const existingConfig = JSON.stringify({ port: 9090 });
     const deps = makeFakeDeps({ [configPath]: existingConfig });
     const flags: InitFlags = { port: "8080" };
     const prompts = makeScriptedPrompts({
       textResponse: "8080",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -433,68 +364,11 @@ describe("runInitInteractive — seeding", () => {
     );
   });
 
-  it("seeds models initialValues from ALL_CODEX_MODELS when no flags and no existing config", async () => {
-    const deps = makeFakeDeps();
-    const prompts = makeScriptedPrompts({
-      textResponse: String(DEFAULT_PORT),
-      multiselectResponse: [...DEFAULT_CODEX_MODELS],
-      selectResponse: "local",
-    });
-
-    await runInitInteractive("/project", deps, {}, prompts);
-
-    assert.deepEqual(
-      [...(prompts.multiselectCalls[0]?.initialValues ?? [])],
-      [...DEFAULT_CODEX_MODELS],
-      "models should be seeded from ALL_CODEX_MODELS when no flags or existing config",
-    );
-  });
-
-  it("seeds models initialValues from existing config when no model flags", async () => {
-    const configPath = join("/project", "subswitch.config.json");
-    const existingConfig = JSON.stringify({ port: 4141, codex: { models: ["gpt-5.6-luna"] } });
-    const deps = makeFakeDeps({ [configPath]: existingConfig });
-    const prompts = makeScriptedPrompts({
-      textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-luna"],
-      selectResponse: "local",
-    });
-
-    await runInitInteractive("/project", deps, {}, prompts);
-
-    assert.deepEqual(
-      [...(prompts.multiselectCalls[0]?.initialValues ?? [])],
-      ["gpt-5.6-luna"],
-      "models should be seeded from existing config when no flags",
-    );
-  });
-
-  it("seeds models initialValues from flags (flags beat existing config)", async () => {
-    const configPath = join("/project", "subswitch.config.json");
-    const existingConfig = JSON.stringify({ port: 4141, codex: { models: ["gpt-5.6-luna"] } });
-    const deps = makeFakeDeps({ [configPath]: existingConfig });
-    const flags: InitFlags = { codexModels: "gpt-5.5" };
-    const prompts = makeScriptedPrompts({
-      textResponse: "4141",
-      multiselectResponse: ["gpt-5.5"],
-      selectResponse: "local",
-    });
-
-    await runInitInteractive("/project", deps, {}, prompts, flags);
-
-    assert.deepEqual(
-      [...(prompts.multiselectCalls[0]?.initialValues ?? [])],
-      ["gpt-5.5"],
-      "flag models must beat existing config models",
-    );
-  });
-
   it("seeds settingsTarget initialValue from flags", async () => {
     const deps = makeFakeDeps();
     const flags: InitFlags = { settingsTarget: "shared" };
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "shared",
     });
 
@@ -511,7 +385,6 @@ describe("runInitInteractive — seeding", () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -535,7 +408,6 @@ describe("runInitInteractive — precondition warnings", () => {
     const deps = makeFakeDeps({ [authPath]: '{"token":"x"}' });
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -551,7 +423,6 @@ describe("runInitInteractive — precondition warnings", () => {
     const deps = makeFakeDeps(); // auth file not in existingFiles
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
@@ -568,91 +439,11 @@ describe("runInitInteractive — precondition warnings", () => {
     const deps = makeFakeDeps({ [authPath]: '{"token":"x"}' });
     const prompts = makeScriptedPrompts({
       textResponse: "4141",
-      multiselectResponse: ["gpt-5.6-sol"],
       selectResponse: "local",
     });
 
     await runInitInteractive("/project", deps, {}, prompts);
 
     assert.equal(prompts.warnArgs.length, 0, "should emit no warnings when conditions are met");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Custom model from existing config — option presence + preselection [self-review P2]
-// ---------------------------------------------------------------------------
-
-describe("runInitInteractive — custom model from existing config", () => {
-  it("includes custom model as option and preselects it when present in existing config", async () => {
-    const configPath = join("/project", "subswitch.config.json");
-    const existingConfig = JSON.stringify({ port: 4141, codex: { models: ["my-custom-model"] } });
-    const deps = makeFakeDeps({ [configPath]: existingConfig });
-    const prompts = makeScriptedPrompts({
-      textResponse: "4141",
-      multiselectResponse: ["my-custom-model"],
-      selectResponse: "local",
-    });
-
-    const exitCode = await runInitInteractive("/project", deps, {}, prompts);
-
-    assert.equal(exitCode, 0, "should return exit code 0");
-
-    const multiselectCall = prompts.multiselectCalls[0];
-    assert.ok(multiselectCall !== undefined, "multiselect should have been called");
-
-    // Custom model appears as an option so clack can render it.
-    assert.ok(
-      multiselectCall.options.some((o) => o.value === "my-custom-model"),
-      "custom model from existing config should appear as a selectable option",
-    );
-
-    // Custom model is preselected (initialValues contains it).
-    assert.ok(
-      (multiselectCall.initialValues ?? []).includes("my-custom-model"),
-      "custom model from existing config should be preselected",
-    );
-  });
-
-  it("custom model round-trips into the written config when selected", async () => {
-    const configPath = join("/project", "subswitch.config.json");
-    const existingConfig = JSON.stringify({ port: 4141, codex: { models: ["my-custom-model"] } });
-    const deps = makeFakeDeps({ [configPath]: existingConfig });
-    const prompts = makeScriptedPrompts({
-      textResponse: "4141",
-      multiselectResponse: ["my-custom-model"],
-      selectResponse: "local",
-    });
-
-    await runInitInteractive("/project", deps, {}, prompts);
-
-    const writtenConfig = JSON.parse(deps.written[configPath] as string) as {
-      codex: { models: string[] };
-    };
-    assert.ok(
-      writtenConfig.codex.models.includes("my-custom-model"),
-      "custom model should be written back to config when selected",
-    );
-  });
-
-  it("custom model option carries a (custom) hint label", async () => {
-    const configPath = join("/project", "subswitch.config.json");
-    const existingConfig = JSON.stringify({ port: 4141, codex: { models: ["my-custom-model"] } });
-    const deps = makeFakeDeps({ [configPath]: existingConfig });
-    const prompts = makeScriptedPrompts({
-      textResponse: "4141",
-      multiselectResponse: ["my-custom-model"],
-      selectResponse: "local",
-    });
-
-    await runInitInteractive("/project", deps, {}, prompts);
-
-    const multiselectCall = prompts.multiselectCalls[0];
-    assert.ok(multiselectCall !== undefined);
-    const customOption = multiselectCall.options.find((o) => o.value === "my-custom-model");
-    assert.ok(customOption !== undefined, "custom option must be present");
-    assert.ok(
-      customOption.hint?.includes("custom"),
-      "custom model option should carry a hint mentioning 'custom'",
-    );
   });
 });

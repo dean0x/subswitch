@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAuthManager, createFsAuthFileStore } from "../../src/codex-auth.js";
 import { noopLogger } from "../../src/logger.js";
+import { providerEvents } from "../../src/provider-events.js";
 import { makeAccessToken, makeAuthFileContent, startFakeUpstream, type FakeUpstream } from "./fake-upstreams.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -33,12 +34,14 @@ describe("codex auth refresh against the real filesystem", () => {
       store: createFsAuthFileStore(authFilePath),
       oauthTokenUrl: `${oauth.url}/token`,
       logger: noopLogger,
+      events: providerEvents("codex"),
     });
 
     const result = await auth.getCredentials();
     assert.ok(result.ok);
-    assert.equal(result.value.accessToken, newToken);
-    assert.equal(result.value.accountId, "acct_integration_1");
+    assert.equal(result.value.provider, "codex");
+    assert.equal(result.value.authHeaders["authorization"], `Bearer ${newToken}`);
+    assert.equal(result.value.authHeaders["chatgpt-account-id"], "acct_integration_1");
     assert.equal(oauth.requests.length, 1);
 
     const oauthBody = JSON.parse(oauth.requests[0]!.body.toString("utf8")) as Record<string, unknown>;
@@ -70,6 +73,7 @@ describe("codex auth refresh against the real filesystem", () => {
       store: createFsAuthFileStore(authFilePath),
       oauthTokenUrl: `${oauth.url}/token`,
       logger: noopLogger,
+      events: providerEvents("codex"),
     });
 
     assert.ok((await auth.getCredentials()).ok);

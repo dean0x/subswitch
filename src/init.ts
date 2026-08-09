@@ -1,10 +1,10 @@
-import { mkdir, readFile as fsReadFile, writeFile as fsWriteFile, rename as fsRename, unlink as fsUnlink } from "node:fs/promises";
+import { mkdir, open, readFile as fsReadFile, rename as fsRename, unlink as fsUnlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
-import { DEFAULT_PORT, DEFAULT_CODEX_MODELS } from "./config.js";
+import { DEFAULT_PORT, DEFAULT_CODEX_AUTH_FILE, expandHome, detectLegacyConfigKeys } from "./config.js";
+import { isPlainObject } from "./plain-object.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -14,14 +14,14 @@ export type SettingsTarget = "local" | "shared";
 
 export interface InitOptions {
   readonly port: number;
-  readonly codexModels: readonly string[];
   readonly settingsTarget: SettingsTarget;
 }
 
 export type InitError =
   | { readonly kind: "malformed_json"; readonly message: string }
   | { readonly kind: "invalid_input"; readonly message: string }
-  | { readonly kind: "write_error"; readonly message: string };
+  | { readonly kind: "write_error"; readonly message: string }
+  | { readonly kind: "legacy_config"; readonly message: string };
 
 // ---------------------------------------------------------------------------
 // Validation schemas (parse at boundaries)
@@ -30,13 +30,6 @@ export type InitError =
 export const PortSchema = z.coerce.number().int().min(1).max(65535, { message: "port must be between 1 and 65535" });
 
 export const SettingsTargetSchema = z.enum(["local", "shared"]);
-
-// ---------------------------------------------------------------------------
-// Plain-object guard (used in all JSON object checks)
-// ---------------------------------------------------------------------------
-
-export const isPlainObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null && !Array.isArray(v);
 
 // ---------------------------------------------------------------------------
 // Init dispatch decision (pure — injectable for tests)
@@ -61,10 +54,6 @@ export const resolveInitDispatch = (
   return "refuse";
 };
 
-// ALL_CODEX_MODELS derives from the config constant — no duplicated literals.
-export const ALL_CODEX_MODELS = DEFAULT_CODEX_MODELS;
-export type CodexModelName = (typeof ALL_CODEX_MODELS)[number];
-
 // ---------------------------------------------------------------------------
 // Prompts seam — injectable for tests (A2.12) [F25/F4/F23]
 // ---------------------------------------------------------------------------
@@ -80,12 +69,6 @@ interface SelectOption {
   readonly value: string;
   readonly label: string;
   readonly hint?: string;
-}
-
-interface MultiselectOptions {
-  readonly message: string;
-  readonly options: ReadonlyArray<SelectOption>;
-  readonly initialValues?: readonly string[];
 }
 
 interface SelectOptions {
@@ -108,7 +91,6 @@ export interface InitPrompts {
   intro(title: string): void;
   warn(message: string): void;
   text(opts: TextOptions): Promise<string | symbol>;
-  multiselect(opts: MultiselectOptions): Promise<readonly string[] | symbol>;
   select(opts: SelectOptions): Promise<string | symbol>;
   isCancel(v: unknown): v is symbol;
   cancel(message: string): void;
@@ -134,11 +116,9 @@ export const makeClackPrompts = async (): Promise<InitPrompts> => {
   // effectively `T | undefined`. We cast to `unknown` then to the clack type
   // to satisfy tsc without leaking `any` into our own interface. [boundary-validation]
   type ClackText = typeof clack.text;
-  type ClackMultiselect = typeof clack.multiselect;
   type ClackSelect = typeof clack.select;
 
   const callText = clack.text as unknown as (o: unknown) => ReturnType<ClackText>;
-  const callMultiselect = clack.multiselect as unknown as (o: unknown) => ReturnType<ClackMultiselect>;
   const callSelect = clack.select as unknown as (o: unknown) => ReturnType<ClackSelect>;
 
   return {
@@ -151,16 +131,6 @@ export const makeClackPrompts = async (): Promise<InitPrompts> => {
         ...(opts.initialValue !== undefined ? { initialValue: opts.initialValue } : {}),
         ...(opts.validate !== undefined ? { validate: opts.validate } : {}),
       }) as Promise<string | symbol>,
-    multiselect: (opts) =>
-      callMultiselect({
-        message: opts.message,
-        options: opts.options.map((o) => ({
-          value: o.value,
-          label: o.label,
-          ...(o.hint !== undefined ? { hint: o.hint } : {}),
-        })),
-        ...(opts.initialValues !== undefined ? { initialValues: [...opts.initialValues] } : {}),
-      }) as Promise<readonly string[] | symbol>,
     select: (opts) =>
       callSelect({
         message: opts.message,
@@ -256,15 +226,15 @@ export const planSettingsWrite = (
 };
 
 /**
- * Pure: merge port and codex.models into an existing (or absent) subswitch.config.json.
- * Preserves every other top-level key and every other codex.* key.
+ * Pure: merge port into an existing (or absent) subswitch.config.json.
+ * Preserves every other top-level key.
+ *
  * Fails on malformed JSON or non-object input.
  * No side effects — callers supply the current file content.
  */
 export const planConfigWrite = (
   existingJson: string | null,
   port: number,
-  models: readonly string[],
   projectDir: string,
 ): Result<ConfigWritePlan, InitError> => {
   const path = join(projectDir, "subswitch.config.json");
@@ -276,16 +246,24 @@ export const planConfigWrite = (
     existing = parseResult.value;
   }
 
-  // Preserve all codex.* keys except models (deep merge).
-  const existingCodex = isPlainObject(existing["codex"]) ? existing["codex"] : {};
+  // Reject legacy config keys before merging — init runs before loadConfig, so it is the
+  // only repair tool for a user blocked by the legacy-key gate. Writing { ...existing, port }
+  // over a legacy config would preserve the offending keys and leave the user in the same
+  // loop: init reports success, the next `serve` rejects the config identically. (avoids PF-010)
+  const legacyKeys = detectLegacyConfigKeys(existing);
+  if (legacyKeys.length > 0) {
+    return err({
+      kind: "legacy_config",
+      message:
+        `outdated config layout in ${path} — ` +
+        legacyKeys.map((l) => `move \`${l.path}\` to \`${l.replacement}\``).join("; ") +
+        `. Edit the file to match subswitch.config.example.json, or delete it and run init again.`,
+    });
+  }
 
   const merged: Record<string, unknown> = {
     ...existing,
     port,
-    codex: {
-      ...existingCodex,
-      models: [...models],
-    },
   };
 
   return ok({ path, content: `${JSON.stringify(merged, null, 2)}\n` });
@@ -315,11 +293,21 @@ export const makeRealFsDeps = (): InitFsDeps => ({
   },
   writeFile: async (path: string, content: string): Promise<void> => {
     await mkdir(dirname(path), { recursive: true });
-    // Atomic write: write to a temp file then rename over the target so a
-    // crash mid-write never leaves a partially-written config. [F2]
+    // Atomic write: open an exclusive temp file then rename over the target.
+    // O_EXCL ("wx") fails if the temp path already exists, preventing a
+    // pre-created symlink or file from receiving the config content before the
+    // rename. 0o600 restricts the file to the owner — consistent with the same
+    // fix in src/codex-auth.ts. A crash between open and rename leaves the temp;
+    // the catch block unlinks it. (fixes SEC-03) [F2]
     const tmp = `${path}.tmp.${process.pid}`;
     try {
-      await fsWriteFile(tmp, content, "utf8");
+      const handle = await open(tmp, "wx", 0o600);
+      try {
+        await handle.writeFile(content, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
       await fsRename(tmp, path);
     } catch (e) {
       try { await fsUnlink(tmp); } catch { /* ignore cleanup error */ }
@@ -361,7 +349,7 @@ export const executeInit = async (
   }
 
   // 2. Plan both writes (pure — if either fails, nothing is written).
-  const configPlan = planConfigWrite(existingConfigJson, options.port, options.codexModels, projectDir);
+  const configPlan = planConfigWrite(existingConfigJson, options.port, projectDir);
   if (!configPlan.ok) return err(configPlan.error);
 
   const settingsPlan = planSettingsWrite(existingSettingsJson, options.port, options.settingsTarget, projectDir);
@@ -384,15 +372,9 @@ export const executeInit = async (
 
 /**
  * Raw CLI flag shape as produced by parseArgs.
- *
- * - codexModel: from --codex-model (multiple, repeatable)
- * - codexModels: from --codex-models (single CSV string)
- * Merging and normalisation happen inside resolveOptionsFromFlags. [F11]
  */
 export interface InitFlags {
   readonly port?: string;
-  readonly codexModel?: readonly string[];
-  readonly codexModels?: string;
   readonly settingsTarget?: string;
 }
 
@@ -417,38 +399,8 @@ export const resolveOptionsFromFlags = (flags: InitFlags): Result<InitOptions, I
     });
   }
 
-  // Merge codex model flags.
-  // Distinguish "no model flags at all → use defaults" from
-  // "model flags given but resolve to empty → error" so --codex-models ""
-  // is always an error. [F16/F17/F35]
-  const hasModelFlags = flags.codexModel !== undefined || flags.codexModels !== undefined;
-
-  let resolvedModels: readonly string[];
-  if (!hasModelFlags) {
-    // No model flags provided — default to ALL_CODEX_MODELS.
-    resolvedModels = DEFAULT_CODEX_MODELS;
-  } else {
-    const merged: string[] = [...(flags.codexModel ?? [])];
-    if (flags.codexModels !== undefined && flags.codexModels !== "") {
-      merged.push(...flags.codexModels.split(",").map((s) => s.trim()).filter((s) => s.length > 0));
-    }
-    const filtered = merged.map((m) => m.trim()).filter((m) => m.length > 0);
-    // Deduplicate, preserving first-occurrence order — the two model flags are
-    // documented as "combined and deduplicated" (README CLI reference). [F16/F17]
-    const deduped = [...new Set(filtered)];
-    if (deduped.length === 0) {
-      // Model flags were given but resolved to nothing (e.g. --codex-models "").
-      return err({
-        kind: "invalid_input",
-        message: `invalid --codex-models "${flags.codexModels ?? ""}": at least one model is required`,
-      });
-    }
-    resolvedModels = deduped;
-  }
-
   return ok({
     port: portResult.data,
-    codexModels: resolvedModels,
     settingsTarget: targetResult.data,
   });
 };
@@ -498,27 +450,18 @@ const seedWizard = async (
   projectDir: string,
 ): Promise<{
   readonly portSeed: string;
-  readonly modelsSeed: readonly string[];
   readonly settingsTargetSeed: string;
 }> => {
   // Try to read existing config for seeding — ignore read/parse errors here;
   // the real planning step (executeInit → planConfigWrite) will report them.
   const configPath = join(projectDir, "subswitch.config.json");
   let existingPort: number | undefined;
-  let existingModels: readonly string[] | undefined;
   try {
     const existingJson = await deps.readFile(configPath);
     if (existingJson !== null) {
       const parsed: unknown = JSON.parse(existingJson);
       if (isPlainObject(parsed)) {
         if (typeof parsed["port"] === "number") existingPort = parsed["port"];
-        const codex = parsed["codex"];
-        if (isPlainObject(codex) && Array.isArray(codex["models"])) {
-          const models = (codex["models"] as unknown[]).filter(
-            (m): m is string => typeof m === "string" && m.length > 0,
-          );
-          if (models.length > 0) existingModels = models;
-        }
       }
     }
   } catch {
@@ -535,36 +478,20 @@ const seedWizard = async (
     portSeed = String(DEFAULT_PORT);
   }
 
-  // Models: flags → existing config → all defaults [F1]
-  let modelsSeed: readonly string[];
-  const hasModelFlags = flags.codexModel !== undefined || flags.codexModels !== undefined;
-  if (hasModelFlags) {
-    const merged: string[] = [...(flags.codexModel ?? [])];
-    if (flags.codexModels !== undefined && flags.codexModels !== "") {
-      merged.push(...flags.codexModels.split(",").map((s) => s.trim()).filter((s) => s.length > 0));
-    }
-    modelsSeed = merged.length > 0 ? merged : ALL_CODEX_MODELS;
-  } else if (existingModels !== undefined) {
-    modelsSeed = existingModels;
-  } else {
-    modelsSeed = ALL_CODEX_MODELS;
-  }
-
   // Settings target: flags → default (no config file source for this one)
   const settingsTargetSeed = flags.settingsTarget ?? "local";
 
-  return { portSeed, modelsSeed, settingsTargetSeed };
+  return { portSeed, settingsTargetSeed };
 };
 
 /**
  * Run the interactive init wizard.
  *
- * Returns exit code: 0 on success, 1 on cancel / empty selection / write failure.
+ * Returns exit code: 0 on success, 1 on cancel / write failure.
  * Callers (cli.ts) must assign `process.exitCode = exitCode` — this function
  * does not mutate process state. [F18]
  *
  * Cancel at ANY prompt → return 1 with zero writes.
- * Empty multiselect selection → return 1 with zero writes.
  * Write failure → return 1.
  */
 export const runInitInteractive = async (
@@ -587,14 +514,14 @@ export const runInitInteractive = async (
   prompts.intro("subswitch init — interactive setup");
 
   // --- Precondition checks --- [F13]
-  const authFilePath = join(homedir(), ".codex", "auth.json");
+  const authFilePath = expandHome(DEFAULT_CODEX_AUTH_FILE);
   const warnings = collectPreconditionWarnings(env, deps.exists(authFilePath), authFilePath);
   for (const w of warnings) {
     prompts.warn(w);
   }
 
   // --- Seed from flags → existing config → defaults --- [F1]
-  const { portSeed, modelsSeed, settingsTargetSeed } = await seedWizard(flags, deps, projectDir);
+  const { portSeed, settingsTargetSeed } = await seedWizard(flags, deps, projectDir);
 
   // --- Port ---
   const portResult = await prompt<string>(
@@ -617,39 +544,6 @@ export const runInitInteractive = async (
     return 1;
   }
   const port = portParsed.data;
-
-  // --- Codex models ---
-  // Build options: all known models first, then any extra models from flags/existing config
-  // that are not in ALL_CODEX_MODELS. This ensures a custom/forward-compat model that is
-  // already in the config appears as a selectable option and can be preselected. [self-review P2]
-  const knownModelSet = new Set<string>(ALL_CODEX_MODELS);
-  const extraModelOptions = modelsSeed.filter((m) => !knownModelSet.has(m));
-  const allModelsForOptions = [...ALL_CODEX_MODELS, ...extraModelOptions];
-  const extraModelSet = new Set<string>(extraModelOptions);
-  const modelOptions: SelectOption[] = allModelsForOptions.map((m) => ({
-    value: m,
-    label: m,
-    ...(m === "gpt-5.6-sol"
-      ? { hint: "recommended fast model" }
-      : extraModelSet.has(m)
-      ? { hint: "(custom)" }
-      : {}),
-  }));
-
-  const modelsResult = await prompt<readonly string[]>(
-    prompts.multiselect({
-      message: "Which Codex models should subswitch route?",
-      options: modelOptions,
-      initialValues: [...modelsSeed],
-    }),
-  );
-  if (modelsResult === null) return 1;
-
-  const selectedModels = modelsResult.v;
-  if (selectedModels.length === 0) {
-    prompts.cancel("At least one model must be selected — no files written.");
-    return 1;
-  }
 
   // --- Settings target ---
   const settingsResult = await prompt<string>(
@@ -681,7 +575,6 @@ export const runInitInteractive = async (
 
   const options: InitOptions = {
     port,
-    codexModels: selectedModels,
     settingsTarget,
   };
 
@@ -713,8 +606,8 @@ export const runInitInteractive = async (
       `  2. Run \`subswitch doctor\` to verify config + codex auth health`,
       `  3. Restart any running Claude Code session to pick up ANTHROPIC_BASE_URL`,
       `  4. Route a subagent to Codex by adding to its frontmatter:`,
-      `       model: gpt-5.6-sol   # any of: ${options.codexModels.join(", ")}`,
-      `       effort: low           # optional reasoning effort`,
+      `       model: sol   # alias — always the latest generation`,
+      `       effort: low  # optional reasoning effort`,
     ].join("\n"),
     "Setup complete",
   );
@@ -746,24 +639,13 @@ export const runInitDryRun = async (
 
   const options = optionsResult.value;
 
-  // Forward-compat warning for unknown model names (non-fatal). [F32]
-  // Parity with runInitNonInteractive — both non-interactive paths emit this warning. [self-review P2]
-  const knownDryRunModels: ReadonlyArray<string> = ALL_CODEX_MODELS;
-  for (const model of options.codexModels) {
-    if (!knownDryRunModels.includes(model)) {
-      errWrite(
-        `warning: model "${model}" is not in the known list (${ALL_CODEX_MODELS.join(", ")}) — proceeding anyway`,
-      );
-    }
-  }
-
   const configPath = join(projectDir, "subswitch.config.json");
   const settingsPath = settingsPathFor(options.settingsTarget, projectDir);
 
   const existingConfigJson = await deps.readFile(configPath);
   const existingSettingsJson = await deps.readFile(settingsPath);
 
-  const configPlan = planConfigWrite(existingConfigJson, options.port, options.codexModels, projectDir);
+  const configPlan = planConfigWrite(existingConfigJson, options.port, projectDir);
   if (!configPlan.ok) {
     errWrite(`subswitch init --dry-run: ${configPlan.error.message}`);
     return 1;
@@ -796,7 +678,7 @@ export const runInitNonInteractive = async (
   env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
 ): Promise<number> => {
   // Emit precondition warnings before resolving options. [F12/F13]
-  const authFilePath = join(homedir(), ".codex", "auth.json");
+  const authFilePath = expandHome(DEFAULT_CODEX_AUTH_FILE);
   const warnings = collectPreconditionWarnings(env, deps.exists(authFilePath), authFilePath);
   for (const w of warnings) {
     errWrite(`warning: ${w}`);
@@ -806,16 +688,6 @@ export const runInitNonInteractive = async (
   if (!optionsResult.ok) {
     errWrite(`subswitch init: ${optionsResult.error.message}`);
     return 1;
-  }
-
-  // Forward-compat warning for unknown model names (non-fatal). [F32]
-  const knownModels: ReadonlyArray<string> = ALL_CODEX_MODELS;
-  for (const model of optionsResult.value.codexModels) {
-    if (!knownModels.includes(model)) {
-      errWrite(
-        `warning: model "${model}" is not in the known list (${ALL_CODEX_MODELS.join(", ")}) — proceeding anyway`,
-      );
-    }
   }
 
   const result = await executeInit(optionsResult.value, deps, projectDir);
@@ -829,8 +701,6 @@ export const runInitNonInteractive = async (
   write(`Written: ${settingsFile}`);
   write(`Next: run \`subswitch serve\` from ${projectDir}`);
   write(`      run \`subswitch doctor\` to verify config + codex auth health`);
-  write(
-    `      add \`model: ${optionsResult.value.codexModels[0] ?? "gpt-5.6-sol"}\` to a subagent's frontmatter to route it`,
-  );
+  write(`      add \`model: sol\` to a subagent's frontmatter to route it (alias — auto-tracks latest generation)`);
   return 0;
 };

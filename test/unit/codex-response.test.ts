@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { noopLogger, createConsoleLogger } from "../../src/logger.js";
+import type { ProviderId } from "../../src/models.js";
 import {
   aggregateFrames,
   createAnthropicSseTranslator,
@@ -26,7 +27,22 @@ interface TranslateRun {
   readonly reasoningPuts: { callId: string; items: readonly unknown[] }[];
 }
 
-const translate = async (sse: string): Promise<TranslateRun> => {
+/**
+ * SYNTHETIC-PROVIDER CAST — the single sanctioned cast in this file.
+ *
+ * `providerId` is now required and typed as the closed `ProviderId` union, which is
+ * `"codex"` alone today. A test that can only ever pass `"codex"` cannot distinguish a
+ * threaded provider id from a hardcoded literal, so every assertion about
+ * parameterization would be vacuous. Casting through `string` (not a direct
+ * `as ProviderId`, which TypeScript rejects outright) buys a second value to test with.
+ *
+ * Remove this helper and all its callers when a second real provider lands and
+ * PROVIDER_IDS expands. (mirrors test/unit/routing-table.test.ts)
+ */
+const otherProviderName: string = "kimi";
+const OTHER_PROVIDER = otherProviderName as ProviderId;
+
+const translate = async (sse: string, options: { readonly providerId?: ProviderId } = {}): Promise<TranslateRun> => {
   const frames: string[] = [];
   const reasoningPuts: TranslateRun["reasoningPuts"] = [];
   await pipeline(
@@ -36,6 +52,7 @@ const translate = async (sse: string): Promise<TranslateRun> => {
       model: "gpt-5.5",
       logger: noopLogger,
       onReasoningItems: (callId, items) => reasoningPuts.push({ callId, items }),
+      providerId: options.providerId ?? "codex",
     }),
     async (source) => {
       for await (const frame of source) frames.push(String(frame));
@@ -48,6 +65,13 @@ const frameTypes = (frames: readonly string[]): string[] =>
   frames.map((frame) => (JSON.parse(frame.split("\n")[1]!.slice(6)) as { type: string }).type);
 
 const frameData = (frame: string): Record<string, unknown> => JSON.parse(frame.split("\n")[1]!.slice(6));
+
+/** Client-visible message carried by the stream's error frame, or undefined if there is none. */
+const errorFrameMessage = (frames: readonly string[]): string | undefined => {
+  const errorFrame = frames.find((f) => frameData(f)["type"] === "error");
+  if (errorFrame === undefined) return undefined;
+  return (frameData(errorFrame)["error"] as Record<string, unknown>)["message"] as string;
+};
 
 describe("createSseParser", () => {
   it("parses events split across arbitrary chunk boundaries", async () => {
@@ -81,6 +105,112 @@ describe("createSseParser", () => {
       parseSse([Buffer.from(`data: ${"x".repeat(2048)}`)], 1024),
       /sse_event_too_large/,
     );
+  });
+
+  it("parses correctly when the \\r\\n\\r\\n separator straddles a chunk boundary", async () => {
+    // SSE events split so the FIRST separator (\r\n\r\n) falls across two chunks.
+    // Before the O(S²/C) fix, scanning always restarted from 0 — this test verifies
+    // that the scanStart offset does not skip any boundary straddling the split point.
+    // Three bytes of slack (prevLen - 3) is exactly what a 4-byte separator needs to
+    // be found when it begins in the previous chunk; remove the slack and it is missed.
+    //
+    // The SECOND event is load-bearing, not decoration. With a single event, flush()
+    // re-parses the whole leftover buffer at EOF and recovers it even when the scan
+    // never found the boundary at all — so a one-event fixture passes against a parser
+    // whose boundary search is entirely broken. With two events, a missed boundary
+    // makes flush() fold both into one record (eventName overwritten, data lines
+    // concatenated), and the count assertion fires.
+    const first = "event: first\r\ndata: one\r\n";
+    const second = "event: second\r\ndata: two\r\n";
+    const full = `${first}\r\n${second}\r\n`;
+    // Split one byte into the first separator: chunk 1 ends with \r\n\r, chunk 2 starts with \n.
+    const splitAt = first.length + 1;
+    const chunks = [Buffer.from(full.slice(0, splitAt)), Buffer.from(full.slice(splitAt))];
+    const events = await parseSse(chunks);
+    assert.equal(
+      events.length,
+      2,
+      "the straddled boundary must be found by the scan — one event here means flush() folded both together",
+    );
+    assert.equal(events[0]!.event, "first");
+    assert.equal(events[0]!.data, "one");
+    assert.equal(events[1]!.event, "second");
+    assert.equal(events[1]!.data, "two");
+  });
+
+  it("keeps a 4-character separator whole when only its final character is new", async () => {
+    // THE CARRY-WIDTH PROOF. The parser carries the last 3 characters of the accumulator
+    // into the next chunk's search. 3 is exact, and this is the case that fixes it: the
+    // accumulator ends with `\r\n\r` and the next chunk opens with `\n`, so exactly one
+    // character of the 4-character separator is new and the other three must be carried.
+    //
+    // At a carry of 2 this does NOT fail loudly — the search string starts `\n\r\n…`, the
+    // regex matches that 3-character separator one index later, and the event still ends up
+    // split. What leaks is a stray `\r` on the tail of the last data line, because `raw` is
+    // cut one character too late. So the discriminating assertion is on `data`, not on
+    // `events.length`; a count-only assertion passes at carry 2 (avoids PF-009).
+    const chunks = ["event: a\r\ndata: 1\r\n\r", "\nevent: b\r\ndata: 2\r\n\r\n"].map((c) => Buffer.from(c));
+    const events = await parseSse(chunks);
+    assert.equal(events.length, 2);
+    assert.equal(events[0]!.data, "1", "a stray \\r here means the separator was matched one character late");
+    assert.equal(events[1]!.data, "2");
+  });
+
+  it("decodes a 4-byte codepoint split at every internal byte offset", async () => {
+    // StringDecoder holds partial code points across chunk boundaries. Decoding each chunk
+    // independently (`chunk.toString("utf8")`) yields replacement characters instead.
+    const sse = 'data: {"t":"\u{1F600}"}\n\ndata: after\n\n';
+    const bytes = Buffer.from(sse);
+    const emojiStart = bytes.indexOf(Buffer.from("\u{1F600}"));
+    assert.equal(bytes.subarray(emojiStart, emojiStart + 4).length, 4, "expected a 4-byte codepoint");
+    for (let split = emojiStart + 1; split < emojiStart + 4; split += 1) {
+      const events = await parseSse([bytes.subarray(0, split), bytes.subarray(split)]);
+      assert.equal(events.length, 2, `split at byte ${split}`);
+      assert.equal(events[0]!.data, '{"t":"\u{1F600}"}', `codepoint corrupted by a split at byte ${split}`);
+      assert.equal(events[1]!.data, "after");
+    }
+  });
+
+  it("bounds the residual by accumulated characters, not by segment count", async () => {
+    // Three 512-character chunks with no separator: 1536 characters across 3 segments.
+    // A bound that tested the segment COUNT would see 3 and never trip. The existing
+    // single-chunk case above cannot tell the two apart, because there the count is 1.
+    const chunk = Buffer.from("x".repeat(512));
+    await assert.rejects(parseSse([chunk, chunk, chunk], 1024), /sse_event_too_large/);
+  });
+
+  it("rejects an oversized event as it accumulates, not after buffering all of it", async () => {
+    // maxEventBytes is a MEMORY bound, so it has to trip while the event is still arriving.
+    // A check moved after the join would still surface `sse_event_too_large` eventually —
+    // at flush, having buffered every byte — which is exactly the control this asserts
+    // against. Counting accepted chunks is what distinguishes the two.
+    const parser = createSseParser(1024);
+    let failure: Error | undefined;
+    parser.on("error", (e: Error) => {
+      failure = e;
+    });
+    let accepted = 0;
+    for (let i = 0; i < 2048; i += 1) {
+      if (failure !== undefined) break;
+      parser.write(Buffer.from("x"));
+      accepted += 1;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(failure?.message, "sse_event_too_large");
+    assert.equal(accepted, 1025, "must reject on the first chunk that pushes the residual past the bound");
+  });
+
+  it("produces all events when a large event body arrives in many small chunks", async () => {
+    // Regression guard for the O(S²/C) scan pattern: a 64 KB data payload
+    // arriving in 1-byte chunks would previously cause ~2B char comparisons.
+    // This test verifies correctness under that delivery pattern.
+    const payload = "x".repeat(64 * 1024);
+    const sse = `data: ${payload}\n\ndata: second\n\n`;
+    const chunks = [...Buffer.from(sse)].map((b) => Buffer.from([b]));
+    const events = await parseSse(chunks, 128 * 1024);
+    assert.equal(events.length, 2);
+    assert.equal(events[0]!.data, payload);
+    assert.equal(events[1]!.data, "second");
   });
 });
 
@@ -155,6 +285,42 @@ describe("createAnthropicSseTranslator", () => {
     assert.equal(error["message"], "upstream exploded");
   });
 
+  /**
+   * U3.3 — SSE response.failed event carrying a JWT in error.message: the emitted
+   * error frame must contain no `eyJ` prefix.
+   *
+   * Mutation that MUST turn this red: apply the redaction in the handler instead of
+   * in errors.ts (i.e. remove the redactCredentials call from toAnthropicErrorBody
+   * and add it only to the upstream-body-relay in codex-handler.ts). This mutation
+   * exists specifically to prove the chokepoint choice was correct: the response.failed
+   * path flows through toAnthropicErrorSse → toAnthropicErrorBody, NOT through the
+   * handler's upstream-body relay, so handler-side redaction does not cover it.
+   * U3.3 must go RED under this mutation.
+   *
+   * PF-011: proven RED against the named mutation before trusting green.
+   */
+  it("U3.3 — response.failed JWT in error.message is redacted in the emitted error frame", async () => {
+    const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIn0.sig";
+    const sse = [
+      `event: response.created`,
+      `data: {"type":"response.created","response":{"id":"resp_u33","model":"gpt-5.5","status":"in_progress"}}`,
+      ``,
+      `event: response.failed`,
+      `data: {"type":"response.failed","response":{"id":"resp_u33","model":"gpt-5.5","status":"failed","error":{"code":"auth_failed","message":"token ${jwt} rejected"}}}`,
+      ``,
+      ``,
+    ].join("\n");
+    const { frames } = await translate(sse);
+    const errorFrame = frames.find((f) => frameData(f)["type"] === "error");
+    assert.ok(errorFrame !== undefined, "an error frame must be emitted");
+    const message = (frameData(errorFrame)["error"] as Record<string, unknown>)["message"] as string;
+    // JWT must be redacted
+    assert.ok(!message.includes("eyJ"), `JWT (eyJ prefix) must not appear in error frame message, got: ${message}`);
+    // Surrounding context must be preserved (proves surgical redaction, not nuking the message)
+    assert.ok(message.includes("token"), "surrounding context 'token' must be preserved");
+    assert.ok(message.includes("rejected"), "surrounding context 'rejected' must be preserved");
+  });
+
   it("translates a recorded real transcript (sanitized) end-to-end", async () => {
     const { frames } = await translate(loadSse("live-transcript.sse"));
     assert.deepEqual(frameTypes(frames), [
@@ -175,7 +341,7 @@ describe("createAnthropicSseTranslator", () => {
     assert.equal((delta["delta"] as Record<string, unknown>)["stop_reason"], "tool_use");
     assert.deepEqual(delta["usage"], { input_tokens: 66, output_tokens: 18 });
 
-    const aggregated = aggregateFrames(frames);
+    const aggregated = aggregateFrames(frames, "codex");
     assert.ok(aggregated.ok);
     const message = aggregated.value.kind === "message" ? aggregated.value.message : {};
     assert.deepEqual(message["content"], [{ type: "tool_use", id: "call_live_1", name: "list_files", input: { path: "." } }]);
@@ -191,6 +357,275 @@ describe("createAnthropicSseTranslator", () => {
       "message_delta",
       "message_stop",
     ]);
+  });
+
+  // P1-6: these tests belong here (translator behaviour), not in "cache observability".
+  it("closes a block left open by a missing output_item.done before the terminal frames", async () => {
+    // response.completed arrives before output_item.done, so the upstream never closes
+    // the block. The synthesised stop must land before message_stop: a streaming client
+    // that receives a content_block_stop after the terminal frame sees a corrupt stream.
+    const { frames } = await translate(loadSse("completed-before-done.sse"));
+    assert.deepEqual(frameTypes(frames), [
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+    ]);
+  });
+
+  it("errors on dropped deltas even when every block was closed", async () => {
+    // The delta's item_id matches no block, so its text is dropped, but output_item.done
+    // still closes the block. Without an error the client would receive HTTP 200 and an
+    // empty text block while the upstream had actually produced content.
+    const { frames } = await translate(loadSse("delta-id-mismatch.sse"));
+    const types = frameTypes(frames);
+    assert.ok(types.includes("error"), `expected an error frame, got ${types.join(",")}`);
+    assert.ok(!types.includes("message_stop"), "terminal frames must not follow the error frame");
+    const result = aggregateFrames(frames, "codex");
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "error");
+  });
+
+  // P0-2 Variant A: block opened, no delta, EOF before terminal event → must be error, not 200.
+  it("emits error when stream ends with an opened block but no deltas and no terminal event", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"r7","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m7","role":"assistant"}}',
+      '',
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(frameTypes(frames).includes("error"), `expected error frame, got: ${frameTypes(frames).join(",")}`);
+    const result = aggregateFrames(frames, "codex");
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "error");
+  });
+
+  // P0-2 Variant B: response.created only, EOF before any output block → must be error, not 200.
+  it("emits error when stream ends after response.created with no output blocks and no terminal event", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"r8","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(frameTypes(frames).includes("error"), `expected error frame, got: ${frameTypes(frames).join(",")}`);
+    const result = aggregateFrames(frames, "codex");
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "error");
+  });
+
+  // P1-3: duplicate output_item.added with the same item id must not create a second block.
+  it("ignores duplicate output_item.added for the same item id (no spurious empty block)", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_dup","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_dup","role":"assistant"}}',
+      '',
+      // Duplicate announcement — must be ignored.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_dup","role":"assistant"}}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"msg_dup","output_index":0,"delta":"real content"}',
+      '',
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_dup","role":"assistant"}}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"resp_dup","model":"gpt-5.5","status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}',
+      '',
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
+    const result = aggregateFrames(frames, "codex");
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    // Exactly one content block with the real text; no spurious empty block.
+    assert.deepEqual(msg["content"], [{ type: "text", text: "real content" }]);
+  });
+
+  // W1: a stray unmatched delta from an unknown-type item must not poison a turn that has real content.
+  // Mutation target: reconcileOpenBlocks error condition — change back to `if (sawUnmatchedDelta)`
+  // (drop the `&& blocksWithContent.size === 0` guard) and the test must FAIL.
+  it("W1: stray unmatched delta from an unknown-type item does not poison a turn with real content", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_w1","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      // Real message block — registered, receives a delta, then properly closed.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_real","role":"assistant"}}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"msg_real","output_index":0,"delta":"real content"}',
+      '',
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_real","role":"assistant"}}',
+      '',
+      // Unknown-type item (e.g. web_search_call) — type not handled, never registered.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"web_search_call","id":"ws_1"}}',
+      '',
+      // Stray delta for the unknown item — unmatched (no block registered for ws_1 / oi:1).
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"ws_1","output_index":1,"delta":"dropped"}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"resp_w1","model":"gpt-5.5","status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}',
+      '',
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
+    assert.ok(frameTypes(frames).includes("message_stop"), "must produce message_stop");
+    const result = aggregateFrames(frames, "codex");
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    assert.deepEqual(msg["content"], [{ type: "text", text: "real content" }]);
+  });
+
+  // W2: a block that was opened but never received any delta must not produce a spurious empty entry.
+  // Mutation target 1: remove the `blocksWithContent.has(index)` guard in reconcileOpenBlocks (emit
+  // content_block_stop for ALL open blocks). The test must FAIL because block 1 now gets a stop,
+  // and aggregateFrames appends {type:"text", text:""} to the content.
+  // Mutation target 2 (RELI-01): remove the message_delta/message_stop pushes from flush()'s
+  // reconcile branch. The test must FAIL because message_stop is absent from frames, and
+  // msg["stop_reason"] is null rather than "max_tokens".
+  it("W2: no spurious empty block when a second block is opened but never delta'd before EOF", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_w2","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      // Block 0: receives content.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_content","role":"assistant"}}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"msg_content","output_index":0,"delta":"real content"}',
+      '',
+      // Block 1: opened but never delta'd — upstream truncated before producing content for it.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_empty","role":"assistant"}}',
+      '',
+      // EOF with no terminal event (truncation).
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
+    // RELI-01: flush() must emit terminal frames so streaming callers see a complete turn.
+    assert.ok(frameTypes(frames).includes("message_stop"), `flush() truncation path must emit message_stop; got: ${frameTypes(frames).join(",")}`);
+    const result = aggregateFrames(frames, "codex");
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    // Exactly one content block with the real text; the zero-delta block must be discarded.
+    assert.deepEqual(msg["content"], [{ type: "text", text: "real content" }]);
+    // RELI-01: aggregateFrames must see a message_delta with stop_reason so stop_reason is not null.
+    assert.equal(msg["stop_reason"], "max_tokens", "truncated flush() must produce stop_reason max_tokens");
+  });
+
+  // RELI-03: upstream-controlled content block count must be capped.
+  // Mutation target: remove the `if (nextBlockIndex >= MAX_CONTENT_BLOCKS)` guard in the
+  // response.output_item.added handler. The test must FAIL because: block 0 has content
+  // (blocksWithContent is non-empty), so the no-content error path in flush() does NOT fire.
+  // Without the guard, all 1025 items are accepted, flush() reconciles block 0 and produces
+  // message_delta + message_stop with no error — opposite of what this test asserts.
+  //
+  // The delta on block 0 is load-bearing: without it, blocksWithContent would be empty and
+  // the pre-existing flush() error path would fire anyway (masking the missing guard).
+  it("RELI-03: emits error frame when upstream sends more output items than MAX_CONTENT_BLOCKS (1024)", async () => {
+    const lines: string[] = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_cap","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      // Block 0: receives a delta so blocksWithContent is non-empty, preventing the
+      // started-but-no-content flush() branch from masking the absent cap guard.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg0","role":"assistant"}}',
+      '',
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"msg0","output_index":0,"delta":"hi"}',
+      '',
+    ];
+    // Blocks 1..1024: the item at output_index 1024 pushes nextBlockIndex to 1024, which
+    // equals MAX_CONTENT_BLOCKS and fires the guard (error emitted, finished=true).
+    for (let i = 1; i <= 1024; i++) {
+      lines.push(
+        'event: response.output_item.added',
+        `data: {"type":"response.output_item.added","output_index":${i},"item":{"type":"message","id":"msg${i}","role":"assistant"}}`,
+        '',
+      );
+    }
+    lines.push('');
+    const { frames } = await translate(lines.join('\n'));
+    assert.ok(
+      frameTypes(frames).includes("error"),
+      `must produce error frame when content block cap (1024) is exceeded; got: ${frameTypes(frames).join(",")}`,
+    );
+  });
+
+  // W6: the output_index (oi:) fallback in lookupBlockIndex must be exercised for DELTA lookup.
+  // Mutation target: delete `if (outputIndex !== undefined) keys.push(\`oi:${outputIndex}\`)` from
+  // blockKeys. The test must FAIL because the delta's item_id="msg_B" has no id: match and the
+  // oi: fallback is the only path to the block — dropping it makes the delta unmatched → error.
+  it("W6: oi: fallback resolves a delta whose item_id differs from the registered id but output_index matches", async () => {
+    const sse = [
+      'event: response.created',
+      'data: {"type":"response.created","response":{"id":"resp_w6","model":"gpt-5.5","status":"in_progress"}}',
+      '',
+      // Block registered under id:msg_A and oi:0.
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_A","role":"assistant"}}',
+      '',
+      // Delta carries item_id="msg_B" — no id: match. Only oi:0 can resolve this.
+      'event: response.output_text.delta',
+      'data: {"type":"response.output_text.delta","item_id":"msg_B","output_index":0,"delta":"found via oi fallback"}',
+      '',
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_A","role":"assistant"}}',
+      '',
+      'event: response.completed',
+      'data: {"type":"response.completed","response":{"id":"resp_w6","model":"gpt-5.5","status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}',
+      '',
+      '',
+    ].join('\n');
+    const { frames } = await translate(sse);
+    assert.ok(!frameTypes(frames).includes("error"), `must not produce error frame; got: ${frameTypes(frames).join(",")}`);
+    const result = aggregateFrames(frames, "codex");
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    assert.deepEqual(msg["content"], [{ type: "text", text: "found via oi fallback" }]);
+  });
+
+  // P1-4 path (d): done.item.id differs from added.item.id but output_index matches — content preserved.
+  it("path d: preserves content when output_item.done carries a different id than output_item.added", async () => {
+    const { frames } = await translate(loadSse("done-id-mismatch.sse"));
+    assert.deepEqual(frameTypes(frames), [
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+    ]);
+    const result = aggregateFrames(frames, "codex");
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    assert.deepEqual(msg["content"], [{ type: "text", text: "hello world" }]);
   });
 });
 
@@ -218,7 +653,7 @@ describe("cache observability logging", () => {
     await pipeline(
       Readable.from([Buffer.from(cachedTokensSse)]),
       createSseParser(1024 * 1024),
-      createAnthropicSseTranslator({ model: "gpt-5.5", logger }),
+      createAnthropicSseTranslator({ model: "gpt-5.5", logger, providerId: "codex" }),
       async (source) => {
         for await (const _ of source) { /* drain */ }
       },
@@ -235,7 +670,7 @@ describe("cache observability logging", () => {
     await pipeline(
       Readable.from([Buffer.from(cachedTokensSse)]),
       createSseParser(1024 * 1024),
-      createAnthropicSseTranslator({ model: "gpt-5.5", logger, conversationKey: key }),
+      createAnthropicSseTranslator({ model: "gpt-5.5", logger, conversationKey: key, providerId: "codex" }),
       async (source) => {
         for await (const _ of source) { /* drain */ }
       },
@@ -246,12 +681,13 @@ describe("cache observability logging", () => {
     assert.match(keyLine, /sessionKey=a1b2c3d4/);
     assert.match(keyLine, /sessionKey=[0-9a-f]{8}(\s|$)/);
   });
+
 });
 
 describe("aggregateFrames", () => {
   it("folds streamed frames into a complete message", async () => {
     const { frames } = await translate(loadSse("tool-call-with-reasoning.sse"));
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
     const message = result.value.kind === "message" ? result.value.message : {};
@@ -262,7 +698,7 @@ describe("aggregateFrames", () => {
 
   it("folds text frames into a text message", async () => {
     const { frames } = await translate(loadSse("text-only.sse"));
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     const message = result.value.kind === "message" ? result.value.message : {};
     assert.deepEqual(message["content"], [{ type: "text", text: "Hello from codex" }]);
@@ -271,14 +707,233 @@ describe("aggregateFrames", () => {
 
   it("surfaces stream errors as an error outcome", async () => {
     const { frames } = await translate(loadSse("failed.sse"));
-    const result = aggregateFrames(frames);
+    const result = aggregateFrames(frames, "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "error");
   });
 
   it("errors when no message was produced", () => {
-    const result = aggregateFrames([]);
+    const result = aggregateFrames([], "codex");
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "upstream");
+  });
+
+  it("errors rather than dropping content when a block was never closed", () => {
+    // Safety net: the translator reconciles open blocks before this point, so these
+    // frames should be unreachable in production. Assembling them anyway would return
+    // HTTP 200 with content:[] while the deltas carried text.
+    const result = aggregateFrames([
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"orphaned"}}\n\n',
+    ], "codex");
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "upstream");
+  });
+
+  // P0-1: tool_use block with non-empty but unparseable partialJson must return err(), not input:{}.
+  it("errors when a tool_use block carries non-empty but unparseable partial_json", () => {
+    // reconcileOpenBlocks synthesises the content_block_stop; aggregateFrames then
+    // encounters truncated JSON.  Substituting {} would let callers act on invented
+    // empty arguments (e.g. execute write_file with no path).
+    const result = aggregateFrames([
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_x","name":"write_file","input":{}}}\n\n',
+      // Truncated JSON — closing quote, brace, and outer brace are all missing.
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\\"path\\\":\\\"/etc/hosts\\\",\\\"content\\\":\\\"DAN"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":5,"output_tokens":3}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ], "codex");
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "upstream");
+    assert.match(result.error.message, /unparseable tool_use/);
+  });
+
+  // W4: whitespace-only partial_json must be treated as equivalent to empty → input:{}, not 502.
+  // Mutation target: change `pending.partialJson.trim() === ""` back to `pending.partialJson === ""`.
+  // The test must FAIL because "  ".trim() !== "" → JSON.parse("  ") throws → returns err.
+  it("W4: whitespace-only partial_json is treated as empty and produces input:{}", () => {
+    const result = aggregateFrames([
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_w4","name":"no_args","input":{}}}\n\n',
+      // Whitespace-only partial_json — not empty string, but no parseable JSON content.
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"  "}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":5,"output_tokens":2}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ], "codex");
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    assert.deepEqual(msg["content"], [{ type: "tool_use", id: "call_w4", name: "no_args", input: {} }]);
+  });
+
+  // P0-1: a tool_use block whose partialJson is empty string (zero-argument call) must still return input:{}.
+  it("preserves input:{} for a tool_use block with an empty partial_json (zero-argument call)", () => {
+    const result = aggregateFrames([
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_y","name":"no_args","input":{}}}\n\n',
+      // No input_json_delta — partialJson stays "".
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"input_tokens":5,"output_tokens":2}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ], "codex");
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    const msg = result.value.kind === "message" ? result.value.message : {};
+    assert.deepEqual(msg["content"], [{ type: "tool_use", id: "call_y", name: "no_args", input: {} }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider-id parameterization.
+//
+// Four client-visible fallback messages on this leg name the provider they came
+// from. Each is pinned TWICE against the same input: once as "codex", which must
+// stay byte-identical, and once as OTHER_PROVIDER.
+//
+// The pair is what keeps the assertions falsifiable in both directions:
+//   - re-hardcoding "codex" into a message body fails ONLY the OTHER_PROVIDER case;
+//   - rendering some other constant fails ONLY the "codex" case.
+// A single-sided test would pass under one of those two regressions.
+//
+// `providerId` is now required with no default, so the previous third failure mode —
+// a hardcode hiding inside a `?? "codex"` fallback — is gone by construction: there
+// is no fallback left to hide in.
+//
+// Assertions are on the fully rendered message, not on the interpolation.
+// ---------------------------------------------------------------------------
+
+describe("provider-id parameterization", () => {
+  // (2) flush() — stream opened, block announced, but EOF arrived with no delta
+  // and no terminal lifecycle event.
+  const truncatedNoContentSse = [
+    "event: response.created",
+    'data: {"type":"response.created","response":{"id":"r_pn","model":"gpt-5.5","status":"in_progress"}}',
+    "",
+    "event: response.output_item.added",
+    'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m_pn","role":"assistant"}}',
+    "",
+    "",
+  ].join("\n");
+
+  // (3) aggregateFrames — tool_use block whose partial_json is non-empty but truncated.
+  const unparseableToolUseFrames = [
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_pn","name":"write_file","input":{}}}\n\n',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"/etc/hosts\\",\\"content\\":\\"DAN"}}\n\n',
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+  ];
+
+  // (4) aggregateFrames — one block carrying text that never received its stop.
+  const unclosedBlockFrames = [
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"m","content":[]}}\n\n',
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"orphaned"}}\n\n',
+  ];
+
+  // --- (0) message_start id fallback when the upstream never supplies one ---
+
+  // The stream opens on output_item.added, so ensureStarted() runs with no upstream id
+  // and message_start must fall back to a synthesised one. response.completed arrives
+  // later but cannot backfill the id — `started` is already true by then.
+  const noUpstreamIdSse = [
+    "event: response.output_item.added",
+    'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m_noid","role":"assistant"}}',
+    "",
+    "event: response.output_text.delta",
+    'data: {"type":"response.output_text.delta","output_index":0,"item_id":"m_noid","delta":"hi"}',
+    "",
+    "event: response.output_item.done",
+    'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m_noid","role":"assistant"}}',
+    "",
+    "event: response.completed",
+    'data: {"type":"response.completed","response":{"id":"resp_noid","model":"gpt-5.5","status":"completed"}}',
+    "",
+    "",
+  ].join("\n");
+
+  const messageStartId = (frames: readonly string[]): unknown =>
+    (frameData(frames[0]!)["message"] as Record<string, unknown>)["id"];
+
+  it("derives the message_start fallback id from the provider id", async () => {
+    // The fallback id is the one provider-derived value with no other observable
+    // effect, so without this pair it can be re-hardcoded to "msg_codex" silently.
+    const { frames } = await translate(noUpstreamIdSse, { providerId: OTHER_PROVIDER });
+    assert.equal(messageStartId(frames), "msg_kimi");
+  });
+
+  it("keeps the Codex leg's fallback message id byte-identical", async () => {
+    const { frames } = await translate(noUpstreamIdSse);
+    assert.equal(messageStartId(frames), "msg_codex");
+  });
+
+  // --- (1) reconcileOpenBlocks: every delta dropped, no block ever got content ---
+
+  it("names the codex provider when all content deltas matched no block", async () => {
+    const { frames } = await translate(loadSse("delta-id-mismatch.sse"));
+    assert.equal(
+      errorFrameMessage(frames),
+      "codex stream dropped content deltas that matched no content block",
+      "the Codex leg's rendered message must stay byte-identical",
+    );
+  });
+
+  it("names a second provider when all content deltas matched no block", async () => {
+    const { frames } = await translate(loadSse("delta-id-mismatch.sse"), { providerId: OTHER_PROVIDER });
+    assert.equal(errorFrameMessage(frames), "kimi stream dropped content deltas that matched no content block");
+  });
+
+  // --- (2) flush(): truncated stream with no recoverable content ---
+
+  it("names the codex provider when the stream ends with no terminal event or content", async () => {
+    const { frames } = await translate(truncatedNoContentSse);
+    assert.equal(
+      errorFrameMessage(frames),
+      "codex stream ended without a terminal event or recoverable content",
+      "the Codex leg's rendered message must stay byte-identical",
+    );
+  });
+
+  it("names a second provider when the stream ends with no terminal event or content", async () => {
+    const { frames } = await translate(truncatedNoContentSse, { providerId: OTHER_PROVIDER });
+    assert.equal(errorFrameMessage(frames), "kimi stream ended without a terminal event or recoverable content");
+  });
+
+  // --- (3) aggregateFrames: unparseable tool_use arguments ---
+
+  it("names the codex provider when tool_use arguments are unparseable", () => {
+    const result = aggregateFrames(unparseableToolUseFrames, "codex");
+    assert.ok(!result.ok);
+    assert.equal(
+      result.error.message,
+      "codex stream ended with unparseable tool_use arguments",
+      "the Codex leg's rendered message must stay byte-identical",
+    );
+  });
+
+  it("names a second provider when tool_use arguments are unparseable", () => {
+    const result = aggregateFrames(unparseableToolUseFrames, OTHER_PROVIDER);
+    assert.ok(!result.ok);
+    assert.equal(result.error.message, "kimi stream ended with unparseable tool_use arguments");
+  });
+
+  // --- (4) aggregateFrames: unclosed content blocks that carry content ---
+
+  it("names the codex provider when a content block carrying text was never closed", () => {
+    const result = aggregateFrames(unclosedBlockFrames, "codex");
+    assert.ok(!result.ok);
+    assert.equal(
+      result.error.message,
+      "codex stream ended with 1 unclosed content block(s)",
+      "the Codex leg's rendered message must stay byte-identical",
+    );
+  });
+
+  it("names a second provider when a content block carrying text was never closed", () => {
+    const result = aggregateFrames(unclosedBlockFrames, OTHER_PROVIDER);
+    assert.ok(!result.ok);
+    assert.equal(result.error.message, "kimi stream ended with 1 unclosed content block(s)");
   });
 });

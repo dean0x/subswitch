@@ -7,7 +7,7 @@
 **Route Claude Code subagents to a different model - keep everything else on Claude.**
 
 subswitch is a local subscription-routing proxy for Claude Code. Give a subagent a
-Codex model in its frontmatter (`model: gpt-5.5`) and *that subagent alone* runs
+Codex model in its frontmatter (`model: sol`) and *that subagent alone* runs
 on your **Codex subscription**; your main agent and every other request stay on
 your **claude.ai subscription**, untouched. No API keys — subswitch forwards the
 subscription credential each leg already uses.
@@ -21,8 +21,9 @@ your utility calls, everything moves at once.
 
 subswitch is the first proxy that splits traffic **per subagent, by model name**:
 
-- Requests whose `model` is one of the exact names in your `codex.models` list are
-  translated and sent to the Codex backend.
+- Requests whose `model` resolves to a canonical id in the built-in model
+  registry (by exact match, family alias, or custom alias) are translated and
+  sent to the Codex backend.
 - Everything else — the main agent, background utility calls (token counting,
   context management), all non-matching models — is relayed to Anthropic as
   **verbatim bytes**, credentials and all.
@@ -33,16 +34,16 @@ without giving up either subscription and without touching an API key.
 
 ```
 Claude Code ──► subswitch (127.0.0.1:4141)
-                  ├─ model ∈ codex.models ──► chatgpt.com Codex backend
+                  ├─ model ∈ registry ─────► chatgpt.com Codex backend
                   │    (Anthropic Messages ⇄ OpenAI Responses translation,
                   │     ~/.codex/auth.json OAuth, reasoning round-trip cache)
                   └─ everything else ──────► api.anthropic.com
                        (verbatim byte relay, claude.ai OAuth untouched)
 ```
 
-Routing is by the request body's `model` field, **exact membership** in
-`codex.models`. Unknown models pass through to Anthropic and fail visibly there;
-non-matching utility traffic is never misrouted.
+Routing is by the request body's `model` field, resolved against the built-in
+model registry (by exact id, family alias, or custom alias). Unresolvable models
+pass through to Anthropic; non-matching utility traffic is never misrouted.
 
 ## Requirements
 
@@ -93,8 +94,8 @@ subswitch doctor     # checks config + codex auth + network (exits non-zero on p
 ```yaml
 ---
 name: gpt-worker
-model: gpt-5.6-sol   # any exact name from codex.models routes to Codex
-effort: low          # optional reasoning effort (see Effort control below)
+model: sol   # family alias — always the latest sol generation
+effort: low  # optional reasoning effort (see Effort control below)
 ---
 ```
 
@@ -112,6 +113,8 @@ Commands:
   serve     Start the proxy (default command)
   doctor    Check config, codex auth, and network reachability
   init      Interactive setup — writes config + wires Claude Code
+  models    Show effective alias table (registry × aliases)
+            --json   Output model registry as JSON (no color, no TTY check)
 
 Flags (global):
   -h, --help       Show this help message
@@ -126,8 +129,6 @@ Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
       --dry-run              Show what would be written; writes nothing
       --port <n>             Proxy port (default: 4141)
-      --codex-model <name>   Include this Codex model (repeatable)
-      --codex-models <csv>   Comma-separated list of Codex models
       --settings-target <t>  "local" (.claude/settings.local.json, default)
                              or "shared" (.claude/settings.json)
 
@@ -138,6 +139,7 @@ Examples:
   subswitch init --yes                 # non-interactive with defaults
   subswitch init --dry-run             # preview what would be written
   subswitch doctor                     # check config + auth health
+  subswitch models                     # show alias table (registry × aliases)
 
 Environment:
   NO_COLOR      Disable color output (also respected as standard)
@@ -159,8 +161,6 @@ Environment:
 | unknown command or flag | always | 1 |
 
 `doctor` exits 1 whenever any preflight check fails — use it as a gate in scripts. `init` without `--yes` refuses to write anything when stdin is not a TTY (e.g. in CI) and exits 1 immediately with no filesystem side effects.
-
-**Model flag merging** (`--codex-model` and `--codex-models`): the two flags are additive — use `--codex-model` multiple times to add individual models and/or `--codex-models` to pass a comma-separated list; the results are combined and deduplicated. When `--yes` or the wizard confirms, the merged set becomes `codex.models` in the written config.
 
 ### Advanced: manual setup
 
@@ -212,19 +212,153 @@ The config file is located by the following precedence (highest wins):
 1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
 2. `subswitch.config.json` in the current working directory — silently uses defaults if absent
 
-The routing knob that matters most is **`codex.models`** — the exact model names that
-get sent to Codex (everything else passes through to Anthropic). It defaults to
-`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.5`. Add the exact
-model name to a subagent's `model:` frontmatter to route it; names not in this
-list always go to Anthropic.
+**An unrecognised key is rejected, not ignored.** Two checks run against the raw file
+before it is parsed, and a hit on either is a hard load failure — subswitch prints the
+offending key and exits 1 rather than starting:
 
-New knobs added in this release:
+1. **Keys from an older layout.** A top-level `codex` block or a `codex.models` key is
+   rejected with a message naming exactly where each key moved.
+2. **Unknown provider ids.** A `providers.<id>` block whose id this build does not ship —
+   a typo like `providers.codexx`, or a provider from a future release — is rejected, and
+   the message lists the ids that *are* known. Today that is `codex`, so `providers.codex`
+   is the only valid block.
+
+This is deliberate, and the reason is the same in both cases: the config schema **strips**
+keys it does not recognise instead of reporting them, so the only alternative to failing
+the load is a config file that still sits on disk looking correct while the proxy runs
+entirely on defaults — custom aliases gone, `baseUrl` silently back to the public
+endpoint, `userAgent` back to the built-in value, and your configured provider reported as
+absent. A stripping schema can never tell you what it discarded, which is why the check has
+to run on the raw file first and why a refusal to start is the better failure.
+
+### Routable set and aliases
+
+The routable set is the **built-in model registry** — `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.5`. It is not configurable: routing
+follows the registry so a new model becomes available on upgrade with no config
+edit, and everything outside it passes through to Anthropic. Run
+`subswitch models --json` for the machine-readable registry.
+
+**Family aliases** (`sol`, `terra`, `luna`) let you write a model name that
+auto-tracks the latest generation in that family — `model: sol` always resolves
+to whichever `gpt-5.6-sol` (or future `gpt-5.7-sol`) generation is in the registry,
+without any config change. Exact canonical ids (`gpt-5.6-sol`) are also accepted
+and resolve to themselves. Run `subswitch models` to see the current alias table.
+
+An exact model id always wins over an alias, so a `providers.codex.aliases` entry
+can never hijack a real model name. Neither side of an alias entry may be an
+Anthropic model name (`claude-*`, `sonnet`, `opus`, `haiku`, `inherit`) — such a
+config is rejected at load, because either the key or the target would route your
+main agent's traffic to Codex.
+
+### Config reference
+
+Minimal example — only override what you need:
+
+```json
+{
+  "providers": {
+    "codex": {
+      "aliases": {
+        "fast": "gpt-5.6-sol"
+      }
+    }
+  },
+  "limits": {
+    "maxConcurrentRequests": 16
+  }
+}
+```
+
+All keys and their defaults:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `reasoningCache.maxEntries` | `4096` | Maximum number of reasoning cache LRU entries |
-| `reasoningCache.maxBytes` | `67108864` (64 MiB) | Maximum total byte footprint of the reasoning cache |
-| `limits.maxUpstreamSockets` | `32` | Maximum sockets in the Anthropic keep-alive connection pool |
+| `port` | `4141` | Port the proxy listens on |
+| `logLevel` | `"info"` | Log verbosity: `debug`, `info`, `warn`, or `error` |
+| `anthropic.baseUrl` | `"https://api.anthropic.com"` | Anthropic passthrough base URL |
+| `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection timeout (see note below) |
+| `anthropic.streamIdleTimeoutMs` | `300000` (5 min) | Anthropic stream idle timeout |
+| `anthropic.maxUpstreamSockets` | `32` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
+| `anthropic.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `anthropic.baseUrl` points at a host other than `api.anthropic.com`. Set to `true` only when routing through a trusted proxy in front of Anthropic's API. Loopback addresses are always exempt. |
+| `providers.codex.baseUrl` | `"https://chatgpt.com/backend-api/codex"` | Codex backend base URL — override to route subswitch through the wire recorder |
+| `providers.codex.oauthTokenUrl` | `"https://auth.openai.com/oauth/token"` | Token refresh endpoint for the Codex OAuth flow |
+| `providers.codex.authFile` | `"~/.codex/auth.json"` | Path to the Codex credential file written by `codex login` |
+| `providers.codex.userAgent` | `"codex_cli_rs/0.144.6"` | User-agent string sent on Codex leg requests |
+| `providers.codex.aliases` | `{}` | Custom alias overrides — map a short name to a canonical model id. Wins over derived family aliases; loses to exact registry ids. |
+| `providers.codex.reasoningCache.maxEntries` | `4096` | Maximum LRU entries in the reasoning round-trip cache |
+| `providers.codex.reasoningCache.maxBytes` | `67108864` (64 MiB) | Maximum total byte footprint of the reasoning cache |
+| `providers.codex.requestTimeoutMs` | `600000` (10 min) | Wall-clock time limit per Codex request |
+| `providers.codex.streamIdleTimeoutMs` | `300000` (5 min) | Codex stream idle timeout — resets on each SSE chunk |
+| `providers.codex.maxSseEventBytes` | `4194304` (4 MiB) | Maximum bytes per individual SSE event from the Codex upstream |
+| `providers.codex.maxAggregateBytes` | `67108864` (64 MiB) | Maximum total accumulated frame bytes for non-streaming response aggregation; exceeding this returns 502 |
+| `providers.codex.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` points at a host other than `chatgpt.com` or `auth.openai.com`. This prevents credential forwarding to an untrusted host. Set to `true` only when routing through a trusted proxy. Loopback addresses are always exempt. |
+| `limits.maxBodyBytes` | `33554432` (32 MiB) | Maximum request body bytes buffered before the routing decision |
+| `limits.pingIntervalMs` | `15000` (15 s) | Interval between SSE ping frames sent to clients during long Codex streams |
+| `limits.maxConcurrentRequests` | `32` | In-flight request ceiling; requests above this limit receive a 503 |
+
+> **Why `connectTimeoutMs` and `maxUpstreamSockets` are Anthropic-leg-only**: the
+> Anthropic passthrough uses a node:http agent with an explicit keep-alive pool, so
+> both knobs have meaningful effect there. The Codex leg uses Node's global `fetch`
+> (undici's global dispatcher), which `maxUpstreamSockets` does not control — shipping
+> them as per-provider keys would be config that bounds nothing on the Codex side.
+
+### `subswitch models --json`
+
+`subswitch models --json` outputs a single JSON object describing the full model registry
+and alias resolution under the current config. It is the machine-readable counterpart to
+the human-readable `subswitch models` table.
+
+```
+subswitch models --json | jq .models[].id
+```
+
+**Schema** (`schemaVersion: 1`):
+
+```json
+{
+  "kind": "models",
+  "schemaVersion": 1,
+  "subswitchVersion": "0.1.0",
+  "name": "subswitch",
+  "fallbackProvider": "anthropic",
+  "configPath": "/path/to/subswitch.config.json",
+  "configFileFound": false,
+  "providers": [
+    { "id": "anthropic", "displayName": "Anthropic", "routing": "passthrough" },
+    { "id": "codex", "displayName": "Codex", "routing": "registry" }
+  ],
+  "models": [
+    {
+      "id": "gpt-5.6-sol",
+      "provider": "codex",
+      "aliases": [{ "name": "sol", "source": "derived" }],
+      "family": "sol",
+      "gen": [5, 6],
+      "routable": true,
+      "preview": false,
+      "retired": false,
+      "source": "registry"
+    }
+  ]
+}
+```
+
+**Field notes**:
+
+- `schemaVersion` is an integer that bumps on any breaking change to this structure.
+  Consumers must check `schemaVersion === 1` before reading other fields.
+- `gen` is an integer tuple (`[5, 6]`), not a string (`"5.6"`). String comparison sorts
+  `"5.10"` before `"5.9"` — the tuple is the correct form for numeric comparison.
+  `gen` is omitted when the generation is unknown; it is always present for registry entries.
+- `preview` and `retired` are always-present booleans — no `?? false` needed in consumers.
+- `family` is omitted for models with no family alias (e.g. `gpt-5.5`).
+- Anthropic appears in `providers` with zero model rows. subswitch cannot enumerate Claude
+  model names — it prefix-matches them and relays verbatim — so including a fabricated list
+  would be a lie that consumers might cache. The `fallbackProvider: "anthropic"` field
+  identifies where everything unresolved goes.
+- `aliases[].source` is `"derived"` for family aliases computed from the registry, or
+  `"config"` for entries you wrote in `providers.codex.aliases`.
 
 ## How the Codex leg works
 
@@ -282,6 +416,14 @@ End-to-end verification against the real CLI and real upstreams:
   `image_dropped`).
 - One subswitch instance holds the reasoning cache in memory; restarting it
   mid-conversation degrades the next Codex turn to a cache miss.
+- The wire recorder (`e2e/capture/codex-recorder.ts`) silently degrades to
+  pass-through when run against the live Codex backend: the production
+  `/responses` stream carries no `content-type` header, so the recorder's SSE
+  detection never fires and it records zero events and no usage — with no error
+  and no warning. The recorder works correctly only against local fixture
+  upstreams, which do set the header. Anyone repeating the live-capture workflow
+  with the checked-in recorder will get an empty capture and may wrongly conclude
+  the stream is broken.
 
 ## Contributing
 

@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { loadConfig } from "../../src/config.js";
 import { buildDeps, createProxyServer } from "../../src/server.js";
+import type { Logger } from "../../src/logger.js";
+import type { ModelResolution } from "../../src/models.js";
 
 export interface RecordedRequest {
   readonly method: string;
@@ -69,13 +71,44 @@ export interface SubswitchInstance {
   close(): Promise<void>;
 }
 
-export const startSubswitch = async (overrides: Record<string, unknown>): Promise<SubswitchInstance> => {
+/**
+ * Start a subswitch proxy for integration testing.
+ *
+ * @param overrides - Config fields merged over `{ logLevel: "error" }`.
+ * @param options.logger - Optional logger spliced over ServerDeps. The default
+ *   deps use `logLevel: "error"` which swallows routing logs; inject a logger
+ *   here to observe `request_complete` and other routing events in tests.
+ * @param options.resolve - Optional resolver override. When provided, replaces the
+ *   registry-built resolver with a synthetic one — used in tests that need to
+ *   simulate ambiguous or unknown-provider scenarios (F7).
+ *
+ * Usage:
+ *   const captured: Array<{ event: string }> = [];
+ *   const ss = await startSubswitch({ anthropic: { baseUrl: upstream.url } }, {
+ *     logger: { log: (_level, event) => { captured.push({ event }); } },
+ *   });
+ */
+export const startSubswitch = async (
+  overrides: Record<string, unknown>,
+  options: { logger?: Logger; resolve?: (name: string) => ModelResolution } = {},
+): Promise<SubswitchInstance> => {
   const configResult = loadConfig({
     configPath: "inline-test-config.json",
     readFile: () => JSON.stringify({ logLevel: "error", ...overrides }),
   });
   if (!configResult.ok) throw new Error(configResult.error.message);
-  const server = createProxyServer(buildDeps(configResult.value.config));
+  // The logger goes through buildDeps, not over the top of it: the provider handlers are
+  // constructed inside buildDeps and close over whichever logger it was given, so spreading
+  // one onto the result afterwards would replace the request loop's logger only and leave
+  // every handler record uncaptured.
+  const depsResult = buildDeps(configResult.value.config, options.logger);
+  if (!depsResult.ok) throw new Error(`buildDeps rejected config: ${depsResult.error}`);
+  const deps = depsResult.value;
+  const finalDeps = {
+    ...deps,
+    ...(options.resolve !== undefined ? { resolve: options.resolve } : {}),
+  };
+  const server = createProxyServer(finalDeps);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {

@@ -1,7 +1,29 @@
 import tls from "node:tls";
+import { readdir, readFile as fsReadFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
-import type { Config } from "./config.js";
-import { isPlainObject } from "./init.js";
+import { aliasesByProvider, providerConfigFor, type Config } from "./config.js";
+import { inspectAuthFile } from "./codex-auth.js";
+import { isPlainObject } from "./plain-object.js";
+import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
+import { checkAgentModels } from "./agent-scan.js";
+
+// ---------------------------------------------------------------------------
+// Per-provider auth inspector registry (totality anchor)
+//
+// Every ProviderId must have a corresponding inspector. Adding a ProviderId
+// without an entry here is a tsc error — the Record<ProviderId, …> annotation
+// requires all keys. Use the record in checkOneProvider instead of calling
+// inspectAuthFile directly so the same completeness check guards every future
+// provider.
+// ---------------------------------------------------------------------------
+
+type AuthInspector = typeof inspectAuthFile;
+
+export const PROVIDER_AUTH_INSPECTORS: Readonly<Record<ProviderId, AuthInspector>> = {
+  codex: inspectAuthFile,
+} as const;
 
 // ---------------------------------------------------------------------------
 // Discriminated-union result types
@@ -144,6 +166,34 @@ export const makeLiveTlsConnect = (): ProbeTlsDeps["tlsConnect"] => (host, port)
     });
   });
 
+/**
+ * List all agent .md files under a directory recursively.
+ * Returns an empty array when the directory is absent — missing dir is not an error. [F53]
+ * Uses readdir with { recursive: true } — stable in Node 22 (ADR-004). [ADR-004]
+ */
+export const makeLiveListAgentFiles = (): DoctorIO["listAgentFiles"] => async (dir) => {
+  // Resolve to absolute here in the factory (not in runDoctor) so that a relative
+  // project dir (".claude/agents") and the absolute user dir ("~/. claude/agents")
+  // produce identical path strings when they point to the same physical location —
+  // enabling Set-based deduplication in runDoctor to fire correctly. [ADR-004]
+  const absDir = pathResolve(dir);
+  try {
+    const entries = await readdir(absDir, { recursive: true });
+    return (entries as string[])
+      .filter((e) => e.endsWith(".md"))
+      .map((e) => join(absDir, e));
+  } catch {
+    // Missing or unreadable directory → empty list, not an error.
+    return [];
+  }
+};
+
+/**
+ * Read a text file for frontmatter scanning.
+ */
+export const makeLiveReadTextFile = (): DoctorIO["readTextFile"] => async (path) =>
+  fsReadFile(path, "utf8");
+
 // ---------------------------------------------------------------------------
 // High-level doctor runner (injectable for tests)
 // ---------------------------------------------------------------------------
@@ -154,6 +204,10 @@ export interface DoctorIO {
   readonly httpGet: (url: string) => Promise<HttpGetResult>;
   readonly tlsConnect: (host: string, port: number) => Promise<TlsStatus>;
   readonly color: boolean;
+  /** List all .md files under an agent directory. Returns [] when directory absent. */
+  readonly listAgentFiles: (dir: string) => Promise<readonly string[]>;
+  /** Read a file's text content for frontmatter scanning. */
+  readonly readTextFile: (path: string) => Promise<string>;
 }
 
 // Column width for the label portion of each output row. [F24]
@@ -164,13 +218,18 @@ const row = (label: string, value: string): string => `  ${label}`.padEnd(LABEL_
 
 /**
  * Run all doctor checks and write output to io.write.
- * Returns 0 if all checks passed, 1 if any check failed.
+ * Returns 0 if all checks passed, 1 if any check failed. (applies PF-006)
+ *
+ * @param configuredProviderIds Providers the user explicitly opted into. Defaults to
+ *   the empty set, i.e. treat every provider as unconfigured — the conservative choice,
+ *   because a provider the user never asked for must never fail their exit code.
  */
 export const runDoctor = async (
   config: Config,
   configPath: string,
   fileFound: boolean,
   io: DoctorIO,
+  configuredProviderIds: ReadonlySet<ProviderId> = new Set<ProviderId>(),
 ): Promise<number> => {
   const pc = createColors(io.color);
   const passStr = (text: string): string => pc.green(text);
@@ -184,40 +243,125 @@ export const runDoctor = async (
   io.write(row("port:", String(config.port)));
   io.write(row("logLevel:", config.logLevel));
   io.write(row("anthropic.baseUrl:", config.anthropic.baseUrl));
-  io.write(row("codex.baseUrl:", config.codex.baseUrl));
-  io.write(row("codex.models:", config.codex.models.join(", ")));
-  io.write(row("codex.authFile:", config.codex.authFile));
-
-  try {
-    const raw = await io.readAuthFile(config.codex.authFile);
-    // Lazy import to avoid circular deps — inspectAuthFile lives in codex-auth.ts
-    const { inspectAuthFile } = await import("./codex-auth.js");
-    const inspection = inspectAuthFile(raw);
-    if (!inspection.ok) {
-      failures++;
-      io.write(row("codex auth:", failStr(`INVALID (${inspection.error.message})`)));
-    } else {
-      const info = inspection.value;
-      io.write(row("codex auth mode:", passStr(info.authMode)));
-      io.write(row("codex account:", info.accountIdSuffix));
-      io.write(row("token expires:", info.accessTokenExpiresAt ?? "(no exp claim)"));
-      io.write(row("last refresh:", info.lastRefresh ?? "(unknown)"));
-    }
-  } catch {
-    failures++;
-    io.write(row("codex auth:", failStr("UNAVAILABLE") + ` (cannot read auth file — run \`codex login\`)`));
-    io.write("  note: the Anthropic leg works without codex auth; only configured codex models are affected");
+  for (const id of PROVIDER_IDS) {
+    io.write(row(`${id}.baseUrl:`, providerConfigFor(config, id).baseUrl));
   }
 
-  // Run all three network probes in parallel; write results in the fixed output order below. [F28/F5]
-  const anthropicHost = new URL(config.anthropic.baseUrl).hostname;
-  const codexHost = new URL(config.codex.baseUrl).hostname;
+  // Build the routing table once for display and agent-scan. The displayed alias table
+  // reads the same per-provider record, so the two cannot disagree about the input.
+  const aliases = aliasesByProvider(config);
+  const { table, danglingAliases } = buildRoutingTable(MODEL_REGISTRY, aliases);
 
-  const [subswitchStatus, anthropicTls, codexTls] = await Promise.all([
+  // Alias table — shows effective alias → canonical mapping for the current config.
+  const aliasLines = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: aliases });
+  for (const line of aliasLines) {
+    io.write(`    ${line}`);
+  }
+
+  // Dangling alias warnings: targets that are not in the registry.
+  // The router still routes them (forward-compat), but the target won't appear in
+  // model rows and is invisible to tools that enumerate the registry. Warn so the
+  // user can detect a typo before it silently misroutes to an unknown model id.
+  for (const { alias, target } of danglingAliases) {
+    failures++;
+    io.write(row("alias warning:", failStr(`"${alias}" → "${target}" — target not in registry (typo? or future model)`)));
+  }
+
+  // N-provider auth check.
+  //
+  // PF-006 severity rules:
+  //  - provider absent from the config file  → informational, never a failure. A
+  //    Codex-only user must not start failing the moment a second provider ships
+  //    in the registry.
+  //  - provider present in the config file but its credential is missing or broken
+  //    → failure. The user opted in, so a broken opt-in is a real problem.
+  //
+  // Each check RETURNS its output instead of writing it, so N concurrent checks
+  // cannot interleave — rows are written afterwards in PROVIDER_IDS order.
+  interface ProviderCheck {
+    readonly lines: readonly string[];
+    readonly failed: boolean;
+    readonly credentialUsable: boolean;
+  }
+
+  const checkOneProvider = async (id: ProviderId): Promise<ProviderCheck> => {
+    const { authFile, loginCommand } = providerConfigFor(config, id);
+    const optedIn = configuredProviderIds.has(id);
+    const lines: string[] = [row(`${id}.authFile:`, authFile)];
+
+    try {
+      const raw = await io.readAuthFile(authFile);
+      const inspection = PROVIDER_AUTH_INSPECTORS[id](raw);
+      if (!inspection.ok) {
+        // A credential file that exists but does not parse is broken regardless of
+        // whether the provider block is in the config — the user clearly has one.
+        lines.push(row(`${id} auth:`, failStr(`INVALID (${inspection.error.message})`)));
+        return { lines, failed: true, credentialUsable: false };
+      }
+      const info = inspection.value;
+      lines.push(row(`${id} auth mode:`, passStr(info.authMode)));
+      lines.push(row(`${id} account:`, info.accountIdSuffix));
+      lines.push(row("token expires:", info.accessTokenExpiresAt ?? "(no exp claim)"));
+      lines.push(row("last refresh:", info.lastRefresh ?? "(unknown)"));
+      return { lines, failed: false, credentialUsable: true };
+    } catch (e) {
+      const isEnoent =
+        (e instanceof Error && (e as NodeJS.ErrnoException).code === "ENOENT") ||
+        (e instanceof Error && e.message.includes("ENOENT"));
+
+      if (!optedIn) {
+        // Not configured by the user — informational whatever the error. (avoids PF-006)
+        lines.push(
+          row(`${id} auth:`, pc.dim("unconfigured") + ` (run \`${loginCommand}\` to enable ${id} routing)`),
+        );
+        return { lines, failed: false, credentialUsable: false };
+      }
+
+      // Explicitly configured but the credential is unusable — a real failure.
+      const detail = isEnoent ? "no auth file" : "cannot read auth file";
+      lines.push(row(`${id} auth:`, failStr("UNAVAILABLE") + ` (${detail} — run \`${loginCommand}\`)`));
+      lines.push(`  note: the Anthropic leg works without ${id} auth; only ${id} models are affected`);
+      return { lines, failed: true, credentialUsable: false };
+    }
+  };
+
+  // Run subswitch probe, anthropic TLS, per-provider TLS, and per-provider auth
+  // checks concurrently. Results are written in deterministic order after all
+  // complete — no check writes from inside its own closure. [F28/F5]
+  const anthropicHost = new URL(config.anthropic.baseUrl).hostname;
+
+  // Resolve provider hosts up front so the probes can all be issued in parallel.
+  // Only URL parsing is guarded here; a probe rejection must never be swallowed.
+  const providerHosts = PROVIDER_IDS.map((id) => {
+    const { baseUrl } = providerConfigFor(config, id);
+    try {
+      return { id, host: new URL(baseUrl).hostname };
+    } catch {
+      // Unreachable: z.url() validated the URL at config parse time.
+      return { id, host: "" };
+    }
+  });
+
+  const [subswitchStatus, anthropicTls, providerResults, providerTls] = await Promise.all([
     probeSubswitch(config.port, { httpGet: io.httpGet }),
     probeTlsReachable(anthropicHost, { tlsConnect: io.tlsConnect }),
-    probeTlsReachable(codexHost, { tlsConnect: io.tlsConnect }),
+    Promise.all(PROVIDER_IDS.map((id) => checkOneProvider(id))),
+    Promise.all(
+      providerHosts.map(async ({ host }) =>
+        host === "" ? undefined : probeTlsReachable(host, { tlsConnect: io.tlsConnect }),
+      ),
+    ),
   ]);
+
+  // Fold provider auth results in PROVIDER_IDS order (deterministic).
+  const providersWithCredentials = new Set<string>();
+  for (const [i, id] of PROVIDER_IDS.entries()) {
+    const result = providerResults[i];
+    if (result === undefined) continue;
+    for (const line of result.lines) io.write(line);
+    if (result.failed) failures++;
+    if (result.credentialUsable) providersWithCredentials.add(id);
+  }
 
   // Write subswitch probe result
   switch (subswitchStatus.kind) {
@@ -245,7 +389,93 @@ export const runDoctor = async (
   };
 
   checkTls("anthropic TLS", anthropicHost, anthropicTls);
-  checkTls("codex TLS", codexHost, codexTls);
+
+  // Per-provider TLS results (probed in parallel above; written in PROVIDER_IDS order).
+  for (const [i, { id, host }] of providerHosts.entries()) {
+    const status = providerTls[i];
+    if (host === "" || status === undefined) continue;
+    checkTls(`${id} TLS`, host, status);
+  }
+
+  // Agent frontmatter scan — check both project and user-level agent directories.
+  // A missing directory resolves to an empty list — never an error. [F53]
+  const projectAgentsDir = join(".", ".claude", "agents");
+  const userAgentsDir = join(homedir(), ".claude", "agents");
+
+  const [projectFiles, userFiles] = await Promise.all([
+    io.listAgentFiles(projectAgentsDir),
+    io.listAgentFiles(userAgentsDir),
+  ]);
+
+  // Read all discovered agent files (cap read errors to per-file; don't abort the scan).
+  // Deduplication fires because makeLiveListAgentFiles resolves both dirs to absolute
+  // paths in the factory — identical physical locations produce identical path strings.
+  const allPaths = [...new Set([...projectFiles, ...userFiles])];
+  const fileTexts = await Promise.all(
+    allPaths.map(async (path) => {
+      try {
+        const text = await io.readTextFile(path);
+        return { path, text };
+      } catch {
+        // Unreadable file → treat as empty (no frontmatter model).
+        return { path, text: "" };
+      }
+    }),
+  );
+
+  const agentFindings = checkAgentModels(fileTexts, table, providersWithCredentials);
+
+  // Label the first finding row; blank-label subsequent rows to avoid N identical "agent model:"
+  // labels in the columnar output when multiple agents are misconfigured.
+  let firstAgentFinding = true;
+  for (const finding of agentFindings) {
+    const label = firstAgentFinding ? "agent model:" : "";
+    firstAgentFinding = false;
+
+    // Severity travels with the finding, so this renderer never re-derives it.
+    if (finding.severity === "fail") failures++;
+    const tag = finding.severity === "fail" ? failStr("FAIL") : pc.dim("info");
+    const where = `${finding.file}: model "${finding.model}"`;
+
+    switch (finding.kind) {
+      case "unresolvable":
+        io.write(row(label, `${tag} ${where} is not a known id or alias`));
+        break;
+
+      case "ambiguous":
+        io.write(
+          row(label, `${tag} ${where} is ambiguous — claimed by: ${finding.providers.join(", ")} — qualify with provider:name`),
+        );
+        break;
+
+      case "unknown_provider":
+        io.write(row(label, `${tag} ${where} — unknown provider "${finding.qualifier}"`));
+        break;
+
+      case "retired":
+        io.write(
+          row(label, `${tag} ${where} resolves to "${finding.canonical}" which is retired — switch to an active model`),
+        );
+        break;
+
+      case "provider_unconfigured":
+        io.write(
+          row(label, `${tag} ${where} resolves to "${finding.canonical}" but its provider is not configured`),
+        );
+        break;
+
+      case "preview_only":
+        io.write(
+          row(label, `${tag} ${where} resolves to "${finding.canonical}" which is a preview model — use with care`),
+        );
+        break;
+
+      default: {
+        const _exhaustive: never = finding;
+        void _exhaustive;
+      }
+    }
+  }
 
   if (failures === 0) {
     io.write(passStr("all checks passed"));
