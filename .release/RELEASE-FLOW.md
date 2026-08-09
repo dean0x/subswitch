@@ -21,8 +21,8 @@ Release model: tag-push → CI publish with provenance.
 
 Run these in order before pushing the release tag:
 
-1. **Working tree clean**: `git status` — only untracked `.claudeignore` is acceptable; all other
-   changes must be committed. (`.claudeignore` is irrelevant to publish.)
+1. **Working tree clean**: `git status` — the working tree must be fully clean; all changes must
+   be committed.
 
 2. **Tag must not already exist**: confirm `git tag -l vX.Y.Z` returns nothing. Pushing a tag
    that already exists is a no-op and the CI workflow will not re-run.
@@ -34,7 +34,7 @@ Run these in order before pushing the release tag:
 4. **Local gate** (run in order):
    ```
    npm ci
-   npm run check          # typecheck + 258 tests
+   npm run check          # typecheck + full test suite
    ./scripts/smoke-tarball.sh
    ```
    `npm run check` = typecheck + full test suite.
@@ -61,7 +61,7 @@ Run these in order before pushing the release tag:
 | Command | What it does |
 |---------|--------------|
 | `npm run build` | `tsc -p tsconfig.build.json` |
-| `npm run check` | Typecheck + 258 tests |
+| `npm run check` | Typecheck + full test suite |
 | `prepack` hook | Runs `npm run build` automatically |
 | `prepublishOnly` hook | Runs `npm run check` |
 
@@ -71,7 +71,9 @@ Run these in order before pushing the release tag:
 
 **DO NOT run `npm publish` locally.** Publishing is CI-driven:
 
-1. Bump version in `package.json` and update `CHANGELOG.md`
+1. Bump version in `package.json`, sync `package-lock.json` (run `npm install --package-lock-only`
+   to update the top-level `version` and `packages[""].version` in the lockfile), and update
+   `CHANGELOG.md`
 2. Commit: `chore(release): vX.Y.Z`
 3. Create and push an **annotated** tag:
    ```
@@ -110,7 +112,7 @@ After the tag is pushed, in order:
    ```
    gh release create vX.Y.Z \
      --title "vX.Y.Z" \
-     --notes "$(sed -n '/^## \[X.Y.Z\]/,/^## \[/p' CHANGELOG.md | head -n -1)"
+     --notes "$(sed -n '/^## \[X.Y.Z\]/,/^## \[/p' CHANGELOG.md | sed '$d')"
    ```
    Extract notes from `CHANGELOG.md` — the `## [X.Y.Z]` section body.
 
