@@ -36,6 +36,22 @@ jobs:
             exit 1
           fi
 
+      - name: Verify package-lock.json version matches package.json
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          LOCK_VERSION="$(node -p "require('./package-lock.json').version")"
+          LOCK_PKG_VERSION="$(node -p "require('./package-lock.json').packages[''].version")"
+          if [ "${LOCK_VERSION}" != "${PKG_VERSION}" ]; then
+            echo "package-lock.json version ${LOCK_VERSION} does not match package.json version ${PKG_VERSION}" >&2
+            echo "Run: npm install --package-lock-only" >&2
+            exit 1
+          fi
+          if [ "${LOCK_PKG_VERSION}" != "${PKG_VERSION}" ]; then
+            echo "package-lock.json packages[\"\"].version ${LOCK_PKG_VERSION} does not match package.json version ${PKG_VERSION}" >&2
+            echo "Run: npm install --package-lock-only" >&2
+            exit 1
+          fi
+
       - name: Check
         run: npm run check
 
