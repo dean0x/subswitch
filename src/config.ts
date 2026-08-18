@@ -59,7 +59,12 @@ const AnthropicSchema = z
       .url()
       .refine(requireHttpsOrLoopback, { message: `anthropic.baseUrl ${HTTPS_REQUIRED_MESSAGE}` })
       .default("https://api.anthropic.com"),
-    /** Connection timeout for all upstream requests to the Anthropic leg. */
+    /**
+     * TCP connection-establishment timeout for the Anthropic leg (milliseconds).
+     * Bounds only the time to establish a new TCP connection; once connected (or when
+     * a keep-alive socket is reused), the timer is re-armed to `streamIdleTimeoutMs`
+     * so that long upstream think-time is not cut off prematurely.
+     */
     connectTimeoutMs: z.number().int().positive().default(10_000),
     /** Stream idle timeout for the Anthropic passthrough. */
     streamIdleTimeoutMs: z.number().int().positive().default(300_000),

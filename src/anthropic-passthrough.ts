@@ -84,7 +84,12 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
 
   return (req, res, body) => {
     const path = `${basePath}${req.url ?? "/"}`;
-    let responded = false;
+    // `settled` is set by whichever handler wins the race — the response
+    // callback (headers received) or the timeout handler (504 written).
+    // The error handler uses it as its early-return guard so that a
+    // destroy() issued by the timeout handler does not produce a duplicate
+    // `anthropic_upstream_error` warn after the 504 has already been sent.
+    let settled = false;
 
     const upstream = client.request(
       {
@@ -100,7 +105,7 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
         // (cross-name position of interleaved duplicates is not guaranteed).
       },
       (upstreamRes) => {
-        responded = true;
+        settled = true;
         upstream.setTimeout(options.streamIdleTimeoutMs);
         // Response direction: writeHead accepts a flat [name, value, ...] array
         // directly (Node's _storeHeader Array branch), preserving the upstream's
@@ -112,8 +117,19 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       },
     );
 
+    // `connectTimeoutMs` bounds TCP connection establishment only.  Once the
+    // socket connects (or when a pooled socket is reused — no 'connect' event
+    // fires on a reused socket), we re-arm the timer to `streamIdleTimeoutMs`
+    // so that long upstream think-time is not mistakenly cut off at 10 s.
+    // The `else` branch handles the pooled/keep-alive case: `socket.connecting`
+    // is already false, so we must arm the header-wait budget immediately.
     upstream.setTimeout(options.connectTimeoutMs);
-    upstream.on("socket", (socket) => socket.setNoDelay(true));
+    upstream.on("socket", (socket) => {
+      socket.setNoDelay(true);
+      const rearm = () => upstream.setTimeout(options.streamIdleTimeoutMs);
+      if (socket.connecting) socket.once("connect", rearm);
+      else rearm(); // pooled socket — no 'connect' event will ever fire
+    });
 
     // Request direction: build a Map from the filtered rawHeaders so that
     // duplicates (same lowercase key, different values) are preserved as array
@@ -140,18 +156,23 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
     }
 
     upstream.on("timeout", () => {
-      upstream.destroy();
+      // Log and write the 504 BEFORE destroy() to narrow the race window with
+      // the 'error' handler.  destroy() on an in-flight ClientRequest emits
+      // 'error' (ECONNRESET) on the next tick; setting `settled = true` here
+      // prevents that error from producing a duplicate warn log.
       options.logger.log("warn", "anthropic_upstream_timeout", { path: req.url ?? "/" });
       if (!res.headersSent) {
+        settled = true;
         res.writeHead(504, { "content-type": "application/json" });
         res.end(toAnthropicErrorBody("api_error", "upstream timed out"));
       } else {
         res.destroy();
       }
+      upstream.destroy();
     });
 
     upstream.on("error", () => {
-      if (responded) return;
+      if (settled) return;
       options.logger.log("warn", "anthropic_upstream_error", { path: req.url ?? "/" });
       if (!res.headersSent) {
         res.writeHead(502, { "content-type": "application/json" });
