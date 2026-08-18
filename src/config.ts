@@ -63,8 +63,15 @@ const AnthropicSchema = z
     connectTimeoutMs: z.number().int().positive().default(10_000),
     /** Stream idle timeout for the Anthropic passthrough. */
     streamIdleTimeoutMs: z.number().int().positive().default(300_000),
-    /** Maximum sockets in the keep-alive pool for the Anthropic passthrough. */
-    maxUpstreamSockets: z.number().int().positive().default(32),
+    /**
+     * Maximum sockets in the keep-alive pool for the Anthropic passthrough.
+     *
+     * Raised from 32 to 256: with byte-based admission the concurrency gate no longer
+     * caps request count at 32, so realistic peak (~100 concurrent) would queue inside
+     * the http.Agent at 32 sockets, adding ~2 extra full-request-latency waves of
+     * invisible, error-free latency. 256 gives comfortable headroom over peak concurrency.
+     */
+    maxUpstreamSockets: z.number().int().positive().default(256),
     /**
      * Opt-in to a non-default `anthropic.baseUrl` host.
      *
@@ -212,8 +219,50 @@ const LimitsSchema = z
     maxBodyBytes: z.number().int().positive().default(32 * 1024 * 1024),
     /** Interval between SSE ping frames sent to clients during long Codex streams. */
     pingIntervalMs: z.number().int().positive().default(15_000),
-    /** Maximum concurrent in-flight requests; 503 is returned when the limit is exceeded. */
+    /**
+     * @deprecated Superseded by `maxInFlightBytes`. Kept in the schema to avoid
+     * a hard error on existing config files that still set this key. The value is
+     * no longer used by the concurrency gate; remove it from your config and set
+     * `maxInFlightBytes` instead.
+     */
     maxConcurrentRequests: z.number().int().positive().default(32),
+    /**
+     * Total budget for simultaneous in-flight request bodies, in bytes.
+     *
+     * Requests are admitted while `inFlightBytes + requestBytes ≤ maxInFlightBytes`.
+     * When the budget would be exceeded the request is queued (not rejected) until
+     * budget is available; if the queue itself is full the server returns HTTP 529
+     * overloaded_error — the correct Anthropic status for this condition.
+     *
+     * A single request that alone exceeds the budget is always admitted when the
+     * server is otherwise idle (single-request progress guarantee), so no request
+     * can deadlock in the queue. It will still be rejected by `maxBodyBytes` if it
+     * is genuinely oversized.
+     *
+     * Budget rationale: measured RSS amplification is ~3.3× raw body size (~10 MB
+     * RSS per 3.01 MB request body). Realistic peak is ~100 concurrent × a few MB
+     * each ≈ 300 MB in-flight. The 2 GiB default gives ~6× headroom so the gate
+     * effectively never fires under ordinary load. Pathological worst case: 64
+     * simultaneous 32 MiB max-size bodies = 2 GiB budget → ~6.6 GiB RSS (~10% of
+     * a 64 GiB machine).
+     */
+    maxInFlightBytes: z.number().int().positive().default(2 * 1024 * 1024 * 1024),
+    /**
+     * Maximum number of requests that may wait in the admission queue.
+     *
+     * Generously sized so it is effectively unreachable in normal operation.
+     * If this bound is genuinely hit, the server is already deeply overloaded
+     * and a fast 529 is the honest response.
+     */
+    maxQueueDepth: z.number().int().positive().default(1000),
+    /**
+     * Maximum time a queued request will wait for a budget slot, in milliseconds.
+     *
+     * If a slot does not open within this window the request receives HTTP 529
+     * overloaded_error. Set generously — 60 s is unreachable under normal load
+     * but provides a safety bound for pathological pile-ups.
+     */
+    maxQueueWaitMs: z.number().int().positive().default(60_000),
   })
   .prefault({});
 
@@ -308,7 +357,11 @@ export interface Config {
   readonly limits: {
     readonly maxBodyBytes: number;
     readonly pingIntervalMs: number;
+    /** @deprecated See LimitsSchema.maxConcurrentRequests. */
     readonly maxConcurrentRequests: number;
+    readonly maxInFlightBytes: number;
+    readonly maxQueueDepth: number;
+    readonly maxQueueWaitMs: number;
   };
 }
 

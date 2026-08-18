@@ -265,7 +265,7 @@ Minimal example — only override what you need:
     }
   },
   "limits": {
-    "maxConcurrentRequests": 16
+    "maxInFlightBytes": 1073741824
   }
 }
 ```
@@ -279,7 +279,7 @@ All keys and their defaults:
 | `anthropic.baseUrl` | `"https://api.anthropic.com"` | Anthropic passthrough base URL |
 | `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection timeout (see note below) |
 | `anthropic.streamIdleTimeoutMs` | `300000` (5 min) | Anthropic stream idle timeout |
-| `anthropic.maxUpstreamSockets` | `32` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
+| `anthropic.maxUpstreamSockets` | `256` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
 | `anthropic.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `anthropic.baseUrl` points at a host other than `api.anthropic.com`. Set to `true` only when routing through a trusted proxy in front of Anthropic's API. Loopback addresses are always exempt. |
 | `providers.codex.baseUrl` | `"https://chatgpt.com/backend-api/codex"` | Codex backend base URL — override to route subswitch through the wire recorder |
 | `providers.codex.oauthTokenUrl` | `"https://auth.openai.com/oauth/token"` | Token refresh endpoint for the Codex OAuth flow |
@@ -295,7 +295,10 @@ All keys and their defaults:
 | `providers.codex.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` points at a host other than `chatgpt.com` or `auth.openai.com`. This prevents credential forwarding to an untrusted host. Set to `true` only when routing through a trusted proxy. Loopback addresses are always exempt. |
 | `limits.maxBodyBytes` | `33554432` (32 MiB) | Maximum request body bytes buffered before the routing decision |
 | `limits.pingIntervalMs` | `15000` (15 s) | Interval between SSE ping frames sent to clients during long Codex streams |
-| `limits.maxConcurrentRequests` | `32` | In-flight request ceiling; requests above this limit receive a 503 |
+| `limits.maxInFlightBytes` | `2147483648` (2 GiB) | Total budget for simultaneous in-flight request bodies in bytes. Requests that would exceed the budget are **queued** (not rejected) until space opens. A single request larger than the budget is still admitted when the server is idle (single-request progress). The budget rarely fires under normal load (~100 concurrent × a few MB each ≈ 300 MB). Worst case at budget: ~6.6 GiB RSS at 3.3× amplification. |
+| `limits.maxQueueDepth` | `1000` | Maximum requests that may wait in the admission queue simultaneously. When this bound is exceeded the server returns HTTP **529 overloaded_error** — the correct Anthropic status for overload. |
+| `limits.maxQueueWaitMs` | `60000` (60 s) | Maximum time a queued request will wait for a budget slot before receiving HTTP 529 overloaded_error. |
+| `limits.maxConcurrentRequests` | `32` | **Deprecated** — superseded by `maxInFlightBytes`. Kept in the schema so existing config files do not error. The value is no longer used by the admission gate; replace with `maxInFlightBytes`. |
 
 > **Why `connectTimeoutMs` and `maxUpstreamSockets` are Anthropic-leg-only**: the
 > Anthropic passthrough uses a node:http agent with an explicit keep-alive pool, so
