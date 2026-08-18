@@ -53,7 +53,22 @@ const filterRawHeaders = (rawHeaders: readonly string[]): string[] => {
 
 export interface PassthroughOptions {
   readonly baseUrl: string;
+  /**
+   * Bounds TCP connection establishment only (milliseconds).
+   * Once connected (or for a reused pooled socket), the timer is re-armed to
+   * `headerTimeoutMs`.
+   */
   readonly connectTimeoutMs: number;
+  /**
+   * Bounds the connect→response-headers phase (time to first byte), in milliseconds.
+   * Armed on socket connect (or immediately for pooled sockets).
+   * Re-armed to `streamIdleTimeoutMs` once headers arrive.
+   */
+  readonly headerTimeoutMs: number;
+  /**
+   * Bounds the headers→stream-end phase, in milliseconds.
+   * Reset by every received chunk.
+   */
   readonly streamIdleTimeoutMs: number;
   readonly logger: Logger;
   /** Maximum sockets in the keep-alive pool. Config key: limits.maxUpstreamSockets. */
@@ -119,14 +134,15 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
 
     // `connectTimeoutMs` bounds TCP connection establishment only.  Once the
     // socket connects (or when a pooled socket is reused — no 'connect' event
-    // fires on a reused socket), we re-arm the timer to `streamIdleTimeoutMs`
-    // so that long upstream think-time is not mistakenly cut off at 10 s.
+    // fires on a reused socket), we re-arm the timer to `headerTimeoutMs`
+    // so that long upstream think-time before the first response byte is not
+    // mistakenly cut off at the short connect budget.
     // The `else` branch handles the pooled/keep-alive case: `socket.connecting`
     // is already false, so we must arm the header-wait budget immediately.
     upstream.setTimeout(options.connectTimeoutMs);
     upstream.on("socket", (socket) => {
       socket.setNoDelay(true);
-      const rearm = () => upstream.setTimeout(options.streamIdleTimeoutMs);
+      const rearm = () => upstream.setTimeout(options.headerTimeoutMs);
       if (socket.connecting) socket.once("connect", rearm);
       else rearm(); // pooled socket — no 'connect' event will ever fire
     });

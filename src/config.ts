@@ -62,11 +62,22 @@ const AnthropicSchema = z
     /**
      * TCP connection-establishment timeout for the Anthropic leg (milliseconds).
      * Bounds only the time to establish a new TCP connection; once connected (or when
-     * a keep-alive socket is reused), the timer is re-armed to `streamIdleTimeoutMs`
-     * so that long upstream think-time is not cut off prematurely.
+     * a keep-alive socket is reused), the timer is re-armed to `headerTimeoutMs`.
      */
     connectTimeoutMs: z.number().int().positive().default(10_000),
-    /** Stream idle timeout for the Anthropic passthrough. */
+    /**
+     * Time from TCP connection established to first response byte (headers), in
+     * milliseconds.  Bounds only the connect→response-headers phase; once headers
+     * arrive the timer is re-armed to `streamIdleTimeoutMs` for the stream body.
+     * Defaults to 600 000 ms — matching Anthropic's own server-side ceiling — so
+     * the relay never fires before the origin does on a legitimate long-running
+     * request (e.g. a non-streaming Opus completion with large max_tokens).
+     */
+    headerTimeoutMs: z.number().int().positive().default(600_000),
+    /**
+     * Stream idle timeout for the Anthropic passthrough (milliseconds).
+     * Bounds the headers→stream-end phase; reset by every received chunk.
+     */
     streamIdleTimeoutMs: z.number().int().positive().default(300_000),
     /** Maximum sockets in the keep-alive pool for the Anthropic passthrough. */
     maxUpstreamSockets: z.number().int().positive().default(32),
@@ -301,6 +312,7 @@ export interface Config {
   readonly anthropic: {
     readonly baseUrl: string;
     readonly connectTimeoutMs: number;
+    readonly headerTimeoutMs: number;
     readonly streamIdleTimeoutMs: number;
     readonly maxUpstreamSockets: number;
     /**
@@ -593,6 +605,7 @@ export const resolveConfig = (file: FileConfig): Config => ({
   anthropic: {
     baseUrl: file.anthropic.baseUrl,
     connectTimeoutMs: file.anthropic.connectTimeoutMs,
+    headerTimeoutMs: file.anthropic.headerTimeoutMs,
     streamIdleTimeoutMs: file.anthropic.streamIdleTimeoutMs,
     maxUpstreamSockets: file.anthropic.maxUpstreamSockets,
     allowInsecureBaseUrl: file.anthropic.allowInsecureBaseUrl,

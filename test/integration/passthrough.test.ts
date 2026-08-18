@@ -346,11 +346,12 @@ describe("anthropic passthrough", () => {
   // streamIdleTimeoutMs so that upstream think-time beyond connectTimeoutMs
   // is not spuriously cut off with a 504.
 
-  it("does not 504 when upstream think-time exceeds connectTimeoutMs but is under streamIdleTimeoutMs", async () => {
+  it("does not 504 when upstream think-time exceeds connectTimeoutMs but is under headerTimeoutMs", async () => {
     // Upstream delays its response by 200 ms — intentionally longer than
-    // connectTimeoutMs (50 ms) but shorter than streamIdleTimeoutMs (500 ms).
+    // connectTimeoutMs (50 ms) but shorter than headerTimeoutMs (500 ms).
     // Before the fix the 50 ms timer fired immediately after connect and
-    // produced a 504; after the fix the timer is re-armed to 500 ms on connect.
+    // produced a 504; after the fix the timer is re-armed to headerTimeoutMs
+    // (500 ms) on connect, so the 200 ms delay is within budget.
     const anthropic = await startFakeUpstream((_req, res) => {
       setTimeout(() => {
         res.writeHead(200, { "content-type": "application/json" });
@@ -361,6 +362,7 @@ describe("anthropic passthrough", () => {
       anthropic: {
         baseUrl: anthropic.url,
         connectTimeoutMs: 50,
+        headerTimeoutMs: 500,
         streamIdleTimeoutMs: 500,
       },
     });
@@ -380,22 +382,22 @@ describe("anthropic passthrough", () => {
     assert.equal(body.id, "msg_think_time");
   });
 
-  it("emits exactly one warn event on a genuine upstream timeout (no duplicate anthropic_upstream_error)", async () => {
+  it("headerTimeoutMs fires and emits exactly one warn when upstream stalls before sending headers (no duplicate anthropic_upstream_error)", async () => {
     // Upstream accepts the connection but never sends headers.
-    // After streamIdleTimeoutMs (100 ms) the timeout handler fires, writes a
+    // After headerTimeoutMs (100 ms) the timeout handler fires, writes a
     // 504, and calls upstream.destroy().  That destroy() makes the ClientRequest
     // emit 'error'; the error handler must return early (via `settled`) and must
     // NOT log a second anthropic_upstream_error warn.
     const captured: Array<{ level: LogLevel; event: string }> = [];
     const anthropic = await startFakeUpstream((_req, _res) => {
-      // Never responds — stall indefinitely so the idle timer fires.
+      // Never responds — stall indefinitely so the header timer fires.
     });
     const subswitch = await startSubswitch(
       {
         anthropic: {
           baseUrl: anthropic.url,
           connectTimeoutMs: 50,
-          streamIdleTimeoutMs: 100,
+          headerTimeoutMs: 100,
         },
       },
       {
@@ -425,11 +427,11 @@ describe("anthropic passthrough", () => {
     assert.equal(upstreamEvents[0]!.level, "warn");
   });
 
-  it("re-arms streamIdleTimeoutMs immediately on a pooled (keep-alive) socket", async () => {
+  it("re-arms headerTimeoutMs immediately on a pooled (keep-alive) socket", async () => {
     // The pooled socket path takes the `else rearm()` branch because
     // socket.connecting is false on a reused socket — no 'connect' event fires.
     // Verify that a second request whose upstream think-time exceeds
-    // connectTimeoutMs but is under streamIdleTimeoutMs still succeeds.
+    // connectTimeoutMs but is under headerTimeoutMs still succeeds.
     let requestIndex = 0;
     const anthropic = await startFakeUpstream((_req, res) => {
       const idx = requestIndex++;
@@ -439,8 +441,8 @@ describe("anthropic passthrough", () => {
         res.end(JSON.stringify({ id: "first" }));
       } else {
         // Second request: delay 200 ms — longer than connectTimeoutMs (50 ms),
-        // shorter than streamIdleTimeoutMs (500 ms).  On a reused socket the
-        // `else rearm()` branch must arm the 500 ms budget immediately.
+        // shorter than headerTimeoutMs (500 ms).  On a reused socket the
+        // `else rearm()` branch must arm the 500 ms headerTimeoutMs budget immediately.
         setTimeout(() => {
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ id: "pooled" }));
@@ -451,6 +453,7 @@ describe("anthropic passthrough", () => {
       anthropic: {
         baseUrl: anthropic.url,
         connectTimeoutMs: 50,
+        headerTimeoutMs: 500,
         streamIdleTimeoutMs: 500,
       },
     });
@@ -472,7 +475,7 @@ describe("anthropic passthrough", () => {
     assert.equal(
       r2.status,
       200,
-      "pooled socket: streamIdleTimeoutMs must be armed immediately via else rearm(), not cut off at connectTimeoutMs",
+      "pooled socket: headerTimeoutMs must be armed immediately via else rearm(), not cut off at connectTimeoutMs",
     );
     const body2 = (await r2.json()) as { id: string };
     assert.equal(body2.id, "pooled");

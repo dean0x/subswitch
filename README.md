@@ -277,8 +277,9 @@ All keys and their defaults:
 | `port` | `4141` | Port the proxy listens on |
 | `logLevel` | `"info"` | Log verbosity: `debug`, `info`, `warn`, or `error` |
 | `anthropic.baseUrl` | `"https://api.anthropic.com"` | Anthropic passthrough base URL |
-| `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection timeout (see note below) |
-| `anthropic.streamIdleTimeoutMs` | `300000` (5 min) | Anthropic stream idle timeout |
+| `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection establishment timeout (see note below) |
+| `anthropic.headerTimeoutMs` | `600000` (10 min) | **Anthropic leg only** — time from TCP connect to first response byte; defaults to Anthropic's own server-side ceiling so the relay never fires before the origin does on a legitimate long-running request (see note below) |
+| `anthropic.streamIdleTimeoutMs` | `300000` (5 min) | Anthropic stream idle timeout (headers→stream-end, reset by every chunk) |
 | `anthropic.maxUpstreamSockets` | `32` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
 | `anthropic.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `anthropic.baseUrl` points at a host other than `api.anthropic.com`. Set to `true` only when routing through a trusted proxy in front of Anthropic's API. Loopback addresses are always exempt. |
 | `providers.codex.baseUrl` | `"https://chatgpt.com/backend-api/codex"` | Codex backend base URL — override to route subswitch through the wire recorder |
@@ -297,11 +298,11 @@ All keys and their defaults:
 | `limits.pingIntervalMs` | `15000` (15 s) | Interval between SSE ping frames sent to clients during long Codex streams |
 | `limits.maxConcurrentRequests` | `32` | In-flight request ceiling; requests above this limit receive a 503 |
 
-> **Why `connectTimeoutMs` and `maxUpstreamSockets` are Anthropic-leg-only**: the
+> **Why `connectTimeoutMs`, `headerTimeoutMs`, and `maxUpstreamSockets` are Anthropic-leg-only**: the
 > Anthropic passthrough uses a node:http agent with an explicit keep-alive pool, so
-> both knobs have meaningful effect there. The Codex leg uses Node's global `fetch`
-> (undici's global dispatcher), which `maxUpstreamSockets` does not control — shipping
-> them as per-provider keys would be config that bounds nothing on the Codex side.
+> all three knobs have meaningful effect there. The Codex leg uses Node's global `fetch`
+> (undici's global dispatcher), which these knobs do not control — shipping them as
+> per-provider keys would be config that bounds nothing on the Codex side.
 
 ### `subswitch models --json`
 

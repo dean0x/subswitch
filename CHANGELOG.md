@@ -4,28 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.1] - 2026-08-19
 
 ### Fixed
 
 - **Anthropic passthrough — `connectTimeoutMs` now bounds only TCP connection
-  establishment** (fixes #27).  Previously `upstream.setTimeout(connectTimeoutMs)`
-  was armed immediately after `http.request()` and was never re-armed on connect,
-  so it measured time-to-first-byte rather than time-to-connect.  On a keep-alive
-  pooled socket there is no connect phase at all, meaning the 10 s budget was
-  effectively a hard cap on upstream think-time, producing spurious 504s for
-  long-running `claude-opus-4` requests.  The socket listener now re-arms the
-  timer to `streamIdleTimeoutMs` the moment the TCP connection is established (or
-  immediately for a reused socket where no `connect` event fires).
+  establishment; new `headerTimeoutMs` knob bounds time to first byte** (fixes #27).
+  Previously `upstream.setTimeout(connectTimeoutMs)` was armed immediately after
+  `http.request()` and was never re-armed on connect, so it measured time-to-first-byte
+  rather than time-to-connect.  On a keep-alive pooled socket there is no connect
+  phase at all, meaning the 10 s budget was effectively a hard cap on upstream
+  think-time, producing spurious 504s for long-running `claude-opus-4` requests.
+  The fix introduces a three-budget design: `connectTimeoutMs` (10 s, TCP
+  establishment only), `headerTimeoutMs` (600 s default, connect→response-headers —
+  defaults to Anthropic's own server-side ceiling so the relay never fires before
+  the origin does on a legitimate long-running request such as a non-streaming Opus
+  completion with large `max_tokens`), and `streamIdleTimeoutMs` (300 s,
+  headers→stream-end, reset by every chunk).  The socket listener now re-arms the
+  timer to `headerTimeoutMs` the moment the TCP connection is established (or
+  immediately for a reused socket where no `connect` event fires).  **A hung upstream
+  that accepts the TCP connection but never sends headers now takes up to
+  `headerTimeoutMs` (default 600 s) to fail, not 10 s** — tune this knob down if you
+  need faster detection of stalled upstreams.
 
 - **Anthropic passthrough — duplicate `anthropic_upstream_error` warn eliminated**
   (fixes #27).  When a pre-header timeout fired, the timeout handler called
   `upstream.destroy()` before writing the 504.  Destroying an in-flight
   `ClientRequest` causes it to emit `error` (ECONNRESET) on the next tick; the
   error handler's `responded` guard was inert on the pre-header path, so both
-  `anthropic_upstream_timeout` and `anthropic_upstream_error` were logged and
-  `res.end()` was called after `res.destroy()`.  A new `settled` flag is now set
-  by whichever handler responds first; the error handler returns early when
+  `anthropic_upstream_timeout` and `anthropic_upstream_error` were logged.  On
+  `main` the actual response sequence was `writeHead(504)` → `res.end()`
+  (synchronous, in the timeout handler) → next tick, error handler sees
+  `headersSent === true` → `res.destroy()`; the client received a complete 504 body
+  and the real defect was the duplicate warn log only.  A new `settled` flag is now
+  set by whichever handler responds first; the error handler returns early when
   `settled` is true, ensuring exactly one warn event per timeout.
 
 ## [0.2.0] - 2026-08-09
