@@ -441,15 +441,19 @@ describe("CodexAuthManager", () => {
    */
   it("guard fires on format-diverged last_refresh when refresh_token differs (identity check)", async () => {
     const cliToken = accessToken(3_600_000, "acct_1234567890");
-    const store = memoryStore(authFile(accessToken(60_000)));
+    // Falsifier: baseline is "2027-01-15T08:00:00.000Z" and the file writes epoch-millis
+    // "1800000005000" (5 s later). Lexicographically "1..." < "2..." so the old string >
+    // comparison returns false and the guard does NOT fire → the test fails on main, proving
+    // the fixture exercises the identity-check path on the branch.
+    const store = memoryStore(authFile(accessToken(60_000), { last_refresh: "2027-01-15T08:00:00.000Z" }));
     const endpoint = fakeTokenEndpoint(() => ({
       beforeRespond: () => {
-        // CLI writes with a different last_refresh format (bare-seconds Z, no milliseconds)
-        // but a rotated refresh_token. The string comparison would not detect 'newer'
-        // when formats differ; identity check detects it unconditionally.
+        // CLI writes last_refresh as raw epoch-millis ("1800000005000"), which sorts
+        // lexicographically before any ISO date starting with "2" — the old string >
+        // comparison misses this; the identity check on refresh_token fires instead.
         store.content = JSON.stringify({
           ...authFile(cliToken),
-          last_refresh: new Date(NOW_MS + 5_000).toISOString().replace(/\.\d{3}Z$/, "Z"),
+          last_refresh: "1800000005000",
           tokens: {
             ...(JSON.parse(JSON.stringify(authFile(cliToken))) as { tokens: Record<string, unknown> }).tokens,
             access_token: cliToken,
@@ -509,12 +513,13 @@ describe("CodexAuthManager", () => {
 
   /**
    * Fix 2: fileIsNewer is true but materialFrom fails (malformed access_token in the
-   * newer file). Before Fix 2, control fell through into the merge and wrote anyway —
-   * defeating the guard. After Fix 2, an early return propagates the error without writing.
+   * newer file). The guard fires — no write occurs. The branch serves our own valid
+   * refresh result from memory so the request still succeeds.
    *
-   * Assert: no write occurs, result is an error.
+   * Assert: no write occurs, result is a success using our own refresh tokens.
    */
   it("does not write when fileIsNewer is true but materialFrom fails", async () => {
+    const freshToken = accessToken(3_600_000);
     const store = memoryStore(authFile(accessToken(60_000)));
     const endpoint = fakeTokenEndpoint(() => ({
       beforeRespond: () => {
@@ -534,11 +539,16 @@ describe("CodexAuthManager", () => {
           },
         });
       },
-      response: tokenResponse(accessToken(3_600_000)),
+      response: tokenResponse(freshToken),
     }));
 
     const result = await manager(store, endpoint).getCredentials();
-    assert.ok(!result.ok, "should propagate the materialFrom failure");
+    assert.ok(result.ok, "should succeed serving our own valid refresh result from memory");
+    assert.equal(
+      result.value.authHeaders["authorization"],
+      `Bearer ${freshToken}`,
+      "credentials should come from our own refresh result, not the malformed file",
+    );
     assert.equal(store.writes.length, 0, "must not write when materialFrom fails on the newer file");
   });
 

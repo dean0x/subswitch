@@ -369,8 +369,12 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
       // Primary signal: a different refresh_token means another writer rotated it —
       // this is format-independent and already the established idiom in doRefresh() at
       // the invalid_grant retry (line ~291). Secondary signal: numeric timestamp
-      // comparison (Date.parse) catches a concurrent write in the same second when
-      // the refresh token happens not to have been rotated.
+      // comparison (Date.parse) ensures correct ordering when the Codex CLI writes
+      // last_refresh in a format that differs from ours — e.g. "…08:00:05Z" vs
+      // "…08:00:05.500Z" compares as '.' < 'Z' lexicographically (wrong) but as
+      // equal-or-newer numerically (right). Note: Date.parse of an unrecognised format
+      // returns NaN; NaN > NaN is false, so the secondary signal is inert for such
+      // values — the primary identity check remains the reliable guard.
       const fileIsNewer =
         fileNow.tokens.refresh_token !== refreshToken ||
         (fileNow.last_refresh !== undefined &&
@@ -387,8 +391,16 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
         }
         // materialFrom failed (e.g. malformed access_token in the newer file).
         // Do NOT fall through into the merge — that would clobber the other
-        // writer's refresh_token with our now-consumed one.
-        return fromFile;
+        // writer's refresh_token with our now-consumed one. Serve our own valid
+        // refresh result from memory instead so the request still succeeds.
+        const accountId = jwtAccountId(tokens.access_token);
+        if (accountId === undefined) return fromFile;
+        const fresh: CachedTokenMaterial = {
+          material: { accessToken: tokens.access_token, accountId },
+          expiresAtMs: jwtExpiryMs(tokens.access_token) ?? Number.POSITIVE_INFINITY,
+        };
+        this.cached = fresh;
+        return ok(fresh.material);
       }
       const merged: AuthFile = {
         ...fileNow,
