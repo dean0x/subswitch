@@ -69,11 +69,15 @@ const AnthropicSchema = z
      * Time from TCP connection established to first response byte (headers), in
      * milliseconds.  Bounds only the connect→response-headers phase; once headers
      * arrive the timer is re-armed to `streamIdleTimeoutMs` for the stream body.
-     * Defaults to 600 000 ms — matching Anthropic's own server-side ceiling — so
-     * the relay never fires before the origin does on a legitimate long-running
-     * request (e.g. a non-streaming Opus completion with large max_tokens).
+     * Defaults to 660 000 ms — 60 s above Anthropic's own ~600 s server-side
+     * ceiling — so the relay never fires before the origin does on a legitimate
+     * long-running request (e.g. a non-streaming Opus completion with large
+     * max_tokens).  The extra 60 s headroom exists because the relay's clock
+     * starts at TCP connect whereas the origin's starts when it has received the
+     * full request body; equal budgets with an earlier start would let the relay
+     * pre-empt the origin by the request-upload time plus RTT.
      */
-    headerTimeoutMs: z.number().int().positive().default(600_000),
+    headerTimeoutMs: z.number().int().positive().default(660_000),
     /**
      * Stream idle timeout for the Anthropic passthrough (milliseconds).
      * Bounds the headers→stream-end phase; reset by every received chunk.

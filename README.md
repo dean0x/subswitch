@@ -278,7 +278,7 @@ All keys and their defaults:
 | `logLevel` | `"info"` | Log verbosity: `debug`, `info`, `warn`, or `error` |
 | `anthropic.baseUrl` | `"https://api.anthropic.com"` | Anthropic passthrough base URL |
 | `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection establishment timeout (see note below) |
-| `anthropic.headerTimeoutMs` | `600000` (10 min) | **Anthropic leg only** — time from TCP connect to first response byte; defaults to Anthropic's own server-side ceiling so the relay never fires before the origin does on a legitimate long-running request (see note below) |
+| `anthropic.headerTimeoutMs` | `660000` (11 min) | **Anthropic leg only** — time from TCP connect to first response byte; defaults to 60 s above Anthropic's own ~600 s server-side ceiling so the relay never fires before the origin does (the relay's clock starts earlier than the origin's — see note below) |
 | `anthropic.streamIdleTimeoutMs` | `300000` (5 min) | Anthropic stream idle timeout (headers→stream-end, reset by every chunk) |
 | `anthropic.maxUpstreamSockets` | `32` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
 | `anthropic.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `anthropic.baseUrl` points at a host other than `api.anthropic.com`. Set to `true` only when routing through a trusted proxy in front of Anthropic's API. Loopback addresses are always exempt. |

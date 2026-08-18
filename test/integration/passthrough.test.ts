@@ -483,4 +483,96 @@ describe("anthropic passthrough", () => {
     // Both requests must have used one TCP connection (keep-alive reuse).
     assert.equal(anthropic.connectionCount, 1, "keep-alive: both requests must share one TCP connection");
   });
+
+  it("streamIdleTimeoutMs fires when the stream goes idle after headers are received", async () => {
+    // headerTimeoutMs (5 s) cannot be the knob that fires here — only streamIdleTimeoutMs
+    // (100 ms) can.  We send 6 chunks ~50 ms apart (~300 ms of active streaming) before
+    // stalling.  If chunks did NOT reset the idle timer, the 100 ms budget would fire
+    // during the active-streaming window and the body would be truncated before we receive
+    // all 6 chunks — the assertion on chunk count would then catch it.  This pins the
+    // "reset by every received chunk" invariant as a falsifiable property, not mere prose.
+    const captured: Array<{ level: LogLevel; event: string }> = [];
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      let sent = 0;
+      const interval = setInterval(() => {
+        sent++;
+        res.write(`event: ping\ndata: ${sent}\n\n`);
+        if (sent >= 6) {
+          // Stop sending — stream goes idle; res.end() is never called.
+          clearInterval(interval);
+        }
+      }, 50);
+    });
+    const subswitch = await startSubswitch(
+      {
+        anthropic: {
+          baseUrl: anthropic.url,
+          connectTimeoutMs: 50,
+          headerTimeoutMs: 5_000,
+          streamIdleTimeoutMs: 100,
+        },
+      },
+      {
+        logger: {
+          log(level, event) {
+            captured.push({ level, event });
+          },
+        },
+      },
+    );
+    cleanups.push(subswitch.close, anthropic.close);
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+
+    // The upstream sent headers before stalling — client must see 200.
+    assert.equal(response.status, 200, "upstream sent headers before going idle");
+
+    // Collect the body; the server calls res.destroy() once streamIdleTimeoutMs fires,
+    // so the body is truncated mid-stream.  Node fetch (undici) rejects the read with
+    // a network error on a destroyed socket.
+    //
+    // Timing bound: after the last chunk (~300 ms of streaming), the 100 ms idle
+    // timer fires, so the body read must complete (by throwing) within 2 s.  If
+    // streamIdleTimeoutMs were huge (e.g. 10 s), the read would hang for 10 s and
+    // this assertion would fail — making the test non-vacuous.
+    const bodyReadStart = Date.now();
+    let receivedBody = "";
+    let bodyThrew = false;
+    try {
+      receivedBody = await response.text();
+    } catch {
+      bodyThrew = true;
+    }
+    const bodyElapsedMs = Date.now() - bodyReadStart;
+
+    // The body must be incomplete: either the read threw (connection reset) or the
+    // received text contains the streamed chunks but no clean termination.
+    assert.ok(
+      bodyThrew || receivedBody.includes("event: ping"),
+      "body must be truncated (threw) or contain the partial SSE chunks",
+    );
+    assert.ok(bodyThrew, "reading the body must throw — res.destroy() tears down the socket mid-stream");
+    assert.ok(
+      bodyElapsedMs < 2_000,
+      `body read must complete within 2 s (elapsed: ${bodyElapsedMs} ms) — streamIdleTimeoutMs must fire promptly, not after a huge delay`,
+    );
+
+    // Allow one event-loop turn for any stray events to settle.
+    await new Promise<void>((resolve) => setTimeout(resolve, 150));
+
+    // Exactly one streamIdleTimeoutMs warn must be emitted.  headerTimeoutMs (5 s)
+    // cannot have fired — the total test duration is well under 5 s.
+    const timeoutEvents = captured.filter((e) => e.event === "anthropic_upstream_timeout");
+    assert.equal(
+      timeoutEvents.length,
+      1,
+      `expected exactly 1 anthropic_upstream_timeout event, got: ${JSON.stringify(timeoutEvents)}`,
+    );
+    assert.equal(timeoutEvents[0]!.level, "warn");
+  });
 });

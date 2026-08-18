@@ -16,15 +16,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   phase at all, meaning the 10 s budget was effectively a hard cap on upstream
   think-time, producing spurious 504s for long-running `claude-opus-4` requests.
   The fix introduces a three-budget design: `connectTimeoutMs` (10 s, TCP
-  establishment only), `headerTimeoutMs` (600 s default, connect→response-headers —
-  defaults to Anthropic's own server-side ceiling so the relay never fires before
-  the origin does on a legitimate long-running request such as a non-streaming Opus
-  completion with large `max_tokens`), and `streamIdleTimeoutMs` (300 s,
-  headers→stream-end, reset by every chunk).  The socket listener now re-arms the
-  timer to `headerTimeoutMs` the moment the TCP connection is established (or
-  immediately for a reused socket where no `connect` event fires).  **A hung upstream
-  that accepts the TCP connection but never sends headers now takes up to
-  `headerTimeoutMs` (default 600 s) to fail, not 10 s** — tune this knob down if you
+  establishment only), `headerTimeoutMs` (660 s default, connect→response-headers —
+  defaults to 60 s above Anthropic's own ~600 s server-side ceiling; the extra
+  headroom accounts for the relay's clock starting at TCP connect while the origin's
+  starts only after the full request body is received, so equal budgets would let the
+  relay pre-empt the origin by the upload time plus RTT), and `streamIdleTimeoutMs`
+  (300 s, headers→stream-end, reset by every chunk).  The socket listener now
+  re-arms the timer to `headerTimeoutMs` the moment the TCP connection is established
+  (or immediately for a reused socket where no `connect` event fires).  **A hung
+  upstream that accepts the TCP connection but never sends headers now takes up to
+  `headerTimeoutMs` (default 660 s) to fail, not 10 s** — tune this knob down if you
   need faster detection of stalled upstreams.
 
 - **Anthropic passthrough — duplicate `anthropic_upstream_error` warn eliminated**
