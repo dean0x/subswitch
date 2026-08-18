@@ -55,6 +55,8 @@ export type AnthropicErrorType =
   | "invalid_request_error"
   | "authentication_error"
   | "permission_error"
+  | "not_found_error"
+  | "request_too_large"
   | "rate_limit_error"
   | "api_error"
   | "overloaded_error";
@@ -83,7 +85,7 @@ export const proxyErrorToAnthropic = (error: ProxyError): AnthropicError => {
     case "translate":
       return { status: 400, type: "invalid_request_error" };
     case "body_too_large":
-      return { status: 413, type: "invalid_request_error" };
+      return { status: 413, type: "request_too_large" };
     case "timeout":
       return { status: 504, type: "api_error" };
     case "client_disconnected":

@@ -27,6 +27,12 @@ describe("proxyErrorToAnthropic", () => {
     assert.equal(proxyErrorToAnthropic({ kind: "upstream", message: "x", status: 429 }).type, "rate_limit_error");
     assert.equal(proxyErrorToAnthropic({ kind: "upstream", message: "x" }).status, 502);
   });
+
+  it("body_too_large maps to request_too_large type (L4 — matches Anthropic error taxonomy)", () => {
+    const mapped = proxyErrorToAnthropic({ kind: "body_too_large", message: "too big" });
+    assert.equal(mapped.status, 413, "413 status preserved");
+    assert.equal(mapped.type, "request_too_large", "type must be request_too_large, not invalid_request_error");
+  });
 });
 
 describe("anthropic error shaping", () => {
