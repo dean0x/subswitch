@@ -1,7 +1,9 @@
 /**
  * Integration tests for routing-layer behavior:
  *   F7  — ambiguous family name → 400 with both provider names in the body
- *   F6g — unknown provider qualifier → 400 with provider list
+ *   F6g — unknown provider qualifier → fail-open (forwarded to Anthropic, not 400)
+ *   L1  — colon-bearing unknown model name routes to Anthropic (not 400); real codex: prefix still works
+ *   L4  — oversized body returns 413 with type "request_too_large" (matches Anthropic taxonomy)
  *   P2  — routing table built once: ≥2 requests route consistently without per-request rebuilds
  *         Verified via Proxy ownKeys trap on the aliases map (production resolver, no synthetic seam).
  *
@@ -130,14 +132,20 @@ describe("routing — ambiguous family (F7)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// F6g: unknown provider qualifier → 400
+// F6g / L1: unknown provider qualifier → fail-open (forwarded to Anthropic)
+//
+// When a colon-separated name has an unknown prefix (not a registered provider),
+// the relay must NOT return a 400 citing its own provider registry. The origin
+// may support the model (e.g. future namespaced ids like "claude-sonnet-9:preview");
+// the relay's job is to forward, not to police names it doesn't recognise.
 // ---------------------------------------------------------------------------
 
-describe("routing — unknown provider qualifier (F6g)", () => {
-  it("returns 400 when the qualifier prefix is not a known provider", async () => {
+describe("routing — unknown provider qualifier fails open to Anthropic (F6g / L1)", () => {
+  it("forwards to Anthropic (not 400) when the qualifier prefix is not a known provider", async () => {
     const cleanups: Array<() => Promise<void>> = [];
 
-    // Synthetic resolver that returns unknown_qualifier for "kimee:k2"
+    // Synthetic resolver that returns unknown_qualifier for "kimee:k2".
+    // The router maps this to "unknown_provider", and the server must fail open.
     const resolve = (name: string): ModelResolution =>
       name === "kimee:k2"
         ? { kind: "unknown_qualifier", qualifier: "kimee" }
@@ -173,14 +181,114 @@ describe("routing — unknown provider qualifier (F6g)", () => {
         body: JSON.stringify({ model: "kimee:k2", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
       });
 
-      assert.equal(response.status, 400, "unknown provider qualifier must return 400");
+      // Must NOT return 400 — the relay has no authority to reject names it doesn't recognise.
+      assert.notEqual(response.status, 400, "unknown provider qualifier must NOT return 400 (fail-open)");
 
-      const body = (await response.json()) as { error: { type: string; message: string } };
-      assert.equal(body.error.type, "invalid_request_error");
-      assert.ok(body.error.message.includes("kimee"), "error message must name the unknown qualifier");
-      assert.ok(body.error.message.includes("codex"), "error message must list the known providers");
-      // Does not reach anthropic.
-      assert.equal(anthropic.requests.length, 0, "unknown provider must not be forwarded to anthropic");
+      // Must reach Anthropic (fail-open routing).
+      assert.equal(anthropic.requests.length, 1, "request must be forwarded to Anthropic upstream");
+      await response.body?.cancel();
+    } finally {
+      for (const cleanup of cleanups.reverse()) await cleanup();
+    }
+  });
+
+  it("a real codex: prefix still resolves as a provider qualifier (not forwarded to Anthropic)", async () => {
+    const cleanups: Array<() => Promise<void>> = [];
+
+    // Real registry resolution: "codex:gpt-5.6-sol" → resolved as Codex.
+    // Uses default resolver (no synthetic seam) so the real registry is exercised.
+    const sseBody =
+      "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gpt-5.6-sol\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n" +
+      "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+      "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n" +
+      "data: {\"type\":\"message_stop\"}\n\n";
+
+    const codex = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(sseBody);
+    });
+    cleanups.push(codex.close);
+
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
+    });
+    cleanups.push(anthropic.close);
+
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-codex-prefix-test-"));
+    const authFilePath = join(dir, "auth.json");
+    await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
+
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: anthropic.url },
+      providers: { codex: { baseUrl: codex.url, authFile: authFilePath } },
+    });
+    cleanups.push(subswitch.close);
+
+    try {
+      const response = await fetch(`${subswitch.url}/v1/messages`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer sk-ant",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "codex:gpt-5.6-sol", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      // Must route to Codex, not to the anthropic upstream.
+      assert.equal(codex.requests.length, 1, "codex: prefix must route to the Codex upstream");
+      assert.equal(anthropic.requests.length, 0, "codex: prefix must NOT route to Anthropic");
+      await response.body?.cancel();
+    } finally {
+      for (const cleanup of cleanups.reverse()) await cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L4: oversized body → 413 with type "request_too_large"
+// ---------------------------------------------------------------------------
+
+describe("routing — oversized body returns request_too_large (L4)", () => {
+  it("returns 413 with error type 'request_too_large' for a body exceeding maxBodyBytes", async () => {
+    const cleanups: Array<() => Promise<void>> = [];
+
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
+    });
+    cleanups.push(anthropic.close);
+
+    // maxBodyBytes: 64 bytes — tiny, so we can trigger the limit easily.
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: anthropic.url },
+      limits: { maxBodyBytes: 64, maxInFlightBytes: 2 * 1024 * 1024 * 1024 },
+    });
+    cleanups.push(subswitch.close);
+
+    try {
+      const oversizedBody = Buffer.alloc(128, "x"); // 128 > 64 → triggers 413
+      const response = await fetch(`${subswitch.url}/v1/messages`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer sk-ant",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: oversizedBody,
+      });
+
+      assert.equal(response.status, 413, "oversized body must return 413");
+      const body = (await response.json()) as { type: string; error: { type: string; message: string } };
+      assert.equal(body.type, "error", "response type must be 'error'");
+      assert.equal(
+        body.error.type,
+        "request_too_large",
+        "413 error type must be 'request_too_large', not 'invalid_request_error'",
+      );
+      // Must NOT reach the upstream — the relay caps before forwarding.
+      assert.equal(anthropic.requests.length, 0, "oversized body must not reach the upstream");
     } finally {
       for (const cleanup of cleanups.reverse()) await cleanup();
     }

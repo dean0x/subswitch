@@ -308,9 +308,165 @@ const peekModel = (parsed: unknown): string | undefined => {
   return result.success ? result.data.model : undefined;
 };
 
+/**
+ * Sentinel error thrown when a client disconnects while its request is in the
+ * admission queue. Used to short-circuit the dispatch catch handler — no error
+ * response should be sent to an already-closed connection.
+ */
+class DisconnectedWhileQueued extends Error {
+  constructor() {
+    super("client disconnected while queued");
+    this.name = "DisconnectedWhileQueued";
+  }
+}
+
+/**
+ * One entry in the byte-based admission queue.
+ *
+ * `resolve` is called to admit the request (inFlightBytes already incremented by drainQueue).
+ * `timer` is the queue-wait timeout handle — cleared on admission or removal.
+ */
+interface QueueEntry {
+  readonly reservationBytes: number;
+  readonly resolve: () => void;
+  readonly reject: (err: Error) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
 export const createProxyServer = (deps: ServerDeps): Server => {
   const { config, logger } = deps;
-  let activeRequests = 0;
+
+  // ---------------------------------------------------------------------------
+  // Byte-based admission gate
+  //
+  // Replace the count-based 503 gate with a byte-budget gate that queues instead
+  // of rejecting.  Rationale: measured RSS amplification is ~3.3× raw body bytes
+  // (~10 MB RSS per 3.01 MB request body), so body bytes is the real resource.
+  // Count-based rejection at 32 was ~3× below realistic peak (100 concurrent),
+  // causing ordinary traffic to receive errors the origin would not produce.
+  //
+  // Single-request progress: if a request alone exceeds the budget and the server
+  // is otherwise idle (inFlightBytes === 0), it is still admitted — it will be
+  // caught by maxBodyBytes if genuinely oversized.
+  //
+  // Invariant: inFlightBytes ≥ 0 at all times; returns to 0 when all requests
+  // complete.  Violated inFlightBytes is corrected defensively (never negative).
+  // ---------------------------------------------------------------------------
+  let inFlightBytes = 0;
+  const queue: QueueEntry[] = [];
+
+  /**
+   * Drain queued requests into available budget slots.
+   *
+   * Called after each reservation is released. Walk the queue front-to-back and
+   * admit entries that fit. Stop at the first entry that does not fit — FIFO order
+   * is preserved to prevent starvation.
+   */
+  const drainQueue = (): void => {
+    while (queue.length > 0) {
+      const next = queue[0]!;
+      // Admit if budget is available, or if the server is idle (single-request progress).
+      if (inFlightBytes > 0 && inFlightBytes + next.reservationBytes > config.limits.maxInFlightBytes) {
+        break;
+      }
+      queue.shift();
+      clearTimeout(next.timer);
+      inFlightBytes += next.reservationBytes;
+      next.resolve();
+    }
+  };
+
+  /**
+   * Estimate the byte reservation for a request before the body is read.
+   *
+   * Uses `content-length` when present (capped at maxBodyBytes to prevent
+   * inflation from malicious headers).  For POST /v1/messages without
+   * content-length (chunked encoding), falls back to maxBodyBytes — the only
+   * path that actually buffers the body, so this is a conservative-but-honest
+   * estimate that prevents absent content-length from becoming a bypass.
+   * Non-buffered requests (non-POST, non-/v1/messages) contribute 0 bytes:
+   * they stream through the http.Agent without accumulating in Node.js heap.
+   */
+  const getReservationBytes = (incomingReq: IncomingMessage, pathname: string): number => {
+    const contentLength = incomingReq.headers["content-length"];
+    if (contentLength !== undefined) {
+      const parsed = parseInt(contentLength, 10);
+      if (!isNaN(parsed) && parsed >= 0) {
+        return Math.min(parsed, config.limits.maxBodyBytes);
+      }
+    }
+    if (incomingReq.method === "POST" && pathname.startsWith("/v1/messages")) {
+      return config.limits.maxBodyBytes;
+    }
+    return 0;
+  };
+
+  /**
+   * Acquire a byte slot from the budget.
+   *
+   * Returns immediately when the budget has room. Queues the request when the
+   * budget is full — the returned Promise resolves when the slot opens. Rejects
+   * when the queue is full (caller returns 529) or when the client disconnects
+   * while queued (DisconnectedWhileQueued — caller should silently return).
+   */
+  const acquireSlot = (req: IncomingMessage, reservationBytes: number): Promise<void> => {
+    // Immediate admission: budget available, OR server is idle (single-request progress).
+    if (inFlightBytes === 0 || inFlightBytes + reservationBytes <= config.limits.maxInFlightBytes) {
+      inFlightBytes += reservationBytes;
+      return Promise.resolve();
+    }
+
+    // Queue full — last resort 529.
+    if (queue.length >= config.limits.maxQueueDepth) {
+      return Promise.reject(new Error("queue_full"));
+    }
+
+    // Queue the request.
+    return new Promise<void>((resolve, reject) => {
+      // Use a mutable slot reference so both closures can find the entry by identity
+      // without a temporal-dead-zone problem.  The slot is filled synchronously before
+      // either callback can fire (setTimeout with positive delay, event loop).
+      let entrySlot: QueueEntry | undefined;
+
+      const onDisconnect = (): void => {
+        if (entrySlot === undefined) return;
+        const idx = queue.indexOf(entrySlot);
+        if (idx !== -1) {
+          queue.splice(idx, 1);
+          clearTimeout(entrySlot.timer);
+          entrySlot = undefined;
+          drainQueue(); // a slot opened — try admitting the next waiter
+          reject(new DisconnectedWhileQueued());
+        }
+      };
+
+      const timer = setTimeout(() => {
+        if (entrySlot === undefined) return;
+        const idx = queue.indexOf(entrySlot);
+        if (idx !== -1) {
+          queue.splice(idx, 1);
+          req.removeListener("close", onDisconnect);
+          entrySlot = undefined;
+          reject(new Error("queue_timeout"));
+        }
+      }, config.limits.maxQueueWaitMs);
+
+      const entry: QueueEntry = {
+        reservationBytes,
+        resolve: () => {
+          req.removeListener("close", onDisconnect);
+          entrySlot = undefined;
+          resolve();
+        },
+        reject,
+        timer,
+      };
+
+      entrySlot = entry;
+      req.once("close", onDisconnect);
+      queue.push(entry);
+    });
+  };
 
   return http.createServer((req, res) => {
     const startedAt = Date.now();
@@ -342,16 +498,45 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         return;
       }
 
-      // Concurrency gate — reject with 503 when active requests exceed the configured limit.
+      // Byte-based admission gate.
       // Checked here (after /__subswitch/* is handled above) so health checks are never gated.
-      activeRequests++;
-      res.on("close", () => { activeRequests--; });
-      if (activeRequests > config.limits.maxConcurrentRequests) {
+      // Requests that exceed the in-flight budget are QUEUED, not rejected — a relay-invented
+      // rejection that the origin would not have produced is a defect.
+      // If the queue itself is full, HTTP 529 overloaded_error is the correct Anthropic status.
+      const reservationBytes = getReservationBytes(req, pathname);
+      try {
+        await acquireSlot(req, reservationBytes);
+      } catch (slotErr: unknown) {
+        if (slotErr instanceof DisconnectedWhileQueued) {
+          // Client disconnected while waiting in queue — nothing to send, clean exit.
+          return;
+        }
+        // Queue full or queue timeout — 529 overloaded_error (not 503, per Anthropic taxonomy).
         route = "rate_limited";
-        res.writeHead(503, { "content-type": "application/json" });
-        res.end(toAnthropicErrorBody("overloaded_error", "too many concurrent requests — try again shortly"));
+        res.writeHead(529, { "content-type": "application/json" });
+        res.end(toAnthropicErrorBody("overloaded_error", "server overloaded — too many concurrent requests, try again shortly"));
         return;
       }
+      // Release reservation when the response is done.
+      //
+      // Use "finish" (data fully flushed to the OS) rather than "close" (socket dropped):
+      // with HTTP/1.1 keep-alive the socket may stay open long after the response is sent,
+      // so "close" would hold the reservation far longer than necessary. "finish" fires as
+      // soon as res.end() flushes, which is when the buffered body is no longer needed.
+      //
+      // Also listen on "close" as a safety net: if the client drops before "finish" fires
+      // (e.g. mid-stream abort), "close" ensures the reservation is still released.
+      let released = false;
+      const releaseSlot = (): void => {
+        if (released) return;
+        released = true;
+        inFlightBytes = Math.max(0, inFlightBytes - reservationBytes);
+        // Invariant: inFlightBytes ≥ 0.  Math.max(0, …) is the defensive bound; in correct
+        // operation this branch is never taken (every release matches an acquire).
+        drainQueue();
+      };
+      res.once("finish", releaseSlot);
+      res.once("close", releaseSlot);
 
       // Only /v1/messages* bodies are buffered, and only to peek the model for
       // routing; the raw bytes are forwarded untouched so Content-Length holds.
@@ -363,8 +548,11 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       const body = await bufferBody(req, config.limits.maxBodyBytes);
       if (!body.ok) {
         if (body.error.kind === "body_too_large") {
+          // Use `request_too_large` — the error type Anthropic's own API returns for this
+          // condition. `invalid_request_error` was incorrect; clients that key on the real API's
+          // error taxonomy would not recognize the old type for a 413.
           res.writeHead(413, { "content-type": "application/json", connection: "close" });
-          res.end(toAnthropicErrorBody("invalid_request_error", body.error.message));
+          res.end(toAnthropicErrorBody("request_too_large", body.error.message));
           req.destroy();
         }
         return;
@@ -427,16 +615,14 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         }
 
         case "unknown_provider": {
-          // "kimee:k2" — provider prefix not in PROVIDER_IDS. Reject with 400.
-          route = "unknown_provider";
+          // "claude-sonnet-9:preview" or "kimee:k2" — colon prefix is not a known provider id.
+          // Fail open: forward to Anthropic and log a diagnostic warning. The origin may
+          // support the name (future namespaced/variant ids); a relay-invented 400 that names
+          // OUR provider registry in the error message is confusing and incorrect.
+          // The log preserves diagnostic value for operators without breaking the client.
           logger.log("warn", "unknown_provider_qualifier", { model: decision.qualifier });
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end(
-            toAnthropicErrorBody(
-              "invalid_request_error",
-              `unknown provider '${decision.qualifier}' — known providers: ${PROVIDER_IDS.join(", ")}`,
-            ),
-          );
+          route = "anthropic";
+          deps.forwardAnthropic(req, res, body.value);
           return;
         }
 
@@ -450,6 +636,8 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     };
 
     dispatch().catch((cause: unknown) => {
+      // DisconnectedWhileQueued: client left before being admitted — nothing to send.
+      if (cause instanceof DisconnectedWhileQueued) return;
       logger.log("error", "request_failed", { path: pathname, errorCode: cause instanceof Error ? cause.name : "unknown" });
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
