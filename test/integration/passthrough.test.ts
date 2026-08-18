@@ -1,6 +1,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import net from "node:net";
 import type { AddressInfo } from "node:net";
 import type { LogLevel } from "../../src/logger.js";
 import { createAnthropicForwarder } from "../../src/anthropic-passthrough.js";
@@ -663,5 +664,279 @@ describe("anthropic passthrough", () => {
     );
     assert.equal(upstreamEvents[0]!.event, "anthropic_upstream_timeout");
     assert.equal(upstreamEvents[0]!.level, "warn");
+  });
+
+  // ---------------------------------------------------------------------------
+  // L2: stale-pooled-socket retry
+  // ---------------------------------------------------------------------------
+  //
+  // When a connection-level error (ECONNRESET / EPIPE) arrives before any
+  // response byte and the body is fully buffered, the relay retries ONCE on a
+  // fresh socket (agent: false).  The client must never see a relay-synthesised
+  // 502 for a healthy upstream that just closed a keep-alive socket.
+
+  it("L2: retries once on ECONNRESET before any response bytes; client gets success not 502", async () => {
+    const captured: Array<{ level: string; event: string }> = [];
+
+    // Fake upstream: first POST is ECONNRESET'd (simulates stale pooled socket
+    // closed server-side); retry on a fresh socket succeeds.
+    const anthropic = await startFakeUpstream((_req, res, _body, index) => {
+      if (index === 0) {
+        res.socket!.destroy(); // ECONNRESET before any response headers
+      } else {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "retried" }));
+      }
+    });
+    const subswitch = await startSubswitch(
+      { anthropic: { baseUrl: anthropic.url } },
+      { logger: { log(level, event) { captured.push({ level, event }); } } },
+    );
+    cleanups.push(subswitch.close, anthropic.close);
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+
+    // Without fix: error handler writes 502. With fix: retry succeeds → 200.
+    assert.equal(response.status, 200, "retry must succeed; client must NOT see 502");
+    const body = (await response.json()) as { id: string };
+    assert.equal(body.id, "retried", "response body must come from the retry attempt");
+
+    const retryLogs = captured.filter((e) => e.event === "anthropic_upstream_retry");
+    assert.equal(retryLogs.length, 1, "exactly one retry info event must be logged");
+
+    const errorLogs = captured.filter((e) => e.event === "anthropic_upstream_error");
+    assert.equal(errorLogs.length, 0, "anthropic_upstream_error must not be logged on a successful retry");
+  });
+
+  it("L2: when both attempts fail, client sees transport failure (connection destroyed), not 502", async () => {
+    // Both initial and retry get ECONNRESET — relay must call res.destroy()
+    // rather than manufacturing an HTTP 502 the origin cannot produce.
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.socket!.destroy(); // always ECONNRESET
+    });
+    const subswitch = await startSubswitch({ anthropic: { baseUrl: anthropic.url } });
+    cleanups.push(subswitch.close, anthropic.close);
+
+    let threw = false;
+    let responseStatus: number | undefined;
+    try {
+      const resp = await fetch(`${subswitch.url}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+      });
+      responseStatus = resp.status;
+    } catch {
+      threw = true;
+    }
+
+    // Without fix: first ECONNRESET → writes 502 → responseStatus === 502, threw === false.
+    // With fix: both fail → res.destroy() → fetch throws → threw === true.
+    assert.ok(threw, `fetch must throw on dual-failure (transport error), not return HTTP ${responseStatus ?? "?"}`);
+  });
+
+  it("L2: retry is bounded to exactly one attempt; relay never retries more than once", async () => {
+    let upstreamAttempts = 0;
+
+    const anthropic = await startFakeUpstream((_req, res) => {
+      upstreamAttempts++;
+      res.socket!.destroy(); // always fail
+    });
+    const subswitch = await startSubswitch({ anthropic: { baseUrl: anthropic.url } });
+    cleanups.push(subswitch.close, anthropic.close);
+
+    try {
+      await fetch(`${subswitch.url}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+      });
+    } catch {
+      // Expected: transport failure after both attempts
+    }
+
+    // Allow any stray events to settle before asserting.
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
+
+    // Without fix: 1 attempt total (no retry). With fix: exactly 2 (initial + 1 retry).
+    assert.equal(upstreamAttempts, 2, "must make exactly 2 upstream attempts: initial + 1 retry");
+  });
+
+  it("L2: does not retry after response headers have already been received", async () => {
+    // Use a raw TCP server that sends response headers then immediately destroys
+    // the socket.  The relay must NOT retry because settled=true once headers
+    // arrive.
+    let upstreamAttempts = 0;
+    const openSockets = new Set<net.Socket>();
+
+    const server = net.createServer((socket) => {
+      openSockets.add(socket);
+      socket.once("close", () => openSockets.delete(socket));
+      upstreamAttempts++;
+      let buf = "";
+      socket.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        if (buf.includes("\r\n\r\n")) {
+          // Send HTTP 200 response headers only — no body — then destroy.
+          socket.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n");
+          socket.destroy();
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    cleanups.push(() => new Promise<void>((resolve) => {
+      for (const s of openSockets) s.destroy();
+      server.close(() => resolve());
+    }));
+
+    const subswitch = await startSubswitch({ anthropic: { baseUrl: `http://127.0.0.1:${port}` } });
+    cleanups.push(subswitch.close);
+
+    try {
+      await fetch(`${subswitch.url}/v1/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+      });
+    } catch {
+      // Expected: partial response, broken body
+    }
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
+
+    // Retry would produce 2 upstream attempts.  settled=true must prevent retry.
+    assert.equal(upstreamAttempts, 1, "relay must NOT retry after response headers were received");
+  });
+
+  // ---------------------------------------------------------------------------
+  // L3: x-subswitch-synthesized marker header
+  // ---------------------------------------------------------------------------
+  //
+  // Every response the relay generates itself — 502 (connection failure),
+  // 504 (timeout), 500 (internal proxy error), 413 (body too large), 503
+  // (concurrency gate) — carries x-subswitch-synthesized: 1 so operators can
+  // distinguish relay faults from upstream faults.  Responses proxied from the
+  // origin (including upstream errors such as 429) must NOT carry this header.
+
+  it("L3: x-subswitch-synthesized: 1 is present on a relay-synthesised 504 timeout response", async () => {
+    const anthropic = await startFakeUpstream((_req, _res) => {
+      // Never responds — triggers headerTimeoutMs.
+    });
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: anthropic.url, headerTimeoutMs: 80 },
+    });
+    cleanups.push(subswitch.close, anthropic.close);
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+
+    // Without fix: header absent. With fix: "1".
+    assert.equal(response.status, 504);
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      "1",
+      "relay-synthesised 504 must carry x-subswitch-synthesized: 1",
+    );
+  });
+
+  it("L3: x-subswitch-synthesized is ABSENT on a successfully proxied origin response", async () => {
+    const { subswitch } = await setup((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "ok" }));
+    });
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+
+    assert.equal(response.status, 200);
+    // Must be absent — the origin produced this response, not the relay.
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      null,
+      "proxied origin 200 must NOT carry x-subswitch-synthesized",
+    );
+  });
+
+  it("L3: x-subswitch-synthesized is ABSENT on a proxied origin ERROR response such as 429", async () => {
+    // A 429 that the upstream produced must reach the client unchanged —
+    // the relay must not inject x-subswitch-synthesized on responses it merely forwarded.
+    const { subswitch } = await setup((_req, res) => {
+      res.writeHead(429, { "content-type": "application/json", "retry-after": "30" });
+      res.end(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "too many requests" } }));
+    });
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+
+    assert.equal(response.status, 429);
+    // Without the marker: null. The relay must only mark what IT produces.
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      null,
+      "proxied upstream 429 error must NOT carry x-subswitch-synthesized",
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Change 3: client abort must not produce anthropic_upstream_error warn
+  // ---------------------------------------------------------------------------
+
+  it("Change 3: aborting the client mid-request produces no anthropic_upstream_error warn", async () => {
+    // Upstream never responds (stalls); client aborts after 60 ms.
+    // res.on("close") fires → settled=true → upstream.destroy() → error fires
+    // → settled guard prevents spurious warn and 502 attempt.
+    const captured: Array<{ level: string; event: string }> = [];
+
+    const anthropic = await startFakeUpstream((_req, _res) => {
+      // Stall — never send a response.
+    });
+    const subswitch = await startSubswitch(
+      { anthropic: { baseUrl: anthropic.url, headerTimeoutMs: 10_000 } },
+      { logger: { log(level, event) { captured.push({ level, event }); } } },
+    );
+    cleanups.push(subswitch.close, anthropic.close);
+
+    const controller = new AbortController();
+    const fetchPromise = fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+      signal: controller.signal,
+    });
+
+    // Abort before upstream has a chance to respond.
+    setTimeout(() => controller.abort(), 60);
+
+    try {
+      await fetchPromise;
+    } catch {
+      // Expected: AbortError from the client-side abort.
+    }
+
+    // Allow the event loop to drain so any stray error events settle.
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+    const warnLogs = captured.filter((e) => e.event === "anthropic_upstream_error");
+    // Without fix: settled=false when res closes → upstream.destroy() → error fires → warn logged.
+    // With fix: settled=true before destroy() → error fires → settled guard returns early → no warn.
+    assert.equal(
+      warnLogs.length,
+      0,
+      `client abort must not produce anthropic_upstream_error warn; got: ${JSON.stringify(warnLogs)}`,
+    );
   });
 });

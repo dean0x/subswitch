@@ -334,11 +334,11 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       // /__subswitch/* namespace: handled locally, never forwarded upstream.
       if (pathname.startsWith("/__subswitch/")) {
         if (req.method === "GET" && pathname === "/__subswitch/health") {
-          res.writeHead(200, { "content-type": "application/json" });
+          res.writeHead(200, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
           res.end(buildHealthBody(config));
           return;
         }
-        res.writeHead(404, { "content-type": "application/json" });
+        res.writeHead(404, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
         res.end(JSON.stringify({ error: "not found" }));
         return;
       }
@@ -349,7 +349,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       res.on("close", () => { activeRequests--; });
       if (activeRequests > config.limits.maxConcurrentRequests) {
         route = "rate_limited";
-        res.writeHead(503, { "content-type": "application/json" });
+        res.writeHead(503, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
         res.end(toAnthropicErrorBody("overloaded_error", "too many concurrent requests — try again shortly"));
         return;
       }
@@ -364,7 +364,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       const body = await bufferBody(req, config.limits.maxBodyBytes);
       if (!body.ok) {
         if (body.error.kind === "body_too_large") {
-          res.writeHead(413, { "content-type": "application/json", connection: "close" });
+          res.writeHead(413, { "content-type": "application/json", connection: "close", "x-subswitch-synthesized": "1" });
           res.end(toAnthropicErrorBody("invalid_request_error", body.error.message));
           req.destroy();
         }
@@ -417,7 +417,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           // Two providers claim the same family name. Reject with 400 naming both.
           route = "ambiguous";
           logger.log("warn", "ambiguous_model_name", { model: decision.name });
-          res.writeHead(400, { "content-type": "application/json" });
+          res.writeHead(400, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
           res.end(
             toAnthropicErrorBody(
               "invalid_request_error",
@@ -431,7 +431,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           // "kimee:k2" — provider prefix not in PROVIDER_IDS. Reject with 400.
           route = "unknown_provider";
           logger.log("warn", "unknown_provider_qualifier", { model: decision.qualifier });
-          res.writeHead(400, { "content-type": "application/json" });
+          res.writeHead(400, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
           res.end(
             toAnthropicErrorBody(
               "invalid_request_error",
@@ -453,7 +453,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     dispatch().catch((cause: unknown) => {
       logger.log("error", "request_failed", { path: pathname, errorCode: cause instanceof Error ? cause.name : "unknown" });
       if (!res.headersSent) {
-        res.writeHead(500, { "content-type": "application/json" });
+        res.writeHead(500, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
         res.end(toAnthropicErrorBody("api_error", "internal proxy error"));
       } else if (!res.writableEnded) {
         res.destroy();
