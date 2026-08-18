@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Codex auth concurrent-refresh guard** — replaced the lexicographic string `>` comparison
+  on `last_refresh` timestamps in `persistTokens` with a refresh-token identity check
+  (`fileNow.tokens.refresh_token !== refreshToken`). The old comparison depended on the
+  Codex CLI emitting byte-identical ISO-8601 formatting indefinitely; a format divergence
+  or same-second collision could cause the guard to miss, letting subswitch clobber the
+  CLI's rotated refresh token. The identity check is format-independent and is the
+  established idiom already used in the `invalid_grant` retry path. A `Date.parse` numeric
+  comparison is kept as a secondary signal for the same-second case. (Fixes #26)
+- **Codex auth guard bypass on materialFrom failure** — added an early return in
+  `persistTokens` when `fileIsNewer` is true but `materialFrom` fails on the newer file.
+  Previously, control fell through into the merge and wrote our refresh result anyway,
+  defeating the guard even when it had correctly fired.
+
 ## [0.2.0] - 2026-08-09
 
 ### Upgrading from 0.1.0

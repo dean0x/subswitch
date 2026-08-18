@@ -282,7 +282,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
       const tokenResult = await this.callTokenEndpoint(refreshToken);
       if (tokenResult.ok) {
         this.logger.log("info", this.events.tokenRefreshed);
-        return this.persistTokens(tokenResult.value, baselineLastRefresh);
+        return this.persistTokens(tokenResult.value, refreshToken, baselineLastRefresh);
       }
       if (tokenResult.error.invalidGrant && attempt === 0) {
         const reread = await this.store.read();
@@ -358,6 +358,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
 
   private async persistTokens(
     tokens: TokenResponse,
+    refreshToken: string,
     baselineLastRefresh: string | undefined,
   ): Promise<Result<CodexTokenMaterial, ProxyError>> {
     const reread = await this.store.read();
@@ -365,9 +366,16 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
 
     if (rereadFile.ok) {
       const fileNow = rereadFile.value;
+      // Primary signal: a different refresh_token means another writer rotated it —
+      // this is format-independent and already the established idiom in doRefresh() at
+      // the invalid_grant retry (line ~291). Secondary signal: numeric timestamp
+      // comparison (Date.parse) catches a concurrent write in the same second when
+      // the refresh token happens not to have been rotated.
       const fileIsNewer =
-        fileNow.last_refresh !== undefined &&
-        (baselineLastRefresh === undefined || fileNow.last_refresh > baselineLastRefresh);
+        fileNow.tokens.refresh_token !== refreshToken ||
+        (fileNow.last_refresh !== undefined &&
+          (baselineLastRefresh === undefined ||
+            Date.parse(fileNow.last_refresh) > Date.parse(baselineLastRefresh)));
       if (fileIsNewer) {
         // Another process refreshed while we were refreshing; its rotated
         // refresh token must not be clobbered. Newer file wins.
@@ -377,6 +385,10 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
           this.cached = fromFile.value;
           return ok(fromFile.value.material);
         }
+        // materialFrom failed (e.g. malformed access_token in the newer file).
+        // Do NOT fall through into the merge — that would clobber the other
+        // writer's refresh_token with our now-consumed one.
+        return fromFile;
       }
       const merged: AuthFile = {
         ...fileNow,
