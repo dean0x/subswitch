@@ -414,21 +414,13 @@ describe("buildDeps — SEC-04 host-rejection gate (anthropic.baseUrl)", () => {
 // z.strictObject rejects unknown keys. If `subswitch.config.example.json` has
 // a key the schema does not know, this test fails — forcing the example and the
 // schema to stay in sync after every schema change.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// loadConfig — example config file schema sync (PF-010)
-//
-// z.strictObject rejects unknown keys. If `subswitch.config.example.json` has
-// a key the schema does not know, this test fails — forcing the example and the
-// schema to stay in sync after every schema change.
 //
 // Additionally: the shipped example must never contain deprecated keys.  The
 // DEPRECATED_KEYS table has 6 entries (anthropic.headerTimeoutMs,
 // anthropic.streamIdleTimeoutMs, limits.maxConcurrentRequests,
 // limits.maxInFlightBytes, limits.maxQueueDepth, limits.maxQueueWaitMs).
 // limits.maxConcurrentRequests was NEVER present in the example; the other five
-// were removed in phase 1 (commit 0a00a42).
+// were deprecated when the admission gate was removed (ADR-010).
 // ---------------------------------------------------------------------------
 
 describe("loadConfig — example config schema sync (PF-010)", () => {

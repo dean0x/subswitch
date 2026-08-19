@@ -635,7 +635,7 @@ describe("anthropic passthrough", () => {
   // L3: x-subswitch-synthesized marker header
   // ---------------------------------------------------------------------------
   //
-  // Synthesized-response coverage (as of phase 3 — C10 correction):
+  // Synthesized-response coverage:
   //   502 (connection failure)  — asserted above in the 502 test (C6)
   //   504 (connect timeout)     — asserted in "x-subswitch-synthesized: 1 on 504" below
   //   500 (internal error)      — asserted in the 8d dispatch-error test below
@@ -758,7 +758,7 @@ describe("anthropic passthrough", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Change 3: client abort must not produce anthropic_upstream_error warn
+  // Client abort must not produce anthropic_upstream_error warn
   // ---------------------------------------------------------------------------
 
   // ---------------------------------------------------------------------------
@@ -916,7 +916,7 @@ describe("anthropic passthrough", () => {
     );
   });
 
-  it("Change 3: aborting the client mid-request produces no anthropic_upstream_error warn", async () => {
+  it("aborting the client mid-request produces no anthropic_upstream_error warn", async () => {
     // Upstream never responds (stalls); client aborts after 60 ms.
     // res.on("close") fires → settled=true → upstream.destroy() → error fires
     // → settled guard prevents spurious warn and 502 attempt.
