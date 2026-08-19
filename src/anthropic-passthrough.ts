@@ -108,11 +108,20 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
 
   return (req, res, body) => {
     const path = `${basePath}${req.url ?? "/"}`;
-    // One-way latch: the first terminal outcome (response headers, timeout, error,
-    // or client disconnect) claims the settlement. Subsequent events return early
-    // so that a destroy() issued by the timeout handler cannot produce a duplicate
-    // anthropic_upstream_error warn, and a client abort cannot attempt to write
-    // into a response that has already been written or destroyed.
+    // One-way latch over a four-outcome terminal state machine:
+    //   1. upstream response headers  — relayed verbatim
+    //   2. connect-phase timeout      — synthesized 504
+    //   3. upstream error             — synthesized 502
+    //   4. client disconnect, or a client stream error on the unbuffered path
+    // The first to claim it owns the client-visible outcome and the warn log; the
+    // rest return early, so a destroy() issued by one handler cannot produce a
+    // duplicate anthropic_upstream_error warn or write into a response that is
+    // already written or destroyed.
+    //
+    // It answers one question — has the client's outcome been decided? — and only
+    // that one.  Resource teardown has its own predicate (res.writableFinished),
+    // because this latch is spent the instant headers are relayed, which is before
+    // the mid-stream abort teardown has to handle (PF-022).
     let settled = false;
     const settle = (): boolean => {
       if (settled) return false;
@@ -133,13 +142,14 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
         // setHeader calls below to preserve original casing and per-name value order
         // (cross-name position of interleaved duplicates is not guaranteed).
       },
+      // Terminal outcome 1 (upstream response headers).
       (upstreamRes) => {
         if (!settle()) return;
         // Response direction: writeHead accepts a flat [name, value, ...] array
         // directly (Node's _storeHeader Array branch), preserving the upstream's
         // original header casing, order, and duplicates byte-for-byte.
-        // filterRawHeaders strips x-subswitch-synthesized so an origin that sets
-        // it cannot impersonate the relay's synthesized-response marker.
+        // filterRawHeaders strips SYNTHESIZED_HEADER so an origin that sets it
+        // cannot impersonate the relay's synthesized-response marker.
         res.writeHead(upstreamRes.statusCode ?? 502, filterRawHeaders(upstreamRes.rawHeaders, RESPONSE_STRIP));
         res.socket?.setNoDelay(true);
         upstreamRes.pipe(res);
@@ -248,24 +258,20 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
 
     // Terminal outcome 4 (client disconnect).
     //
-    // The upstream MUST be destroyed on every abort, settled or not — settle()
-    // arbitrates only who owns the client-visible outcome and the warn log, never
-    // whether the upstream connection is reclaimed.  Gating the destroy on the
-    // latch leaks a socket per mid-stream abort: once headers are relayed the
-    // response callback has already claimed the settlement, and `pipe()` does not
-    // propagate destination teardown to the source, so the upstream response stays
-    // half-read and its socket never returns to the agent's free pool.  At
-    // maxUpstreamSockets such sockets exhaust the pool and every later request
-    // queues inside http.Agent indefinitely — a hang no origin can produce, and
-    // exactly the leak ADR-010 warns the removed idle timer no longer covers.
+    // Teardown is unconditional on an unfinished response: `res.writableFinished` is
+    // the predicate, never the latch (PF-022).  `pipe()` does not propagate
+    // destination teardown to the source, so an upstream left alive here stays
+    // half-read and its socket never returns to the agent's free pool; at
+    // maxUpstreamSockets the pool exhausts and every later request queues inside
+    // http.Agent indefinitely — a hang no origin can produce (ADR-010).
     //
-    // settle() is still claimed first when it is open, so the ECONNRESET that
-    // destroy() raises on the next tick cannot emit a spurious
-    // anthropic_upstream_error warn or write a 502 into a closed response.
-    // A client abort is normal — no warn log, no synthetic HTTP response.
+    // The latch is claimed on the way through so the ECONNRESET that destroy() raises
+    // a tick later cannot warn or write a 502 into a closed response.  Its return is
+    // discarded: a client abort owns this outcome either way, and is normal — no warn
+    // log, no synthetic HTTP response.
     res.on("close", () => {
       if (res.writableFinished) return;
-      settle();
+      void settle();
       upstream.destroy();
     });
 
