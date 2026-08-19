@@ -1,9 +1,8 @@
 import http from "node:http";
 import { existsSync } from "node:fs";
-import type { IncomingMessage, Server } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { toAnthropicErrorBody } from "./errors.js";
 import { type Result, ok, err } from "./result.js";
-import type { ProxyError } from "./errors.js";
 import { aliasesByProvider, enumerateDestinations, isLoopbackHost, providerConfigFor, type Config } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
 import { providerEvents } from "./provider-events.js";
@@ -274,12 +273,57 @@ const buildHealthBody = (config: Config): string =>
     }),
   });
 
-const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buffer, ProxyError>> =>
+/**
+ * Local error type for bufferBody. These errors are handled entirely within server.ts:
+ *   - body_too_large: synthetic 413 is sent, then drainRejectedUpload() lets TCP close cleanly.
+ *   - client_disconnected: client is gone — no HTTP response is possible.
+ *
+ * Both variants are deliberately excluded from ProxyError so proxyErrorToAnthropic
+ * can never accidentally be called with them. The compiler enforces this: any future
+ * code path that tries to pass a BufferBodyError into proxyErrorToAnthropic will fail
+ * to type-check.
+ */
+type BufferBodyError =
+  | { readonly kind: "body_too_large"; readonly message: string }
+  | { readonly kind: "client_disconnected"; readonly message: string };
+
+/**
+ * Drain remaining upload data after a 413 so TCP can close with FIN rather than RST.
+ *
+ * When the server sends a 413 before the client finishes uploading, the socket still
+ * has unread inbound bytes.  Calling req.socket.destroy() (or req.destroy()) with
+ * unread data causes the kernel to send RST — the client may discard the response
+ * before reading it.  Calling req.resume() drains the inbound data, allowing the
+ * connection to close naturally with FIN, giving the client time to read the 413.
+ *
+ * A 2-second safety timer (unref'd) destroys the socket if draining stalls — e.g.
+ * when the client is sending a pathologically large body and does not honour the 413.
+ * unref() ensures this timer never prevents the process from exiting.
+ *
+ * The latch (`done`) prevents the timer from firing after a clean drain.
+ */
+const drainRejectedUpload = (req: IncomingMessage, res: ServerResponse): void => {
+  let done = false;
+  const finish = (): void => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+  };
+  const timer = setTimeout(() => {
+    if (!done) req.socket?.destroy();
+  }, 2_000).unref();
+  req.on("end", finish);
+  req.on("error", finish);
+  res.on("close", finish);
+  req.resume();
+};
+
+const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buffer, BufferBodyError>> =>
   new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let total = 0;
     let settled = false;
-    const settle = (result: Result<Buffer, ProxyError>): void => {
+    const settle = (result: Result<Buffer, BufferBodyError>): void => {
       if (settled) return;
       settled = true;
       resolve(result);
@@ -414,7 +458,15 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           return;
         }
         res.writeHead(404, synthesizedHeaders());
-        res.end(JSON.stringify({ error: "not found" }));
+        // toAnthropicErrorBody shapes the 404 identically to every other synthesized error,
+        // preventing path reflection and credential leakage (ADR-008, chokepoint pattern).
+        // Do NOT echo the requested path: path reflection is a log-injection / reflection
+        // surface — use a fixed message only.
+        // toAnthropicErrorBody shapes the 404 identically to every other synthesized error,
+        // preventing path reflection and credential leakage (ADR-008, chokepoint pattern).
+        // Do NOT echo the requested path: path reflection is a log-injection / reflection
+        // surface — use a fixed message only.
+        res.end(toAnthropicErrorBody("not_found_error", "not found"));
         return;
       }
 
@@ -431,9 +483,17 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           // Use `request_too_large` — the error type Anthropic's own API returns for this
           // condition. `invalid_request_error` was incorrect; clients that key on the real API's
           // error taxonomy would not recognize the old type for a 413.
-          res.writeHead(413, synthesizedHeaders({ connection: "close" }));
+          //
+          // drainRejectedUpload() lets remaining upload data drain before TCP teardown so the
+          // kernel closes with FIN rather than RST — giving the client a chance to read this
+          // 413 before the connection closes. req.destroy() was removed because calling destroy()
+          // with unread inbound bytes causes RST, which may cause the client to discard the
+          // response (delivering a 413 the client never sees is no better than a raw RST).
+          // connection:close was also removed: it is a hop-by-hop header; Node's keep-alive
+          // agent manages connection lifecycle and does not need the relay to hint it.
+          res.writeHead(413, synthesizedHeaders());
           res.end(toAnthropicErrorBody("request_too_large", body.error.message));
-          req.destroy();
+          drainRejectedUpload(req, res);
         }
         return;
       }
@@ -481,16 +541,24 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         }
 
         case "ambiguous": {
-          // Two providers claim the same family name. Reject with 400 naming both.
-          route = "ambiguous";
-          logger.log("warn", "ambiguous_model_name", { model: decision.name });
-          res.writeHead(400, synthesizedHeaders());
-          res.end(
-            toAnthropicErrorBody(
-              "invalid_request_error",
-              `model '${decision.name}' is claimed by multiple providers: ${decision.providers.join(", ")} — qualify with provider:name (e.g. codex:${decision.name})`,
-            ),
-          );
+          // Fail open: forward to Anthropic and log a diagnostic warning.
+          //
+          // Rationale: the same as `unknown_provider`.  A relay-invented 400 that names OUR
+          // provider registry in the error message is an ADR-010 violation — it produces a
+          // status the origin never emits in this situation.  The origin may support the name
+          // unambiguously; at minimum, forwarding lets it answer with its own error, which is
+          // always preferable to the relay inventing one.
+          //
+          // PROVIDER_IDS only has "codex" today, so this branch is currently unreachable in
+          // practice.  It becomes live the moment a second provider ships — the forward-safe
+          // policy ensures correctness by default.
+          //
+          // The warn log preserves diagnostic value: `model` carries the ambiguous name
+          // annotated with the provider list ("name (p1, p2)") so operators can identify and
+          // disambiguate the alias.
+          logger.log("warn", "ambiguous_model_name", { model: `${decision.name} (${decision.providers.join(", ")})` });
+          route = "anthropic";
+          deps.forwardAnthropic(req, res, body.value);
           return;
         }
 
@@ -516,10 +584,11 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     };
 
     dispatch().catch((cause: unknown) => {
+      route = "internal_error";
       logger.log("error", "request_failed", { path: pathname, errorCode: cause instanceof Error ? cause.name : "unknown" });
       if (!res.headersSent) {
         res.writeHead(500, synthesizedHeaders());
-        res.end(toAnthropicErrorBody("api_error", "internal proxy error"));
+        res.end(toAnthropicErrorBody("api_error", "subswitch internal error — this is a proxy fault, not an upstream failure"));
       } else if (!res.writableEnded) {
         res.destroy();
       }

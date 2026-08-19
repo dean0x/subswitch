@@ -47,9 +47,7 @@ export type ProxyError =
   | { readonly kind: "auth"; readonly message: string }
   | { readonly kind: "upstream"; readonly message: string; readonly status?: number }
   | { readonly kind: "translate"; readonly message: string }
-  | { readonly kind: "body_too_large"; readonly message: string }
-  | { readonly kind: "timeout"; readonly message: string }
-  | { readonly kind: "client_disconnected"; readonly message: string };
+  | { readonly kind: "timeout"; readonly message: string };
 
 export type AnthropicErrorType =
   | "invalid_request_error"
@@ -61,7 +59,13 @@ export type AnthropicErrorType =
   // overloaded_error is kept: upstream 529 responses pass through untouched.
   // The relay must never synthesize this status — a relay-invented 529 on a
   // connected client is a defect (ADR-010). Only the origin may produce it.
-  | "overloaded_error";
+  | "overloaded_error"
+  // not_found_error: used by the /__subswitch/* 404 response in src/server.ts.
+  // Named here so toAnthropicErrorBody shapes it identically to every other
+  // synthesized error — preventing path reflection and credential leakage
+  // (ADR-008, chokepoint pattern). This type is recognised by the Anthropic API.
+  // Consumer: the 404 arm in createProxyServer's /__subswitch/* handler.
+  | "not_found_error";
 
 export interface AnthropicError {
   readonly status: number;
@@ -86,12 +90,8 @@ export const proxyErrorToAnthropic = (error: ProxyError): AnthropicError => {
       return upstreamStatusToAnthropicError(error.status ?? 502);
     case "translate":
       return { status: 400, type: "invalid_request_error" };
-    case "body_too_large":
-      return { status: 413, type: "request_too_large" };
     case "timeout":
       return { status: 504, type: "api_error" };
-    case "client_disconnected":
-      return { status: 499, type: "api_error" };
   }
 };
 

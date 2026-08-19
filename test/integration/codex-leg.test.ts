@@ -710,7 +710,7 @@ describe("codex leg", () => {
     assert.equal(body.error.message, `${codexProviderName} stream interrupted`);
   });
 
-  it("aggregation !ok maps to 502 (no message_start in stream)", async () => {
+  it("unrepresentable upstream stream format (no message_start) maps to 502", async () => {
     // A stream with only unknown events produces no message_start; aggregateFrames
     // returns err(...), which the handler must map to 502 api_error.
     const rig = await setupRig((_req, res) => {

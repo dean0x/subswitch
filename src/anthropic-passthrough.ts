@@ -5,16 +5,12 @@ import { toAnthropicErrorBody } from "./errors.js";
 import type { Logger } from "./logger.js";
 
 /**
- * Hop-by-hop headers are the only ones we own; everything else — notably
- * `authorization` and every `anthropic-*` header — is forwarded verbatim.
- * A raw node client (not fetch) is required: fetch normalizes and injects
- * headers, which breaks subscription OAuth upstream.
+ * Hop-by-hop headers per RFC 7230 §6.1 — stripped in BOTH the request and response
+ * directions. These are connection-specific and must not be forwarded end-to-end.
  *
- * Per RFC 7230 §6.1. `host` is also excluded: Node sets it on the outbound
- * connection. `connection` is managed by the keep-alive agent.
- *
- * `x-subswitch-synthesized` is also stripped from proxied responses so that
- * the marker is authoritative: only the relay itself can assert it.
+ * `host` is included: Node sets it on the outbound connection so the client-supplied
+ * value must not be forwarded. `proxy-connection` is a de-facto same-class extension.
+ * `connection` is managed by the keep-alive agent.
  */
 const HOP_BY_HOP = new Set([
   "host",
@@ -27,28 +23,41 @@ const HOP_BY_HOP = new Set([
   "trailer",
   "transfer-encoding",
   "upgrade",
-  "x-subswitch-synthesized",
 ]);
 
 /**
- * Build a filtered flat [name, value, ...] array from a rawHeaders array,
- * skipping hop-by-hop headers case-insensitively while preserving the
- * original casing, order, and duplicates of every non-hop-by-hop header.
+ * Additional headers stripped from the response direction (upstream → client) only.
  *
- * Used for both directions:
- * - Request: source is req.rawHeaders (client → upstream)
- * - Response: source is upstreamRes.rawHeaders (upstream → client)
+ * `x-subswitch-synthesized` is removed from proxied responses so the marker is
+ * authoritative: only the relay itself can assert it.  It is NOT stripped from the
+ * request direction because:
+ *   - The relay never reads the request-side value anywhere.
+ *   - The header is not hop-by-hop.
+ *   - With subswitch turned off, the header would reach the origin untouched.
+ * Stripping it from client requests is relay-invented behaviour — the kind
+ * ADR-010 prohibits.
+ */
+const RESPONSE_STRIP = new Set([...HOP_BY_HOP, "x-subswitch-synthesized"]);
+
+/**
+ * Build a filtered flat [name, value, ...] array from a rawHeaders array,
+ * skipping headers listed in `strip` case-insensitively while preserving the
+ * original casing, order, and duplicates of every non-stripped header.
+ *
+ * The `strip` parameter is REQUIRED so every call site must declare its direction:
+ * - Response direction (upstream → client): pass RESPONSE_STRIP
+ * - Request direction (client → upstream): pass HOP_BY_HOP
  *
  * Node's http.ServerResponse.writeHead() accepts the flat-array form directly
  * (via _storeHeader's Array branch).  For the request direction we use setHeader
  * calls instead (http.request options.headers uses Object.keys, not flat pairs).
  */
-const filterRawHeaders = (rawHeaders: readonly string[]): string[] => {
+const filterRawHeaders = (rawHeaders: readonly string[], strip: ReadonlySet<string>): string[] => {
   const filtered: string[] = [];
   for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
     const name = rawHeaders[i]!;
     const value = rawHeaders[i + 1]!;
-    if (!HOP_BY_HOP.has(name.toLowerCase())) {
+    if (!strip.has(name.toLowerCase())) {
       filtered.push(name, value);
     }
   }
@@ -128,7 +137,7 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
         // original header casing, order, and duplicates byte-for-byte.
         // filterRawHeaders strips x-subswitch-synthesized so an origin that sets
         // it cannot impersonate the relay's synthesized-response marker.
-        res.writeHead(upstreamRes.statusCode ?? 502, filterRawHeaders(upstreamRes.rawHeaders));
+        res.writeHead(upstreamRes.statusCode ?? 502, filterRawHeaders(upstreamRes.rawHeaders, RESPONSE_STRIP));
         res.socket?.setNoDelay(true);
         upstreamRes.pipe(res);
         upstreamRes.on("error", () => res.destroy());
@@ -176,7 +185,7 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
     // (A,A,B); per-name value order is preserved (RFC 7230 §3.2.2) and adjacent
     // duplicates are byte-exact.  Anthropic clients do not interleave duplicate
     // header names, so this is safe in practice.
-    const filteredRaw = filterRawHeaders(req.rawHeaders);
+    const filteredRaw = filterRawHeaders(req.rawHeaders, HOP_BY_HOP);
     const headerMap = new Map<string, { name: string; values: string[] }>();
     for (let i = 0; i + 1 < filteredRaw.length; i += 2) {
       const name = filteredRaw[i]!;
@@ -196,6 +205,17 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
     // Terminal outcome 2 (timeout): only the connect-phase timeout can fire;
     // no other timer is ever armed.  settle() ensures the error handler does
     // not produce a duplicate warn after destroy() is called.
+    //
+    // FLAGGED — NOT FIXED (OUT OF SCOPE, tracked for future hardening):
+    // When `body` is undefined and the request is piped (unbuffered path), the
+    // 504 response below races against the client still streaming upload data.
+    // `req.socket` may have unread inbound bytes, so `upstream.destroy()` can
+    // cause the kernel to send RST instead of FIN.  The client may discard the
+    // 504 before reading it.  The minimal mitigation is `req.unpipe(upstream);
+    // req.resume();` before `res.end()` — analogous to drainRejectedUpload in
+    // server.ts.  This is left unfixed to keep the PR focused; the buffered path
+    // (body !== undefined) is not affected because the request has already been
+    // fully consumed before the upstream is opened.
     upstream.on("timeout", () => {
       options.logger.log("warn", "anthropic_upstream_timeout", { path: req.url ?? "/" });
       if (!settle()) return;

@@ -5,6 +5,9 @@ import type { AddressInfo } from "node:net";
 import type { LogLevel } from "../../src/logger.js";
 import { createAnthropicForwarder } from "../../src/anthropic-passthrough.js";
 import { startSubswitch, startFakeUpstream, rawHttpRequest, type SubswitchInstance, type FakeUpstream } from "./fake-upstreams.js";
+import { loadConfig } from "../../src/config.js";
+import { buildDeps, createProxyServer } from "../../src/server.js";
+import type { AnthropicForwarder } from "../../src/anthropic-passthrough.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 after(async () => {
@@ -117,6 +120,11 @@ describe("anthropic passthrough", () => {
       body: `{"model":"claude-sonnet-4-6","padding":"${"x".repeat(4096)}"}`,
     });
     assert.equal(response.status, 413);
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      "1",
+      "413 is relay-synthesized — must carry x-subswitch-synthesized: 1",
+    );
     const body = (await response.json()) as { type: string; error: { type: string } };
     assert.equal(body.type, "error");
     assert.equal(body.error.type, "request_too_large");
@@ -215,6 +223,10 @@ describe("anthropic passthrough", () => {
 
     // Mixed-case, out-of-standard-order, and a duplicate header.
     // anthropic-beta is included as PF-001 regression guard.
+    // x-subswitch-synthesized is included to prove REQUEST-direction stripping is absent:
+    // the relay must forward this header to the upstream unchanged (ADR-010). If the relay
+    // stripped it on the request side, the upstream would not receive it and the assertion
+    // at the bottom of this test would fail.
     const sentRawHeaders = [
       "Authorization", "Bearer sk-ant-oat-FAKE-OAUTH",
       "Anthropic-Beta", "oauth-2025-04-20,interleaved-thinking-2025-05-14",
@@ -222,6 +234,7 @@ describe("anthropic passthrough", () => {
       "X-App", "cli",
       "X-Custom", "first",
       "X-Custom", "second",
+      "x-subswitch-synthesized", "client-sent",
       "Content-Type", "application/json",
     ];
 
@@ -732,6 +745,161 @@ describe("anthropic passthrough", () => {
   // ---------------------------------------------------------------------------
   // Change 3: client abort must not produce anthropic_upstream_error warn
   // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // 413 delivery race — drainRejectedUpload (item 6)
+  // ---------------------------------------------------------------------------
+  //
+  // When the server sends 413 while the client is still uploading, calling
+  // req.destroy() with unread inbound data causes the kernel to send RST.
+  // The client may receive ECONNRESET before reading the response body, making
+  // the 413 delivery unreliable.  drainRejectedUpload() fixes this by calling
+  // req.resume() to drain remaining data so the TCP teardown uses FIN, giving
+  // the client time to read the 413.
+  //
+  // Non-vacuity: without drainRejectedUpload (i.e. with req.destroy() still present),
+  // the RST races against the client's socket read.  On a loopback interface the race
+  // is tight; in practice the response sometimes arrives, sometimes throws ECONNRESET.
+  // The test uses rawHttpRequest (Node http module) which buffers the full response
+  // before resolving — if RST arrives first, it rejects with an ECONNRESET error
+  // rather than resolving with status 413.  With drainRejectedUpload the connection
+  // closes cleanly (FIN) after all data is drained, and the 413 is always readable.
+
+  it("413 race: large upload receives the 413 response even while still sending body", async () => {
+    const { anthropic, subswitch } = await setup(
+      (_req, res) => {
+        res.writeHead(200);
+        res.end();
+      },
+      { maxBodyBytes: 1024 },
+    );
+
+    // 8 MiB body — well above the 1024 byte cap.  Use rawHttpRequest so we
+    // control the send and can observe the raw status without fetch buffering
+    // complications.  The relay triggers body_too_large after 1024 bytes and
+    // sends 413 while the rest of the 8 MiB is still in-flight.
+    const largeBody = Buffer.alloc(8 * 1024 * 1024, "x");
+    const response = await rawHttpRequest(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      rawHeaders: ["Content-Type", "application/json"],
+      body: largeBody,
+    });
+
+    assert.equal(response.status, 413, "large-body 413 must be readable (drainRejectedUpload prevents RST before client reads response)");
+    assert.equal(
+      response.rawHeaders[response.rawHeaders.findIndex((h) => h.toLowerCase() === "x-subswitch-synthesized") + 1],
+      "1",
+      "413 response must carry x-subswitch-synthesized: 1",
+    );
+    const parsed = JSON.parse(response.body.toString("utf8")) as { type: string; error: { type: string } };
+    assert.equal(parsed.error.type, "request_too_large", "413 body error type must be request_too_large");
+    assert.equal(anthropic.requests.length, 0, "upstream must not receive the oversized request");
+  });
+
+  // ---------------------------------------------------------------------------
+  // 404 shape — /__subswitch/* uses toAnthropicErrorBody (item 8a)
+  // ---------------------------------------------------------------------------
+  //
+  // Non-vacuity: without toAnthropicErrorBody, the 404 body was JSON.stringify({error:"not found"})
+  // which has no `type` field and no `error.type` field — the assertions below would fail.
+  // With toAnthropicErrorBody the body has the standard Anthropic shape AND does not echo the path.
+
+  it("L3/8a: /__subswitch/* 404 is Anthropic-shaped, synthesized, and does not reflect the path", async () => {
+    const { subswitch } = await setup((_req, res) => {
+      res.writeHead(200);
+      res.end();
+    });
+
+    // Use a path with a recognisable token — if path reflection were present, the token
+    // would appear in the error body, and the assertion below would catch it.
+    const injectionPath = "/__subswitch/does-not-exist?q=INJECTION_TOKEN";
+    const response = await fetch(`${subswitch.url}${injectionPath}`);
+
+    assert.equal(response.status, 404, "unknown /__subswitch/* path must return 404");
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      "1",
+      "404 must carry x-subswitch-synthesized: 1 (relay-synthesized)",
+    );
+    const body = (await response.json()) as { type: string; error: { type: string; message: string } };
+    assert.equal(body.type, "error", "404 body must have outer type: 'error'");
+    assert.equal(body.error.type, "not_found_error", "404 error type must be 'not_found_error'");
+    // No path reflection: the requested path must not appear in the body.
+    const bodyStr = JSON.stringify(body);
+    assert.ok(!bodyStr.includes("does-not-exist"), "requested path must not be reflected in the 404 body");
+    assert.ok(!bodyStr.includes("INJECTION_TOKEN"), "query parameters must not be reflected in the 404 body");
+  });
+
+  // ---------------------------------------------------------------------------
+  // 500/internal_error — dispatch().catch() sets route = "internal_error" (item 8d)
+  // ---------------------------------------------------------------------------
+  //
+  // Non-vacuity: without route = "internal_error" in dispatch().catch(), the
+  // request_complete log would carry route: "anthropic" (the initial default).
+  // The assertion on the captured log would fail.  Without the updated message,
+  // the message assertion would also fail.
+
+  it("8d: dispatch error → 500 Anthropic-shaped body with 'proxy fault' message and route=internal_error log", async () => {
+    // Use buildDeps + createProxyServer directly so we can inject a throwing forwardAnthropic.
+    // startSubswitch does not expose forwardAnthropic as an override seam.
+    const anthropic = await startFakeUpstream((_req, res) => { res.end(); });
+    cleanups.push(anthropic.close);
+
+    const configResult = loadConfig({
+      configPath: "inline-test-config.json",
+      readFile: () => JSON.stringify({ logLevel: "error", anthropic: { baseUrl: anthropic.url } }),
+    });
+    assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
+
+    const captured: Array<{ event: string; route: string | undefined }> = [];
+    const capturedLogger = {
+      log(_level: string, event: string, fields?: Record<string, unknown>) {
+        captured.push({ event, route: fields?.route as string | undefined });
+      },
+    };
+
+    const depsResult = buildDeps(configResult.value.config, capturedLogger);
+    assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
+
+    // Override forwardAnthropic to throw synchronously — simulates an unexpected
+    // internal error in the proxy path that dispatch() does not explicitly handle.
+    const throwingForwarder: AnthropicForwarder = () => {
+      throw new Error("simulated internal proxy fault");
+    };
+
+    const server = createProxyServer({ ...depsResult.value, forwardAnthropic: throwingForwarder });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    cleanups.push(() => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }));
+
+    // A GET request routes to forwardAnthropic (unbuffered path) and will throw synchronously.
+    const response = await fetch(`http://127.0.0.1:${port}/v1/models`);
+
+    assert.equal(response.status, 500, "internal error must return 500");
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      "1",
+      "500 must carry x-subswitch-synthesized: 1",
+    );
+    const body = (await response.json()) as { type: string; error: { type: string; message: string } };
+    assert.equal(body.type, "error", "500 body must have outer type: 'error'");
+    assert.equal(body.error.type, "api_error", "500 error type must be api_error");
+    assert.ok(
+      body.error.message.includes("proxy fault"),
+      `500 message must identify this as a proxy fault; got: ${JSON.stringify(body.error.message)}`,
+    );
+
+    // Wait for the request_complete log to fire (res.on("close") fires after response is consumed).
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+
+    const completeLog = captured.find((e) => e.event === "request_complete");
+    assert.ok(completeLog !== undefined, "request_complete log must be emitted");
+    assert.equal(
+      completeLog.route,
+      "internal_error",
+      `request_complete log must carry route: "internal_error"; got: ${JSON.stringify(completeLog.route)}`,
+    );
+  });
 
   it("Change 3: aborting the client mid-request produces no anthropic_upstream_error warn", async () => {
     // Upstream never responds (stalls); client aborts after 60 ms.

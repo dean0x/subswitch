@@ -1,6 +1,6 @@
 /**
  * Integration tests for routing-layer behavior:
- *   F7  — ambiguous family name → 400 with both provider names in the body
+ *   F7  — ambiguous family name → fail-open (forwarded to Anthropic), warn log carries provider list
  *   F6g — unknown provider qualifier → fail-open (forwarded to Anthropic, not 400)
  *   L1  — colon-bearing unknown model name routes to Anthropic (not 400); real codex: prefix still works
  *   L4  — oversized body returns 413 with type "request_too_large" (matches Anthropic taxonomy)
@@ -28,11 +28,19 @@ import { buildDeps, createProxyServer } from "../../src/server.js";
 import type { ModelResolution } from "../../src/models.js";
 
 // ---------------------------------------------------------------------------
-// F7: ambiguous family → 400 with both provider names
+// F7: ambiguous family → fail-open (forwarded to Anthropic, warn log carries provider list)
+//
+// Rationale (ADR-010): A relay-invented 400 naming our own provider registry is a
+// relay-invented status the origin never emits — a defect.  PROVIDER_IDS only contains
+// "codex" today, so this branch is currently unreachable in practice.  It becomes live
+// the moment a second provider ships; the fail-open policy ensures correctness by default.
+//
+// Non-vacuity: if the old 400 branch were still active, assert.equal(response.status, 200)
+// would fail and assert.equal(anthropic.requests.length, 1) would fail (0 requests).
 // ---------------------------------------------------------------------------
 
-describe("routing — ambiguous family (F7)", () => {
-  it("returns 400 when two providers claim the same family name", async () => {
+describe("routing — ambiguous family forwards to Anthropic (F7)", () => {
+  it("forwards to Anthropic when two providers claim the same family name", async () => {
     const cleanups: Array<() => Promise<void>> = [];
 
     // A synthetic resolver that always reports "fast" as ambiguous between two providers.
@@ -51,12 +59,16 @@ describe("routing — ambiguous family (F7)", () => {
     const authFilePath = join(dir, "auth.json");
     await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
 
+    const captured: Array<{ event: string; model: string | undefined }> = [];
     const subswitch = await startSubswitch(
       {
         anthropic: { baseUrl: anthropic.url },
         providers: { codex: { authFile: authFilePath } },
       },
-      { resolve },
+      {
+        resolve,
+        logger: { log(_level, event, fields?: Record<string, unknown>) { captured.push({ event, model: fields?.model as string | undefined }); } },
+      },
     );
     cleanups.push(subswitch.close);
 
@@ -71,20 +83,27 @@ describe("routing — ambiguous family (F7)", () => {
         body: JSON.stringify({ model: "fast", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
       });
 
-      assert.equal(response.status, 400, "ambiguous model name must return 400");
+      // Must NOT return 400 — the relay has no authority to reject ambiguous names (ADR-010).
+      assert.equal(response.status, 200, "ambiguous model name must forward to Anthropic, not 400");
 
-      const body = (await response.json()) as { error: { type: string; message: string } };
-      assert.equal(body.error.type, "invalid_request_error", "error type must be invalid_request_error");
-      assert.ok(body.error.message.includes("fast"), "error message must name the ambiguous model");
-      assert.ok(body.error.message.includes("codex"), "error message must name the first provider");
-      assert.ok(body.error.message.includes("kimi"), "error message must name the second provider");
-      assert.ok(body.error.message.includes("multiple providers"), "error message must mention multiple providers");
+      // Must reach Anthropic (fail-open).
+      assert.equal(anthropic.requests.length, 1, "request must be forwarded to Anthropic upstream");
+
+      await response.body?.cancel();
+
+      // A warn log must be emitted with both provider names in the model field.
+      await new Promise<void>((r) => setTimeout(r, 20));
+      const warnLog = captured.find((e) => e.event === "ambiguous_model_name");
+      assert.ok(warnLog !== undefined, "ambiguous_model_name warn must be logged");
+      assert.ok(warnLog.model?.includes("fast"), "warn log model field must include the ambiguous name");
+      assert.ok(warnLog.model?.includes("codex"), "warn log model field must include first provider");
+      assert.ok(warnLog.model?.includes("kimi"), "warn log model field must include second provider");
     } finally {
       for (const cleanup of cleanups.reverse()) await cleanup();
     }
   });
 
-  it("does not forward an ambiguous request to either upstream", async () => {
+  it("forwarded ambiguous request reaches the Anthropic upstream (not blocked)", async () => {
     const cleanups: Array<() => Promise<void>> = [];
 
     const resolve = (name: string): ModelResolution =>
@@ -122,9 +141,10 @@ describe("routing — ambiguous family (F7)", () => {
         body: JSON.stringify({ model: "fast", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
       });
 
-      // The 400 must be emitted by subswitch itself — not proxied from any upstream.
-      assert.equal(response.status, 400);
-      assert.equal(anthropic.requests.length, 0, "anthropic upstream must not receive the request");
+      // Must NOT be blocked — the ambiguous request must reach the upstream.
+      assert.equal(response.status, 200, "ambiguous request must not be blocked; must reach Anthropic");
+      assert.equal(anthropic.requests.length, 1, "Anthropic upstream must receive the ambiguous request");
+      await response.body?.cancel();
     } finally {
       for (const cleanup of cleanups.reverse()) await cleanup();
     }
@@ -479,12 +499,12 @@ describe("routing — 'claude-sonnet-9:preview' routes to Anthropic via the real
         }),
       });
 
-      // Must NOT return 400 — the relay must not police names it does not recognise.
-      assert.notEqual(response.status, 400, "'claude-sonnet-9:preview' must not return 400 (relay must fail open)");
+      // Must forward to Anthropic with 200 — relay must not police names it does not recognise.
+      // Non-vacuity: assert.equal(200) fails on any other status, including 400 and 500.
+      assert.equal(response.status, 200, "'claude-sonnet-9:preview' must be forwarded to Anthropic with 200 (relay must fail open)");
 
       // Must reach Anthropic (the real registry knows no provider for 'claude-sonnet-9:preview').
       assert.equal(anthropicUpstream.requests.length, 1, "request must be forwarded to Anthropic");
-      assert.equal(response.status, 200, "Anthropic response must be forwarded with status 200");
 
       // Response body must be forwarded byte-identical (no relay mangling).
       const parsed = (await response.json()) as { id: string };
