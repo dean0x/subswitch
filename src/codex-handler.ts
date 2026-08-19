@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
-import { upstreamStatusToAnthropicError, toAnthropicErrorBody, toAnthropicErrorSse } from "./errors.js";
+import { upstreamStatusToAnthropicError, toAnthropicErrorBody, toAnthropicErrorSse, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
 import { respondJson, respondProxyError, readBoundedText, createFrameWriter } from "./provider-transport.js";
 import type { CodexProviderConfig } from "./config.js";
 import type { Logger } from "./logger.js";
@@ -349,7 +349,7 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
       resetIdle();
 
       if (wantStream) {
-        res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "x-subswitch-synthesized": "1" });
+        res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER });
         res.socket?.setNoDelay(true);
         // res is written manually rather than placed inside pipeline(): on an
         // upstream error, pipeline destroys every stream it owns, which would

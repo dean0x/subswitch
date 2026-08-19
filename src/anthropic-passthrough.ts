@@ -1,7 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { toAnthropicErrorBody } from "./errors.js";
+import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
 import type { Logger } from "./logger.js";
 
 /**
@@ -28,16 +28,18 @@ const HOP_BY_HOP = new Set([
 /**
  * Additional headers stripped from the response direction (upstream → client) only.
  *
- * `x-subswitch-synthesized` is removed from proxied responses so the marker is
- * authoritative: only the relay itself can assert it.  It is NOT stripped from the
- * request direction because:
+ * The synthesized marker is removed from proxied responses so it stays
+ * authoritative: only the relay itself can assert it.  The name is imported from
+ * errors.ts rather than restated, so a rename cannot reach the emitters while
+ * leaving this stripper matching the old name (ADR-008 chokepoint).  It is NOT
+ * stripped from the request direction because:
  *   - The relay never reads the request-side value anywhere.
  *   - The header is not hop-by-hop.
  *   - With subswitch turned off, the header would reach the origin untouched.
  * Stripping it from client requests is relay-invented behaviour — the kind
  * ADR-010 prohibits.
  */
-const RESPONSE_STRIP = new Set([...HOP_BY_HOP, "x-subswitch-synthesized"]);
+const RESPONSE_STRIP = new Set([...HOP_BY_HOP, SYNTHESIZED_HEADER]);
 
 /**
  * Build a filtered flat [name, value, ...] array from a rawHeaders array,
@@ -220,7 +222,7 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       if (!settle()) return;
       options.logger.log("warn", "anthropic_upstream_timeout", { path: req.url ?? "/" });
       if (!res.headersSent) {
-        res.writeHead(504, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
+        res.writeHead(504, { "content-type": "application/json", [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER });
         res.end(toAnthropicErrorBody("api_error", "upstream timed out"));
       } else {
         res.destroy();
@@ -234,7 +236,7 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       if (!settle()) return;
       options.logger.log("warn", "anthropic_upstream_error", { path: req.url ?? "/" });
       if (!res.headersSent) {
-        res.writeHead(502, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
+        res.writeHead(502, { "content-type": "application/json", [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER });
         res.end(toAnthropicErrorBody("api_error", "upstream connection failed"));
       } else {
         res.destroy();

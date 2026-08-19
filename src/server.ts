@@ -1,7 +1,7 @@
 import http from "node:http";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, Server } from "node:http";
-import { toAnthropicErrorBody, type AnthropicErrorType } from "./errors.js";
+import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, type AnthropicErrorType } from "./errors.js";
 import { type Result, ok, err } from "./result.js";
 import { aliasesByProvider, enumerateDestinations, isLoopbackHost, providerConfigFor, type Config } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
@@ -371,15 +371,15 @@ const peekModel = (parsed: unknown): string | undefined => {
 
 /**
  * Base headers for every response the relay generates itself (as opposed to
- * responses proxied verbatim from an upstream).  The `x-subswitch-synthesized`
- * marker is included here so callers cannot forget it and future synthesized
- * response sites are correct by default.
+ * responses proxied verbatim from an upstream).  The synthesized marker is
+ * included here so callers cannot forget it and future synthesized response
+ * sites are correct by default.
  *
  * Pass extra headers (e.g. `{ connection: "close" }`) as `extra`.
  */
 const synthesizedHeaders = (extra: Record<string, string> = {}): Record<string, string> => ({
   "content-type": "application/json",
-  "x-subswitch-synthesized": "1",
+  [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER,
   ...extra,
 });
 
@@ -453,7 +453,7 @@ const MALFORMED_REQUEST_RESPONSE = {
 
 /**
  * Handle `clientError` events (malformed requests, header overflow, inbound
- * timeouts) with an Anthropic-shaped response body and `x-subswitch-synthesized: 1`.
+ * timeouts) with an Anthropic-shaped response body and the synthesized marker.
  *
  * Node's built-in clientError response is bodyless (just a status line) and
  * bypasses the request listener entirely, so it can never carry our marker or
@@ -480,7 +480,7 @@ export const attachClientErrorHandler = (server: http.Server, logger: Logger): v
       `HTTP/1.1 ${status} ${reason}\r\n` +
       `content-type: application/json\r\n` +
       `content-length: ${Buffer.byteLength(body)}\r\n` +
-      `x-subswitch-synthesized: 1\r\n` +
+      `${SYNTHESIZED_HEADER}: ${SYNTHESIZED_MARKER}\r\n` +
       `connection: close\r\n` +
       `\r\n`;
     socket.end(head + body);

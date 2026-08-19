@@ -2,15 +2,15 @@
 // Used by every provider handler; imports nothing provider-specific.
 
 import type { ServerResponse } from "node:http";
-import { proxyErrorToAnthropic, toAnthropicErrorBody, type ProxyError } from "./errors.js";
+import { proxyErrorToAnthropic, toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, type ProxyError } from "./errors.js";
 
 /**
  * Send a JSON response, no-op if headers were already sent.
  *
  * Every response emitted by a provider handler is synthesized by the relay
  * (the codex leg translates Codex→Anthropic; no byte is forwarded verbatim).
- * `x-subswitch-synthesized: 1` is therefore always correct here and is
- * included by default so callers cannot forget it.
+ * The synthesized marker is therefore always correct here and is included by
+ * default so callers cannot forget it.
  */
 export const respondJson = (
   res: ServerResponse,
@@ -19,7 +19,7 @@ export const respondJson = (
   extraHeaders: Record<string, string> = {},
 ): void => {
   if (res.headersSent) return;
-  res.writeHead(status, { "content-type": "application/json", "x-subswitch-synthesized": "1", ...extraHeaders });
+  res.writeHead(status, { "content-type": "application/json", [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER, ...extraHeaders });
   res.end(body);
 };
 

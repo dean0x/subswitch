@@ -1,6 +1,45 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { upstreamStatusToAnthropicError, proxyErrorToAnthropic, toAnthropicErrorBody, toAnthropicErrorSse, redactCredentials } from "../../src/errors.js";
+import {
+  upstreamStatusToAnthropicError,
+  proxyErrorToAnthropic,
+  toAnthropicErrorBody,
+  toAnthropicErrorSse,
+  redactCredentials,
+  SYNTHESIZED_HEADER,
+  SYNTHESIZED_MARKER,
+} from "../../src/errors.js";
+
+/**
+ * U3.3 — the synthesized marker's wire name and value.
+ *
+ * README documents `x-subswitch-synthesized: 1` as an operator contract, and every
+ * emitter plus the response-direction stripper in anthropic-passthrough.ts now derives
+ * from these two constants (ADR-008 chokepoint; ADR-010's third application).  Because
+ * the name exists once in src/, this assertion is the single place a rename is caught.
+ *
+ * The literals below are restated deliberately rather than imported a second time: an
+ * assertion whose two sides derive from the same source moves with it and guards nothing
+ * (PF-011, self-referential pin).  Duplicating the string here is the point — a deliberate
+ * rename must edit both sides and read this comment on the way past.
+ *
+ * Mutation that MUST turn this red: change either constant in src/errors.ts.
+ */
+describe("synthesized marker constants", () => {
+  it("U3.3 — SYNTHESIZED_HEADER/SYNTHESIZED_MARKER match the documented wire contract", () => {
+    assert.equal(
+      SYNTHESIZED_HEADER,
+      "x-subswitch-synthesized",
+      "the synthesized marker's header name is an operator contract documented in README — " +
+        "renaming it breaks every log filter and dashboard keyed on it, and must be a deliberate act",
+    );
+    assert.equal(
+      SYNTHESIZED_MARKER,
+      "1",
+      "the synthesized marker's value is documented in README as `x-subswitch-synthesized: 1`",
+    );
+  });
+});
 
 describe("upstreamStatusToAnthropicError", () => {
   it("maps the documented statuses", () => {
