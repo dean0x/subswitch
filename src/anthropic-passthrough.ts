@@ -2,6 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
+import { drainRejectedUpload } from "./provider-transport.js";
 import type { Logger } from "./logger.js";
 
 /**
@@ -204,20 +205,18 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       upstream.setHeader(name, values.length === 1 ? values[0]! : values);
     }
 
-    // Terminal outcome 2 (timeout): only the connect-phase timeout can fire;
+    // Terminal outcome 2 (connect timeout): only the connect-phase timeout can fire;
     // no other timer is ever armed.  settle() ensures the error handler does
     // not produce a duplicate warn after destroy() is called.
     //
-    // FLAGGED — NOT FIXED (OUT OF SCOPE, tracked for future hardening):
-    // When `body` is undefined and the request is piped (unbuffered path), the
-    // 504 response below races against the client still streaming upload data.
-    // `req.socket` may have unread inbound bytes, so `upstream.destroy()` can
-    // cause the kernel to send RST instead of FIN.  The client may discard the
-    // 504 before reading it.  The minimal mitigation is `req.unpipe(upstream);
-    // req.resume();` before `res.end()` — analogous to drainRejectedUpload in
-    // server.ts.  This is left unfixed to keep the PR focused; the buffered path
-    // (body !== undefined) is not affected because the request has already been
-    // fully consumed before the upstream is opened.
+    // On the unbuffered path the client is often still uploading when this fires, and
+    // its bytes are piped into the upstream that is about to be destroyed.  The upload
+    // is unpiped and handed to drainRejectedUpload, which reads it out under the same
+    // time and byte bounds the 413 path uses.  Without that, the 504 is written but the
+    // connection is dead weight: Node cannot parse the next request out of a body it
+    // never consumed, so the socket is held until server.requestTimeout (600 s) with
+    // the client still pushing into it (measured).  The buffered path needs none of
+    // this — the request was fully consumed before the upstream was opened.
     upstream.on("timeout", () => {
       if (!settle()) return;
       options.logger.log("warn", "anthropic_upstream_timeout", { path: req.url ?? "/" });
@@ -226,6 +225,10 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
         res.end(toAnthropicErrorBody("api_error", "upstream timed out"));
       } else {
         res.destroy();
+      }
+      if (body === undefined) {
+        req.unpipe(upstream);
+        drainRejectedUpload(req);
       }
       upstream.destroy();
     });
@@ -270,7 +273,15 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       upstream.end(body);
     } else {
       req.pipe(upstream);
-      req.on("error", () => upstream.destroy());
+      // A failed client stream takes the upstream down with it, and claims the
+      // settlement on the way out for the same reason the res "close" handler does:
+      // the ECONNRESET that destroy() raises a tick later must not be reported as an
+      // origin failure or answered with a 502 the origin never sent.  The return is
+      // discarded — a client fault owns the outcome whether or not the latch was open.
+      req.on("error", () => {
+        void settle();
+        upstream.destroy();
+      });
     }
   };
 };

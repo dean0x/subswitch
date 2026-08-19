@@ -1577,3 +1577,195 @@ describe("anthropic passthrough — an origin that dies mid-body terminates the 
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// B12: a client-stream error must claim the settlement before tearing the upstream down
+//
+// On the unbuffered path the client's bytes are piped straight into the upstream,
+// so a client stream that fails takes the upstream down with it.  Destroying the
+// upstream without claiming the latch first leaves the settlement open for the
+// ECONNRESET that destroy() raises a tick later: the upstream error handler then
+// wins, logs anthropic_upstream_error, and writes a 502 for a request the origin
+// never failed — a client fault reported as an origin fault, and a status the
+// origin never emitted (ADR-010).  This is the same discipline the res "close"
+// sibling five lines above already follows (PF-022).
+//
+// The client error is emitted directly rather than produced by killing the client
+// socket, and deliberately so: killing the socket fires `res` "close" as well, and
+// on Node 22 that arrives FIRST, claims the latch, and masks the defect on most
+// runs.  The control removes the race instead of betting on it — what is under test
+// is the handler's discipline, not which of two events wins.
+//
+// Non-vacuity: RED against `req.on("error", () => upstream.destroy())` — one
+// anthropic_upstream_error warn and a 502 written to a client that is still
+// connected.
+// ---------------------------------------------------------------------------
+
+describe("anthropic passthrough — a client error on the unbuffered path claims the settlement (B12)", () => {
+  it("does not report the relay's own teardown as an origin failure", async () => {
+    const captured: Array<{ level: LogLevel; event: string }> = [];
+
+    // The origin accepts the connection and never answers, so no terminal outcome
+    // is available except the one the test drives.
+    let originSawRequest: () => void = () => undefined;
+    const originReached = new Promise<void>((resolve) => { originSawRequest = resolve; });
+    const origin = http.createServer(() => originSawRequest());
+    await new Promise<void>((r) => origin.listen(0, "127.0.0.1", r));
+    const originPort = (origin.address() as AddressInfo).port;
+
+    const forwarder = createAnthropicForwarder({
+      baseUrl: `http://127.0.0.1:${originPort}`,
+      connectTimeoutMs: 10_000,
+      maxUpstreamSockets: 4,
+      logger: { log(level: LogLevel, event: string) { captured.push({ level, event }); } },
+    });
+
+    let inbound: import("node:http").IncomingMessage | undefined;
+    // No body argument — the unbuffered path, where req is piped into the upstream.
+    const relay = http.createServer((req, res) => { inbound = req; forwarder(req, res); });
+    await new Promise<void>((r) => relay.listen(0, "127.0.0.1", r));
+    const relayPort = (relay.address() as AddressInfo).port;
+
+    let clientBytes = 0;
+    const client = net.connect(relayPort, "127.0.0.1");
+    client.on("data", (chunk: Buffer) => { clientBytes += chunk.length; });
+    client.on("error", () => { /* teardown noise is not what this test measures */ });
+
+    try {
+      await new Promise<void>((r) => client.once("connect", () => r()));
+      // Declared body far larger than what is sent: the request is still uploading.
+      client.write(
+        `POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:${relayPort}\r\n` +
+          `content-type: application/json\r\ncontent-length: 1000000\r\n\r\n{"model":"claude-sonnet-4-6"`,
+      );
+      await originReached;
+
+      assert.ok(inbound !== undefined, "the relay must have received the request");
+      inbound.emit("error", new Error("client stream failed mid-upload"));
+
+      // Long enough for the upstream ECONNRESET raised by destroy() to land.
+      await new Promise((r) => setTimeout(r, 200));
+
+      const upstreamErrors = captured.filter((e) => e.event === "anthropic_upstream_error");
+      assert.equal(
+        upstreamErrors.length,
+        0,
+        `a client-side stream failure must not be logged as an origin failure; got ${JSON.stringify(upstreamErrors)}`,
+      );
+      assert.equal(
+        clientBytes,
+        0,
+        `the relay must not synthesize a 502 for a request the origin never failed; ` +
+          `the client received ${clientBytes} bytes`,
+      );
+    } finally {
+      client.destroy();
+      relay.closeAllConnections();
+      await new Promise<void>((r) => relay.close(() => r()));
+      origin.closeAllConnections();
+      await new Promise<void>((r) => origin.close(() => r()));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B13: the unbuffered 504 must reclaim the connection, not wedge it
+//
+// On the unbuffered path (`body === undefined` — every non-/v1/messages POST with a
+// body) the client's upload is piped straight into the upstream.  When the connect
+// budget expires the relay writes its 504 and destroys the upstream, and the client
+// is still uploading into a request body nothing will ever read.  Node cannot parse
+// the next request out of a body it never consumed, so before the fix the socket sat
+// there until server.requestTimeout (600 s) — measured: 504 delivered, connection
+// still open and still being written to 8 s later, `req._dump()` powerless because
+// `req.pipe(upstream)` already set `_consuming`.
+//
+// The 413 path solved this once already; this asserts the passthrough leg reaches the
+// same end state through the same helper (drainRejectedUpload, provider-transport.ts).
+//
+// Both bounds of the assertion matter: the response must arrive COMPLETE (draining
+// before teardown is what keeps the client from losing a response it was already
+// sent — ADR-010), and the socket must be reclaimed within the drain's time bound
+// rather than held for requestTimeout.
+//
+// Non-vacuity: RED without the `req.unpipe(upstream); drainRejectedUpload(req)` pair
+// in the timeout handler — the socket is still open at the 8 s give-up.
+// ---------------------------------------------------------------------------
+
+describe("anthropic passthrough — an unbuffered 504 reclaims a client that is still uploading (B13)", () => {
+  it("delivers the whole 504 and closes the connection instead of holding it for requestTimeout", async (t) => {
+    const CONNECT_MS = 250;
+    // 192.0.2.1 is TEST-NET-1 (RFC 5737): the SYN is forwarded and never answered, so
+    // the connect budget is the only thing that can end the request.  createAnthropicForwarder
+    // is called directly because the config layer requires HTTPS-or-loopback base URLs.
+    const forwarder = createAnthropicForwarder({
+      baseUrl: "http://192.0.2.1:80",
+      connectTimeoutMs: CONNECT_MS,
+      maxUpstreamSockets: 1,
+      logger: { log: () => undefined },
+    });
+    // No body argument — the unbuffered path this test exists for.
+    const relay = http.createServer((req, res) => forwarder(req, res));
+    await new Promise<void>((r) => relay.listen(0, "127.0.0.1", r));
+    const relayPort = (relay.address() as AddressInfo).port;
+    cleanups.push(() => new Promise<void>((r) => { relay.closeAllConnections(); relay.close(() => r()); }));
+
+    const GIVE_UP_MS = 8_000;
+    const outcome = await new Promise<{ wire: string; closedAfterMs: number }>((resolve) => {
+      const started = Date.now();
+      const received: Buffer[] = [];
+      let dribble: NodeJS.Timeout | undefined;
+      const stop = (): void => { if (dribble !== undefined) clearInterval(dribble); };
+      const socket = net.connect(relayPort, "127.0.0.1", () => {
+        // Declare far more than is ever sent: the client is mid-upload for the whole test.
+        socket.write(
+          `POST /v1/complete HTTP/1.1\r\nHost: 127.0.0.1:${relayPort}\r\n` +
+            `content-type: application/json\r\ncontent-length: 1000000000\r\n\r\n`,
+        );
+        socket.write(JSON.stringify({ model: "claude-sonnet-4-6", pad: "A".repeat(4096) }));
+        dribble = setInterval(() => socket.write("B".repeat(64)), 100);
+      });
+      socket.on("data", (chunk: Buffer) => received.push(chunk));
+      socket.on("error", () => { /* RST/EPIPE on destroy is the expected end state */ });
+      socket.on("close", () => {
+        stop();
+        resolve({ wire: Buffer.concat(received).toString("utf8"), closedAfterMs: Date.now() - started });
+      });
+      const giveUp = setTimeout(() => {
+        stop();
+        const wire = Buffer.concat(received).toString("utf8");
+        socket.destroy();
+        resolve({ wire, closedAfterMs: -1 });
+      }, GIVE_UP_MS);
+      giveUp.unref();
+    });
+
+    const status = Number(/^HTTP\/1\.1 (\d{3})/.exec(outcome.wire)?.[1] ?? 0);
+    assert.ok(
+      status === 504 || status === 502,
+      `expected 504 (connect timeout) or 502 (ENETUNREACH — host has no route to TEST-NET-1); got ${status} ` +
+        `from wire ${JSON.stringify(outcome.wire.slice(0, 200))}`,
+    );
+    assert.ok(
+      outcome.wire.includes("upstream timed out") || outcome.wire.includes("upstream connection failed"),
+      `the synthesized error body must reach the client whole; got ${JSON.stringify(outcome.wire)}`,
+    );
+    assert.ok(
+      outcome.wire.endsWith("0\r\n\r\n"),
+      `the response must be terminated, not truncated by a teardown mid-write; got ${JSON.stringify(outcome.wire.slice(-40))}`,
+    );
+
+    if (status === 502) {
+      // The host answered with ICMP unreachable, so the connect budget never ran and
+      // the error path produced the response.  The reclaim below belongs to the
+      // timeout path; the sibling connect-timeout tests document the same caveat.
+      t.skip("host has no route to TEST-NET-1 (ENETUNREACH → 502); the connect-timeout path is unreachable here");
+      return;
+    }
+    assert.ok(
+      outcome.closedAfterMs > 1_500 && outcome.closedAfterMs < 4_000,
+      `the drain's time bound must reclaim the connection; closed after ${outcome.closedAfterMs} ms ` +
+        `(expected > 1_500 && < 4_000; -1 means still open at the ${GIVE_UP_MS} ms give-up, i.e. held until requestTimeout)`,
+    );
+  });
+});

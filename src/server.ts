@@ -14,6 +14,7 @@ import type { ProviderAuth } from "./provider-auth.js";
 import { ReasoningCache } from "./reasoning-cache.js";
 import { createCodexHandler } from "./codex-handler.js";
 import { ModelPeekSchema } from "./anthropic-wire-types.js";
+import { drainRejectedUpload } from "./provider-transport.js";
 import {
   buildRoutingTable,
   resolveModel as resolveModelFromTable,
@@ -287,75 +288,6 @@ const buildHealthBody = (config: Config): string =>
 type BufferBodyError =
   | { readonly kind: "body_too_large"; readonly message: string }
   | { readonly kind: "client_disconnected"; readonly message: string };
-
-/**
- * The two bounds on draining an upload the relay has already answered with a 413:
- * how long the drain may run, and how much it may read.
- *
- * Both are colocated with drainRejectedUpload because a later batch moves the helper
- * to provider-transport.ts and the bounds travel with it.
- *
- * Time alone does not bound volume.  Measured on loopback, a client at line rate
- * pushes ~1 GB through the drain in ~215 ms, so a 2 s window admits gigabytes per
- * rejected request.  REJECTED_UPLOAD_DRAIN_BYTES is what makes the volume finite.
- *
- * 32 MiB is the default `limits.maxBodyBytes` — the largest body the relay would
- * have accepted — so a client that merely overshot the cap is never cut off
- * mid-drain.  It is deliberately a constant rather than the configured maxBodyBytes:
- * an operator who lowers the cap to, say, 1 MiB would otherwise have the relay
- * destroy the socket of every client with more than 1 MiB still in flight, which is
- * the RST this helper exists to prevent.
- *
- * The two bounds are pinned by opposite controls: B7 asserts a slow client is closed
- * between 1.5 s and 3 s (time), B10 asserts a line-rate client stops being read far
- * short of its declared length (bytes).
- */
-const REJECTED_UPLOAD_DRAIN_MS = 2_000;
-const REJECTED_UPLOAD_DRAIN_BYTES = 32 * 1024 * 1024;
-
-/**
- * Drain remaining upload data after a 413 so TCP can close with FIN rather than RST.
- *
- * When the server sends a 413 before the client finishes uploading, the socket still
- * has unread inbound bytes.  Destroying it then makes the kernel send RST, and the
- * client may discard the 413 it had already received — delivering a response the
- * client never reads is no better than delivering none.  Reading the rest of the
- * upload lets the connection close with FIN instead, and keeps it reusable when the
- * client finishes promptly.
- *
- * Both bounds destroy the socket outright: past either one the client is not
- * honouring the 413 and the exchange is dead, so reclaiming it costs nothing the
- * client can still use.  unref() keeps the timer from holding the process open, and
- * the `done` latch keeps it from firing after a clean drain.
- *
- * Every disarm signal is taken from `req`, never from `res`.  `res` emits "close"
- * within a tick or two of the 413 that precedes this call, so disarming on it would
- * cancel the bound almost as soon as it is armed; `req`'s "end"/"close"/"error" are
- * the signals that mean the upload is finished or gone.
- */
-const drainRejectedUpload = (req: IncomingMessage): void => {
-  let done = false;
-  const finish = (): void => {
-    if (done) return;
-    done = true;
-    clearTimeout(timer);
-  };
-  const timer = setTimeout(() => {
-    if (!done) req.socket?.destroy();
-  }, REJECTED_UPLOAD_DRAIN_MS).unref();
-  req.on("end", finish);
-  req.on("close", finish);
-  req.on("error", finish);
-  let drained = 0;
-  req.on("data", (chunk: Buffer) => {
-    drained += chunk.length;
-    if (drained > REJECTED_UPLOAD_DRAIN_BYTES) {
-      finish();
-      req.socket?.destroy();
-    }
-  });
-  req.resume();
-};
 
 const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buffer, BufferBodyError>> =>
   new Promise((resolve) => {
