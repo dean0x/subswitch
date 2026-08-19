@@ -1,11 +1,11 @@
 ---
 feature: cli-ux
 name: CLI / init command / terminal UX
-description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, log event names, config load and provider config resolution, the models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, providerEvents, provider-events, log injection, FIELD_KEYS, renderToken, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, buildDeps, ProviderConfigs, PROVIDER_SCHEMAS, PROVIDER_RESOLVERS, detectUnknownProviderKeys, detectLegacyConfigKeys, LEGACY_KEY_ENTRIES, renderLegacyKeyEntry, credentialUsable, providersWithCredentials, enumerateDestinations, RoutingDestination, isLoopbackHost, strictObject, oauthTokenUrl, PROVIDER_AUTH_INSPECTORS, plain-object, SERVER_TUNING, applyInboundPolicy, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, drainRejectedUpload, ADR-010."
+description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, log event names, config load and provider config resolution, the models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, providerEvents, provider-events, log injection, FIELD_KEYS, renderToken, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, buildDeps, ProviderConfigs, PROVIDER_SCHEMAS, PROVIDER_RESOLVERS, detectUnknownProviderKeys, detectLegacyConfigKeys, LEGACY_KEY_ENTRIES, renderLegacyKeyEntry, credentialUsable, providersWithCredentials, enumerateDestinations, RoutingDestination, isLoopbackHost, isLoopbackHostname, strictObject, oauthTokenUrl, PROVIDER_AUTH_INSPECTORS, plain-object, SERVER_TUNING, applyInboundPolicy, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, drainRejectedUpload, hostGateVerdict, responseForClientError, client_disconnected, respondJson, anthropic:ambiguous, anthropic:fallback, ADR-010."
 category: architecture
-directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts]
+directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts, src/provider-transport.ts]
 created: 2026-07-23
-updated: 2026-08-19
+updated: 2026-08-20
 ---
 
 # CLI / init command / terminal UX
@@ -62,15 +62,17 @@ Both `logger.ts` and `cli.ts` import this function. `FORCE_COLOR=0` and `FORCE_C
 
 **`resolveConfig` builds `anthropic` and `limits` field-by-field** (not by spreading `file.anthropic` or `file.limits`) so removed keys cannot accidentally reach the runtime `Config` even if the schema were to parse them.
 
-**All top-level sub-schemas are `z.strictObject`.** `CodexProviderSchema`, `AnthropicSchema`, `LimitsSchema`, and `FileConfigSchema` all use `z.strictObject`; `reasoningCache` within `CodexProviderSchema` is also a `z.strictObject`. A typo'd leaf key is a hard load error rather than a silent revert to default (avoids PF-010). `AliasesSchema` stays `z.record` by design. The `ProviderFileConfig` type has been removed — provider configs are typed directly via their Zod schema inference.
+**All top-level sub-schemas are `z.strictObject`.** `CodexProviderSchema`, `AnthropicSchema`, `LimitsSchema`, and `FileConfigSchema` all use `z.strictObject`; `reasoningCache` within `CodexProviderSchema` is also a `z.strictObject`. A typo'd leaf key is a hard load error rather than a silent revert to default (avoids PF-010). `AliasesSchema` stays `z.record` by design.
 
-**https-or-loopback URL refinement.** `requireHttpsOrLoopback` is applied to `providers.codex.baseUrl`, `providers.codex.oauthTokenUrl`, and `anthropic.baseUrl`. `isLoopbackHost(hostname)` is **exported** so `buildDeps` can apply the same logic at startup (no duplication). The loopback exemption covers the e2e dev workflow at `http://127.0.0.1:4142`.
+**`isLoopbackHost(hostname)` — exported, strict, exact-match only.** Accepts `localhost`, `::1`, and full dotted-quad `127.x.y.z`. The `^…$` anchors are load-bearing: `127.0.0.1.evil.test` has four groups separated by more than three dots and fails; `127.1` has only two groups and likewise fails. Brackets are stripped before comparison so `[::1]` (WHATWG URL form) passes. This function receives hostnames from `new URL().hostname` — the WHATWG parser preserves brackets on IPv6.
+
+**Deliberate divergence from `inbound-policy.ts`'s `isLoopbackHostname`.** Both are strict, but handle different input provenance: `isLoopbackHost` (config.ts) judges WHATWG-parsed URL hostnames where brackets are preserved by the parser; `isLoopbackHostname` (inbound-policy.ts, private) judges wire Host-header authority strings where brackets must be stripped by the function itself. Neither reuses the other — the input shapes are incompatible. See Gotchas.
+
+**https-or-loopback URL refinement.** `requireHttpsOrLoopback` is applied to `providers.codex.baseUrl`, `providers.codex.oauthTokenUrl`, and `anthropic.baseUrl`. `isLoopbackHost` is **exported** so `buildDeps` can apply the same logic at startup (no duplication). The loopback exemption covers the e2e dev workflow at `http://127.0.0.1:4142`.
 
 **One mechanism for rejected config keys — there is no soft-deprecation subsystem:**
 
 `LEGACY_KEY_ENTRIES` (a `readonly LegacyKeyEntry[]`, private to `config.ts`) is the single table. Each entry is either a `moved` row (old path → new path, e.g. restructure migration) or a `removed` row (key outright deleted). `detectLegacyConfigKeys(raw)` walks it and `renderLegacyKeyEntry` formats each hit for the error message. Both kinds produce the same outcome: `loadConfig` returns `err` and the relay refuses to start. The table is append-only.
-
-The two genuinely removed keys in 0.3.0 are `anthropic.streamIdleTimeoutMs` (removed in 0.3.0, ADR-010) and `limits.maxConcurrentRequests` (removed in 0.3.0, ADR-010). `codex.models` is a `removed` row from 0.2.0 (ADR-006). The four never-shipped keys (`anthropic.headerTimeoutMs`, `limits.maxInFlightBytes`, `limits.maxQueueDepth`, `limits.maxQueueWaitMs`) are not in the table at all — they are rejected silently by `z.strictObject` as unrecognised fields.
 
 **Two raw pre-parse scans reject unrecognised keys (avoids PF-010):**
 - `detectLegacyConfigKeys(raw)` — pre-`providers.*` layout keys, each paired with its replacement path.
@@ -84,15 +86,9 @@ Both walk with `Object.hasOwn` only, through the shared `isPlainObject` predicat
 
 **`enumerateDestinations(config): readonly RoutingDestination[]`** enumerates all routing destinations in topology order: Anthropic (passthrough) first, then each registered provider. Both `/__subswitch/health` and `subswitch models --json` build their `providers[]` array from this single source (no drift).
 
-**`loginCommand`** is config-sourced rather than synthesised because `${providerId} login` is not always a safe derivation (e.g. `kimi auth login`).
-
-**Per-provider limits.** Each provider config carries: `requestTimeoutMs`, `streamIdleTimeoutMs`, `maxSseEventBytes`, `maxAggregateBytes`. These are provider-scoped (in `providers.codex.*`), not in the global `limits.*` block.
-
 ### src/provider-events.ts — Compile-time-safe log event names
 
 `providerEvents<P extends ProviderId>(providerId: P): ProviderEvents<P>` derives **19** provider-scoped log event names from a provider id using template-literal types. This is a security control: a config-supplied `string` containing `"\n"` is a COMPILE error at the call site — only a closed `ProviderId` union member can reach the derivation.
-
-The 19 fields break down as 11 handler/translator events, 1 security event (`insecureBaseUrlScheme`), and 7 auth manager events.
 
 ### src/models.ts — Pure model registry (no repo imports)
 
@@ -113,31 +109,65 @@ Per-command flag validation walks `parseArgs` **tokens**, not `values`. The main
 
 **`serve` now takes `LoadConfigResult`** (not a resolved `Config`) — matching the shape already used by `doctor` and `modelsJson`. Legacy or removed config keys cause `loadConfig` to return `err` before `serve` is dispatched; there is no soft-deprecation path that lets startup proceed.
 
-**`models` subcommand.** The JSON branch returns before `resolveColorEnabled` is ever called — `FORCE_COLOR` cannot bleed into JSON output even on a real TTY.
-
 `out()` / `errOut()` write directly to stdout / stderr — NOT routed through the structured logger. Use the structured logger for runtime request telemetry so output respects `--quiet`, `--verbose`, and the field allow-list.
+
+### src/inbound-policy.ts — Server policy layer
+
+**`applyInboundPolicy(server, logger)`** (exported): the single entry point that owns both `SERVER_TUNING` application and the Anthropic-shaped `clientError` handler. `attachClientErrorHandler` no longer exists — the two halves are unified because applying the tuning without the error handler (or vice versa) reproduces the original defect.
+
+**`appliedServers` WeakSet.** `applyInboundPolicy` guards itself with a `WeakSet<http.Server>` to prevent double-application. Calling it twice on the same server is a no-op and logs a warning rather than registering a second `clientError` listener.
+
+**`hostGateVerdict(headers)`** (exported, pure): strict wire-side predicate that gates on Host/Origin. Returns a discriminated verdict (`{ verdict: "allow" } | { verdict: "reject"; reason: string; observed: string; message: string }`). Uses the module-private `isLoopbackHostname`, which handles wire Host-header authority strings directly (brackets stripped, port stripped). Deliberately does NOT reuse `config.ts`'s `isLoopbackHost` — different input provenance (see config.ts section). Called as the **first gate** in the dispatch handler: a foreign Host gets a 403 `permission_error` + `drainRejectedUpload` before any body is read.
+
+**`responseForClientError(code)`** (exported): looks up the Anthropic-shaped response for a Node `clientError` error code (`HPE_HEADER_OVERFLOW`, `HPE_INVALID_*`, etc.). Uses `Object.hasOwn` — prototype-safe. Without the guard, a bracket-read on a non-existent key returns `undefined`, and `res.writeHead(undefined, undefined)` emits `HTTP/1.1 undefined undefined` on the wire.
+
+**Per-request reply guard (WeakMap).** The `clientError` handler uses `writtenAtLastResponse: WeakMap<Duplex, number>` keyed on the socket. On every `res` "finish" event, it snapshots `socket.bytesWritten`. At `clientError` time, it compares the current `socket.bytesWritten` to the snapshot — if they differ, bytes have been sent since the last response finished, meaning the socket is mid-stream and writing a new response would corrupt it. `socket.bytesWritten` is per-socket-lifetime (counts across all keep-alive responses), so comparing it without the snapshot gives false positives. See Gotchas.
 
 ### src/server.ts — The one wiring site
 
 `buildDeps(config, logger = createConsoleLogger(config.logLevel))` is the only place production dependencies are constructed. The **logger is a defaulted parameter, not a local** — this shape is load-bearing so injected test loggers observe all handler records (see Anti-Patterns).
 
-**`SERVER_TUNING`** (exported `as const`): `{ requestTimeout: 600_000, headersTimeout: 120_000, keepAliveTimeout: 300_000, maxRequestsPerSocket: 0, maxHeaderSize: 64*1024 }`. Applied to `http.createServer` and then to the server instance post-construction. `maxHeaderSize` must go through `http.createServer({ maxHeaderSize }, …)` — it is not a settable property on the server object. Exported so tests can apply identical values to their own test servers (no fixture drift).
+**`SERVER_TUNING`** (exported `as const`): `{ requestTimeout: 600_000, headersTimeout: 120_000, keepAliveTimeout: 300_000, maxRequestsPerSocket: 0, maxHeaderSize: 64*1024 }`. `maxHeaderSize` must go through `http.createServer({ maxHeaderSize }, …)` — it is not a settable property on the server object. Exported so tests can apply identical values to their own test servers (no fixture drift).
 
-**`applyInboundPolicy(server, logger)`** (exported from `src/inbound-policy.ts`): the single entry point that owns both `SERVER_TUNING` application and the Anthropic-shaped `clientError` handler. It converts Node's bodyless 400/408/431 responses into Anthropic-shaped bodies carrying `x-subswitch-synthesized: 1` (set via `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` from `src/errors.ts`). Guards against writing to a non-writable socket or one that has already sent bytes with a per-request reply guard. `attachClientErrorHandler` no longer exists — the two halves are unified because applying the tuning without the error handler (or vice versa) reproduces the original defect.
+**Dispatch order in the request handler:**
 
-**`drainRejectedUpload(req)`** (module-local): called after sending a 413 so remaining upload data drains cleanly before TCP teardown. Uses FIN rather than RST, giving the client a chance to read the 413. A 2-second unref'd timer destroys the socket if draining stalls. Replaces the old `req.destroy()` which caused RST and risked the 413 being discarded.
+1. `res.on("close", …)` listener registered first — must be the earliest hook.
+2. `hostGateVerdict(req.headers)` — foreign Host → 403 + `drainRejectedUpload(req)` + return.
+3. `/__subswitch/*` namespace — handled locally, never forwarded.
+4. `bufferBody(req, limits.maxBodyBytes)` — rejects early if `Content-Length` header exceeds the cap (before reading a byte); otherwise streams and rejects once the byte count crosses the cap.
+5. Exhaustive `BufferBodyError` switch:
+   - `body_too_large` → 413 `request_too_large` + `drainRejectedUpload(req)`.
+   - `client_disconnected` → no response (client gone; logged by the close handler already).
+
+**`client_disconnected` log event.** When `res.close` fires with `!res.headersSent`, the handler logs `info client_disconnected { path, route, model?, latencyMs }` instead of `request_complete`. This is correct: `res.statusCode` is Node's 200 initialiser when no response has been sent, so `request_complete status=200` would make a vanished client indistinguishable from a served request. `res` "close" fires **before** `req` "error" on Node 22 — the decision must live in the `close` handler.
+
+**Route log labels.** `route` defaults to `"anthropic"` and is updated before dispatch:
+- `"host_rejected"` — foreign Host gate fired.
+- `"anthropic:ambiguous"` — `resolveModel` returned `"ambiguous"`; fails open (ADR-010).
+- `"anthropic:fallback"` — `resolveModel` returned `"unknown_qualifier"`; fails open (ADR-010).
+- `"{provider}:{endpoint}:{model}"` — routed to a configured provider.
+- `"internal_error"` — unhandled `dispatch()` rejection.
+- Retired values (no producer): `"rate_limited"`, `"ambiguous"`, `"unknown_provider"`.
 
 **`BufferBodyError`** (module-local type): `{ kind: "body_too_large" } | { kind: "client_disconnected" }`. Intentionally excluded from `ProxyError` so `proxyErrorToAnthropic` can never accidentally be called with them — any attempt is a compile error.
 
-**Byte-budget admission gate is GONE.** The old `inFlightBytes`, `queue`, `acquireSlot`, `drainQueue`, `releaseSlot`, `getReservationBytes`, `SlotError`, `QueueEntry`, and the synthesized 529/`rate_limited`/`disconnected_while_queued` labels were all removed as ADR-010 violations. `"overloaded_error"` was also removed from `AnthropicErrorType` — there is no producer for it; upstream 5xx including 529 maps to `"api_error"` via `upstreamStatusToAnthropicError`. Anthropic-leg upstream response bodies pass through untouched.
+**Byte-budget admission gate is GONE.** The old `inFlightBytes`, `queue`, `acquireSlot`, `drainQueue`, `releaseSlot`, `getReservationBytes`, `SlotError`, `QueueEntry`, and the synthesized 529/`rate_limited`/`disconnected_while_queued` labels were all removed as ADR-010 violations.
 
-**Ambiguous model routing fails open (ADR-010).** When `resolveModel` returns `"ambiguous"`, the relay now logs `warn ambiguous_model_name { model: "name (p1, p2)" }` and forwards to Anthropic unchanged — it does not synthesize a 400. This matches the `unknown_qualifier` precedent: the origin may support the name; at minimum, forwarding lets it answer with its own error.
+**Ambiguous model routing fails open (ADR-010).** When `resolveModel` returns `"ambiguous"`, the relay logs `warn ambiguous_model_name` and forwards to Anthropic unchanged — it does not synthesize a 400.
 
-**404 for `/__subswitch/*`** is now shaped via `toAnthropicErrorBody("not_found_error", "not found")` — same chokepoint as every other synthesized error (ADR-008). The path is NOT reflected in the message.
+### src/provider-transport.ts — Shared transport helpers
 
-**`route = "internal_error"`** is set on unhandled `dispatch()` rejections (previously unlabeled).
+**`drainRejectedUpload(req)`** (exported): drains an in-flight upload after a rejection response has been sent, so the socket closes with FIN rather than RST (which can cause the client to discard the already-sent response). Bounds: 2-second unref'd timer (`REJECTED_UPLOAD_DRAIN_MS = 2_000`) + 32 MiB byte cap (`REJECTED_UPLOAD_DRAIN_BYTES = 32 * 1024 * 1024`). Four callers:
+- `server.ts` host-gate 403 path.
+- `server.ts` 413 `body_too_large` path.
+- `anthropic-passthrough.ts` unbuffered 504 (upstream timeout) path.
+- `anthropic-passthrough.ts` unbuffered 502 (upstream error) path.
 
-**`src/errors.ts` changes:** `body_too_large` and `client_disconnected` were removed from `ProxyError` (now `BufferBodyError` in server.ts). `not_found_error` was added to `AnthropicErrorType`. `overloaded_error` was **removed** from `AnthropicErrorType` — upstream 5xx including 529 maps to `api_error` via the mapper. `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` are exported from `src/errors.ts` as the single chokepoint for the `x-subswitch-synthesized` header — all emitters and `RESPONSE_STRIP` in `anthropic-passthrough.ts` derive from them.
+**`respondJson(res, status, body, extraHeaders?)`** (exported): writes a JSON response. `extraHeaders` is spread **before** `SYNTHESIZED_HEADER` in the `writeHead` call — the synthesized marker always wins over any caller-supplied header with the same name. The `extraHeaders` parameter exists specifically for the Codex 429 `retry-after` passthrough.
+
+### src/errors.ts
+
+`ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed — upstream 5xx incl. 529 → `api_error`); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` exported as single chokepoint for `x-subswitch-synthesized`; `redactCredentials` inside `toAnthropicErrorBody` (ADR-008).
 
 ### src/init.ts — Functional-core / imperative-shell
 
@@ -160,24 +190,11 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 - Provider present but credential missing/broken → failure.
 - Credential file exists but does not parse → failure regardless of opt-in.
 
-The `ProviderCheck` interface uses **`credentialUsable: boolean`** (not `configured`). The local accumulator is **`providersWithCredentials`** (not `configuredProviders`).
-
 ### src/agent-scan.ts — Agent frontmatter scanner
 
 `parseFrontmatterModel(text)` hand-rolled, no YAML dependency. `checkAgentModels(files, table, configuredProviders)` maps to six finding kinds.
 
-| Finding kind | Severity | Trigger |
-|---|---|---|
-| `unresolvable` | fail | `resolveModel` returns `unresolved` |
-| `ambiguous` | fail | `resolveModel` returns `ambiguous` |
-| `unknown_provider` | **info** | `resolveModel` returns `unknown_qualifier` |
-| `retired` | info | Resolves to a registry entry marked `retired` |
-| `provider_unconfigured` | info | Resolves ok but provider not in `configuredProviders` |
-| `preview_only` | info | Resolves to a registry entry marked `preview` |
-
 **`unknown_provider` is now severity `"info"`, not `"fail"` (ADR-010).** An unknown qualifier does not make the request fail — subswitch forwards it to Anthropic unchanged. By contrast `ambiguous` stays `"fail"` because that conflict is subswitch-derived and WILL produce a routing error.
-
-**The Anthropic skip list is required in production code** — without it doctor fails on every repo that has Claude subagents.
 
 ### src/logger.ts — Structured key=value logger
 
@@ -186,8 +203,6 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 **`FIELD_KEYS` now has a bidirectional compile-time completeness check:**
 - `as const satisfies readonly (keyof LogFields)[]` — every listed key must exist in `LogFields`.
 - `type _FieldKeysComplete = Exclude<keyof LogFields, (typeof FIELD_KEYS)[number]> extends never ? true : never` — every field in `LogFields` must appear in `FIELD_KEYS`. Adding a field to `LogFields` without adding it to `FIELD_KEYS` is a compile error.
-
-`inFlightBytes` and `reservationBytes` were removed from `LogFields` (byte-gate removed). New/updated log events: `ambiguous_model_name` (warn, from `createProxyServer`), `client_error` (warn, from `applyInboundPolicy`'s `clientError` handler), `route = "internal_error"` (from unhandled dispatch rejections).
 
 **Log injection prevention:** `renderToken(value)` strips all C0 control characters (U+0000–U+001F), DEL (U+007F), and C1 control characters (U+0080–U+009F) — not just `\r\n` — then quotes anything matching `/[\s="\\]/`. Applied to both field values AND the event token. The primary control is that every event name is a compile-time string literal.
 
@@ -214,11 +229,9 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 
 - **Synthesizing a status the origin never produces** — the byte-budget 529, the ambiguous-model 400, a relay-invented 503. ADR-010: emit only what the origin would have sent, or forward and let the origin answer. If a synthesized status is unavoidable, always mark it with `x-subswitch-synthesized: 1`.
 
-- **Building a dependency inside a factory and then spreading it onto the result, when callers can also inject it.** This is the fake-ignores-its-argument shape and it makes tests pass vacuously. `buildDeps` hit it exactly: handlers closed over the logger `buildDeps` built itself, so an injected test logger observed nothing and its assertions were trivially satisfied. Fix is structural — take the dependency as a **defaulted parameter** so the injected instance reaches everything constructed from it.
+- **Building a dependency inside a factory and then spreading it onto the result, when callers can also inject it.** This is the fake-ignores-its-argument shape. Fix is structural — take the dependency as a **defaulted parameter** so the injected instance reaches everything constructed from it.
 
 - **Widening `providerEvents`' parameter to `string`** — the compile-time closed-union input IS the log-injection control. A runtime sanitization check is not an equivalent substitute.
-
-- **Re-hardcoding a provider event name as a literal anywhere outside `providerEvents`** — inside `providerEvents` a literal is not assignable to its template-literal type, so `tsc` catches it.
 
 - **Re-implementing color logic inline** — always import `resolveColorEnabled` from `tty.ts`.
 
@@ -228,19 +241,17 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 
 - **Adding a provider dispatch as a `switch` with a `default` arm, or as a `Partial`/`Map`** — every provider-keyed structure is a total `Record`/mapped type precisely so the completeness check is structural.
 
-- **Adding a config restructure without a `LEGACY_KEY_ENTRIES` row** — reintroduces PF-010. Both renamed keys (`moved`) and removed keys (`removed`) go into `LEGACY_KEY_ENTRIES` as hard errors; there is no soft-deprecation path. A renamed key that lands in `removed` instead of `moved` loses its migration hint; a removed key with no entry gives a generic schema error instead of a named reason.
+- **Adding a config restructure without a `LEGACY_KEY_ENTRIES` row** — reintroduces PF-010. Both renamed keys (`moved`) and removed keys (`removed`) go into `LEGACY_KEY_ENTRIES` as hard errors; there is no soft-deprecation path.
 
 - **Calling `out()` / `errOut()` from `serve` for runtime request logs** — use the structured logger.
 
-- **Mutating the `config` object** from `loadConfig()` — apply overrides via object spread.
-
-- **Asserting `subswitch doctor` exits 0 in smoke tests** — doctor exits non-zero whenever any check fails (applies PF-006).
-
 - **Assembling the `providers[]` array independently in health or models --json** — always use `enumerateDestinations(config)`.
+
+- **Calling `req.destroy()` after a rejection response** — use `drainRejectedUpload(req)` instead. `req.destroy()` causes the kernel to send RST, which may cause the client to discard the already-sent response before reading it.
 
 ## Gotchas
 
-**The byte-budget admission gate is gone. Any text describing a concurrency cap, byte-based admission, queueing, or a 503/529 from the relay is now false.** `"overloaded_error"` was removed from `AnthropicErrorType` — upstream 5xx including 529 maps to `"api_error"` via `upstreamStatusToAnthropicError`. The relay never synthesizes an `overloaded_error` body.
+**The byte-budget admission gate is gone. Any text describing a concurrency cap, byte-based admission, queueing, or a 503/529 from the relay is now false.** `"overloaded_error"` was removed from `AnthropicErrorType` — upstream 5xx including 529 maps to `"api_error"` via `upstreamStatusToAnthropicError`.
 
 **`FORCE_COLOR` beats `NO_COLOR` here — this inverts the no-color.org convention.** `FORCE_COLOR=1 NO_COLOR=1 subswitch models` emits ANSI. Do not "fix" it without a decision record.
 
@@ -248,65 +259,65 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 
 **Doctor probes TLS on port 443 unconditionally.** An operator with an `http://` or non-443 `baseUrl` (a local mock) always sees `TLS: FAIL` and a `failures++`.
 
-**A trailing positional is silently ignored.** `parseArgs` reads `positionals[0]` and never checks `positionals.length`, so `subswitch models --json extra` exits 0 and emits normal JSON.
+**`isLoopbackHost` and `isLoopbackHostname` are NOT interchangeable.** `isLoopbackHost` (config.ts, exported) receives WHATWG-parsed hostnames (`new URL().hostname`) where IPv6 brackets are preserved by the parser — it strips them. `isLoopbackHostname` (inbound-policy.ts, private) receives wire Host-header authority strings and handles brackets/ports itself. Passing a wire Host header directly to `isLoopbackHost` will fail on port-qualified addresses like `127.0.0.1:4141`.
+
+**`socket.bytesWritten` is a per-socket-lifetime counter.** In the `clientError` handler, comparing `socket.bytesWritten !== 0` gives false positives on keep-alive sockets that have already served responses. The WeakMap snapshot (taken at each `res` "finish") is the correct guard.
+
+**`res` "close" fires BEFORE `req` "error" on Node 22 (measured).** In the `bufferBody` flow, the `client_disconnected` decision must live in the `res` "close" handler — not in a `req` "error" handler — or the log entry can be emitted after the close event has already been processed.
 
 **Doctor always exits non-zero in CI.** `scripts/smoke-tarball.sh` uses `subswitch --version` — always exits 0 — not `subswitch doctor` (applies PF-006).
 
 **Zod strips unknown keys at the top-level `providers.*` and pre-restructure positions — the raw pre-parse scans are the only guard there.** Inside a known block (e.g. a misspelled field inside `providers.codex`), `z.strictObject` catches it (avoids PF-010).
 
-**`subswitch.config.example.json` must stay in sync with the strict schema.** A stale example with an unknown key is a hard load error. Any schema refactor must update the example simultaneously.
+**`subswitch.config.example.json` must stay in sync with the strict schema.** A stale example with an unknown key is a hard load error.
 
-**Legacy or removed keys hard-error immediately via `LEGACY_KEY_ENTRIES`.** There is no path where a legacy key's value is validated before being discarded — the load fails at the pre-parse scan before Zod parses the schema at all.
+**Legacy or removed keys hard-error immediately via `LEGACY_KEY_ENTRIES`.** There is no path where a legacy key's value is validated before being discarded — the load fails at the pre-parse scan before Zod runs.
 
-**`ambiguous` model routing fails open.** The relay forwards to Anthropic and logs a `warn`. It does NOT synthesize a 400. If you see an `ambiguous_model_name` warn in logs, it means two providers claim the same family name (only reachable once a second provider ships).
+**`ambiguous` model routing fails open.** The relay forwards to Anthropic and logs `warn ambiguous_model_name`. It does NOT synthesize a 400. Route label is `anthropic:ambiguous`.
 
-**`drainRejectedUpload` must be called instead of `req.destroy()` after a 413.** Calling `req.destroy()` with unread inbound bytes causes the kernel to send RST, which may cause the client to discard the 413 before reading it. The 2-second timer is unref'd so it never prevents process exit.
-
-**`maxHeaderSize` must go through `http.createServer({ maxHeaderSize }, ...)`.** It is not a settable property on the server object after construction. Apply other `SERVER_TUNING` fields post-construction via direct assignment.
+**`maxHeaderSize` must go through `http.createServer({ maxHeaderSize }, ...)`.** It is not a settable property on the server object after construction.
 
 **Test suite gotchas:**
 - Test globs are FLAT and NON-RECURSIVE (`test/unit/*.test.ts`, `test/integration/*.test.ts`). A new test file in a subdirectory silently never runs.
-- There is a 30-second hard per-test timeout and no fake timers. Wall-clock assertions must account for realistic elapsed time.
 - Run the suite alone — it has wall-clock assertions and flakes under parallel load alongside other processes (e.g., concurrent `tsc`).
+- `version.test.ts` pins both `package-lock.json` version fields AND the newest `CHANGELOG.md` heading — bumping the version requires updating all three simultaneously.
 
-**`isReservedAnthropicName` guards places that must never disagree.** `AliasesSchema` refines in `config.ts`, `buildRoutingTable` at table-build time, and the agent-scan skip list all use the same predicate.
-
-**`config.ts` keeps its own private `isPlainObject` copy — deliberately.** The shared copy in `src/plain-object.ts` is for `doctor.ts` and `init.ts`. The `config.ts` copy is the prototype-pollution boundary for `hasOwnPath`, `detectUnknownProviderKeys`, and `detectConfiguredProviders`.
-
-**`makeLiveListAgentFiles` must resolve dirs to absolute paths.** Without `pathResolve(dir)`, the project-relative path and the user-global path produce different strings for the same directory, the `Set` dedup fails silently, and finding counts double.
-
-**`makeClackPrompts()` must only be called on the interactive path.** It triggers a dynamic `import("@clack/prompts")` loading terminal control sequences.
+**Parallel-agent git atomicity.** `git add <paths>` followed by a separate `git commit` is not atomic — another agent can stage its own files between the two commands. Use `git commit --only -m "…" -- <paths>` (no prior `git add`) to stage and commit only the named paths in a single operation.
 
 ## Key Files
 
 - `src/tty.ts` — `resolveColorEnabled(env, isTTY)` — single color-enable source of truth
-- `src/cli.ts` — Binary entry point; `parseCliArgs` → `CliCommand` union; `serve` now takes `LoadConfigResult` (load hard-errors on any legacy/removed key before dispatch); exhaustive switch with `never` guard
-- `src/config.ts` — `FileConfig`/`Config` split; `z.strictObject` for all top-level sub-schemas; https-or-loopback refinements; `isLoopbackHost` (exported); `LEGACY_KEY_ENTRIES` + `LegacyKeyEntry` + `renderLegacyKeyEntry` (exported) + `detectLegacyConfigKeys` — single hard-error mechanism for both renamed and removed keys; `resolveConfig` field-by-field (no spreading removed fields); `enumerateDestinations` + `RoutingDestination`; totality anchors
+- `src/cli.ts` — Binary entry point; `parseCliArgs` → `CliCommand` union; exhaustive switch with `never` guard
+- `src/config.ts` — `FileConfig`/`Config` split; `z.strictObject` for all top-level sub-schemas; `isLoopbackHost` (exported, strict dotted-quad + localhost + ::1 only); https-or-loopback refinements; `LEGACY_KEY_ENTRIES` + `detectLegacyConfigKeys` — single hard-error mechanism; `resolveConfig` field-by-field; `enumerateDestinations` + `RoutingDestination`; totality anchors
 - `src/provider-events.ts` — `providerEvents<P extends ProviderId>`; template-literal `ProviderEvents<P>`; 19-field table; compile-time log-injection control
-- `src/logger.ts` — `createConsoleLogger`; `FIELD_KEYS` bidirectional completeness check (`satisfies` + `Exclude`); `renderToken` strips all C0/DEL/C1 control characters then quotes — applied to values AND event token
-- `src/inbound-policy.ts` — `SERVER_TUNING` (exported `as const`); `applyInboundPolicy(server, logger)` (the single entry point — applies tuning AND registers the Anthropic-shaped `clientError` handler with per-request reply guard; `attachClientErrorHandler` no longer exists); `responseForClientError` (looks up Anthropic-shaped 400/408/431 response by error code)
-- `src/server.ts` — `buildDeps(config, logger?)` — the one wiring site; `drainRejectedUpload` (module-local); `BufferBodyError` (module-local); no byte-budget gate; ambiguous fails open; 404 via `toAnthropicErrorBody`; `route = "internal_error"`
-- `src/errors.ts` — `ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed — upstream 5xx incl. 529 → `api_error`); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` exported as single chokepoint for `x-subswitch-synthesized`; `redactCredentials` inside `toAnthropicErrorBody` (ADR-008)
-- `src/doctor.ts` — `runDoctor`; `PROVIDER_AUTH_INSPECTORS` (exported totality anchor); `makeLiveListAgentFiles` (absolute-path resolution critical); `probeTlsReachable` (hardcoded 443)
+- `src/logger.ts` — `createConsoleLogger`; `FIELD_KEYS` bidirectional completeness check; `renderToken` strips all C0/DEL/C1 control characters then quotes — applied to values AND event token
+- `src/inbound-policy.ts` — `SERVER_TUNING` (exported); `applyInboundPolicy(server, logger)` (single entry point — applies tuning AND registers `clientError` handler); `appliedServers` WeakSet (idempotency guard); `hostGateVerdict(headers)` (pure, exported — wire-side Host/Origin gate); `responseForClientError(code)` (Object.hasOwn, prototype-safe); `writtenAtLastResponse` WeakMap (per-request reply guard, snapshots `socket.bytesWritten` at each response finish)
+- `src/server.ts` — `buildDeps(config, logger?)` — the one wiring site; `BufferBodyError` (module-local); dispatch order: close listener → host gate → namespace → bufferBody → exhaustive error switch; `client_disconnected` log event for headerless close; `anthropic:ambiguous`/`anthropic:fallback` route labels
+- `src/provider-transport.ts` — `drainRejectedUpload(req)` (exported; 2 s + 32 MiB bounds; 4 callers); `respondJson(res, status, body, extraHeaders?)` (extraHeaders spread before marker so marker always wins)
+- `src/errors.ts` — `ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` single chokepoint
+- `src/doctor.ts` — `runDoctor`; `PROVIDER_AUTH_INSPECTORS` (exported totality anchor); `makeLiveListAgentFiles` (absolute-path resolution critical)
 - `src/init.ts` — Pure planning + `InitFsDeps` / `InitPrompts` seams; wizard prompts only port + settings-target
-- `src/agent-scan.ts` — `parseFrontmatterModel`; `checkAgentModels`; `unknown_provider` severity now `"info"` (ADR-010)
+- `src/agent-scan.ts` — `parseFrontmatterModel`; `checkAgentModels`; `unknown_provider` severity `"info"` (ADR-010)
 - `src/models.ts` — Pure registry; no repo imports; `MODEL_REGISTRY`, `PROVIDER_IDS`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `routableModelCount`
 - `src/plain-object.ts` — Shared `isPlainObject` guard for `doctor.ts` and `init.ts`; `config.ts` keeps its own private copy (prototype-pollution boundary)
-- `scripts/smoke-tarball.sh` — Uses `--version` not `doctor` for the binary-resolves assertion
 
 ## Related
 
-- ADR-010: Relay transparency — a relay must be indistinguishable from the origin; drove removal of the byte-budget gate, the synthesized 529, and the ambiguous-model 400.
-- PF-010: Zod strips unknown keys → a pre-restructure config parses clean while every setting silently reverts to defaults. `z.strictObject` now guards leaf sub-schemas; the raw pre-parse scans guard the outer structure.
-- PF-006: Doctor exits non-zero without live services; smoke uses `--version` not `doctor`; drives the `configuredProviders` severity split.
-- PF-007: Alias targets as well as keys must be validated against `isReservedAnthropicName`.
-- PF-005: Live-verified protocol constants must not be re-derived.
-- PF-011: A green suite proves nothing until each control has been proven RED against the mutation it claims to catch.
-- PF-012: The mutation-proof pass needs its own controls.
+- ADR-010: Relay transparency — a relay must be indistinguishable from the origin; drove removal of the byte-budget gate, the synthesized 529, and the ambiguous-model 400; governs `anthropic:ambiguous`/`anthropic:fallback` fail-open routing.
+- ADR-009: Credential vetting — `isLoopbackHost` strictness is load-bearing here; the loopback exemption is what makes `http://127.0.0.1:4142` reachable in dev.
 - ADR-008: Credential redaction applied once at the error render site — the chokepoint pattern also used for the 404 body (no path reflection).
 - ADR-006: `MODEL_REGISTRY` as sole routable set source.
-- ADR-005: Exact model-membership routing — `isReservedAnthropicName` guards keep Anthropic names out of the routing table.
+- ADR-005: Live-verified protocol constants must not be re-derived.
 - ADR-004: `@types/node` pinned to Node-22 majors — affects `parseArgs` type signatures.
-- ADR-002: Subscription OAuth passthrough — why `anthropic` has no auth config of its own and stays top-level in `Config`.
+- ADR-002: Subscription OAuth passthrough — why `anthropic` has no auth config of its own.
+- PF-025: `respondJson` extraHeaders marker-last ordering — the synthesized marker must always be the last header written so it cannot be shadowed.
+- PF-023: Distinct route labels (`anthropic:ambiguous`, `anthropic:fallback`) for fail-open paths — makes post-hoc log analysis unambiguous.
+- PF-022: `client_disconnected` log event vs. `request_complete status=200` — `res.statusCode` is Node's 200 initialiser; the close-before-error ordering on Node 22 is the reason the decision lives in the close handler.
+- PF-021: WeakMap per-request reply guard — `socket.bytesWritten` is per-socket-lifetime; snapshot at each response finish is required.
+- PF-020: `hostGateVerdict` and `isLoopbackHostname` divergence from `isLoopbackHost` — wire authority vs. WHATWG hostname are different input shapes.
+- PF-014: `version.test.ts` pins both `package-lock.json` version fields and newest `CHANGELOG.md` heading — closed structurally by the test.
+- PF-011: A green suite proves nothing until each control has been proven RED against the mutation it claims to catch.
+- PF-010: Zod strips unknown keys → a pre-restructure config parses clean while every setting silently reverts to defaults. `z.strictObject` now guards leaf sub-schemas; the raw pre-parse scans guard the outer structure.
+- PF-006: Doctor exits non-zero without live services; smoke uses `--version` not `doctor`; drives the `configuredProviders` severity split.
 - `.devflow/features/codex-leg/KNOWLEDGE.md` — Full model resolution contract, `buildHeaders`, `ProviderEvents<P>` 19-field table, and the Codex handler/translator/auth side.
 - `src/version.ts` — Source of `SUBSWITCH_VERSION` used by `--version`, doctor, `/__subswitch/health`, and `models --json`.
