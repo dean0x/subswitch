@@ -53,19 +53,27 @@ const _fieldKeysComplete: _FieldKeysComplete = true;
 void _fieldKeysComplete;
 
 /**
- * Render one token's value: newlines stripped, then quoted (with internal escaping)
- * if it could otherwise be mistaken for sibling tokens.
+ * Render one token's value: control characters stripped, then quoted (with internal
+ * escaping) if it could otherwise be mistaken for sibling tokens.
  *
- * Stripping prevents record-forgery — a `\n` in an interpolated string forges a whole
- * extra record. Quoting prevents field-forgery — a value containing whitespace, `=`,
- * `"`, or `\` would otherwise parse as additional top-level fields under logfmt's
- * last-wins semantics. Embedded `"` and `\` are backslash-escaped so the surrounding
- * quotes cannot be closed by a crafted value. Real values (model ids, route names,
- * event names, status codes) contain none of these characters, so this is a no-op on
- * every log line the tree emits.
+ * This is the single render site for every log field value and event token (ADR-008).
+ * No other site strips or escapes — fix here and both paths are covered.
+ *
+ * Invariant: no C0 control character (U+0000–U+001F), DEL (U+007F), or C1 control
+ * character (U+0080–U+009F) reaches the sink. Stripping the full range (not just \r\n)
+ * prevents record-forgery via terminal escape sequences: OSC 0 rewrites the window
+ * title; cursor-movement + erase sequences overwrite previously printed log lines,
+ * defeating anti-forgery without a newline. Quoting prevents field-forgery — a value
+ * containing whitespace, `=`, `"`, or `\` would otherwise parse as additional
+ * top-level fields under logfmt's last-wins semantics. Embedded `"` and `\` are
+ * backslash-escaped so the surrounding quotes cannot be closed by a crafted value.
+ * Real values (model ids, route names, event names, status codes) contain none of
+ * these characters, so this is a no-op on every log line the tree emits.
  */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+
 const renderToken = (value: string): string => {
-  const safe = value.replace(/[\r\n]/g, "");
+  const safe = value.replace(CONTROL_CHARS, "");
   return /[\s="\\]/.test(safe) ? `"${safe.replace(/["\\]/g, (c) => `\\${c}`)}"` : safe;
 };
 
