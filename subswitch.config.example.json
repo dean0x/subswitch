@@ -4,8 +4,6 @@
   "anthropic": {
     "baseUrl": "https://api.anthropic.com",
     "connectTimeoutMs": 10000,
-    "headerTimeoutMs": 660000,
-    "streamIdleTimeoutMs": 300000,
     "maxUpstreamSockets": 256,
     "allowInsecureBaseUrl": false
   },
@@ -29,9 +27,6 @@
   },
   "limits": {
     "maxBodyBytes": 33554432,
-    "pingIntervalMs": 15000,
-    "maxInFlightBytes": 2147483648,
-    "maxQueueDepth": 1000,
-    "maxQueueWaitMs": 60000
+    "pingIntervalMs": 15000
   }
 }

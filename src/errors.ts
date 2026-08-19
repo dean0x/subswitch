@@ -58,6 +58,9 @@ export type AnthropicErrorType =
   | "request_too_large"
   | "rate_limit_error"
   | "api_error"
+  // overloaded_error is kept: upstream 529 responses pass through untouched.
+  // The relay must never synthesize this status — a relay-invented 529 on a
+  // connected client is a defect (ADR-010). Only the origin may produce it.
   | "overloaded_error";
 
 export interface AnthropicError {

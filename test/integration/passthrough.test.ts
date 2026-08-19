@@ -341,20 +341,18 @@ describe("anthropic passthrough", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Timeout semantics — regression tests for issue #27
+  // Timeout semantics — ADR-010 compliance
   // ---------------------------------------------------------------------------
   //
-  // connectTimeoutMs must bound only TCP connection establishment.  Once
-  // connected (or when a pooled socket is reused), the timer is re-armed to
-  // streamIdleTimeoutMs so that upstream think-time beyond connectTimeoutMs
-  // is not spuriously cut off with a 504.
+  // connectTimeoutMs bounds ONLY TCP connection establishment.  Once connected
+  // the timer is DISARMED.  The relay must never fire a timer that terminates
+  // a connected client's request — no headerTimeoutMs, no streamIdleTimeoutMs.
 
-  it("does not 504 when upstream think-time exceeds connectTimeoutMs but is under headerTimeoutMs", async () => {
+  it("does not 504 when upstream think-time exceeds connectTimeoutMs (no further timer after connect)", async () => {
     // Upstream delays its response by 200 ms — intentionally longer than
-    // connectTimeoutMs (50 ms) but shorter than headerTimeoutMs (500 ms).
-    // Before the fix the 50 ms timer fired immediately after connect and
-    // produced a 504; after the fix the timer is re-armed to headerTimeoutMs
-    // (500 ms) on connect, so the 200 ms delay is within budget.
+    // connectTimeoutMs (50 ms).  Before the fix the connect-phase timer fired
+    // immediately after connect and produced a 504; after the fix the timer is
+    // DISARMED on connect (ADR-010) so the 200 ms delay completes successfully.
     const anthropic = await startFakeUpstream((_req, res) => {
       setTimeout(() => {
         res.writeHead(200, { "content-type": "application/json" });
@@ -365,8 +363,6 @@ describe("anthropic passthrough", () => {
       anthropic: {
         baseUrl: anthropic.url,
         connectTimeoutMs: 50,
-        headerTimeoutMs: 500,
-        streamIdleTimeoutMs: 500,
       },
     });
     cleanups.push(subswitch.close, anthropic.close);
@@ -379,28 +375,31 @@ describe("anthropic passthrough", () => {
     assert.equal(
       response.status,
       200,
-      "response must be 200 — connectTimeoutMs must not cut off upstream think-time after connect",
+      "response must be 200 — relay must not fire any timer after TCP connect",
     );
     const body = (await response.json()) as { id: string };
     assert.equal(body.id, "msg_think_time");
   });
 
-  it("headerTimeoutMs fires and emits exactly one warn when upstream stalls before sending headers (no duplicate anthropic_upstream_error)", async () => {
-    // Upstream accepts the connection but never sends headers.
-    // After headerTimeoutMs (100 ms) the timeout handler fires, writes a
-    // 504, and calls upstream.destroy().  That destroy() makes the ClientRequest
-    // emit 'error'; the error handler must return early (via `settled`) and must
-    // NOT log a second anthropic_upstream_error warn.
+  it("slow-header upstream is not terminated by the relay (ADR-010: no headers-phase timer)", async () => {
+    // Upstream accepts the connection but delays headers by 300 ms.
+    // Previously headerTimeoutMs would have fired at ~100 ms and produced a 504.
+    // After ADR-010 no such timer exists — the 300 ms delay must complete with 200.
+    //
+    // Non-vacuity: if a 100 ms headers-phase timer were still armed after connect,
+    // the response would be 504, not 200, and this test would fail.
     const captured: Array<{ level: LogLevel; event: string }> = [];
-    const anthropic = await startFakeUpstream((_req, _res) => {
-      // Never responds — stall indefinitely so the header timer fires.
+    const anthropic = await startFakeUpstream((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "slow_headers" }));
+      }, 300);
     });
     const subswitch = await startSubswitch(
       {
         anthropic: {
           baseUrl: anthropic.url,
           connectTimeoutMs: 50,
-          headerTimeoutMs: 100,
         },
       },
       {
@@ -418,34 +417,30 @@ describe("anthropic passthrough", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
     });
-    assert.equal(response.status, 504, "timed-out upstream must produce a 504");
-    await response.text(); // drain
+    assert.equal(response.status, 200, "slow-header upstream must not be terminated by the relay");
+    const body = (await response.json()) as { id: string };
+    assert.equal(body.id, "slow_headers");
 
-    // Allow one extra event-loop turn for any stray error events to land.
+    // Allow one event-loop turn for stray events.
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
-
     const upstreamEvents = captured.filter((e) => e.event.startsWith("anthropic_upstream"));
-    assert.equal(upstreamEvents.length, 1, `expected exactly 1 upstream warn event, got: ${JSON.stringify(upstreamEvents)}`);
-    assert.equal(upstreamEvents[0]!.event, "anthropic_upstream_timeout", "the single warn must be anthropic_upstream_timeout");
-    assert.equal(upstreamEvents[0]!.level, "warn");
+    assert.equal(upstreamEvents.length, 0, `no upstream events must fire on a successful response; got: ${JSON.stringify(upstreamEvents)}`);
   });
 
-  it("re-arms headerTimeoutMs immediately on a pooled (keep-alive) socket", async () => {
-    // The pooled socket path takes the `else rearm()` branch because
-    // socket.connecting is false on a reused socket — no 'connect' event fires.
-    // Verify that a second request whose upstream think-time exceeds
-    // connectTimeoutMs but is under headerTimeoutMs still succeeds.
+  it("pooled (keep-alive) socket reuse succeeds when second request delays beyond connectTimeoutMs", async () => {
+    // On a pooled socket the connect phase is already done and connectTimeoutMs
+    // has no effect — the relay arms NO timer of any kind (ADR-010).
+    // A 200 ms delay on the second (pooled) request must succeed.
     let requestIndex = 0;
     const anthropic = await startFakeUpstream((_req, res) => {
       const idx = requestIndex++;
       if (idx === 0) {
-        // First request: respond immediately to establish the pooled socket.
+        // First request: respond immediately to establish the pooled connection.
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ id: "first" }));
       } else {
-        // Second request: delay 200 ms — longer than connectTimeoutMs (50 ms),
-        // shorter than headerTimeoutMs (500 ms).  On a reused socket the
-        // `else rearm()` branch must arm the 500 ms headerTimeoutMs budget immediately.
+        // Second request: delay 200 ms — longer than connectTimeoutMs (50 ms).
+        // On a reused socket there is no connect phase and no timer — must succeed.
         setTimeout(() => {
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ id: "pooled" }));
@@ -456,8 +451,6 @@ describe("anthropic passthrough", () => {
       anthropic: {
         baseUrl: anthropic.url,
         connectTimeoutMs: 50,
-        headerTimeoutMs: 500,
-        streamIdleTimeoutMs: 500,
       },
     });
     cleanups.push(subswitch.close, anthropic.close);
@@ -468,17 +461,17 @@ describe("anthropic passthrough", () => {
       body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
     } as const;
 
-    // First request: builds the pooled connection.
+    // First request: establishes the pooled connection.
     const r1 = await fetch(`${subswitch.url}/v1/messages`, postOpts);
     assert.equal(r1.status, 200);
     await r1.text();
 
-    // Second request: reuses the pooled socket (else rearm() branch).
+    // Second request: reuses the pooled socket.
     const r2 = await fetch(`${subswitch.url}/v1/messages`, postOpts);
     assert.equal(
       r2.status,
       200,
-      "pooled socket: headerTimeoutMs must be armed immediately via else rearm(), not cut off at connectTimeoutMs",
+      "pooled socket: 200 ms delay must succeed — no timer armed after connect (ADR-010)",
     );
     const body2 = (await r2.json()) as { id: string };
     assert.equal(body2.id, "pooled");
@@ -487,43 +480,33 @@ describe("anthropic passthrough", () => {
     assert.equal(anthropic.connectionCount, 1, "keep-alive: both requests must share one TCP connection");
   });
 
-  it("streamIdleTimeoutMs fires when the stream goes idle after headers are received", async () => {
-    // headerTimeoutMs (5 s) cannot be the knob that fires here — only streamIdleTimeoutMs
-    // (100 ms) can.  We send 6 chunks ~50 ms apart (~300 ms of active streaming) before
-    // stalling.  If chunks did NOT reset the idle timer, the 100 ms budget would fire
-    // during the active-streaming window and the body would be truncated before we receive
-    // all 6 chunks — the assertion on chunk count would then catch it.  This pins the
-    // "reset by every received chunk" invariant as a falsifiable property, not mere prose.
-    const captured: Array<{ level: LogLevel; event: string }> = [];
+  it("idle stream is not terminated by the relay (ADR-010: no stream-idle timer)", async () => {
+    // Upstream sends 3 chunks, idles for 400 ms, then sends 3 more and closes.
+    // Previously streamIdleTimeoutMs (100 ms) would have fired during the idle gap
+    // and destroyed the connection. After ADR-010 no such timer exists — all 6
+    // chunks must arrive.
+    //
+    // Non-vacuity: if a 100 ms stream-idle timer were still active, the connection
+    // would be destroyed during the 400 ms gap and chunks 4–6 would never arrive.
     const anthropic = await startFakeUpstream((_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
       let sent = 0;
-      const interval = setInterval(() => {
+      const sendChunk = (): void => {
         sent++;
         res.write(`event: ping\ndata: ${sent}\n\n`);
-        if (sent >= 6) {
-          // Stop sending — stream goes idle; res.end() is never called.
-          clearInterval(interval);
-        }
-      }, 50);
+      };
+      sendChunk(); sendChunk(); sendChunk(); // 3 chunks immediately
+      setTimeout(() => {
+        sendChunk(); sendChunk(); sendChunk(); // 3 more after idle gap
+        res.end();
+      }, 400);
     });
-    const subswitch = await startSubswitch(
-      {
-        anthropic: {
-          baseUrl: anthropic.url,
-          connectTimeoutMs: 50,
-          headerTimeoutMs: 5_000,
-          streamIdleTimeoutMs: 100,
-        },
+    const subswitch = await startSubswitch({
+      anthropic: {
+        baseUrl: anthropic.url,
+        connectTimeoutMs: 50,
       },
-      {
-        logger: {
-          log(level, event) {
-            captured.push({ level, event });
-          },
-        },
-      },
-    );
+    });
     cleanups.push(subswitch.close, anthropic.close);
 
     const response = await fetch(`${subswitch.url}/v1/messages`, {
@@ -531,52 +514,16 @@ describe("anthropic passthrough", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
     });
+    assert.equal(response.status, 200, "upstream sent headers before idle gap");
+    const text = await response.text();
 
-    // The upstream sent headers before stalling — client must see 200.
-    assert.equal(response.status, 200, "upstream sent headers before going idle");
-
-    // Collect the body; the server calls res.destroy() once streamIdleTimeoutMs fires,
-    // so the body is truncated mid-stream.  Node fetch (undici) rejects the read with
-    // a network error on a destroyed socket.
-    //
-    // Timing bound: after the last chunk (~300 ms of streaming), the 100 ms idle
-    // timer fires, so the body read must complete (by throwing) within 2 s.  If
-    // streamIdleTimeoutMs were huge (e.g. 10 s), the read would hang for 10 s and
-    // this assertion would fail — making the test non-vacuous.
-    const bodyReadStart = Date.now();
-    let receivedBody = "";
-    let bodyThrew = false;
-    try {
-      receivedBody = await response.text();
-    } catch {
-      bodyThrew = true;
-    }
-    const bodyElapsedMs = Date.now() - bodyReadStart;
-
-    // The body must be incomplete: either the read threw (connection reset) or the
-    // received text contains the streamed chunks but no clean termination.
-    assert.ok(
-      bodyThrew || receivedBody.includes("event: ping"),
-      "body must be truncated (threw) or contain the partial SSE chunks",
-    );
-    assert.ok(bodyThrew, "reading the body must throw — res.destroy() tears down the socket mid-stream");
-    assert.ok(
-      bodyElapsedMs < 2_000,
-      `body read must complete within 2 s (elapsed: ${bodyElapsedMs} ms) — streamIdleTimeoutMs must fire promptly, not after a huge delay`,
-    );
-
-    // Allow one event-loop turn for any stray events to settle.
-    await new Promise<void>((resolve) => setTimeout(resolve, 150));
-
-    // Exactly one streamIdleTimeoutMs warn must be emitted.  headerTimeoutMs (5 s)
-    // cannot have fired — the total test duration is well under 5 s.
-    const timeoutEvents = captured.filter((e) => e.event === "anthropic_upstream_timeout");
+    // All 6 chunks must be received.
+    const chunks = text.match(/^data: \d+$/gm) ?? [];
     assert.equal(
-      timeoutEvents.length,
-      1,
-      `expected exactly 1 anthropic_upstream_timeout event, got: ${JSON.stringify(timeoutEvents)}`,
+      chunks.length,
+      6,
+      `all 6 SSE chunks must arrive — stream-idle gap must not be terminated by relay; got: ${JSON.stringify(chunks)}`,
     );
-    assert.equal(timeoutEvents[0]!.level, "warn");
   });
 
   // ---------------------------------------------------------------------------
@@ -609,8 +556,6 @@ describe("anthropic passthrough", () => {
     const forwarder = createAnthropicForwarder({
       baseUrl: "http://192.0.2.1:80",
       connectTimeoutMs: CONNECT_MS,
-      headerTimeoutMs: 30_000,
-      streamIdleTimeoutMs: 30_000,
       maxUpstreamSockets: 1,
       logger: {
         log(level: LogLevel, event: string) {
@@ -678,26 +623,40 @@ describe("anthropic passthrough", () => {
   // so that an origin setting it cannot impersonate the relay's marker.
 
   it("L3: x-subswitch-synthesized: 1 is present on a relay-synthesised 504 timeout response", async () => {
-    const anthropic = await startFakeUpstream((_req, _res) => {
-      // Never responds — triggers headerTimeoutMs.
+    // Produce a 504 via TCP connect timeout to 192.0.2.1 (TEST-NET-1, RFC 5737:
+    // documentation-only, no real host — SYN is forwarded but never answered).
+    // This is the only way to trigger a relay-synthesized 504 after the removal of
+    // headerTimeoutMs (ADR-010): the connect-phase timer is the only remaining timer.
+    //
+    // CI note: on containers with no default route, the kernel returns ENETUNREACH
+    // immediately (502, not 504). In that case the marker is still present on the 502.
+    const forwarder = createAnthropicForwarder({
+      baseUrl: "http://192.0.2.1:80",
+      connectTimeoutMs: 150,
+      maxUpstreamSockets: 1,
+      logger: { log: () => undefined },
     });
-    const subswitch = await startSubswitch({
-      anthropic: { baseUrl: anthropic.url, headerTimeoutMs: 80 },
-    });
-    cleanups.push(subswitch.close, anthropic.close);
+    const server = http.createServer((req, res) => forwarder(req, res));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    cleanups.push(() => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }));
 
-    const response = await fetch(`${subswitch.url}/v1/messages`, {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
     });
 
-    // Without fix: header absent. With fix: "1".
-    assert.equal(response.status, 504);
+    // The relay produces a 504 (connect timeout) or 502 (no route on CI).
+    // Either way x-subswitch-synthesized: 1 must be present.
+    assert.ok(
+      response.status === 504 || response.status === 502,
+      `expected 504 or 502, got ${response.status}`,
+    );
     assert.equal(
       response.headers.get("x-subswitch-synthesized"),
       "1",
-      "relay-synthesised 504 must carry x-subswitch-synthesized: 1",
+      "relay-synthesised timeout/error response must carry x-subswitch-synthesized: 1",
     );
   });
 
@@ -784,7 +743,7 @@ describe("anthropic passthrough", () => {
       // Stall — never send a response.
     });
     const subswitch = await startSubswitch(
-      { anthropic: { baseUrl: anthropic.url, headerTimeoutMs: 10_000 } },
+      { anthropic: { baseUrl: anthropic.url } },
       { logger: { log(level, event) { captured.push({ level, event }); } } },
     );
     cleanups.push(subswitch.close, anthropic.close);

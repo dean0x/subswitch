@@ -6,6 +6,8 @@ import {
   loadConfig,
   detectLegacyConfigKeys,
   detectUnknownProviderKeys,
+  detectDeprecatedConfigKeys,
+  DEPRECATED_KEYS,
   aliasesByProvider,
   enumerateDestinations,
   type RoutingDestination,
@@ -27,8 +29,6 @@ describe("loadConfig", () => {
     assert.equal(result.value.config.logLevel, "info");
     assert.equal(result.value.config.anthropic.baseUrl, "https://api.anthropic.com");
     assert.equal(result.value.config.anthropic.connectTimeoutMs, 10_000);
-    assert.equal(result.value.config.anthropic.headerTimeoutMs, 660_000);
-    assert.equal(result.value.config.anthropic.streamIdleTimeoutMs, 300_000);
     assert.equal(result.value.config.anthropic.maxUpstreamSockets, 256);
     assert.equal(result.value.config.providers.codex.baseUrl, "https://chatgpt.com/backend-api/codex");
     assert.equal(result.value.config.providers.codex.oauthTokenUrl, "https://auth.openai.com/oauth/token");
@@ -41,10 +41,6 @@ describe("loadConfig", () => {
     assert.equal(result.value.config.providers.codex.maxAggregateBytes, 64 * 1024 * 1024);
     assert.equal(result.value.config.limits.maxBodyBytes, 32 * 1024 * 1024);
     assert.equal(result.value.config.limits.pingIntervalMs, 15_000);
-    assert.equal(result.value.config.limits.maxConcurrentRequests, 32);
-    assert.equal(result.value.config.limits.maxInFlightBytes, 2 * 1024 * 1024 * 1024);
-    assert.equal(result.value.config.limits.maxQueueDepth, 1000);
-    assert.equal(result.value.config.limits.maxQueueWaitMs, 60_000);
     assert.equal(result.value.fileFound, false);
   });
 
@@ -243,53 +239,75 @@ describe("loadConfig", () => {
   });
 
   // -------------------------------------------------------------------------
-  // limits.maxConcurrentRequests
+  // Deprecated keys (soft-deprecation — loaded but not wired, must warn)
   // -------------------------------------------------------------------------
 
-  it("limits.maxConcurrentRequests defaults to 32", () => {
-    const result = loadConfig({ readFile: missingFile, env: {} });
-    assert.ok(result.ok);
-    assert.equal(result.value.config.limits.maxConcurrentRequests, 32);
-  });
-
-  it("limits.maxConcurrentRequests can be overridden via config file", () => {
+  it("deprecated key limits.maxConcurrentRequests is accepted without error (soft-deprecated)", () => {
+    // The key was removed from the gate (ADR-010) but existing configs must not
+    // hard-error — the schema accepts it as .optional() and the value is ignored.
     const result = loadConfig({
       configPath: "x",
       readFile: () => JSON.stringify({ limits: { maxConcurrentRequests: 64 } }),
     });
-    assert.ok(result.ok);
-    assert.equal(result.value.config.limits.maxConcurrentRequests, 64);
+    assert.ok(result.ok, "deprecated key must not cause a parse error");
+    // The value is NOT wired into Config.limits — it is silently dropped.
+    assert.ok(!Object.hasOwn(result.value.config.limits, "maxConcurrentRequests"),
+      "deprecated field must not appear in resolved Config.limits");
   });
 
-  // -------------------------------------------------------------------------
-  // limits.maxInFlightBytes / maxQueueDepth / maxQueueWaitMs (byte-based gate)
-  // -------------------------------------------------------------------------
-
-  it("limits.maxInFlightBytes defaults to 2 GiB", () => {
-    const result = loadConfig({ readFile: missingFile, env: {} });
-    assert.ok(result.ok);
-    assert.equal(result.value.config.limits.maxInFlightBytes, 2 * 1024 * 1024 * 1024);
-  });
-
-  it("limits.maxInFlightBytes can be overridden via config file", () => {
+  it("deprecated key limits.maxInFlightBytes is accepted without error (soft-deprecated)", () => {
     const result = loadConfig({
       configPath: "x",
       readFile: () => JSON.stringify({ limits: { maxInFlightBytes: 512 * 1024 * 1024 } }),
     });
     assert.ok(result.ok);
-    assert.equal(result.value.config.limits.maxInFlightBytes, 512 * 1024 * 1024);
+    assert.ok(!Object.hasOwn(result.value.config.limits, "maxInFlightBytes"));
   });
 
-  it("limits.maxQueueDepth defaults to 1000", () => {
-    const result = loadConfig({ readFile: missingFile, env: {} });
-    assert.ok(result.ok);
-    assert.equal(result.value.config.limits.maxQueueDepth, 1000);
+  it("a config with all 6 deprecated keys loads successfully and reports them in deprecatedKeys", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({
+          anthropic: { headerTimeoutMs: 660_000, streamIdleTimeoutMs: 300_000 },
+          limits: {
+            maxConcurrentRequests: 32,
+            maxInFlightBytes: 2 * 1024 * 1024 * 1024,
+            maxQueueDepth: 1000,
+            maxQueueWaitMs: 60_000,
+          },
+        }),
+    });
+    assert.ok(result.ok, "deprecated keys must not hard-error");
+    assert.equal(result.value.deprecatedKeys.length, 6, "must report all 6 deprecated keys");
+    const paths = result.value.deprecatedKeys.map((k) => k.path);
+    assert.ok(paths.includes("anthropic.headerTimeoutMs"));
+    assert.ok(paths.includes("anthropic.streamIdleTimeoutMs"));
+    assert.ok(paths.includes("limits.maxConcurrentRequests"));
+    assert.ok(paths.includes("limits.maxInFlightBytes"));
+    assert.ok(paths.includes("limits.maxQueueDepth"));
+    assert.ok(paths.includes("limits.maxQueueWaitMs"));
   });
 
-  it("limits.maxQueueWaitMs defaults to 60000", () => {
-    const result = loadConfig({ readFile: missingFile, env: {} });
-    assert.ok(result.ok);
-    assert.equal(result.value.config.limits.maxQueueWaitMs, 60_000);
+  it("DEPRECATED_KEYS table completeness: total count matches what detectDeprecatedConfigKeys reports", () => {
+    // This test is an invariant over the table — it does not hand-list keys, so
+    // adding a key to DEPRECATED_KEYS without updating this test is fine.
+    // What it prevents: keys being silently removed from the table without notice.
+    const allDeprecated: Record<string, unknown> = {};
+    for (const { path } of DEPRECATED_KEYS) {
+      const parts = path.split(".");
+      let node = allDeprecated;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const segment = parts[i]!;
+        if (!Object.hasOwn(node, segment) || typeof node[segment] !== "object" || node[segment] === null) {
+          node[segment] = {};
+        }
+        node = node[segment] as Record<string, unknown>;
+      }
+      node[parts[parts.length - 1]!] = 1;
+    }
+    const found = detectDeprecatedConfigKeys(allDeprecated);
+    assert.equal(found.length, DEPRECATED_KEYS.length, "every entry in DEPRECATED_KEYS must be detectable");
   });
 
   it("anthropic.maxUpstreamSockets defaults to 256 (raised to exceed peak concurrency)", () => {

@@ -61,26 +61,16 @@ export interface PassthroughOptions {
    * Bounds TCP connection establishment only (milliseconds).
    * The timer is armed directly on the socket (not via `ClientRequest.setTimeout`,
    * which defers internally and cannot bound the connect phase).  Once TCP connects,
-   * the timer is re-armed to `headerTimeoutMs`.
+   * the timer is disarmed entirely — the relay must never bound the headers or stream
+   * phases on a connected client (ADR-010).
    *
    * On HTTPS connections, `'connect'` fires after TCP establishment but before the
-   * TLS handshake, so TLS negotiation falls under `headerTimeoutMs`, not this budget.
+   * TLS handshake, so TLS negotiation is NOT covered by this budget — neither the
+   * headers phase nor the stream phase is bounded, consistent with ADR-010.
    *
-   * For pooled/keep-alive sockets (no connect phase), `headerTimeoutMs` is armed
-   * immediately and this budget has no effect.
+   * For pooled/keep-alive sockets (no connect phase), this budget has no effect.
    */
   readonly connectTimeoutMs: number;
-  /**
-   * Bounds the connect→response-headers phase (time to first byte), in milliseconds.
-   * Armed on socket connect (or immediately for pooled sockets).
-   * Re-armed to `streamIdleTimeoutMs` once headers arrive.
-   */
-  readonly headerTimeoutMs: number;
-  /**
-   * Bounds the headers→stream-end phase, in milliseconds.
-   * Reset by every received chunk.
-   */
-  readonly streamIdleTimeoutMs: number;
   readonly logger: Logger;
   /** Maximum sockets in the keep-alive pool. Config key: limits.maxUpstreamSockets. */
   readonly maxUpstreamSockets: number;
@@ -106,12 +96,17 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
 
   return (req, res, body) => {
     const path = `${basePath}${req.url ?? "/"}`;
-    // `settled` is set by whichever handler wins the race — the response
-    // callback (headers received) or the timeout handler (504 written).
-    // The error handler uses it as its early-return guard so that a
-    // destroy() issued by the timeout handler does not produce a duplicate
-    // `anthropic_upstream_error` warn after the 504 has already been sent.
+    // One-way latch: the first terminal outcome (response headers, timeout, error,
+    // or client disconnect) claims the settlement. Subsequent events return early
+    // so that a destroy() issued by the timeout handler cannot produce a duplicate
+    // anthropic_upstream_error warn, and a client abort cannot attempt to write
+    // into a response that has already been written or destroyed.
     let settled = false;
+    const settle = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      return true;
+    };
 
     const upstream = client.request(
       {
@@ -127,8 +122,7 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
         // (cross-name position of interleaved duplicates is not guaranteed).
       },
       (upstreamRes) => {
-        settled = true;
-        upstream.setTimeout(options.streamIdleTimeoutMs);
+        if (!settle()) return;
         // Response direction: writeHead accepts a flat [name, value, ...] array
         // directly (Node's _storeHeader Array branch), preserving the upstream's
         // original header casing, order, and duplicates byte-for-byte.
@@ -141,27 +135,21 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       },
     );
 
-    // Timer arming — three-budget design:
+    // Timer arming — single-budget design (ADR-010):
     //
-    // 1. connectTimeoutMs — bounds TCP establishment, armed DIRECTLY on the
-    //    socket (not via upstream.setTimeout).  ClientRequest.setTimeout()
-    //    defers internally via its own 'connect' listener, so it would fire
-    //    only after connect — in the same tick as the headerTimeoutMs rearm,
-    //    leaving connectTimeoutMs never actually in force.
+    // connectTimeoutMs — bounds TCP establishment ONLY, armed DIRECTLY on the
+    // socket (not via upstream.setTimeout).  ClientRequest.setTimeout() defers
+    // internally via its own 'connect' listener, so it would fire only after
+    // connect and cannot bound the connect phase.
     //
-    //    Node v22's internal socket-timeout handler (onTimeout) skips
-    //    req.emit('timeout') when socket.connecting is true, so we must
-    //    propagate the timeout manually via upstream.emit('timeout').
-    //    On HTTPS, 'connect' fires after TCP but BEFORE the TLS handshake, so
-    //    TLS negotiation falls under headerTimeoutMs, not connectTimeoutMs.
+    // Node v22's internal socket-timeout handler (onTimeout) skips
+    // req.emit('timeout') when socket.connecting is true, so we propagate the
+    // timeout manually via upstream.emit('timeout').
     //
-    // 2. headerTimeoutMs — armed on 'connect' (or immediately for a pooled
-    //    socket where no 'connect' event will ever fire).  Bounds the window
-    //    from TCP-connected to first response byte.  upstream.setTimeout() in
-    //    the connected state propagates normally via Node's internal handler.
+    // On connect the timer is DISARMED entirely: the relay must never bound the
+    // headers-phase or stream-phase on a connected client (ADR-010).
     //
-    // 3. streamIdleTimeoutMs — armed in the response callback once headers
-    //    arrive; reset by every received chunk.
+    // For pooled/keep-alive sockets (no connect phase) this budget has no effect.
     upstream.on("socket", (socket) => {
       socket.setNoDelay(true);
       if (socket.connecting) {
@@ -173,15 +161,12 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
         };
         const onConnect = () => {
           socket.removeListener("timeout", onConnectTimeout);
-          socket.setTimeout(0); // cancel connect budget
-          upstream.setTimeout(options.headerTimeoutMs);
+          socket.setTimeout(0); // disarm — no further timers (ADR-010)
         };
         socket.once("timeout", onConnectTimeout);
         socket.once("connect", onConnect);
-      } else {
-        // Pooled/keep-alive socket — no connect phase; arm header budget immediately.
-        upstream.setTimeout(options.headerTimeoutMs);
       }
+      // Pooled/keep-alive socket: connect phase already done, no timer to arm.
     });
 
     // Request direction: build a Map from the filtered rawHeaders so that
@@ -208,14 +193,13 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       upstream.setHeader(name, values.length === 1 ? values[0]! : values);
     }
 
+    // Terminal outcome 2 (timeout): only the connect-phase timeout can fire;
+    // no other timer is ever armed.  settle() ensures the error handler does
+    // not produce a duplicate warn after destroy() is called.
     upstream.on("timeout", () => {
-      // Log and write the 504 BEFORE destroy() to narrow the race window with
-      // the 'error' handler.  destroy() on an in-flight ClientRequest emits
-      // 'error' (ECONNRESET) on the next tick; setting `settled = true` here
-      // prevents that error from producing a duplicate warn log.
       options.logger.log("warn", "anthropic_upstream_timeout", { path: req.url ?? "/" });
+      if (!settle()) return;
       if (!res.headersSent) {
-        settled = true;
         res.writeHead(504, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
         res.end(toAnthropicErrorBody("api_error", "upstream timed out"));
       } else {
@@ -224,15 +208,12 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       upstream.destroy();
     });
 
+    // Terminal outcome 3 (upstream error): settle() prevents a double-warn if
+    // destroy() from the timeout handler produces an ECONNRESET on the next tick.
     upstream.on("error", () => {
-      if (settled) return;
-      // Log and surface as 502 only when the client response is still open.
-      // Set settled before writing so a second 'error' emission (practically
-      // unreachable after socket destroy, but possible in theory) cannot
-      // double-write.
+      if (!settle()) return;
       options.logger.log("warn", "anthropic_upstream_error", { path: req.url ?? "/" });
       if (!res.headersSent) {
-        settled = true;
         res.writeHead(502, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
         res.end(toAnthropicErrorBody("api_error", "upstream connection failed"));
       } else {
@@ -240,19 +221,13 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       }
     });
 
-    // Change 3: set settled before destroy() so the error event emitted by
-    // destroy() on the next tick does not trigger a spurious
-    // anthropic_upstream_error warn or attempt to write a 502 into an already-
-    // closed response.  A client abort is an entirely normal event — it must
-    // produce no warn log and no synthetic HTTP response.
-    //
-    // Note: the timeout handler does not check `settled` before calling
-    // upstream.destroy() because it sets `settled = true` itself before the
-    // destroy, so by the time the 'error' event fires on the next tick the
-    // guard has already been set and the error handler returns early.
+    // Terminal outcome 4 (client disconnect): settle() ensures that the
+    // destroy() call does not cause the error handler to fire a spurious
+    // anthropic_upstream_error warn.  A client abort is normal — no warn log,
+    // no synthetic HTTP response.
     res.on("close", () => {
       if (!res.writableFinished) {
-        settled = true;
+        if (!settle()) return;
         upstream.destroy();
       }
     });

@@ -132,8 +132,6 @@ const makeTestConfig = (): Config => ({
   anthropic: {
     baseUrl: "https://api.anthropic.com",
     connectTimeoutMs: 10_000,
-    headerTimeoutMs: 600_000,
-    streamIdleTimeoutMs: 300_000,
     maxUpstreamSockets: 32,
     allowInsecureBaseUrl: false,
   },
@@ -155,10 +153,6 @@ const makeTestConfig = (): Config => ({
   limits: {
     maxBodyBytes: 32 * 1024 * 1024,
     pingIntervalMs: 15_000,
-    maxConcurrentRequests: 32,
-    maxInFlightBytes: 2 * 1024 * 1024 * 1024,
-    maxQueueDepth: 1000,
-    maxQueueWaitMs: 60_000,
   },
 });
 

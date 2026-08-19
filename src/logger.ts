@@ -23,9 +23,6 @@ export interface LogFields {
    *  Verifies key stability across turns without revealing the full key.
    *  Truncated: non-reversible. */
   readonly sessionKey?: string;
-  /** Byte-gate accounting fields — present only on inFlightBytes_underflow events. */
-  readonly inFlightBytes?: number;
-  readonly reservationBytes?: number;
 }
 
 export interface Logger {
@@ -45,7 +42,15 @@ const FIELD_KEYS = [
   "effort",
   "cachedTokens",
   "sessionKey",
-] as const;
+] as const satisfies readonly (keyof LogFields)[];
+
+/**
+ * Compile-time check: every key in LogFields must appear in FIELD_KEYS.
+ * Adding a field to LogFields without adding it to FIELD_KEYS is a compile error.
+ */
+type _FieldKeysComplete = Exclude<keyof LogFields, (typeof FIELD_KEYS)[number]> extends never ? true : never;
+const _fieldKeysComplete: _FieldKeysComplete = true;
+void _fieldKeysComplete;
 
 /**
  * Render one token's value: newlines stripped, then quoted (with internal escaping)

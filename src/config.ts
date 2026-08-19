@@ -73,23 +73,18 @@ const AnthropicSchema = z
      */
     connectTimeoutMs: z.number().int().positive().default(10_000),
     /**
-     * Time from TCP connection established to first response byte (headers), in
-     * milliseconds.  Bounds only the connect→response-headers phase; once headers
-     * arrive the timer is re-armed to `streamIdleTimeoutMs` for the stream body.
-     * Defaults to 660 000 ms — 60 s above Anthropic's own ~600 s server-side
-     * ceiling — so the relay never fires before the origin does on a legitimate
-     * long-running request (e.g. a non-streaming Opus completion with large
-     * max_tokens).  The extra 60 s headroom exists because the relay's clock
-     * starts at TCP connect whereas the origin's starts when it has received the
-     * full request body; equal budgets with an earlier start would let the relay
-     * pre-empt the origin by the request-upload time plus RTT.
+     * @deprecated The relay must never bound the headers phase on a connected client
+     * (ADR-010). Kept in the schema so existing config files with this key do not
+     * hard-error on load; the value is silently ignored. Remove from your config.
      */
-    headerTimeoutMs: z.number().int().positive().default(660_000),
+    headerTimeoutMs: z.number().int().positive().optional(),
     /**
-     * Stream idle timeout for the Anthropic passthrough (milliseconds).
-     * Bounds the headers→stream-end phase; reset by every received chunk.
+     * @deprecated The relay must never bound the stream-idle phase on a connected client
+     * (ADR-010). Kept in the schema so existing config files with this key do not
+     * hard-error on load; the value is silently ignored. Remove from your config.
+     * Use providers.codex.streamIdleTimeoutMs for the Codex leg instead.
      */
-    streamIdleTimeoutMs: z.number().int().positive().default(300_000),
+    streamIdleTimeoutMs: z.number().int().positive().optional(),
     /**
      * Maximum sockets in the keep-alive pool for the Anthropic passthrough.
      *
@@ -247,49 +242,26 @@ const LimitsSchema = z
     /** Interval between SSE ping frames sent to clients during long Codex streams. */
     pingIntervalMs: z.number().int().positive().default(15_000),
     /**
-     * @deprecated Superseded by `maxInFlightBytes`. Kept in the schema to avoid
-     * a hard error on existing config files that still set this key. The value is
-     * no longer used by the concurrency gate; remove it from your config and set
-     * `maxInFlightBytes` instead.
+     * @deprecated The admission gate has been removed (ADR-010). Kept in the schema
+     * so existing config files do not hard-error on load. Remove from your config.
      */
-    maxConcurrentRequests: z.number().int().positive().default(32),
+    maxConcurrentRequests: z.number().int().positive().optional(),
     /**
-     * Total budget for simultaneous in-flight request bodies, in bytes.
-     *
-     * Requests are admitted while `inFlightBytes + requestBytes ≤ maxInFlightBytes`.
-     * When the budget would be exceeded the request is queued (not rejected) until
-     * budget is available; if the queue itself is full the server returns HTTP 529
-     * overloaded_error — the correct Anthropic status for this condition.
-     *
-     * A single request that alone exceeds the budget is always admitted when the
-     * server is otherwise idle (single-request progress guarantee), so no request
-     * can deadlock in the queue. It will still be rejected by `maxBodyBytes` if it
-     * is genuinely oversized.
-     *
-     * Budget rationale: measured RSS amplification is ~3.3× raw body size (~10 MB
-     * RSS per 3.01 MB request body). Realistic peak is ~100 concurrent × a few MB
-     * each ≈ 300 MB in-flight. The 2 GiB default gives ~6× headroom so the gate
-     * effectively never fires under ordinary load. Pathological worst case: 64
-     * simultaneous 32 MiB max-size bodies = 2 GiB budget → ~6.6 GiB RSS (~10% of
-     * a 64 GiB machine).
+     * @deprecated The byte-based admission gate has been removed (ADR-010). Kept in
+     * the schema so existing config files do not hard-error on load. Remove from
+     * your config.
      */
-    maxInFlightBytes: z.number().int().positive().default(2 * 1024 * 1024 * 1024),
+    maxInFlightBytes: z.number().int().positive().optional(),
     /**
-     * Maximum number of requests that may wait in the admission queue.
-     *
-     * Generously sized so it is effectively unreachable in normal operation.
-     * If this bound is genuinely hit, the server is already deeply overloaded
-     * and a fast 529 is the honest response.
+     * @deprecated The admission queue has been removed (ADR-010). Kept in the schema
+     * so existing config files do not hard-error on load. Remove from your config.
      */
-    maxQueueDepth: z.number().int().positive().default(1000),
+    maxQueueDepth: z.number().int().positive().optional(),
     /**
-     * Maximum time a queued request will wait for a budget slot, in milliseconds.
-     *
-     * If a slot does not open within this window the request receives HTTP 529
-     * overloaded_error. Set generously — 60 s is unreachable under normal load
-     * but provides a safety bound for pathological pile-ups.
+     * @deprecated The admission queue has been removed (ADR-010). Kept in the schema
+     * so existing config files do not hard-error on load. Remove from your config.
      */
-    maxQueueWaitMs: z.number().int().positive().default(60_000),
+    maxQueueWaitMs: z.number().int().positive().optional(),
   })
   .prefault({});
 
@@ -372,8 +344,6 @@ export interface Config {
   readonly anthropic: {
     readonly baseUrl: string;
     readonly connectTimeoutMs: number;
-    readonly headerTimeoutMs: number;
-    readonly streamIdleTimeoutMs: number;
     readonly maxUpstreamSockets: number;
     /**
      * Opt-in to a non-default host on `anthropic.baseUrl`.
@@ -385,11 +355,6 @@ export interface Config {
   readonly limits: {
     readonly maxBodyBytes: number;
     readonly pingIntervalMs: number;
-    /** @deprecated See LimitsSchema.maxConcurrentRequests. */
-    readonly maxConcurrentRequests: number;
-    readonly maxInFlightBytes: number;
-    readonly maxQueueDepth: number;
-    readonly maxQueueWaitMs: number;
   };
 }
 
@@ -559,7 +524,7 @@ const LEGACY_KEY_MOVES: readonly (readonly [path: string, replacement: string])[
   ["reasoningCache", "providers.codex.reasoningCache"],
   ["limits.connectTimeoutMs", "anthropic.connectTimeoutMs"],
   ["limits.maxUpstreamSockets", "anthropic.maxUpstreamSockets"],
-  ["limits.streamIdleTimeoutMs", "anthropic.streamIdleTimeoutMs and/or providers.codex.streamIdleTimeoutMs"],
+  ["limits.streamIdleTimeoutMs", "providers.codex.streamIdleTimeoutMs"],
   ["limits.requestTimeoutMs", "providers.codex.requestTimeoutMs"],
   ["limits.maxSseEventBytes", "providers.codex.maxSseEventBytes"],
 ];
@@ -620,6 +585,59 @@ export const detectUnknownProviderKeys = (raw: unknown): readonly string[] => {
 };
 
 // ---------------------------------------------------------------------------
+// Deprecated config keys — warn but do not reject (soft-deprecation path)
+// ---------------------------------------------------------------------------
+
+/**
+ * One entry in the deprecated-key table.
+ *
+ * A deprecated key differs from a legacy key in that it is still accepted by the
+ * schema (as `.optional()`) so existing user configs continue to load — the value
+ * is simply not wired into the runtime `Config`. The operator receives a `warn`
+ * log and a stderr notice so they know to remove it.
+ */
+export interface DeprecatedConfigKey {
+  /** Dotted config path (e.g. "anthropic.headerTimeoutMs"). */
+  readonly path: string;
+  /** Human-readable reason to include in the warning. */
+  readonly reason: string;
+}
+
+/**
+ * Keys that are accepted by the schema (so configs don't break) but whose values
+ * are no longer wired into the runtime Config. Soft-deprecation: warn on load,
+ * do not reject.
+ *
+ * Six keys are deprecated:
+ *   - anthropic.headerTimeoutMs      — relay must never bound headers phase (ADR-010)
+ *   - anthropic.streamIdleTimeoutMs  — relay must never bound stream phase (ADR-010)
+ *   - limits.maxConcurrentRequests   — admission gate removed (ADR-010)
+ *   - limits.maxInFlightBytes        — admission gate removed (ADR-010)
+ *   - limits.maxQueueDepth           — admission gate removed (ADR-010)
+ *   - limits.maxQueueWaitMs          — admission gate removed (ADR-010)
+ */
+export const DEPRECATED_KEYS: readonly DeprecatedConfigKey[] = [
+  { path: "anthropic.headerTimeoutMs", reason: "the relay no longer bounds the headers phase on a connected client (ADR-010); remove this key" },
+  { path: "anthropic.streamIdleTimeoutMs", reason: "the relay no longer bounds the stream-idle phase on a connected client (ADR-010); remove this key" },
+  { path: "limits.maxConcurrentRequests", reason: "the admission gate has been removed (ADR-010); remove this key" },
+  { path: "limits.maxInFlightBytes", reason: "the admission gate has been removed (ADR-010); remove this key" },
+  { path: "limits.maxQueueDepth", reason: "the admission gate has been removed (ADR-010); remove this key" },
+  { path: "limits.maxQueueWaitMs", reason: "the admission gate has been removed (ADR-010); remove this key" },
+];
+
+/**
+ * Return the subset of DEPRECATED_KEYS whose dotted paths are present in the raw
+ * config object. Pure: no I/O. Own-property walks only (prototype-pollution safe).
+ *
+ * Unlike detectLegacyConfigKeys (hard error), deprecated keys are soft: the config
+ * loads successfully, but the caller is expected to warn. (avoids PF-010)
+ */
+export const detectDeprecatedConfigKeys = (raw: unknown): readonly DeprecatedConfigKey[] => {
+  if (!isPlainObject(raw)) return [];
+  return DEPRECATED_KEYS.filter((entry) => hasOwnPath(raw, entry.path));
+};
+
+// ---------------------------------------------------------------------------
 // resolveConfig — FileConfig → Config transformation
 // ---------------------------------------------------------------------------
 
@@ -669,15 +687,21 @@ export const resolveConfig = (file: FileConfig): Config => ({
   anthropic: {
     baseUrl: file.anthropic.baseUrl,
     connectTimeoutMs: file.anthropic.connectTimeoutMs,
-    headerTimeoutMs: file.anthropic.headerTimeoutMs,
-    streamIdleTimeoutMs: file.anthropic.streamIdleTimeoutMs,
+    // headerTimeoutMs and streamIdleTimeoutMs are deprecated — parsed by schema
+    // so existing configs don't hard-error, but not wired into Config (ADR-010).
     maxUpstreamSockets: file.anthropic.maxUpstreamSockets,
     allowInsecureBaseUrl: file.anthropic.allowInsecureBaseUrl,
   },
   providers: {
     codex: PROVIDER_RESOLVERS.codex(file.providers.codex),
   },
-  limits: file.limits,
+  limits: {
+    maxBodyBytes: file.limits.maxBodyBytes,
+    pingIntervalMs: file.limits.pingIntervalMs,
+    // maxConcurrentRequests, maxInFlightBytes, maxQueueDepth, maxQueueWaitMs are
+    // deprecated — admission gate removed (ADR-010). Parsed by schema so existing
+    // configs don't hard-error, but not wired into Config.
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -706,6 +730,15 @@ export interface LoadConfigResult {
    * failing the exit code. (avoids PF-006)
    */
   readonly configuredProviders: ReadonlySet<ProviderId>;
+  /**
+   * Deprecated config keys that were present in the config file.
+   *
+   * Non-empty when the user has keys in their config that are accepted by the schema
+   * (soft-deprecated) but whose values are no longer wired into the runtime Config.
+   * The `serve` command logs a `warn` and prints a stderr notice for each entry so
+   * the operator knows to remove them. Empty array when no deprecated keys are present.
+   */
+  readonly deprecatedKeys: readonly DeprecatedConfigKey[];
 }
 
 /**
@@ -825,6 +858,7 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     configPath: resolvedPath,
     fileFound,
     configuredProviders: detectConfiguredProviders(raw),
+    deprecatedKeys: detectDeprecatedConfigKeys(raw),
   });
 };
 

@@ -231,13 +231,13 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
 // ---------------------------------------------------------------------------
 
 const serve = async (
-  config: Config,
-  configPath: string,
-  fileFound: boolean,
+  result: LoadConfigResult,
   verbose: boolean,
   quiet: boolean,
   portStr?: string,
 ): Promise<void> => {
+  const { config, configPath, fileFound, deprecatedKeys } = result;
+
   // Validate --port if given, with byte-identical wording to init port validation. [F3/F15]
   let effectivePort = config.port;
   if (portStr !== undefined) {
@@ -281,6 +281,14 @@ const serve = async (
     path: configPath,
     eventType: fileFound ? "loaded" : "defaults",
   });
+
+  // Warn on deprecated config keys — accepted by schema so existing configs
+  // don't break, but the values are no longer wired into the runtime Config.
+  for (const { path, reason } of deprecatedKeys) {
+    deps.logger.log("warn", "config_key_deprecated", { path });
+    errOut(`subswitch: deprecated config key "${path}" — ${reason}`);
+  }
+
   deps.logger.log("info", "listening", { path: `http://127.0.0.1:${effectiveConfig.port}` });
 
   // Human-readable ready banner — one line per provider (7d).
@@ -475,8 +483,7 @@ const main = async (): Promise<void> => {
         fail(configResult.error.message);
         return;
       }
-      const { config, configPath, fileFound } = configResult.value;
-      await serve(config, configPath, fileFound, command.verbose, command.quiet, command.port);
+      await serve(configResult.value, command.verbose, command.quiet, command.port);
       return;
     }
 
