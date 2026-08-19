@@ -1,11 +1,11 @@
 ---
 feature: codex-leg
 name: Codex translation leg (gpt-* → /responses)
-description: "Use when modifying Codex request translation, model alias resolution, session/cache key derivation, protocol headers, reasoning round-trips, or the codex-recorder dev tool. Keywords: codex, gpt, responses, conversation key, session_id, prompt_cache_key, reasoning, effort, translation, routing table, alias, family, canonical, buildRoutingTable, resolveModel, ModelResolution, buildHeaders, CodexTransportConstants, maxAggregateBytes, forceRefresh."
+description: "Use when modifying Codex request translation, model alias resolution, session/cache key derivation, protocol headers, reasoning round-trips, count_tokens estimation, ambiguous-model routing policy, timeout asymmetry, or the codex-recorder dev tool. Keywords: codex, gpt, responses, conversation key, session_id, prompt_cache_key, reasoning, effort, translation, routing table, alias, family, canonical, buildRoutingTable, resolveModel, ModelResolution, buildHeaders, CodexTransportConstants, maxAggregateBytes, forceRefresh, count_tokens, estimateTokens, ambiguous_model_name, BufferBodyError, ADR-010, streamIdleTimeoutMs."
 category: domain-knowledge
 directories: [src]
 created: 2026-07-22
-updated: 2026-08-08
+updated: 2026-08-19
 ---
 
 # Codex Translation Leg (gpt-* → /responses)
@@ -16,7 +16,7 @@ subswitch translates Anthropic Messages API requests into OpenAI Responses API c
 
 The pipeline has three distinct stages: **resolve** (alias/family → canonical model in `server.ts`), **route** (dispatch decision in `router.ts`), and **send** (translation + fetch in `codex-handler.ts`). Keeping these stages separate is the load-bearing invariant of ADR-005 — the router accepts a typed `ModelResolution`, never a raw string, so name matching cannot creep back in.
 
-The translation leg is not a simple field rename. Several fields are deliberately dropped (max_tokens), renamed (system → developer role), injected (prompt_cache_key, reasoning.effort), or round-tripped through a server-side cache (encrypted reasoning). These rules exist because the Codex backend differs from the Responses API in ways that are not obvious from its OpenAPI surface.
+**Governing principle (ADR-010):** a relay fronting an origin API must be indistinguishable from the origin. A bound that reclaims a provably dead connection is legitimate; a bound that can terminate a request the origin was about to answer, or emit a status the origin never sends, is a defect. This principle drove the removal of the byte-budget slot system and the deprecation of the Anthropic-leg stream timeout.
 
 ## Business Context
 
@@ -77,6 +77,22 @@ Credential state is deliberately **not** an input to `buildRoutingTable`: gating
 **`isReservedAnthropicName` (renamed from `isAnthropicModelName`; regex unchanged).** Prefix-based, covering `inherit|sonnet|opus|haiku|claude-*`. Used in two places that must never disagree:
 - `config.ts` AliasesSchema refines — reject alias keys or values at config-parse time.
 - `buildRoutingTable` `byAlias` construction — entries matching the predicate are added to `rejectedAliases` and skipped.
+
+### Ambiguous Model Policy: Fail Open (src/server.ts)
+
+When `decideRoute` returns `{ kind: "ambiguous" }`, the server **forwards to Anthropic** rather than synthesizing a 400. This is ADR-010 applied to routing: a relay-invented 400 that names our provider registry in the error message is a status the origin never emits. The origin may support the name unambiguously; at minimum, forwarding lets it answer with its own error.
+
+`Route.ambiguous` is **kept** in the router. Classification (what the name is) lives in the router; policy (what to do with it) lives in the server. The `server.ts` comment makes this distinction explicit so the two are not collapsed.
+
+The `ambiguous_model_name` warn log preserves diagnostic value: the `model` field carries the ambiguous name annotated with the provider list (`"name (p1, p2)"`).
+
+**Doctor severity:** `unknown_provider` is `"info"` (the request still forwards and may succeed at the origin); `ambiguous` stays `"fail"` because that conflict is subswitch-derived and WILL 404 at the origin — flagging it is honest.
+
+### count_tokens Returns an Estimate (src/codex-handler.ts + src/codex-request.ts)
+
+`handleCountTokens` returns `{ input_tokens: estimateTokens(rawBody) }` where `estimateTokens` uses a `chars / 4` heuristic (UTF-16 code units, not bytes). This is a **deliberate design decision, not an unfinished shortcut.**
+
+Rationale: forwarding the count_tokens request to Anthropic would return a count for a different model (Claude's tokenizer, not the Codex model). The chars/4 estimate is the least-wrong option — close enough for Claude Code's context bookkeeping purposes without misattributing a different model's count. Do not "fix" this by forwarding to Anthropic.
 
 ### Resolve → Route → Send in src/server.ts
 
@@ -154,7 +170,7 @@ The rule in one line: **never return a healthy-looking empty turn.** An unrecove
 
 The seven auth events now in `ProviderEvents<P>`: `tokenRefreshed`, `refreshTokenRotatedExternally`, `tokenRefreshFailed`, `refreshRetryBoundViolated`, `authFileNewerThanRefresh`, `authFileWriteFailed`, `authFileUnreadableAfterRefresh`.
 
-**`callTokenEndpoint` passes `AbortSignal.timeout(15_000)`.** Without a timeout, a hung OAuth server holds the single-flight promise open indefinitely — all 32 concurrency slots fill and everything else 503s.
+**`callTokenEndpoint` passes `AbortSignal.timeout(15_000)`.** Without a timeout, a hung OAuth server holds the single-flight promise open indefinitely, blocking every pending request that shares the one `refreshInflight` promise until it resolves or the 15 s signal fires.
 
 **`forceRefresh()` has a 30-second cooldown** (`FORCE_REFRESH_COOLDOWN_MS = 30_000`). A persistent upstream 401 that survives a freshly-minted token must not trigger a full OAuth round-trip on every concurrent request.
 
@@ -166,11 +182,14 @@ The seven auth events now in `ProviderEvents<P>`: `tokenRefreshed`, `refreshToke
 
 ```
 IncomingMessage (Anthropic wire)
-  → bufferBody (raw bytes preserved)
+  → bufferBody (raw bytes preserved; body_too_large → 413; client_disconnected → drop)
   → JSON.parse (once; parsedBody passed to handler — P4 contract)
   → peekModel (as-requested name for logs; never reassigned)
   → deps.resolve(model) → ModelResolution (table built once at startup in buildDeps)
   → decideRoute(method, path, resolution) → Route
+      ├── "ambiguous" → warn ambiguous_model_name; forward to Anthropic (fail open, ADR-010)
+      ├── "unknown_provider" → warn unknown_provider_qualifier; forward to Anthropic
+      └── "provider" → dispatch to handleMessages or handleCountTokens
   → deps.providers["codex"].handleMessages(req, res, rawBody, parsedBody, canonical)
       → AnthropicRequestSchema.safeParse(parsedBody)
       → canonical substitution (model field → canonical in `request`)
@@ -192,6 +211,9 @@ IncomingMessage (Anthropic wire)
       → createFrameWriter (res, signal) — real function; backpressure + abort-safe
       → stream to client (or aggregateFrames for non-streaming — materialises a block
         ONLY on its content_block_stop; bounded by maxAggregateBytes=64MiB)
+
+  → handleCountTokens: estimateTokens(rawBody) → chars/4 heuristic → { input_tokens: N }
+        (deliberate estimate — forwarding to Anthropic would return a different model's count)
 ```
 
 ### Reasoning round-trip (src/codex-request.ts + codex-response.ts)
@@ -216,13 +238,16 @@ IncomingMessage (Anthropic wire)
 | Stream truncated before any terminal lifecycle event | `flush()` reconciles when some block has content and emits `message_delta(max_tokens)` + `message_stop`; otherwise emits an error frame so the client gets 502, never a 200 with empty or null content. |
 | Non-streaming accumulation exceeds `maxAggregateBytes` (64 MiB) | 502 "stream interrupted" — same shape as any other pipeline failure on this leg. Never pass a truncated frames array to `aggregateFrames` (would silently produce 200 with empty content — avoids PF-008). |
 | Tool-use arguments non-empty but unparseable | `aggregateFrames` returns `err()` → 502. The client must not act on an invented `input: {}`. An empty argument string still yields `input: {}` — correct for a zero-argument call. |
+| Codex-leg timeout | 504 with `api_error` — **kept deliberately** (ADR-010: 504 is a status the origin genuinely produces for a timed-out upstream; the relay must not invent an alternative). |
+| Unrepresentable upstream status | 502 with `api_error` — **kept deliberately** (ADR-010: same rationale; the upstream produced a status, and 502 is the truthful relay response). |
 | Abort (client close or timeout) | `AbortController` shared between `res.on("close")` and total/idle timers. Idle timer resets on each data chunk. |
 | `reasoning_cache_miss` | Degraded, not broken. Warning logged as `errorCode`. |
-| `maxConcurrentRequests` exceeded | 503 returned immediately; health endpoint is exempt from the concurrency gate. |
+| `body_too_large` | 413 with `request_too_large`. `drainRejectedUpload()` lets remaining upload drain via FIN rather than RST. `body_too_large` is a **server-local `BufferBodyError`** — deliberately excluded from `ProxyError` so `proxyErrorToAnthropic` can never be called with it. |
+| `client_disconnected` | Client is gone — no HTTP response sent. Also a `BufferBodyError`, not a `ProxyError`. |
 
 ## Anti-Patterns
 
-**Aligning `/responses` headers to `codex exec` wire captures.** The parity gaps table in `e2e/README.md` documents analytics-endpoint headers from the wrong transport (avoids PF-005). Changing `buildHeaders` to match that table will break the working `/responses` HTTP leg. PF-005 forbids using the wrong-transport capture table to change header **names or values**; it does **not** govern **order**.
+**Aligning `/responses` headers to `codex exec` wire captures.** The parity gaps table in `e2e/README.md` documents analytics-endpoint headers from the wrong transport (avoids PF-005). Changing `buildHeaders` to match that table will break the working `/responses` HTTP leg. PF-005 forbids using the wrong-transport capture table to change header **names or values**; it does **not** govern header **order**.
 
 **Naming `authorization` / `chatgpt-account-id` explicitly in `buildHeaders`.** Building the header object by spelling out `authorization` and `chatgpt-account-id` by name re-hardcodes one provider's header names into a provider-neutral handler. Credentials supply their own names via `authHeaders`; `buildHeaders` must not know what those names are — the `put()` guard writes transport constants and the credential's own entries land first.
 
@@ -254,6 +279,10 @@ IncomingMessage (Anthropic wire)
 
 **Joining the SSE accumulator outside the boundary branch.** `createSseParser` holds undelivered text as an array of segments and joins only on the chunk that completes an event. Adding a `pending.join("")` on the no-boundary path restores the quadratic behaviour — 38x slower at 8 MiB.
 
+**"Fixing" count_tokens by forwarding to Anthropic.** The estimate is deliberate: Anthropic returns counts for Claude's tokenizer, not for the Codex model. The chars/4 heuristic is correct; forwarding is wrong.
+
+**Synthesizing a 400/429/503 for an ambiguous model name.** The policy is fail open (ADR-010). A relay-invented 400 naming our registry is a status the origin never emits. `Route.ambiguous` stays in the router for classification; the server decides the policy.
+
 ## Gotchas
 
 **`stream: true` is always sent, even when the client sets `stream: false`.** subswitch always requests an SSE stream from the backend, then `aggregateFrames` assembles a non-streaming response.
@@ -264,7 +293,7 @@ IncomingMessage (Anthropic wire)
 
 **`subswitch.config.example.json` must stay in sync with the strict schema.** After `CodexProviderSchema`, `AnthropicSchema`, `LimitsSchema`, and `FileConfigSchema` became `z.strictObject`, an unknown key in the example file is a hard load error, not a cosmetic drift. Anyone updating the schema must update the example file.
 
-**`addEventListener("abort", …)` never fires on an already-aborted signal.** In `createFrameWriter`, the drain-wait loop registers an abort listener. If the signal is already aborted when a frame needs a drain wait, the listener never fires — the request's concurrency slot leaks for the life of the process, permanently degrading the server to 503. The fix is the explicit `signal.aborted` check placed after `res.write` so an in-flight frame still goes out. Any future backpressure wait must replicate this pattern.
+**`addEventListener("abort", …)` never fires on an already-aborted signal.** In `createFrameWriter`, the drain-wait loop registers an abort listener. If the signal is already aborted when a frame needs a drain wait, the listener never fires — the request hangs forever. The fix is the explicit `signal.aborted` check placed after `res.write` so an in-flight frame still goes out. Any future backpressure wait must replicate this pattern.
 
 **`Object.hasOwn` is required for alias lookup.** `buildRoutingTable` builds `byAlias` using `Object.hasOwn` during table construction; all request-time lookups are then `Map.get()` which is prototype-pollution safe.
 
@@ -276,33 +305,38 @@ IncomingMessage (Anthropic wire)
 
 **Parallel tool calls share reasoning items.** When the backend returns multiple function calls in one response, all share the same `reasoningItems` buffer. `injectReasoningItems` deduplicates by `item.id` using `injectedReasoningIds`, but reasoning items are re-injected for each call. This is by design.
 
-**`maxConcurrentRequests` has a failure mode where one leaked increment permanently degrades the server.** Any test must be sensitive to a single leak, not just gross breakage.
-
 **No test in the suite can catch an SSE-parser performance regression.** The slow path is byte-for-byte correct, so it passes all golden split assertions. `node --import tsx test/tools/sse-parser.bench.ts` is the only artifact that distinguishes them — run it after any `createSseParser` edit.
 
 **`codex-recorder.ts` cannot capture SSE events from the live backend.** Its detection gates on `contentType.includes("text/event-stream")`, but the production `/responses` stream sends **no `Content-Type` header at all** (avoids PF-013). The recorder therefore silently degrades to pass-through mode. It works correctly only against local fixture upstreams.
 
+**The Codex leg has a stream idle timeout; the Anthropic leg does not — this is a genuine asymmetry.** `providers.codex.streamIdleTimeoutMs` is live and intentional (default 300 s). `anthropic.headerTimeoutMs` and `anthropic.streamIdleTimeoutMs` are **deprecated** and silently ignored (ADR-010: the relay must not bound a connected client's stream phase). `LEGACY_KEY_MOVES` migrates `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs` only; there is no Anthropic equivalent. Any code that assumes both legs have matching timeout behavior is wrong.
+
+**Test suite must run alone; globs are flat and non-recursive.** Test globs are `test/unit/*.test.ts` and `test/integration/*.test.ts` — they do NOT descend into subdirectories. The suite has a hard 30 s per-test timeout and no fake timers. Wall-clock assertions flake when run alongside parallel processes (e.g. `tsc`). Always run the suite alone when validating timing-sensitive behavior.
+
 ## Key Files
 
-- `src/server.ts` — Wiring site for resolve→route→send; `buildDeps` calls `buildRoutingTable` once; `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; concurrency gate
+- `src/server.ts` — Wiring site for resolve→route→send; `buildDeps` calls `buildRoutingTable` once; `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; ambiguous fail-open policy; `BufferBodyError` (server-local, not `ProxyError`); `attachClientErrorHandler`; `SERVER_TUNING`
 - `src/models.ts` — Pure registry module (no repo imports); `MODEL_REGISTRY`, `PROVIDER_IDS`, `AliasesByProvider`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `routableModelCount`, `formatModelsReport`, `buildModelRows`, `buildAliasRows`
-- `src/router.ts` — Pure routing decision; accepts `ModelResolution` (not raw string); zero name matching; exhaustive switch
-- `src/codex-handler.ts` — `createCodexHandler<P>(deps): ProviderHandler` entry point; `CodexHandlerDeps<P>`, `CodexTransportConstants` interface; `buildHeaders` (exported pure module-level fn); canonical substitution; sessionId before loop; bounded retry; `AbortController` above `auth.getCredentials()`
+- `src/router.ts` — Pure routing decision; accepts `ModelResolution` (not raw string); zero name matching; exhaustive switch; classification only — policy lives in server.ts
+- `src/codex-handler.ts` — `createCodexHandler<P>(deps): ProviderHandler` entry point; `CodexHandlerDeps<P>`, `CodexTransportConstants` interface; `buildHeaders` (exported pure module-level fn); canonical substitution; sessionId before loop; bounded retry; `AbortController` above `auth.getCredentials()`; `handleCountTokens` (estimate, not forwarded)
 - `src/provider-transport.ts` — `createFrameWriter` (abort-safe, backpressure-aware); `respondJson`, `respondProxyError`, `readBoundedText`
 - `src/provider-handler.ts` — `ProviderHandler` interface; P4 contract documented
-- `src/codex-request.ts` — All request translation logic; `translateRequest`, `translateEffort`
+- `src/codex-request.ts` — All request translation logic; `translateRequest`, `translateEffort`, `estimateTokens` (chars/4 heuristic)
 - `src/anthropic-parse.ts` — `buildInstructions` (moved from `codex-request.ts`); `textOfBlocks`
 - `src/conversation-key.ts` — Deterministic v7-shaped UUID from sha256 of canonical request
 - `src/codex-response.ts` — `MAX_CONTENT_BLOCKS`; SSE parser (segment array; linear); Anthropic SSE translator state machine; `aggregateFrames`; `blockIndexByKey` NOT pruned on stop
 - `src/codex-auth.ts` — `CodexAuthManager`; all 7 auth events now table-derived via `events: ProviderEvents<"codex">`; `callTokenEndpoint` uses `AbortSignal.timeout(15_000)`; `forceRefresh()` 30s cooldown; `writeAtomic` self-heals EEXIST
 - `src/provider-events.ts` — `providerEvents<P>(id): ProviderEvents<P>`; 19-field table (11 handler/translator events + 1 insecureBaseUrlScheme + 7 auth events); compile-time log-injection control
-- `src/config.ts` — `providers.codex.maxAggregateBytes` (64 MiB default); `CodexProviderSchema` via `z.strictObject`
+- `src/config.ts` — `providers.codex.streamIdleTimeoutMs` (default 300 s, live); `anthropic.streamIdleTimeoutMs` and `anthropic.headerTimeoutMs` (deprecated, ignored); `LEGACY_KEY_MOVES` migrates `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs`; `providers.codex.maxAggregateBytes` (64 MiB default); strict schemas via `z.strictObject`
+- `src/errors.ts` — `ProxyError` union (auth/upstream/translate/timeout); `BufferBodyError` is separate and local to `server.ts`; `AnthropicErrorType` includes `not_found_error`; `upstreamStatusToAnthropicError`; 504→timeout and 502→upstream are both intentional (ADR-010)
+- `src/agent-scan.ts` — `unknown_provider` severity is `"info"`; `ambiguous` severity is `"fail"`
 - `test/tools/` — `sse-parser.bench.ts` (the only guard against an SSE-parser perf regression)
 - `test/fixtures/sse-splits.golden.json` — Frame-boundary pin for `createSseParser`; 66,039 splits asserted
 - `e2e/capture/codex-recorder.ts` — Dev-only transparent forwarder. **Known defect**: cannot capture SSE from live backend (no `Content-Type` header — avoids PF-013)
 
 ## Related
 
+- ADR-010 (Accepted): relay must be indistinguishable from the origin — drove removal of slot-based admission gate, deprecation of Anthropic-leg stream timeout, and fail-open policy for ambiguous/unknown-provider routes
 - ADR-006 (Accepted): Source the routable set from `MODEL_REGISTRY`, not a user-maintained `codex.models` list
 - ADR-005 (Accepted): Route by exact model-name membership; resolution strictly before `decideRoute`; `decideRoute` now accepts `ModelResolution` (not raw string) enforcing this structurally
 - ADR-008 (Accepted): Apply credential redaction once at the error render site (`toAnthropicErrorBody`); `redactCredentials` is called inside `toAnthropicErrorBody`, not at each relay call site
