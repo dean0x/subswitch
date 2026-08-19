@@ -215,6 +215,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
     forwardAnthropic: createAnthropicForwarder({
       baseUrl: config.anthropic.baseUrl,
       connectTimeoutMs: config.anthropic.connectTimeoutMs,
+      headerTimeoutMs: config.anthropic.headerTimeoutMs,
       streamIdleTimeoutMs: config.anthropic.streamIdleTimeoutMs,
       maxUpstreamSockets: config.anthropic.maxUpstreamSockets,
       logger,

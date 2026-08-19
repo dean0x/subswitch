@@ -59,9 +59,36 @@ const AnthropicSchema = z
       .url()
       .refine(requireHttpsOrLoopback, { message: `anthropic.baseUrl ${HTTPS_REQUIRED_MESSAGE}` })
       .default("https://api.anthropic.com"),
-    /** Connection timeout for all upstream requests to the Anthropic leg. */
+    /**
+     * TCP connection-establishment timeout for the Anthropic leg (milliseconds).
+     * Bounds only the time to establish a new TCP connection; the timer is armed
+     * directly on the socket (not via `ClientRequest.setTimeout`, which defers
+     * internally and cannot bound the connect phase).
+     * Once TCP connects the timer is re-armed to `headerTimeoutMs`.
+     *
+     * On HTTPS connections, `'connect'` fires after TCP establishment but before
+     * the TLS handshake, so TLS negotiation falls under `headerTimeoutMs`.
+     *
+     * Has no effect on reused pooled sockets (no connect phase).
+     */
     connectTimeoutMs: z.number().int().positive().default(10_000),
-    /** Stream idle timeout for the Anthropic passthrough. */
+    /**
+     * Time from TCP connection established to first response byte (headers), in
+     * milliseconds.  Bounds only the connect→response-headers phase; once headers
+     * arrive the timer is re-armed to `streamIdleTimeoutMs` for the stream body.
+     * Defaults to 660 000 ms — 60 s above Anthropic's own ~600 s server-side
+     * ceiling — so the relay never fires before the origin does on a legitimate
+     * long-running request (e.g. a non-streaming Opus completion with large
+     * max_tokens).  The extra 60 s headroom exists because the relay's clock
+     * starts at TCP connect whereas the origin's starts when it has received the
+     * full request body; equal budgets with an earlier start would let the relay
+     * pre-empt the origin by the request-upload time plus RTT.
+     */
+    headerTimeoutMs: z.number().int().positive().default(660_000),
+    /**
+     * Stream idle timeout for the Anthropic passthrough (milliseconds).
+     * Bounds the headers→stream-end phase; reset by every received chunk.
+     */
     streamIdleTimeoutMs: z.number().int().positive().default(300_000),
     /** Maximum sockets in the keep-alive pool for the Anthropic passthrough. */
     maxUpstreamSockets: z.number().int().positive().default(32),
@@ -296,6 +323,7 @@ export interface Config {
   readonly anthropic: {
     readonly baseUrl: string;
     readonly connectTimeoutMs: number;
+    readonly headerTimeoutMs: number;
     readonly streamIdleTimeoutMs: number;
     readonly maxUpstreamSockets: number;
     /**
@@ -588,6 +616,7 @@ export const resolveConfig = (file: FileConfig): Config => ({
   anthropic: {
     baseUrl: file.anthropic.baseUrl,
     connectTimeoutMs: file.anthropic.connectTimeoutMs,
+    headerTimeoutMs: file.anthropic.headerTimeoutMs,
     streamIdleTimeoutMs: file.anthropic.streamIdleTimeoutMs,
     maxUpstreamSockets: file.anthropic.maxUpstreamSockets,
     allowInsecureBaseUrl: file.anthropic.allowInsecureBaseUrl,

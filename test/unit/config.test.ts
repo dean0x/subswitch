@@ -27,6 +27,7 @@ describe("loadConfig", () => {
     assert.equal(result.value.config.logLevel, "info");
     assert.equal(result.value.config.anthropic.baseUrl, "https://api.anthropic.com");
     assert.equal(result.value.config.anthropic.connectTimeoutMs, 10_000);
+    assert.equal(result.value.config.anthropic.headerTimeoutMs, 660_000);
     assert.equal(result.value.config.anthropic.streamIdleTimeoutMs, 300_000);
     assert.equal(result.value.config.anthropic.maxUpstreamSockets, 32);
     assert.equal(result.value.config.providers.codex.baseUrl, "https://chatgpt.com/backend-api/codex");

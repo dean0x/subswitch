@@ -25,6 +25,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Previously, control fell through into the merge and wrote our refresh result anyway,
   defeating the guard even when it had correctly fired.
 
+- **Anthropic passthrough — `connectTimeoutMs` now genuinely bounds TCP connection
+  establishment; new `headerTimeoutMs` knob bounds time to first byte** (fixes #27).
+  Previously `upstream.setTimeout(connectTimeoutMs)` was called on the `ClientRequest`
+  object, but Node's implementation defers that call via an internal `'connect'`
+  listener — so it fired only after TCP connect, in the same tick as the
+  `headerTimeoutMs` rearm, meaning `connectTimeoutMs` was never in force for any
+  measurable interval.  Measured against a blackholed IP (`192.0.2.1`, TEST-NET-1)
+  with `connectTimeoutMs=700` and `headerTimeoutMs=5000`, the request previously
+  failed after **75 019 ms** (the macOS kernel TCP timeout) — neither budget fired.
+  The fix arms the timer **directly on the socket** inside the `'socket'` event
+  handler, before `'connect'` fires, so the connect-phase budget is in force for
+  the full TCP handshake window.  The same measured scenario now fails at ~700 ms.
+  On HTTPS, `'connect'` fires after TCP establishment but before the TLS handshake,
+  so TLS negotiation falls under `headerTimeoutMs`, not `connectTimeoutMs` — this is
+  documented in the JSDoc.  The fix also introduces a three-budget design:
+  `connectTimeoutMs` (10 s, TCP establishment only), `headerTimeoutMs` (660 s
+  default, connect→response-headers — defaults to 60 s above Anthropic's own ~600 s
+  server-side ceiling; the extra headroom accounts for the relay's clock starting at
+  TCP connect while the origin's starts only after the full request body is received,
+  so equal budgets would let the relay pre-empt the origin by the upload time plus
+  RTT), and `streamIdleTimeoutMs` (300 s, headers→stream-end, reset by every chunk).
+  **A hung upstream that accepts the TCP connection but never sends headers now takes
+  up to `headerTimeoutMs` (default 660 s) to fail, not 10 s** — tune this knob down
+  if you need faster detection of stalled upstreams.
+
+- **Anthropic passthrough — duplicate `anthropic_upstream_error` warn eliminated**
+  (fixes #27).  When a pre-header timeout fired, the timeout handler called
+  `upstream.destroy()` before writing the 504.  Destroying an in-flight
+  `ClientRequest` causes it to emit `error` (ECONNRESET) on the next tick; the
+  error handler's `responded` guard was inert on the pre-header path, so both
+  `anthropic_upstream_timeout` and `anthropic_upstream_error` were logged.  On
+  `main` the actual response sequence was `writeHead(504)` → `res.end()`
+  (synchronous, in the timeout handler) → next tick, error handler sees
+  `headersSent === true` → `res.destroy()`; the client received a complete 504 body
+  and the real defect was the duplicate warn log only.  A new `settled` flag is now
+  set by whichever handler responds first; the error handler returns early when
+  `settled` is true, ensuring exactly one warn event per timeout.
+
 ## [0.2.0] - 2026-08-09
 
 ### Upgrading from 0.1.0

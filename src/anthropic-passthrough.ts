@@ -53,7 +53,29 @@ const filterRawHeaders = (rawHeaders: readonly string[]): string[] => {
 
 export interface PassthroughOptions {
   readonly baseUrl: string;
+  /**
+   * Bounds TCP connection establishment only (milliseconds).
+   * The timer is armed directly on the socket (not via `ClientRequest.setTimeout`,
+   * which defers internally and cannot bound the connect phase).  Once TCP connects,
+   * the timer is re-armed to `headerTimeoutMs`.
+   *
+   * On HTTPS connections, `'connect'` fires after TCP establishment but before the
+   * TLS handshake, so TLS negotiation falls under `headerTimeoutMs`, not this budget.
+   *
+   * For pooled/keep-alive sockets (no connect phase), `headerTimeoutMs` is armed
+   * immediately and this budget has no effect.
+   */
   readonly connectTimeoutMs: number;
+  /**
+   * Bounds the connect→response-headers phase (time to first byte), in milliseconds.
+   * Armed on socket connect (or immediately for pooled sockets).
+   * Re-armed to `streamIdleTimeoutMs` once headers arrive.
+   */
+  readonly headerTimeoutMs: number;
+  /**
+   * Bounds the headers→stream-end phase, in milliseconds.
+   * Reset by every received chunk.
+   */
   readonly streamIdleTimeoutMs: number;
   readonly logger: Logger;
   /** Maximum sockets in the keep-alive pool. Config key: limits.maxUpstreamSockets. */
@@ -84,7 +106,12 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
 
   return (req, res, body) => {
     const path = `${basePath}${req.url ?? "/"}`;
-    let responded = false;
+    // `settled` is set by whichever handler wins the race — the response
+    // callback (headers received) or the timeout handler (504 written).
+    // The error handler uses it as its early-return guard so that a
+    // destroy() issued by the timeout handler does not produce a duplicate
+    // `anthropic_upstream_error` warn after the 504 has already been sent.
+    let settled = false;
 
     const upstream = client.request(
       {
@@ -100,7 +127,7 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
         // (cross-name position of interleaved duplicates is not guaranteed).
       },
       (upstreamRes) => {
-        responded = true;
+        settled = true;
         upstream.setTimeout(options.streamIdleTimeoutMs);
         // Response direction: writeHead accepts a flat [name, value, ...] array
         // directly (Node's _storeHeader Array branch), preserving the upstream's
@@ -112,8 +139,48 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       },
     );
 
-    upstream.setTimeout(options.connectTimeoutMs);
-    upstream.on("socket", (socket) => socket.setNoDelay(true));
+    // Timer arming — three-budget design:
+    //
+    // 1. connectTimeoutMs — bounds TCP establishment, armed DIRECTLY on the
+    //    socket (not via upstream.setTimeout).  ClientRequest.setTimeout()
+    //    defers internally via its own 'connect' listener, so it would fire
+    //    only after connect — in the same tick as the headerTimeoutMs rearm,
+    //    leaving connectTimeoutMs never actually in force.
+    //
+    //    Node v22's internal socket-timeout handler (onTimeout) skips
+    //    req.emit('timeout') when socket.connecting is true, so we must
+    //    propagate the timeout manually via upstream.emit('timeout').
+    //    On HTTPS, 'connect' fires after TCP but BEFORE the TLS handshake, so
+    //    TLS negotiation falls under headerTimeoutMs, not connectTimeoutMs.
+    //
+    // 2. headerTimeoutMs — armed on 'connect' (or immediately for a pooled
+    //    socket where no 'connect' event will ever fire).  Bounds the window
+    //    from TCP-connected to first response byte.  upstream.setTimeout() in
+    //    the connected state propagates normally via Node's internal handler.
+    //
+    // 3. streamIdleTimeoutMs — armed in the response callback once headers
+    //    arrive; reset by every received chunk.
+    upstream.on("socket", (socket) => {
+      socket.setNoDelay(true);
+      if (socket.connecting) {
+        socket.setTimeout(options.connectTimeoutMs);
+        const onConnectTimeout = () => {
+          socket.removeListener("connect", onConnect);
+          socket.setTimeout(0); // disarm before manual propagation
+          upstream.emit("timeout"); // triggers our handler → 504
+        };
+        const onConnect = () => {
+          socket.removeListener("timeout", onConnectTimeout);
+          socket.setTimeout(0); // cancel connect budget
+          upstream.setTimeout(options.headerTimeoutMs);
+        };
+        socket.once("timeout", onConnectTimeout);
+        socket.once("connect", onConnect);
+      } else {
+        // Pooled/keep-alive socket — no connect phase; arm header budget immediately.
+        upstream.setTimeout(options.headerTimeoutMs);
+      }
+    });
 
     // Request direction: build a Map from the filtered rawHeaders so that
     // duplicates (same lowercase key, different values) are preserved as array
@@ -140,18 +207,23 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
     }
 
     upstream.on("timeout", () => {
-      upstream.destroy();
+      // Log and write the 504 BEFORE destroy() to narrow the race window with
+      // the 'error' handler.  destroy() on an in-flight ClientRequest emits
+      // 'error' (ECONNRESET) on the next tick; setting `settled = true` here
+      // prevents that error from producing a duplicate warn log.
       options.logger.log("warn", "anthropic_upstream_timeout", { path: req.url ?? "/" });
       if (!res.headersSent) {
+        settled = true;
         res.writeHead(504, { "content-type": "application/json" });
         res.end(toAnthropicErrorBody("api_error", "upstream timed out"));
       } else {
         res.destroy();
       }
+      upstream.destroy();
     });
 
     upstream.on("error", () => {
-      if (responded) return;
+      if (settled) return;
       options.logger.log("warn", "anthropic_upstream_error", { path: req.url ?? "/" });
       if (!res.headersSent) {
         res.writeHead(502, { "content-type": "application/json" });

@@ -4,6 +4,7 @@
   "anthropic": {
     "baseUrl": "https://api.anthropic.com",
     "connectTimeoutMs": 10000,
+    "headerTimeoutMs": 660000,
     "streamIdleTimeoutMs": 300000,
     "maxUpstreamSockets": 32,
     "allowInsecureBaseUrl": false

@@ -53,6 +53,7 @@ const makeMinimalConfig = (overrides: {
     anthropic: {
       baseUrl: anthropicBaseUrl,
       connectTimeoutMs: 10_000,
+      headerTimeoutMs: 600_000,
       streamIdleTimeoutMs: 300_000,
       maxUpstreamSockets: 32,
       allowInsecureBaseUrl: anthropicAllowInsecureBaseUrl,
