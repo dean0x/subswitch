@@ -1769,3 +1769,102 @@ describe("anthropic passthrough — an unbuffered 504 reclaims a client that is 
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// B14: the unbuffered 502 must reclaim the connection, not wedge it
+//
+// On the unbuffered path (body === undefined — every non-/v1/messages request)
+// the client's upload is piped straight into the upstream.  When the upstream
+// connection fails (ECONNRESET from an origin that accepts TCP then destroys
+// immediately) the relay writes its 502 but the client is still uploading into
+// a request body nothing will ever read.  Node cannot parse the next request
+// out of a body it never consumed, so before the fix the socket sat there
+// until server.requestTimeout (600 s) — identical to the 504 defect B13 pins.
+//
+// An origin that accepts TCP and destroys the socket immediately gives a
+// deterministic ECONNRESET → 502 without TEST-NET-1 topology dependence, so
+// this is always a 502 (never a 504) and the reclaim assertion always runs.
+//
+// Both bounds of the assertion matter: the response must arrive complete
+// (draining before teardown keeps the client from losing it — ADR-010), and
+// the socket must be reclaimed within the drain's time bound rather than held
+// for requestTimeout (applies ADR-010, avoids PF-011).
+//
+// Non-vacuity: RED without `req.unpipe(upstream); drainRejectedUpload(req)` in
+// the upstream error handler — the socket is still open at the 8 s give-up.
+// ---------------------------------------------------------------------------
+
+describe("anthropic passthrough — an unbuffered 502 reclaims a client that is still uploading (B14)", () => {
+  it("delivers the whole 502 and closes the connection instead of holding it for requestTimeout", async () => {
+    // Origin accepts TCP then destroys immediately → ECONNRESET → 502.
+    const origin = net.createServer((socket) => { socket.destroy(); });
+    await new Promise<void>((r) => origin.listen(0, "127.0.0.1", r));
+    const originPort = (origin.address() as AddressInfo).port;
+
+    const forwarder = createAnthropicForwarder({
+      baseUrl: `http://127.0.0.1:${originPort}`,
+      connectTimeoutMs: 10_000,
+      maxUpstreamSockets: 1,
+      logger: { log: () => undefined },
+    });
+    // No body argument — the unbuffered path this test exists for.
+    const relay = http.createServer((req, res) => forwarder(req, res));
+    await new Promise<void>((r) => relay.listen(0, "127.0.0.1", r));
+    const relayPort = (relay.address() as AddressInfo).port;
+
+    const GIVE_UP_MS = 8_000;
+    const outcome = await new Promise<{ wire: string; closedAfterMs: number }>((resolve) => {
+      const started = Date.now();
+      const received: Buffer[] = [];
+      let dribble: NodeJS.Timeout | undefined;
+      const stop = (): void => { if (dribble !== undefined) clearInterval(dribble); };
+      const socket = net.connect(relayPort, "127.0.0.1", () => {
+        // Declare far more than is ever sent: the client is mid-upload for the whole test.
+        socket.write(
+          `POST /v1/complete HTTP/1.1\r\nHost: 127.0.0.1:${relayPort}\r\n` +
+            `content-type: application/json\r\ncontent-length: 1000000000\r\n\r\n`,
+        );
+        socket.write(JSON.stringify({ model: "claude-sonnet-4-6", pad: "A".repeat(4096) }));
+        dribble = setInterval(() => socket.write("B".repeat(64)), 100);
+      });
+      socket.on("data", (chunk: Buffer) => received.push(chunk));
+      socket.on("error", () => { /* RST/EPIPE on destroy is the expected end state */ });
+      socket.on("close", () => {
+        stop();
+        resolve({ wire: Buffer.concat(received).toString("utf8"), closedAfterMs: Date.now() - started });
+      });
+      const giveUp = setTimeout(() => {
+        stop();
+        const wire = Buffer.concat(received).toString("utf8");
+        socket.destroy();
+        resolve({ wire, closedAfterMs: -1 });
+      }, GIVE_UP_MS);
+      giveUp.unref();
+    });
+
+    await new Promise<void>((r) => origin.close(() => r()));
+    relay.closeAllConnections();
+    await new Promise<void>((r) => relay.close(() => r()));
+
+    const status = Number(/^HTTP\/1\.1 (\d{3})/.exec(outcome.wire)?.[1] ?? 0);
+    assert.equal(
+      status,
+      502,
+      `expected 502 (upstream connection failed via ECONNRESET); got ${status} ` +
+        `from wire ${JSON.stringify(outcome.wire.slice(0, 200))}`,
+    );
+    assert.ok(
+      outcome.wire.includes("upstream connection failed"),
+      `the synthesized error body must reach the client whole; got ${JSON.stringify(outcome.wire)}`,
+    );
+    assert.ok(
+      outcome.wire.endsWith("0\r\n\r\n"),
+      `the response must be terminated, not truncated by a teardown mid-write; got ${JSON.stringify(outcome.wire.slice(-40))}`,
+    );
+    assert.ok(
+      outcome.closedAfterMs > 1_500 && outcome.closedAfterMs < 4_000,
+      `the drain's time bound must reclaim the connection; closed after ${outcome.closedAfterMs} ms ` +
+        `(expected > 1_500 && < 4_000; -1 means still open at the ${GIVE_UP_MS} ms give-up, i.e. held until requestTimeout)`,
+    );
+  });
+});
