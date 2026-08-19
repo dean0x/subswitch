@@ -289,6 +289,17 @@ type BufferBodyError =
   | { readonly kind: "client_disconnected"; readonly message: string };
 
 /**
+ * Safety timeout for drainRejectedUpload: destroy the socket if draining stalls.
+ *
+ * Colocated with the helper because a later batch will move drainRejectedUpload
+ * to provider-transport.ts and this constant must travel with it.
+ *
+ * The B7 integration test asserts closure between 1.5 s and 3 s, which remains
+ * valid against this bound.
+ */
+const REJECTED_UPLOAD_DRAIN_MS = 2_000;
+
+/**
  * Drain remaining upload data after a 413 so TCP can close with FIN rather than RST.
  *
  * When the server sends a 413 before the client finishes uploading, the socket still
@@ -297,8 +308,8 @@ type BufferBodyError =
  * before reading it.  Calling req.resume() drains the inbound data, allowing the
  * connection to close naturally with FIN, giving the client time to read the 413.
  *
- * A 2-second safety timer (unref'd) destroys the socket if draining stalls — e.g.
- * when the client is sending a pathologically large body and does not honour the 413.
+ * REJECTED_UPLOAD_DRAIN_MS destroys the socket if draining stalls — e.g. when the
+ * client is sending a pathologically large body and does not honour the 413.
  * unref() ensures this timer never prevents the process from exiting.
  *
  * The latch (`done`) prevents the timer from firing after a clean drain.
@@ -319,7 +330,7 @@ const drainRejectedUpload = (req: IncomingMessage): void => {
   };
   const timer = setTimeout(() => {
     if (!done) req.socket?.destroy();
-  }, 2_000).unref();
+  }, REJECTED_UPLOAD_DRAIN_MS).unref();
   req.on("end", finish);
   req.on("close", finish);
   req.on("error", finish);
@@ -375,13 +386,10 @@ const peekModel = (parsed: unknown): string | undefined => {
  * responses proxied verbatim from an upstream).  The synthesized marker is
  * included here so callers cannot forget it and future synthesized response
  * sites are correct by default.
- *
- * Pass extra headers (e.g. `{ connection: "close" }`) as `extra`.
  */
-const synthesizedHeaders = (extra: Record<string, string> = {}): Record<string, string> => ({
+const synthesizedHeaders = (): Record<string, string> => ({
   "content-type": "application/json",
   [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER,
-  ...extra,
 });
 
 export const createProxyServer = (deps: ServerDeps): Server => {

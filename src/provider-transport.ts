@@ -7,10 +7,14 @@ import { proxyErrorToAnthropic, toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHE
 /**
  * Send a JSON response, no-op if headers were already sent.
  *
- * Every response emitted by a provider handler is synthesized by the relay
- * (the codex leg translates Codex→Anthropic; no byte is forwarded verbatim).
- * The synthesized marker is therefore always correct here and is included by
- * default so callers cannot forget it.
+ * Responses from the translating (Codex) leg are synthesized by construction
+ * (Codex→Anthropic format translation; no byte is forwarded verbatim), so the
+ * marker is always correct here and is included by default so callers cannot
+ * forget it.  The Anthropic passthrough leg's upstream responses are NOT marked
+ * by this helper — only relay-generated errors on that leg are synthesized.
+ *
+ * Caller-supplied headers are spread first so the synthesized marker is always
+ * last: a caller cannot accidentally or maliciously clear the marker (ADR-010).
  */
 export const respondJson = (
   res: ServerResponse,
@@ -19,7 +23,7 @@ export const respondJson = (
   extraHeaders: Record<string, string> = {},
 ): void => {
   if (res.headersSent) return;
-  res.writeHead(status, { "content-type": "application/json", [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER, ...extraHeaders });
+  res.writeHead(status, { "content-type": "application/json", ...extraHeaders, [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER });
   res.end(body);
 };
 
