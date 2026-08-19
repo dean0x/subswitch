@@ -298,11 +298,11 @@ All keys and their defaults:
 > (undici's global dispatcher), which these knobs do not control — shipping them as
 > per-provider keys would be config that bounds nothing on the Codex side.
 
-> **BREAKING (0.2.1):** Six config keys were removed: `anthropic.headerTimeoutMs`,
-> `anthropic.streamIdleTimeoutMs`, `limits.maxConcurrentRequests`, `limits.maxInFlightBytes`,
-> `limits.maxQueueDepth`, and `limits.maxQueueWaitMs`. If your config contains any of these,
+> **BREAKING (0.3.0):** Two config keys were removed: `anthropic.streamIdleTimeoutMs`
+> and `limits.maxConcurrentRequests`. If your config contains either of these,
 > `subswitch` will refuse to start and print a message naming each offending key. Delete
-> them from your config to continue. See the [0.2.1 changelog](#0.2.1---2026-08-19) for details.
+> them from your config to continue. See the
+> [0.3.0 changelog](CHANGELOG.md#030---2026-08-19) for details.
 
 > **Behavior when an upstream connects but never responds**: the Anthropic leg has no
 > relay-side timer on the response phase. If an upstream accepts the TCP connection and

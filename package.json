@@ -1,6 +1,6 @@
 {
   "name": "subswitch",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Local subscription-routing proxy for Claude Code — route a single subagent to a different model (OpenAI Codex) while every other request stays on Claude. Per-subagent routing, no API keys.",
   "bin": {
