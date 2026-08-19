@@ -54,7 +54,9 @@ const defaultConfig = (): Config => {
  * Overrides are applied AFTER parsing — the https bypass still works because
  * we spread over the already-parsed Config object, not re-running the schema.
  *
- * Non-vacuity: see "makeMinimalConfig — non-vacuity guard" describe block below.
+ * Non-vacuity: the "makeMinimalConfig — non-vacuity guard" describe block below pins
+ * non-overridden fields to their literal default values (not to defaultConfig()), so
+ * the guard catches hardcoded drift even when both sides call the same function.
  */
 const makeMinimalConfig = (overrides: {
   codexBaseUrl?: string;
@@ -92,21 +94,35 @@ const makeMinimalConfig = (overrides: {
 };
 
 describe("makeMinimalConfig — non-vacuity guard", () => {
-  it("non-overridden fields of makeMinimalConfig() match real loadConfig defaults — cannot drift", () => {
-    // Verifies that the spread-over-defaultConfig() pattern keeps non-URL fields
-    // in sync with loadConfig's real defaults.  Previously maxUpstreamSockets was
-    // hardcoded as 32 when the real default was 256 — that is now a structural
-    // impossibility because we spread ...base.anthropic.
-    const base = defaultConfig();
+  it("non-overridden fields of makeMinimalConfig() equal the real loadConfig defaults — literal pin", () => {
+    // Compares against LITERAL values (not against defaultConfig()) so the guard is
+    // genuinely discriminating: if makeMinimalConfig() ever stops spreading defaultConfig()
+    // and hardcodes wrong values, the literals catch it even when both sides call the same
+    // underlying function (avoids PF-011, PF-012).
+    //
+    // MUTATION PROOF: temporarily changing a default in src/config.ts (e.g. DEFAULT_PORT
+    // from 4141 to 4142, or connectTimeoutMs from 10_000 to 9_999) causes this test to go
+    // RED at the corresponding assertion — the literal no longer matches.  A spread-vs-base
+    // comparison would remain green because both sides derive from the same function.
+    //
+    // Canonical defaults (kept in sync with src/config.ts):
+    //   port:                              4141   (DEFAULT_PORT)
+    //   anthropic.connectTimeoutMs:        10_000
+    //   anthropic.maxUpstreamSockets:      256
+    //   limits.maxBodyBytes:               33_554_432  (32 MiB)
+    //   limits.pingIntervalMs:             15_000
+    //   providers.codex.aliases:           {}
+    //   providers.codex.requestTimeoutMs:  600_000
+    //   providers.codex.streamIdleTimeoutMs: 300_000
     const fixture = makeMinimalConfig();
-    assert.equal(fixture.port, base.port, "port must match default");
-    assert.equal(fixture.anthropic.connectTimeoutMs, base.anthropic.connectTimeoutMs, "connectTimeoutMs must match default");
-    assert.equal(fixture.anthropic.maxUpstreamSockets, base.anthropic.maxUpstreamSockets, "maxUpstreamSockets must match default");
-    assert.equal(fixture.limits.maxBodyBytes, base.limits.maxBodyBytes, "limits.maxBodyBytes must match default");
-    assert.equal(fixture.limits.pingIntervalMs, base.limits.pingIntervalMs, "limits.pingIntervalMs must match default");
-    assert.deepEqual(fixture.providers.codex.aliases, base.providers.codex.aliases, "aliases must match default");
-    assert.equal(fixture.providers.codex.requestTimeoutMs, base.providers.codex.requestTimeoutMs, "requestTimeoutMs must match default");
-    assert.equal(fixture.providers.codex.streamIdleTimeoutMs, base.providers.codex.streamIdleTimeoutMs, "streamIdleTimeoutMs must match default");
+    assert.equal(fixture.port, 4141, "port default must be 4141 (DEFAULT_PORT)");
+    assert.equal(fixture.anthropic.connectTimeoutMs, 10_000, "anthropic.connectTimeoutMs default must be 10 000 ms");
+    assert.equal(fixture.anthropic.maxUpstreamSockets, 256, "anthropic.maxUpstreamSockets default must be 256");
+    assert.equal(fixture.limits.maxBodyBytes, 32 * 1024 * 1024, "limits.maxBodyBytes default must be 32 MiB");
+    assert.equal(fixture.limits.pingIntervalMs, 15_000, "limits.pingIntervalMs default must be 15 000 ms");
+    assert.deepEqual(fixture.providers.codex.aliases, {}, "providers.codex.aliases default must be empty");
+    assert.equal(fixture.providers.codex.requestTimeoutMs, 600_000, "providers.codex.requestTimeoutMs default must be 600 000 ms");
+    assert.equal(fixture.providers.codex.streamIdleTimeoutMs, 300_000, "providers.codex.streamIdleTimeoutMs default must be 300 000 ms");
   });
 });
 

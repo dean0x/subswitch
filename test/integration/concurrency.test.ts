@@ -18,48 +18,35 @@ after(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Shared upstream that parks a single request and lets the test release it.
-// Also records the URL of the parked request so tests can assert request identity.
+// Shared upstream that parks ALL arriving requests and lets the test release them.
+// Each request is held until releaseAll() is called.
 // ---------------------------------------------------------------------------
 
 interface ParkingUpstream {
   readonly url: string;
-  /** If a request is parked, holds its ServerResponse so the test can release it. */
-  parkedRes: ServerResponse | null;
-  /** URL path+query of the currently parked request — allows identity assertions. */
-  parkedUrl: string | null;
-  /** Release the parked request with a 200 { ok: true } response. */
-  release(): void;
+  /** Number of requests that have fully arrived at the upstream and are waiting. */
+  readonly arrivedCount: number;
+  /** Release every parked request with a 200 { ok: true } response. */
+  releaseAll(): void;
   close(): Promise<void>;
 }
 
 const startParkingUpstream = async (): Promise<ParkingUpstream> => {
-  const state: { parkedRes: ServerResponse | null; parkedUrl: string | null } = {
-    parkedRes: null,
-    parkedUrl: null,
-  };
+  const parked: ServerResponse[] = [];
   const server = http.createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => {
-      state.parkedRes = res;
-      state.parkedUrl = req.url ?? null;
-    });
+    req.on("end", () => { parked.push(res); });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
-    get parkedRes() { return state.parkedRes; },
-    set parkedRes(v) { state.parkedRes = v; },
-    get parkedUrl() { return state.parkedUrl; },
-    set parkedUrl(v) { state.parkedUrl = v; },
-    release() {
-      if (state.parkedRes) {
-        state.parkedRes.writeHead(200, { "content-type": "application/json" });
-        state.parkedRes.end(JSON.stringify({ ok: true }));
-        state.parkedRes = null;
-        state.parkedUrl = null;
+    get arrivedCount() { return parked.length; },
+    releaseAll() {
+      for (const res of parked.splice(0)) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
       }
     },
     close: () =>
@@ -85,14 +72,21 @@ const pollUntil = async (condition: () => boolean, timeoutMs: number, intervalMs
 // ---------------------------------------------------------------------------
 // Concurrent requests all reach the upstream — no relay-invented gate (P0-2a)
 //
-// Non-vacuity: if the relay still had a gate set to 1 concurrent request,
-// the second concurrent POST would receive 503/529 (not 200), and this
-// test would fail at the "second request must reach upstream" assertion.
+// N = 20: one-fifth of the ~100-concurrent-sub-agent product thesis.  All 20
+// are fired simultaneously; the test asserts all 20 arrive at the upstream
+// before any are released.  If a relay-side gate blocked any request, that
+// request would never arrive and pollUntil would time out — RED at the
+// arrivedCount assertion.  Within the 30 s hard per-test timeout (package.json).
 // ---------------------------------------------------------------------------
 
 describe("concurrency — all requests reach upstream without relay interference (P0-2a)", () => {
-  it("N concurrent POSTs all reach the upstream and return 200", async () => {
-    // Two concurrent POSTs — the relay must forward both without blocking or rejecting.
+  it("20 concurrent POSTs all reach the upstream and return 200", async () => {
+    // Non-vacuity: if the relay had a gate set to K < 20 concurrent requests, at most K
+    // requests would arrive at the upstream before the others stalled.  pollUntil would
+    // time out before arrivedCount reached 20 and the test would fail at the assert.equal
+    // below.  Positive control: all 20 are released and must each return 200.
+    const N = 20;
+
     const parked = await startParkingUpstream();
     cleanups.push(parked.close);
 
@@ -102,48 +96,32 @@ describe("concurrency — all requests reach upstream without relay interference
     cleanups.push(subswitch.close);
 
     const body = JSON.stringify({ model: "claude-sonnet-4-6", messages: [] });
+    const headers = { "content-type": "application/json" };
 
-    // Fire req1 — parks at upstream.
-    const controller1 = new AbortController();
-    const req1 = fetch(`${subswitch.url}/v1/messages?id=req1`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body,
-      signal: controller1.signal,
-    });
-    const req1Parked = await pollUntil(() => parked.parkedRes !== null, 2000);
-    assert.ok(req1Parked, "req1 must reach upstream");
-    const req1Res = parked.parkedRes!;
-    parked.parkedRes = null;
+    // Fire all N concurrently — no sequential sequencing.
+    const requests = Array.from({ length: N }, (_, i) =>
+      fetch(`${subswitch.url}/v1/messages?id=${i}`, { method: "POST", headers, body }),
+    );
 
-    // Fire req2 while req1 is still in-flight — must also reach upstream.
-    const controller2 = new AbortController();
-    const req2 = fetch(`${subswitch.url}/v1/messages?id=req2`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body,
-      signal: controller2.signal,
-    });
-    const req2Parked = await pollUntil(() => parked.parkedRes !== null, 2000);
-    assert.ok(req2Parked, "req2 must also reach upstream — no gate must block it");
+    // Wait for all N to arrive at the upstream (no relay-side gate may block any).
+    const allArrived = await pollUntil(() => parked.arrivedCount >= N, 5000);
+    assert.ok(allArrived, `all ${N} requests must reach upstream within 5 s`);
+    assert.equal(parked.arrivedCount, N, `all ${N} requests must have arrived — no relay gate may block any`);
 
-    // Complete both requests.
-    req1Res.writeHead(200, { "content-type": "application/json" });
-    req1Res.end(JSON.stringify({ id: "req1" }));
-    parked.release();
-
-    const [r1, r2] = await Promise.all([req1, req2]);
-    assert.equal(r1.status, 200, "req1 must return 200");
-    assert.equal(r2.status, 200, "req2 must return 200");
-    await r1.text();
-    await r2.text();
-
-    controller1.abort();
-    controller2.abort();
+    // Positive control: release all and verify every request returns 200.
+    parked.releaseAll();
+    const results = await Promise.all(requests);
+    for (const [i, r] of results.entries()) {
+      assert.equal(r.status, 200, `request ${i} must return 200`);
+      await r.text();
+    }
   });
 
   it("health endpoint always reaches relay regardless of in-flight requests", async () => {
-    // Health endpoint must never be blocked by any relay-side gate.
+    // Non-vacuity: if health were blocked by in-flight traffic, the fetch() call
+    // would hang until the 30 s test deadline, triggering a hard timeout failure.
+    // Positive control: after health check, the parked POST is released and must
+    // also return 200 — confirming it was genuinely in-flight, not already dropped.
     const parked = await startParkingUpstream();
     cleanups.push(parked.close);
 
@@ -152,23 +130,25 @@ describe("concurrency — all requests reach upstream without relay interference
     });
     cleanups.push(subswitch.close);
 
-    // Park a POST to simulate an in-flight request.
-    const controller = new AbortController();
+    // Fire a POST — it parks at the upstream.
     const postPromise = fetch(`${subswitch.url}/v1/messages`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
-      signal: controller.signal,
     });
-    await pollUntil(() => parked.parkedRes !== null, 2000);
+    const postArrived = await pollUntil(() => parked.arrivedCount >= 1, 2000);
+    assert.ok(postArrived, "POST must reach upstream before health check");
 
-    // Health must respond immediately.
+    // Health must respond immediately while POST is still in-flight.
     const health = await fetch(`${subswitch.url}/__subswitch/health`);
     assert.equal(health.status, 200, "health must return 200 with in-flight POST");
     assert.equal(health.headers.get("x-subswitch-synthesized"), "1");
 
-    controller.abort();
-    try { await postPromise; } catch { /* AbortError */ }
-    parked.release();
+    // Positive control: release the parked POST — it must complete successfully,
+    // confirming it was genuinely in-flight (not already dropped by the relay).
+    parked.releaseAll();
+    const postResult = await postPromise;
+    assert.equal(postResult.status, 200, "in-flight POST must complete 200 after release");
+    await postResult.text();
   });
 });

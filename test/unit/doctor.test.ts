@@ -131,7 +131,6 @@ describe("probeTlsReachable", () => {
  * defaults because it IS loadConfig's real defaults.
  *
  * Pattern from test/unit/codex-handler.test.ts lines 104-106.
- * Non-vacuity: see "defaultConfig — non-vacuity guard" describe block below.
  */
 const defaultConfig = (): Config => {
   const result = loadConfig({ configPath: "inline-test.json", readFile: () => "{}", env: {} });
@@ -139,18 +138,10 @@ const defaultConfig = (): Config => {
   return result.value.config;
 };
 
-describe("defaultConfig — non-vacuity guard", () => {
-  it("defaultConfig() is identical to loadConfig with empty file — cannot drift from real defaults", () => {
-    // This test makes it structurally IMPOSSIBLE for defaultConfig() to disagree
-    // with loadConfig's defaults: both call the same function with the same args.
-    // Any change to a default in loadConfig automatically propagates to defaultConfig().
-    // Previously defaultConfig() hard-coded maxUpstreamSockets: 32 when the real
-    // default was 256 — that drift is now a compile-time impossibility.
-    const direct = loadConfig({ configPath: "inline-test.json", readFile: () => "{}", env: {} });
-    assert.ok(direct.ok, "loadConfig with empty file must succeed");
-    assert.deepEqual(defaultConfig(), direct.value.config, "defaultConfig() must equal loadConfig({}).config exactly");
-  });
-});
+// The defaultConfig — non-vacuity guard describe block was deleted (avoids PF-011,
+// PF-012).  The guard compared defaultConfig() against the identical loadConfig()
+// call that defaultConfig() IS — a tautology that cannot fail.  The real protection
+// lives in test/unit/config.test.ts, which pins exact default values as literals.
 
 const allPassIO = (lines: string[]) => ({
   write: (line: string) => lines.push(line),

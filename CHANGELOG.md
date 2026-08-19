@@ -26,29 +26,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   defeating the guard even when it had correctly fired.
 
 - **Anthropic passthrough — `connectTimeoutMs` now genuinely bounds TCP connection
-  establishment; new `headerTimeoutMs` knob bounds time to first byte** (fixes #27).
+  establishment** (fixes #27).
   Previously `upstream.setTimeout(connectTimeoutMs)` was called on the `ClientRequest`
   object, but Node's implementation defers that call via an internal `'connect'`
-  listener — so it fired only after TCP connect, in the same tick as the
-  `headerTimeoutMs` rearm, meaning `connectTimeoutMs` was never in force for any
-  measurable interval.  Measured against a blackholed IP (`192.0.2.1`, TEST-NET-1)
-  with `connectTimeoutMs=700` and `headerTimeoutMs=5000`, the request previously
-  failed after **75 019 ms** (the macOS kernel TCP timeout) — neither budget fired.
-  The fix arms the timer **directly on the socket** inside the `'socket'` event
-  handler, before `'connect'` fires, so the connect-phase budget is in force for
-  the full TCP handshake window.  The same measured scenario now fails at ~700 ms.
-  On HTTPS, `'connect'` fires after TCP establishment but before the TLS handshake,
-  so TLS negotiation falls under `headerTimeoutMs`, not `connectTimeoutMs` — this is
-  documented in the JSDoc.  The fix also introduces a three-budget design:
-  `connectTimeoutMs` (10 s, TCP establishment only), `headerTimeoutMs` (660 s
-  default, connect→response-headers — defaults to 60 s above Anthropic's own ~600 s
-  server-side ceiling; the extra headroom accounts for the relay's clock starting at
-  TCP connect while the origin's starts only after the full request body is received,
-  so equal budgets would let the relay pre-empt the origin by the upload time plus
-  RTT), and `streamIdleTimeoutMs` (300 s, headers→stream-end, reset by every chunk).
-  **A hung upstream that accepts the TCP connection but never sends headers now takes
-  up to `headerTimeoutMs` (default 660 s) to fail, not 10 s** — tune this knob down
-  if you need faster detection of stalled upstreams.
+  listener — so it fired only after TCP connect, meaning `connectTimeoutMs` was never in
+  force for any measurable interval.  Measured against a blackholed IP (`192.0.2.1`,
+  TEST-NET-1) with `connectTimeoutMs=700`, the request previously failed after
+  **75 019 ms** (the macOS kernel TCP timeout).  The fix arms the timer **directly on the
+  socket** inside the `'socket'` event handler, before `'connect'` fires, so the
+  connect-phase budget is in force for the full TCP handshake window.  The same measured
+  scenario now fails at ~700 ms.
 
 - **Anthropic passthrough — `x-subswitch-synthesized: 1` header marks every relay-generated response; stripped from proxied responses** (stacks on #30).
   Previously a relay fault (502 connection failure, 504 timeout, 500 internal proxy error, 413 body too large,
@@ -74,13 +61,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `upstream.destroy()` before writing the 504.  Destroying an in-flight
   `ClientRequest` causes it to emit `error` (ECONNRESET) on the next tick; the
   error handler's `responded` guard was inert on the pre-header path, so both
-  `anthropic_upstream_timeout` and `anthropic_upstream_error` were logged.  On
-  `main` the actual response sequence was `writeHead(504)` → `res.end()`
-  (synchronous, in the timeout handler) → next tick, error handler sees
-  `headersSent === true` → `res.destroy()`; the client received a complete 504 body
-  and the real defect was the duplicate warn log only.  A new `settled` flag is now
-  set by whichever handler responds first; the error handler returns early when
-  `settled` is true, ensuring exactly one warn event per timeout.
+  `anthropic_upstream_timeout` and `anthropic_upstream_error` were logged.  A new
+  `settled` flag is now set by whichever handler responds first; the error handler
+  returns early when `settled` is true, ensuring exactly one warn event per timeout.
 
 - **Anthropic passthrough — a client abort after response headers no longer leaks the
   upstream socket.**  `res.on("close")` gated `upstream.destroy()` on the `settle()`
@@ -88,11 +71,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a mid-stream abort skipped the teardown entirely.  `pipe()` does not propagate
   destination teardown to the source, leaving the upstream response half-read and its
   socket permanently outside the agent's free pool.  Measured: 5 mid-stream aborts left
-  5 sockets held.  At `maxUpstreamSockets` (256) the pool is exhausted and every later
-  request queues inside `http.Agent` indefinitely — an unbounded hang, and precisely the
-  leak the removed `streamIdleTimeoutMs` no longer covers.  The upstream is now destroyed
-  on every abort; `settle()` still arbitrates the warn log and the client-visible outcome,
-  which is all it was ever meant to arbitrate.
+  5 sockets held.  The upstream is now destroyed on every abort; `settle()` still
+  arbitrates the warn log and the client-visible outcome, which is all it was ever meant
+  to arbitrate.
 
 - **Inbound request timeouts keep their `408` instead of being reported as `400`.**
   Attaching a `clientError` listener suppresses Node's canned reply, so the handler added
@@ -112,23 +93,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `req` "end"/"close"/"error", the signals that actually mean the upload is finished or
   gone, and a test pins that the socket is destroyed at ~2 s.
 
+- **404 responses now use the same Anthropic-shaped error body as all other synthesized
+  errors.**  Previously an unknown path returned a bare 404 with no body.  The body now
+  carries `{ type: "error", error: { type: "not_found_error", message: "…" } }` and the
+  `x-subswitch-synthesized: 1` marker, matching every other relay-generated response.
+
+- **Unhandled-exception route labeled `internal_error` in the `request_complete` log.**
+  When an unexpected exception occurs during request handling, the `route` field in the
+  `request_complete` event is now `"internal_error"` rather than whatever routing label
+  was in effect when the exception fired.  This makes relay-side panics distinguishable
+  from normal traffic in post-hoc log analysis.
+
 ### Changed
 
-- **Byte-based admission with queueing** replaces count-based rejection. Requests that would exceed the new `limits.maxInFlightBytes` budget (default 2 GiB) are **queued** until space opens rather than rejected with a relay-invented error. When the queue itself is exhausted, the server returns HTTP **529 overloaded_error** — the correct Anthropic status for this condition (the previous 503 was not a documented Anthropic status code). A single request larger than the budget is still admitted when the server is otherwise idle (single-request progress guarantee). Admission is FIFO: later arrivals cannot jump ahead of waiting requests regardless of size. Budget rationale: measured RSS amplification is ~3.3× raw body size; at realistic peak (~100 concurrent × a few MB each ≈ 300 MB), the 2 GiB default gives ~6× headroom so the gate effectively never fires under ordinary load. Chunked-encoding note: `/v1/messages` requests without `content-length` initially reserve the full `maxBodyBytes` (32 MiB by default) as an anti-bypass measure; that reservation is reconciled to the actual buffered size once the body is read, so the 32 MiB slot is only held for the brief buffering window, not the full request lifetime.
-- **`anthropic.maxUpstreamSockets` default raised from 32 to 256.** With byte-based admission no longer capping concurrent requests at 32, the old socket pool of 32 sockets would have created silent agent-level queuing (~2 extra request-latency waves at 100 concurrent). 256 gives comfortable headroom over realistic peak concurrency.
-- **Colon-bearing model names with unknown prefixes now forward to Anthropic** instead of returning a relay-invented 400. When a model name like `claude-sonnet-9:preview` contains a colon whose prefix is not a registered provider, the relay logs a diagnostic warning and forwards to Anthropic unchanged. Real `codex:` qualified names continue to route to the Codex provider as before.
-- **413 now uses error type `request_too_large`** instead of `invalid_request_error`, matching the Anthropic API's own error taxonomy for oversized bodies.
+- **`anthropic.maxUpstreamSockets` default raised from 32 to 256.**  With no relay-side
+  concurrency cap, the old pool of 32 sockets created silent `http.Agent` queuing at
+  realistic peak load (~100 concurrent Claude Code sub-agents).  256 gives comfortable
+  headroom over realistic peak concurrency.
+
+- **Colon-bearing model names with unknown prefixes now forward to Anthropic** instead of
+  returning a relay-invented 400.  When a model name like `claude-sonnet-9:preview`
+  contains a colon whose prefix is not a registered provider, the relay logs a diagnostic
+  warning and forwards to Anthropic unchanged.  Real `codex:` qualified names continue to
+  route to the Codex provider as before.
+
+- **Ambiguous model family names now forward to Anthropic** instead of returning a
+  relay-invented error.  When two providers claim the same family name, the relay logs an
+  `ambiguous_model_name` warn carrying the provider list and forwards the request to
+  Anthropic unchanged (ADR-010: the relay has no authority to adjudicate a registry
+  conflict it did not cause).
+
+- **413 now uses error type `request_too_large`** instead of `invalid_request_error`,
+  matching the Anthropic API's own error taxonomy for oversized bodies.
+
+- **`SERVER_TUNING` constants set explicitly on the HTTP server**: `requestTimeout`
+  (600 s — Anthropic's own server-side ceiling for long-running requests), `headersTimeout`
+  (120 s — maximum time to receive all request headers), `keepAliveTimeout` (300 s —
+  matches Anthropic's idle-socket keepalive window so the relay's pool never evicts a
+  socket the origin still considers live), and `maxRequestsPerSocket` (unlimited, matching
+  the Anthropic origin's behaviour).  Previously these values were whatever Node's
+  built-in defaults happened to be.
 
 ### Added
 
-- `limits.maxInFlightBytes` config key (default `2147483648` = 2 GiB) — total byte budget for simultaneous in-flight request bodies.
-- `limits.maxQueueDepth` config key (default `1000`) — maximum requests waiting in the admission queue.
-- `limits.maxQueueWaitMs` config key (default `60000`) — maximum milliseconds a queued request waits before receiving 529.
 - `request_too_large` added to the internal `AnthropicErrorType` union.
 
 ### Deprecated
 
-- `limits.maxConcurrentRequests`, `limits.maxInFlightBytes`, `limits.maxQueueDepth`, `limits.maxQueueWaitMs` — the admission gate was removed entirely; these keys are no longer honoured. `anthropic.headerTimeoutMs`, `anthropic.streamIdleTimeoutMs` — relay-side response timers were removed (ADR-010: the relay must not bound what the origin was about to answer). All six keys still parse without error and will produce a `config_key_deprecated` warning on startup. Remove them from your config.
+- Six config keys are accepted by the schema but no longer wired into the runtime — each
+  produces a `config_key_deprecated` warn on startup.  **Remove them from your config:**
+  - `anthropic.headerTimeoutMs` and `anthropic.streamIdleTimeoutMs` — the relay no longer
+    bounds these phases on a connected client (ADR-010: bounding what the origin was about
+    to answer is a defect).
+  - `limits.maxConcurrentRequests`, `limits.maxInFlightBytes`, `limits.maxQueueDepth`,
+    `limits.maxQueueWaitMs` — the admission gate was removed (ADR-010).
 
 ## [0.2.0] - 2026-08-09
 

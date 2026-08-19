@@ -103,52 +103,10 @@ describe("routing — ambiguous family forwards to Anthropic (F7)", () => {
     }
   });
 
-  it("forwarded ambiguous request reaches the Anthropic upstream (not blocked)", async () => {
-    const cleanups: Array<() => Promise<void>> = [];
-
-    const resolve = (name: string): ModelResolution =>
-      name === "fast"
-        ? { kind: "ambiguous", name: "fast", providers: ["codex", "kimi"] as never[] }
-        : { kind: "unresolved" };
-
-    const anthropic = await startFakeUpstream((_req, res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
-    });
-    cleanups.push(anthropic.close);
-
-    const dir = await mkdtemp(join(tmpdir(), "subswitch-ambig-fwd-test-"));
-    const authFilePath = join(dir, "auth.json");
-    await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
-
-    const subswitch = await startSubswitch(
-      {
-        anthropic: { baseUrl: anthropic.url },
-        providers: { codex: { authFile: authFilePath } },
-      },
-      { resolve },
-    );
-    cleanups.push(subswitch.close);
-
-    try {
-      const response = await fetch(`${subswitch.url}/v1/messages`, {
-        method: "POST",
-        headers: {
-          authorization: "Bearer sk-ant",
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ model: "fast", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
-      });
-
-      // Must NOT be blocked — the ambiguous request must reach the upstream.
-      assert.equal(response.status, 200, "ambiguous request must not be blocked; must reach Anthropic");
-      assert.equal(anthropic.requests.length, 1, "Anthropic upstream must receive the ambiguous request");
-      await response.body?.cancel();
-    } finally {
-      for (const cleanup of cleanups.reverse()) await cleanup();
-    }
-  });
+  // Second F7 variant removed: it only re-checked status 200 and upstream reach, both
+  // of which are already asserted (with the stronger ambiguous_model_name warn check)
+  // in the test above.  Keeping a weaker duplicate adds no discriminating power and
+  // creates false confidence that the warn-log property has extra coverage (avoids PF-011).
 });
 
 // ---------------------------------------------------------------------------
