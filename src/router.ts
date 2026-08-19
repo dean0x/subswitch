@@ -35,8 +35,8 @@ export const decideRoute = (
       return { kind: "anthropic" };
 
     case "ambiguous":
-      // Two providers claim the same family name. Never arbitrate or fall through — 400
-      // so the user sees exactly which providers they must qualify with.
+      // Router doesn't arbitrate between same-named providers; fails open to Anthropic
+      // with route "anthropic:ambiguous", and doctor reports the conflict as a config defect.
       return { kind: "ambiguous", name: resolution.name, providers: resolution.providers };
 
     case "unknown_qualifier":
