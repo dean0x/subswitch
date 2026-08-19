@@ -1113,6 +1113,15 @@ describe("anthropic passthrough — request_complete log fields on a live reques
 // agent.sockets and 5 upstream connections open.  The assertion counts live
 // sockets rather than log records, so no filter can hide the leak.
 //
+// Every leak assertion below compares against 0, which is also what a relay that
+// never opened an upstream connection at all would produce.  `upstreamConnections`
+// is the independent positive control for that direction: it counts TCP connections
+// arriving at the origin and must equal the number of aborts, so "the path ran and
+// was reclaimed" is distinguishable from "the path never ran" (avoids PF-011).  The
+// status assertion sits outside the try for the same reason — inside it, the catch
+// swallowed the AssertionError and a relay that answered 502 without contacting the
+// origin passed (measured).
+//
 // A dedicated agent is injected via the documented `agent` test seam so the
 // counters belong to this test alone and cannot be perturbed by another test's
 // traffic.
@@ -1122,6 +1131,7 @@ describe("anthropic passthrough — mid-stream client abort reclaims the upstrea
   it("aborting after headers destroys the upstream instead of leaking its socket", async () => {
     const ABORTS = 5;
     const liveUpstreamSockets = new Set<import("node:net").Socket>();
+    let upstreamConnections = 0;
 
     // Upstream sends headers and one SSE frame, then stalls forever — the shape of
     // a real streaming completion that a sub-agent interrupts partway through.
@@ -1131,6 +1141,7 @@ describe("anthropic passthrough — mid-stream client abort reclaims the upstrea
       res.write("event: message_start\ndata: {}\n\n");
     });
     upstreamServer.on("connection", (socket) => {
+      upstreamConnections++;
       liveUpstreamSockets.add(socket);
       socket.on("close", () => liveUpstreamSockets.delete(socket));
     });
@@ -1153,20 +1164,20 @@ describe("anthropic passthrough — mid-stream client abort reclaims the upstrea
     try {
       for (let i = 0; i < ABORTS; i++) {
         const controller = new AbortController();
+        const response = await fetch(`http://127.0.0.1:${relayPort}/v1/messages`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "claude-sonnet-4-6", stream: true, messages: [] }),
+          signal: controller.signal,
+        });
+        assert.equal(response.status, 200, "upstream headers must have been relayed before the abort");
         try {
-          const response = await fetch(`http://127.0.0.1:${relayPort}/v1/messages`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ model: "claude-sonnet-4-6", stream: true, messages: [] }),
-            signal: controller.signal,
-          });
-          assert.equal(response.status, 200, "upstream headers must have been relayed before the abort");
           // Read the first frame so the settlement is provably already claimed.
           await response.body!.getReader().read();
-          controller.abort();
         } catch {
-          // AbortError from the client-side abort is expected.
+          // A read that loses the race with teardown is not what this test measures.
         }
+        controller.abort();
         await new Promise((r) => setTimeout(r, 60));
       }
 
@@ -1187,6 +1198,12 @@ describe("anthropic passthrough — mid-stream client abort reclaims the upstrea
         liveUpstreamSockets.size,
         0,
         `every aborted request must close its upstream connection; ${liveUpstreamSockets.size} still open at the upstream`,
+      );
+      assert.equal(
+        upstreamConnections,
+        ABORTS,
+        `every iteration must have reached the origin; got ${upstreamConnections}/${ABORTS} connections. ` +
+          `The three zero-comparisons above are equally satisfied by a relay that never opened an upstream socket.`,
       );
     } finally {
       agent.destroy();
@@ -1481,6 +1498,82 @@ describe("server body ingestion — the rejected-upload drain is bounded by byte
       outcome.written < CEILING,
       `the drain must stop reading at its byte bound; the client got ${outcome.written} bytes onto the socket ` +
         `(ceiling ${CEILING}, declared ${DECLARED}) — a drain bounded only by time accepts the whole declaration`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B11: an origin that dies AFTER response headers must terminate the client
+//
+// Every other upstream-failure control in this file fails BEFORE headers reach the
+// client — 502 unreachable, 504 connect timeout, B5's ECONNRESET — so the response
+// callback never runs and the post-headers teardown is unreached.  The nearest
+// neighbour, "self-heals after the upstream socket is destroyed server-side",
+// destroys the socket while it is IDLE in the keep-alive pool, after its response
+// completed.  This is the other half: the socket dies with the body half-relayed.
+//
+// The relay's only signal there is `upstreamRes` "error"; `pipe()` does not
+// propagate source teardown to the destination, so without that handler the client
+// response is never ended and never destroyed.  A half-relayed response that never
+// terminates is worse than any status the origin could return (ADR-010) — the client
+// cannot retry what it cannot see fail.
+//
+// The assertion distinguishes three outcomes, not two: a hang, a clean EOF (which
+// would tell the client it received a complete stream), and an error.  Only the
+// error is correct.
+//
+// Non-vacuity: RED with `upstreamRes.on("error", () => res.destroy())` deleted from
+// src/anthropic-passthrough.ts (measured together with both `else { res.destroy(); }`
+// arms neutered — the full suite stays green without this control).
+// ---------------------------------------------------------------------------
+
+describe("anthropic passthrough — an origin that dies mid-body terminates the client response (B11)", () => {
+  it("surfaces a truncated stream as an error rather than a hang or a clean EOF", async () => {
+    let originSocket: net.Socket | undefined;
+    const { subswitch } = await setup((req, res) => {
+      originSocket = req.socket;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      // Headers plus one frame, then nothing: the shape of a streaming completion
+      // whose origin dies partway through.
+      res.write("event: message_start\ndata: {}\n\n");
+    });
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", stream: true, messages: [] }),
+    });
+    assert.equal(response.status, 200, "headers must be relayed before the origin dies");
+
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    assert.equal(first.done, false, "the first frame must be relayed before the origin dies");
+    assert.ok(originSocket !== undefined, "the origin socket must have been captured");
+
+    originSocket.destroy();
+
+    const HANG_BUDGET_MS = 3_000;
+    const outcome = await Promise.race([
+      reader.read().then(
+        (r) => (r.done ? ("clean-eof" as const) : ("more-data" as const)),
+        () => "errored" as const,
+      ),
+      new Promise<"hung">((resolve) => {
+        setTimeout(() => resolve("hung"), HANG_BUDGET_MS).unref();
+      }),
+    ]);
+
+    assert.notEqual(
+      outcome,
+      "hung",
+      `the client response must terminate when the origin dies mid-body; it was still open ${HANG_BUDGET_MS} ms later. ` +
+        `Nothing else bounds it: the relay arms no post-connect timer (ADR-010), so this hangs for the life of the process.`,
+    );
+    assert.equal(
+      outcome,
+      "errored",
+      `a truncated relay must reach the client as a transport error, not ${JSON.stringify(outcome)} — ` +
+        `a clean EOF tells the client it received the whole stream`,
     );
   });
 });
