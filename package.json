@@ -43,6 +43,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test --test-timeout=30000 \"test/unit/*.test.ts\" \"test/integration/*.test.ts\"",
     "bench:sse": "node --import tsx test/tools/sse-parser.bench.ts",
+    "bench:memory": "node --import tsx test/tools/memory-concurrent-uploads.bench.ts",
     "check": "npm run typecheck && npm run test",
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",

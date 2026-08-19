@@ -56,8 +56,14 @@ node --import tsx --test --test-timeout=30000 "test/unit/*.test.ts" "test/integr
   step. The zero-warnings policy is enforced through `typecheck` only.
 - **`test/tools/*.bench.ts` are benchmarks, not tests.** They are excluded from
   `npm test` by directory (`test/tools/` is outside the test globs) and by suffix
-  (`.bench.ts`, not `.test.ts`). Run a benchmark directly:
-  `node --import tsx test/tools/sse-parser.bench.ts`.
+  (`.bench.ts`, not `.test.ts`). Each has an npm script: `npm run bench:sse` and
+  `npm run bench:memory`. The memory bench runs the relay in a child process, parks
+  concurrent uploads at a fake origin, samples peak in-flight memory, and exits
+  non-zero if peak per-request RSS exceeds its ceiling. It defaults to
+  `limits.maxBodyBytes` bodies and takes the `CONCURRENCY`, `BODY_MIB` and
+  `CEILING_MIB_PER_REQ` env knobs, e.g.
+  `CONCURRENCY=16 BODY_MIB=8 npm run bench:memory`.
+  At its defaults it allocates several GiB; it is not part of CI.
 
 ## End-to-end verification
 
