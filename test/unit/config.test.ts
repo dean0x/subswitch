@@ -289,10 +289,19 @@ describe("loadConfig", () => {
     assert.ok(paths.includes("limits.maxQueueWaitMs"));
   });
 
-  it("DEPRECATED_KEYS table completeness: total count matches what detectDeprecatedConfigKeys reports", () => {
-    // This test is an invariant over the table — it does not hand-list keys, so
-    // adding a key to DEPRECATED_KEYS without updating this test is fine.
-    // What it prevents: keys being silently removed from the table without notice.
+  it("detectDeprecatedConfigKeys resolves every declared path shape, at whatever nesting depth", () => {
+    // SCOPE — read before trusting this test for more than it does.  Both sides of the
+    // final assertion are derived from DEPRECATED_KEYS, so it is an invariant over the
+    // table's TRAVERSAL, not over its CONTENTS: deleting an entry shrinks the fixture and
+    // the expected count together and this test stays green (verified).
+    //
+    // What it does catch: a path whose nesting hasOwnPath cannot walk (a future
+    // three-segment path, say), which would make the key silently un-warnable.
+    //
+    // The guard against an entry being dropped from the table is the preceding test,
+    // "a config with all 6 deprecated keys loads successfully…", whose six hand-written
+    // path literals and `length === 6` are independent of DEPRECATED_KEYS. That
+    // duplication is deliberate — it is the only thing that can report a removal.
     const allDeprecated: Record<string, unknown> = {};
     for (const { path } of DEPRECATED_KEYS) {
       const parts = path.split(".");

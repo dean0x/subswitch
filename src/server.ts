@@ -1,7 +1,7 @@
 import http from "node:http";
 import { existsSync } from "node:fs";
-import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { toAnthropicErrorBody } from "./errors.js";
+import type { IncomingMessage, Server } from "node:http";
+import { toAnthropicErrorBody, type AnthropicErrorType } from "./errors.js";
 import { type Result, ok, err } from "./result.js";
 import { aliasesByProvider, enumerateDestinations, isLoopbackHost, providerConfigFor, type Config } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
@@ -301,8 +301,15 @@ type BufferBodyError =
  * unref() ensures this timer never prevents the process from exiting.
  *
  * The latch (`done`) prevents the timer from firing after a clean drain.
+ *
+ * Every disarm signal is taken from `req`, never from `res`.  The 413 has already
+ * been written by the time this runs, so `res` emits "close" within a tick or two —
+ * disarming on it cancelled the timer ~2 ms after arming it and left the bound dead
+ * in exactly the case it exists for (measured: a client that keeps uploading after
+ * the 413 was never cut off).  `req`'s "end"/"close"/"error" are the signals that
+ * actually mean "the upload is finished or gone".
  */
-const drainRejectedUpload = (req: IncomingMessage, res: ServerResponse): void => {
+const drainRejectedUpload = (req: IncomingMessage): void => {
   let done = false;
   const finish = (): void => {
     if (done) return;
@@ -313,8 +320,8 @@ const drainRejectedUpload = (req: IncomingMessage, res: ServerResponse): void =>
     if (!done) req.socket?.destroy();
   }, 2_000).unref();
   req.on("end", finish);
+  req.on("close", finish);
   req.on("error", finish);
-  res.on("close", finish);
   req.resume();
 };
 
@@ -331,12 +338,19 @@ const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buff
     req.on("data", (chunk: Buffer) => {
       total += chunk.length;
       if (total > maxBytes) {
+        // Release the accumulated prefix now rather than holding up to maxBodyBytes
+        // alive until the request object is collected — drainRejectedUpload keeps
+        // reading from this socket for up to 2 s after the 413.
+        chunks.length = 0;
         settle(err({ kind: "body_too_large", message: `request body exceeds ${maxBytes} bytes` }));
         return;
       }
       chunks.push(chunk);
     });
     req.on("end", () => {
+      // Already rejected (body_too_large): drainRejectedUpload is draining the rest of
+      // the upload, so 'end' still fires here with nothing left to assemble.
+      if (settled) return;
       const result = Buffer.concat(chunks);
       chunks.length = 0; // release chunk array while concatenated buffer is still in scope
       settle(ok(result));
@@ -394,16 +408,63 @@ export const SERVER_TUNING = {
 } as const;
 
 /**
- * Handle `clientError` events (malformed requests, header overflow) with an
- * Anthropic-shaped response body and `x-subswitch-synthesized: 1`.
+ * The response for one `clientError` code: the status Node itself would have
+ * sent, shaped into the Anthropic error taxonomy.
+ *
+ * Registering a `clientError` listener SUPPRESSES Node's canned reply entirely,
+ * so every status Node would have chosen must be reproduced here — a code this
+ * table does not name silently becomes the 400 fallback.
+ *
+ * `ERR_HTTP_REQUEST_TIMEOUT` is the load-bearing entry.  Measured on Node 22.22,
+ * BOTH `headersTimeout` and `requestTimeout` expiry arrive here under that code,
+ * and Node's own reply for it is `408 Request Timeout`.  Letting it fall into the
+ * 400 arm would emit a status neither Node nor the origin produces for a slow
+ * client, and would additionally misdiagnose a slow request as a malformed one —
+ * a relay-invented status on a connection that is merely slow (ADR-010).
+ *
+ * PF-021 records this response as un-interceptable.  That holds for Node's
+ * DEFAULT reply only: attaching this listener does intercept it, which is
+ * precisely why the status has to be restated rather than inherited.
+ */
+const CLIENT_ERROR_RESPONSES: Readonly<
+  Record<string, { readonly status: number; readonly reason: string; readonly type: AnthropicErrorType; readonly message: string }>
+> = {
+  HPE_HEADER_OVERFLOW: {
+    status: 431,
+    reason: "Request Header Fields Too Large",
+    type: "request_too_large",
+    message: "request headers too large",
+  },
+  ERR_HTTP_REQUEST_TIMEOUT: {
+    status: 408,
+    reason: "Request Timeout",
+    type: "invalid_request_error",
+    message: "request timed out before it was fully received",
+  },
+};
+
+/** Fallback for a genuine parse failure (HPE_INVALID_METHOD, HPE_INVALID_VERSION, …). */
+const MALFORMED_REQUEST_RESPONSE = {
+  status: 400,
+  reason: "Bad Request",
+  type: "invalid_request_error",
+  message: "malformed request",
+} as const;
+
+/**
+ * Handle `clientError` events (malformed requests, header overflow, inbound
+ * timeouts) with an Anthropic-shaped response body and `x-subswitch-synthesized: 1`.
  *
  * Node's built-in clientError response is bodyless (just a status line) and
  * bypasses the request listener entirely, so it can never carry our marker or
  * content-type.  Registering our own `clientError` handler replaces Node's
- * canned response with one that matches the Anthropic error shape.
+ * canned response with one that matches the Anthropic error shape — while
+ * preserving the status Node would have sent (see CLIENT_ERROR_RESPONSES).
  *
  * Socket state guard: if the socket is not writable or has already sent bytes,
- * destroy it silently — there is nothing useful we can send.
+ * destroy it silently — there is nothing useful we can send.  This is also the
+ * branch a slow-but-complete upload lands in: Node still reports the request
+ * timeout after the handler has replied, and the reply must not be corrupted.
  */
 export const attachClientErrorHandler = (server: http.Server, logger: Logger): void => {
   server.on("clientError", (err: Error, socket: import("node:net").Socket) => {
@@ -412,13 +473,11 @@ export const attachClientErrorHandler = (server: http.Server, logger: Logger): v
       return;
     }
     const code = (err as NodeJS.ErrnoException).code ?? "";
-    const status = code === "HPE_HEADER_OVERFLOW" ? 431 : 400;
-    const type = status === 431 ? "request_too_large" : "invalid_request_error";
-    const message = status === 431 ? "request headers too large" : "malformed request";
+    const { status, reason, type, message } = CLIENT_ERROR_RESPONSES[code] ?? MALFORMED_REQUEST_RESPONSE;
     logger.log("warn", "client_error", { ...(code !== "" ? { errorCode: code } : {}), status });
     const body = toAnthropicErrorBody(type, message);
     const head =
-      `HTTP/1.1 ${status} ${status === 431 ? "Request Header Fields Too Large" : "Bad Request"}\r\n` +
+      `HTTP/1.1 ${status} ${reason}\r\n` +
       `content-type: application/json\r\n` +
       `content-length: ${Buffer.byteLength(body)}\r\n` +
       `x-subswitch-synthesized: 1\r\n` +
@@ -462,10 +521,6 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         // preventing path reflection and credential leakage (ADR-008, chokepoint pattern).
         // Do NOT echo the requested path: path reflection is a log-injection / reflection
         // surface — use a fixed message only.
-        // toAnthropicErrorBody shapes the 404 identically to every other synthesized error,
-        // preventing path reflection and credential leakage (ADR-008, chokepoint pattern).
-        // Do NOT echo the requested path: path reflection is a log-injection / reflection
-        // surface — use a fixed message only.
         res.end(toAnthropicErrorBody("not_found_error", "not found"));
         return;
       }
@@ -493,7 +548,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           // agent manages connection lifecycle and does not need the relay to hint it.
           res.writeHead(413, synthesizedHeaders());
           res.end(toAnthropicErrorBody("request_too_large", body.error.message));
-          drainRejectedUpload(req, res);
+          drainRejectedUpload(req);
         }
         return;
       }

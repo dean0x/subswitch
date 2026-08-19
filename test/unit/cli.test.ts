@@ -1,9 +1,15 @@
 /**
  * CLI-level smoke tests for the `subswitch serve` command.
  *
- * This is the ONLY test file that can prove the deprecation warning actually
- * prints at the DEFAULT log level. `startSubswitch` (the integration harness)
- * never calls `serve`, so the integration tests structurally cannot observe it.
+ * This is the ONLY test file that can observe what `serve` actually prints:
+ * `startSubswitch` (the integration harness) never calls `serve`, so the
+ * integration tests structurally cannot see it.
+ *
+ * Precision on the two deprecation surfaces, because they have different
+ * guarantees: the `config_key_deprecated` record goes through the logger and so
+ * IS gated on log level (it appears here because "warn" >= the default "info");
+ * the `errOut` notice writes to stderr directly and is NOT gated on log level at
+ * all. Only the first is evidence about level handling.
  *
  * Non-vacuity strategy: each assertion is paired with a negative control that
  * proves the absence-of-warning case is observable — i.e. that a clean config
@@ -175,10 +181,18 @@ describe("serve — deprecation warning at default log level", () => {
     const port = await getEphemeralPort();
     const result = await runServeUntilReady(port, configPath);
 
-    // The warning is emitted via errOut() which writes to process.stderr.
+    // Two INDEPENDENT surfaces, asserted separately.  An `||` across them would let
+    // either one be deleted while the other kept the assertion green — the structured
+    // record could be dropped to `debug`, or the human notice removed, unnoticed.
     assert.ok(
-      result.stderr.includes("config_key_deprecated") || result.stderr.includes('deprecated config key "limits.maxConcurrentRequests"'),
-      `stderr must contain the deprecation warning for limits.maxConcurrentRequests.\n` +
+      result.stderr.includes("config_key_deprecated"),
+      `stderr must carry the structured warn record 'config_key_deprecated' — it is what a log ` +
+      `pipeline greps for, and it must be emitted at warn (a debug-level record would not appear here).\n` +
+      `stderr:\n${result.stderr}`,
+    );
+    assert.ok(
+      result.stderr.includes('deprecated config key "limits.maxConcurrentRequests"'),
+      `stderr must carry the human-readable errOut() notice naming the key.\n` +
       `stderr:\n${result.stderr}`,
     );
     assert.ok(

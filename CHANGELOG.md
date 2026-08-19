@@ -82,6 +82,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   set by whichever handler responds first; the error handler returns early when
   `settled` is true, ensuring exactly one warn event per timeout.
 
+- **Anthropic passthrough — a client abort after response headers no longer leaks the
+  upstream socket.**  `res.on("close")` gated `upstream.destroy()` on the `settle()`
+  latch, but the response callback claims that latch as soon as headers are relayed, so
+  a mid-stream abort skipped the teardown entirely.  `pipe()` does not propagate
+  destination teardown to the source, leaving the upstream response half-read and its
+  socket permanently outside the agent's free pool.  Measured: 5 mid-stream aborts left
+  5 sockets held.  At `maxUpstreamSockets` (256) the pool is exhausted and every later
+  request queues inside `http.Agent` indefinitely — an unbounded hang, and precisely the
+  leak the removed `streamIdleTimeoutMs` no longer covers.  The upstream is now destroyed
+  on every abort; `settle()` still arbitrates the warn log and the client-visible outcome,
+  which is all it was ever meant to arbitrate.
+
+- **Inbound request timeouts keep their `408` instead of being reported as `400`.**
+  Attaching a `clientError` listener suppresses Node's canned reply, so the handler added
+  for the 400/431 shaping also swallowed the `408 Request Timeout` that `requestTimeout`
+  and `headersTimeout` produce — both arrive as `err.code === "ERR_HTTP_REQUEST_TIMEOUT"`
+  on Node 22 — and re-emitted it as `400 malformed request`.  That invents a status the
+  origin never sends for a slow client and misdiagnoses a slow request as a malformed one
+  (ADR-010).  The status Node would have sent is now preserved and given the same
+  Anthropic-shaped body and `x-subswitch-synthesized: 1` marker.  PF-021 records this
+  response as un-interceptable; that holds for Node's *default* reply only.
+
+- **The `drainRejectedUpload` 2 s safety bound now actually fires.**  It was disarmed on
+  `res` "close", but the 413 has already been written when the drain starts, so `res`
+  closed within a tick and cancelled the timer ~2 ms after it was armed (measured).  A
+  client that ignored the 413 and kept uploading was therefore never cut off — the bound
+  described in the code existed only in its comment (PF-019).  Disarm now happens only on
+  `req` "end"/"close"/"error", the signals that actually mean the upload is finished or
+  gone, and a test pins that the socket is destroyed at ~2 s.
+
 ### Changed
 
 - **Byte-based admission with queueing** replaces count-based rejection. Requests that would exceed the new `limits.maxInFlightBytes` budget (default 2 GiB) are **queued** until space opens rather than rejected with a relay-invented error. When the queue itself is exhausted, the server returns HTTP **529 overloaded_error** — the correct Anthropic status for this condition (the previous 503 was not a documented Anthropic status code). A single request larger than the budget is still admitted when the server is otherwise idle (single-request progress guarantee). Admission is FIFO: later arrivals cannot jump ahead of waiting requests regardless of size. Budget rationale: measured RSS amplification is ~3.3× raw body size; at realistic peak (~100 concurrent × a few MB each ≈ 300 MB), the 2 GiB default gives ~6× headroom so the gate effectively never fires under ordinary load. Chunked-encoding note: `/v1/messages` requests without `content-length` initially reserve the full `maxBodyBytes` (32 MiB by default) as an anti-bypass measure; that reservation is reconciled to the actual buffered size once the body is read, so the 32 MiB slot is only held for the brief buffering window, not the full request lifetime.

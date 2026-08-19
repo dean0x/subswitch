@@ -291,23 +291,80 @@ describe("checkAgentModels", () => {
     assert.ok(findings.some((f) => f.file === "/also-bad.md"), "also-bad.md should produce a finding");
   });
 
-  it("'retired', 'provider_unconfigured', and 'preview_only' findings are informational (severity is 'info')", () => {
+  it("'retired', 'provider_unconfigured', 'preview_only' and 'unknown_provider' findings are informational (severity is 'info')", () => {
     // Derive the failing/passing distinction from finding.severity — the single source of
     // truth — rather than re-stating which kinds fail in a hand-written Set (which was
     // exactly the duplicated source of truth eliminated by AgentFindingBase's doc comment).
     //
-    // Non-vacuity: assert.equal(severity, "info") fails if severity is "fail" — so this test
-    // would fail if provider_unconfigured were promoted to "fail". That is the mutation we
-    // must catch.
+    // Every kind the title names is exercised. The earlier version asserted only
+    // provider_unconfigured, so promoting `retired` or `preview_only` to "fail" — which
+    // would make `doctor` exit 1 for any agent pinned to a retired or preview model, a
+    // PF-006 CI break — passed with the test name still claiming to cover them.
+    //
+    // Non-vacuity: assert.equal(severity, "info") is RED for any kind promoted to "fail";
+    // verified per kind.
 
-    // provider_unconfigured case
-    const files = [{ path: "/agent.md", text: "---\nmodel: gpt-5.6-sol\n---\n" }];
-    const findings = checkAgentModels(files, table, noConfiguredProviders);
-    assert.equal(findings.length, 1);
-    assert.equal(
-      findings[0]!.severity,
-      "info",
-      `provider_unconfigured must be severity 'info'; got: ${findings[0]!.severity}`,
-    );
+    const cases: { readonly label: string; readonly findings: ReturnType<typeof checkAgentModels> }[] = [];
+
+    // provider_unconfigured
+    cases.push({
+      label: "provider_unconfigured",
+      findings: checkAgentModels(
+        [{ path: "/agent.md", text: "---\nmodel: gpt-5.6-sol\n---\n" }],
+        table,
+        noConfiguredProviders,
+      ),
+    });
+
+    // retired
+    const retiredReg: readonly ModelEntry[] = [
+      { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+      { id: "gpt-retired", provider: "codex", gen: [5, 0], retired: true },
+    ];
+    cases.push({
+      label: "retired",
+      findings: checkAgentModels(
+        [{ path: "/agent.md", text: "---\nmodel: gpt-retired\n---\n" }],
+        buildRoutingTable(retiredReg, { codex: {} }).table,
+        configuredProviders,
+        retiredReg,
+      ),
+    });
+
+    // preview_only
+    const previewReg: readonly ModelEntry[] = [
+      { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+      { id: "gpt-preview", provider: "codex", gen: [5, 7], preview: true },
+    ];
+    cases.push({
+      label: "preview_only",
+      findings: checkAgentModels(
+        [{ path: "/agent.md", text: "---\nmodel: gpt-preview\n---\n" }],
+        buildRoutingTable(previewReg, { codex: {} }).table,
+        configuredProviders,
+        previewReg,
+      ),
+    });
+
+    // unknown_provider — flipped from "fail" to "info" (ADR-010): subswitch forwards the
+    // request to Anthropic unchanged, so the qualifier never blocks anything.
+    cases.push({
+      label: "unknown_provider",
+      findings: checkAgentModels(
+        [{ path: "/agent.md", text: "---\nmodel: kimee:k2\n---\n" }],
+        table,
+        configuredProviders,
+      ),
+    });
+
+    for (const { label, findings } of cases) {
+      assert.equal(findings.length, 1, `${label}: expected exactly one finding`);
+      assert.equal(findings[0]!.kind, label, `${label}: finding kind must match the case under test`);
+      assert.equal(
+        findings[0]!.severity,
+        "info",
+        `${label} must be severity 'info' — a 'fail' here makes doctor exit 1 and breaks CI smoke scripts (PF-006); got: ${findings[0]!.severity}`,
+      );
+    }
   });
 });

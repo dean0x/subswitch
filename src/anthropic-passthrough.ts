@@ -217,8 +217,8 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
     // (body !== undefined) is not affected because the request has already been
     // fully consumed before the upstream is opened.
     upstream.on("timeout", () => {
-      options.logger.log("warn", "anthropic_upstream_timeout", { path: req.url ?? "/" });
       if (!settle()) return;
+      options.logger.log("warn", "anthropic_upstream_timeout", { path: req.url ?? "/" });
       if (!res.headersSent) {
         res.writeHead(504, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
         res.end(toAnthropicErrorBody("api_error", "upstream timed out"));
@@ -241,15 +241,27 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       }
     });
 
-    // Terminal outcome 4 (client disconnect): settle() ensures that the
-    // destroy() call does not cause the error handler to fire a spurious
-    // anthropic_upstream_error warn.  A client abort is normal — no warn log,
-    // no synthetic HTTP response.
+    // Terminal outcome 4 (client disconnect).
+    //
+    // The upstream MUST be destroyed on every abort, settled or not — settle()
+    // arbitrates only who owns the client-visible outcome and the warn log, never
+    // whether the upstream connection is reclaimed.  Gating the destroy on the
+    // latch leaks a socket per mid-stream abort: once headers are relayed the
+    // response callback has already claimed the settlement, and `pipe()` does not
+    // propagate destination teardown to the source, so the upstream response stays
+    // half-read and its socket never returns to the agent's free pool.  At
+    // maxUpstreamSockets such sockets exhaust the pool and every later request
+    // queues inside http.Agent indefinitely — a hang no origin can produce, and
+    // exactly the leak ADR-010 warns the removed idle timer no longer covers.
+    //
+    // settle() is still claimed first when it is open, so the ECONNRESET that
+    // destroy() raises on the next tick cannot emit a spurious
+    // anthropic_upstream_error warn or write a 502 into a closed response.
+    // A client abort is normal — no warn log, no synthetic HTTP response.
     res.on("close", () => {
-      if (!res.writableFinished) {
-        if (!settle()) return;
-        upstream.destroy();
-      }
+      if (res.writableFinished) return;
+      settle();
+      upstream.destroy();
     });
 
     if (body !== undefined) {

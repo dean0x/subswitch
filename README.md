@@ -320,8 +320,8 @@ subswitch configures its inbound `http.Server` with the following fixed values:
 
 | Property | Value | Rationale |
 |----------|-------|-----------|
-| `requestTimeout` | `600 000` ms (10 min) | Matches the maximum Codex/Anthropic request lifetime |
-| `headersTimeout` | `120 000` ms (2 min) | Allows slow Claude Code uploads; fires before `requestTimeout` |
+| `requestTimeout` | `600 000` ms (10 min) | Bounds **receipt of the request only** — it stops once the request body has arrived, so it can never cut short a slow completion or a long stream. On expiry subswitch returns an Anthropic-shaped `408`. |
+| `headersTimeout` | `120 000` ms (2 min) | Bounds receipt of the **request headers** only. Same `408` on expiry. |
 | `keepAliveTimeout` | `300 000` ms (5 min) | **Deliberately long.** Claude Code's connection pool keeps sockets open for reuse. At Node's default 5 s, an idle socket gets a FIN/RST from subswitch; if that close races an outgoing POST, undici will **not** retry the resulting ECONNRESET for a non-idempotent request (PF-018). 300 s means sockets outlive any realistic inter-request gap. |
 | `maxRequestsPerSocket` | `0` (unlimited) | Prevents connection cycling on long-lived agents |
 | `maxHeaderSize` | `65 536` bytes (64 KiB) | Anthropic's own limit; subswitch returns a `431 Request Header Fields Too Large` (Anthropic-shaped) when exceeded |
@@ -442,7 +442,8 @@ This header is present on:
 
 - **Anthropic-leg relay errors**: 502 (upstream connection failure), 504
   (upstream connect timeout), 413 (request body too large), 431 (request headers
-  too large), 500 (internal proxy error).
+  too large), 408 (inbound request not fully received within `requestTimeout` /
+  `headersTimeout`), 400 (malformed request), 500 (internal proxy error).
 - **Codex-leg responses**: every byte returned on the codex leg is synthesized
   by the relay (it translates OpenAI Responses format → Anthropic Messages
   format), so the header is present on both streaming and non-streaming codex

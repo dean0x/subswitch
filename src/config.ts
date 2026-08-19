@@ -63,11 +63,16 @@ const AnthropicSchema = z
      * TCP connection-establishment timeout for the Anthropic leg (milliseconds).
      * Bounds only the time to establish a new TCP connection; the timer is armed
      * directly on the socket (not via `ClientRequest.setTimeout`, which defers
-     * internally and cannot bound the connect phase).
-     * Once TCP connects the timer is re-armed to `headerTimeoutMs`.
+     * internally and cannot bound the connect phase — PF-019).
+     *
+     * This is the ONLY timer the Anthropic leg arms. On `'connect'` it is disarmed
+     * outright: neither the headers phase nor the stream phase is bounded, because
+     * the relay must never terminate a request the origin was about to answer
+     * (ADR-010). A connect that has not completed is a connection the origin has
+     * not yet seen, which is what makes this bound legitimate.
      *
      * On HTTPS connections, `'connect'` fires after TCP establishment but before
-     * the TLS handshake, so TLS negotiation falls under `headerTimeoutMs`.
+     * the TLS handshake, so TLS negotiation is NOT covered by this budget.
      *
      * Has no effect on reused pooled sockets (no connect phase).
      */
@@ -88,10 +93,10 @@ const AnthropicSchema = z
     /**
      * Maximum sockets in the keep-alive pool for the Anthropic passthrough.
      *
-     * Raised from 32 to 256: with byte-based admission the concurrency gate no longer
-     * caps request count at 32, so realistic peak (~100 concurrent) would queue inside
-     * the http.Agent at 32 sockets, adding ~2 extra full-request-latency waves of
-     * invisible, error-free latency. 256 gives comfortable headroom over peak concurrency.
+     * 256 gives comfortable headroom over the realistic peak of ~100 concurrent
+     * sub-agents. Past this ceiling `http.Agent` queues internally, which costs
+     * latency rather than producing a synthesized status — the native-looking
+     * failure mode ADR-010 prefers.
      */
     maxUpstreamSockets: z.number().int().positive().default(256),
     /**

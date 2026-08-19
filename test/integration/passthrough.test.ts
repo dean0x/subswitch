@@ -1,6 +1,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import net from "node:net";
 import type { AddressInfo } from "node:net";
 import type { LogLevel } from "../../src/logger.js";
 import { createAnthropicForwarder } from "../../src/anthropic-passthrough.js";
@@ -976,10 +977,17 @@ describe("anthropic passthrough", () => {
 // document the terminal path coverage.  They are not proofs of a previously
 // observable failure.
 //
-// Terminal-path coverage table:
-//   response-headers-received  → 0 upstream events — asserted at line ~439
-//   connect timeout            → 1 event (anthropic_upstream_timeout) — asserted ~line 614
-//   client disconnect          → 0 upstream events — asserted ~line 954
+// Terminal-path coverage table (named by test, not by line number — line numbers
+// in this table had already drifted once and a stale pointer reads as coverage):
+//   response-headers-received  → 0 upstream events
+//        — "forwards method, path+query, auth headers, and body verbatim" and the
+//          header-fidelity tests, none of which tolerate an upstream warn
+//   connect timeout            → 1 event (anthropic_upstream_timeout)
+//        — "connectTimeoutMs fires during TCP connect to a non-routable upstream"
+//   client disconnect          → 0 upstream events
+//        — "aborting the client mid-request produces no anthropic_upstream_error warn"
+//          (pre-headers) and "B6: mid-stream client abort reclaims the upstream socket"
+//          (post-headers; also pins that the teardown itself still happens)
 //   upstream error (ECONNRESET) → 1 event (anthropic_upstream_error) — asserted below
 // ---------------------------------------------------------------------------
 
@@ -988,12 +996,19 @@ describe("B5: upstreamEvents at-most-one contract — upstream error terminal pa
     // This test covers the one terminal path not already asserting the contract:
     // when the upstream is unreachable and the error handler fires.
     //
-    // Non-vacuity argument: the upstream_error handler in anthropic-passthrough.ts
-    // calls settle() before logging.  Removing the settle() guard would still produce
-    // exactly one event here because there is only one error on this path — the
-    // contract test for the DUPLICATE case requires a deliberate race that is no
-    // longer reachable.  We document this honestly rather than claiming a proof we
-    // do not have.
+    // Non-vacuity argument, stated precisely:
+    //  - The assertion IS falsifiable in the duplicate direction: the filter is
+    //    `startsWith("anthropic_upstream")`, not an exact-name match, so a second
+    //    record of any upstream event turns it RED (verified by emitting one twice).
+    //  - It does NOT prove the settle() latch.  Neutering settle() to always return
+    //    true leaves this test green, because only one error occurs on this path.
+    //    The latch's observable guarantee is covered by the client-disconnect test
+    //    instead.  Documented rather than overclaimed.
+    //
+    // Both terminal handlers now call settle() BEFORE logging, so the latch — not
+    // the shape of any individual path — is what makes at-most-one structural.
+    // The timeout handler previously logged first, leaving the timeout path's
+    // at-most-one property dependent on the connect test rather than on the latch.
     const captured: Array<{ level: string; event: string }> = [];
 
     const anthropic = await startFakeUpstream((_req, res) => res.end());
@@ -1076,5 +1091,171 @@ describe("C7: request_complete log event fields on a live request", () => {
     assert.equal(f.status, 200, "status must be the HTTP response status code");
     assert.equal(typeof f.latencyMs, "number", "latencyMs must be a number");
     assert.ok((f.latencyMs as number) >= 0, "latencyMs must be non-negative");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B6: a client abort AFTER response headers must still reclaim the upstream socket
+//
+// The existing client-abort test aborts BEFORE the upstream responds, so the
+// settlement is still open and upstream.destroy() runs.  The mid-stream case is
+// the one that leaks: once headers are relayed the response callback has already
+// claimed settle(), so gating the teardown on the latch skips destroy() entirely.
+// `pipe()` does not propagate destination teardown to the source, so the upstream
+// response stays half-read and its socket never returns to the agent's free pool.
+//
+// This is the failure ADR-010 names as the reason a relay cannot simply delete
+// every bound: leaked sockets accumulate until maxUpstreamSockets is exhausted,
+// after which http.Agent queues every later request forever — an unbounded hang
+// no origin can produce, and one the removed streamIdleTimeoutMs no longer covers.
+//
+// Non-vacuity: measured RED on the pre-fix code — 5 aborts left 5 sockets in
+// agent.sockets and 5 upstream connections open.  The assertion counts live
+// sockets rather than log records, so no filter can hide the leak.
+//
+// A dedicated agent is injected via the documented `agent` test seam so the
+// counters belong to this test alone and cannot be perturbed by another test's
+// traffic.
+// ---------------------------------------------------------------------------
+
+describe("B6: mid-stream client abort reclaims the upstream socket", () => {
+  it("aborting after headers destroys the upstream instead of leaking its socket", async () => {
+    const ABORTS = 5;
+    const liveUpstreamSockets = new Set<import("node:net").Socket>();
+
+    // Upstream sends headers and one SSE frame, then stalls forever — the shape of
+    // a real streaming completion that a sub-agent interrupts partway through.
+    const upstreamServer = http.createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write("event: message_start\ndata: {}\n\n");
+    });
+    upstreamServer.on("connection", (socket) => {
+      liveUpstreamSockets.add(socket);
+      socket.on("close", () => liveUpstreamSockets.delete(socket));
+    });
+    await new Promise<void>((r) => upstreamServer.listen(0, "127.0.0.1", r));
+    const upstreamPort = (upstreamServer.address() as AddressInfo).port;
+
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 8, scheduling: "lifo" });
+    const forwarder = createAnthropicForwarder({
+      baseUrl: `http://127.0.0.1:${upstreamPort}`,
+      connectTimeoutMs: 10_000,
+      maxUpstreamSockets: 8,
+      logger: { log: () => undefined },
+      agent,
+    });
+
+    const relay = http.createServer((req, res) => forwarder(req, res, Buffer.from("{}")));
+    await new Promise<void>((r) => relay.listen(0, "127.0.0.1", r));
+    const relayPort = (relay.address() as AddressInfo).port;
+
+    try {
+      for (let i = 0; i < ABORTS; i++) {
+        const controller = new AbortController();
+        try {
+          const response = await fetch(`http://127.0.0.1:${relayPort}/v1/messages`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ model: "claude-sonnet-4-6", stream: true, messages: [] }),
+            signal: controller.signal,
+          });
+          assert.equal(response.status, 200, "upstream headers must have been relayed before the abort");
+          // Read the first frame so the settlement is provably already claimed.
+          await response.body!.getReader().read();
+          controller.abort();
+        } catch {
+          // AbortError from the client-side abort is expected.
+        }
+        await new Promise((r) => setTimeout(r, 60));
+      }
+
+      await new Promise((r) => setTimeout(r, 300));
+
+      const pools = agent as unknown as { sockets: Record<string, unknown[]>; requests: Record<string, unknown[]> };
+      const inUse = Object.values(pools.sockets).reduce((n, list) => n + list.length, 0);
+      const queued = Object.values(pools.requests).reduce((n, list) => n + list.length, 0);
+
+      assert.equal(
+        inUse,
+        0,
+        `every aborted request must release its upstream socket; ${inUse} of ${ABORTS} still held in agent.sockets. ` +
+          `Held sockets count against maxUpstreamSockets, so this leak wedges the relay permanently.`,
+      );
+      assert.equal(queued, 0, `no request should be left queued inside http.Agent; got ${queued}`);
+      assert.equal(
+        liveUpstreamSockets.size,
+        0,
+        `every aborted request must close its upstream connection; ${liveUpstreamSockets.size} still open at the upstream`,
+      );
+    } finally {
+      agent.destroy();
+      relay.closeAllConnections();
+      await new Promise<void>((r) => relay.close(() => r()));
+      upstreamServer.closeAllConnections();
+      await new Promise<void>((r) => upstreamServer.close(() => r()));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B7: the drainRejectedUpload 2 s safety bound must actually FIRE
+//
+// PF-019's standing rule: never trust a timeout that has no test proving it fires.
+// The drain exists so the client can read its 413 before TCP teardown, but a client
+// that ignores the 413 and keeps uploading must still be cut off — that is what the
+// 2 s timer is for.  Disarming it on `res` "close" made it dead: the 413 has already
+// been written when the drain starts, so `res` closes within a tick or two and the
+// timer was cleared ~2 ms after being armed (measured).  Every disarm signal must
+// come from `req`, the stream actually being drained.
+//
+// Non-vacuity: this test is RED on code that disarms on `res` "close" — the socket
+// is never destroyed and the assertion times out at the 8 s budget instead of the
+// ~2 s bound.  The paired 413-race test above is the control for the opposite
+// mutation (dropping the drain entirely, or shortening the timer to zero, breaks
+// delivery of the 413 and turns that test red).
+//
+// A raw socket is required: fetch/undici will not keep writing a body after the
+// server has responded, so it cannot construct the "client ignores the 413" case.
+// ---------------------------------------------------------------------------
+
+describe("B7: drainRejectedUpload cuts off a client that ignores the 413", () => {
+  it("destroys the socket ~2 s after the 413 when the upload never stops", async () => {
+    const { subswitch } = await setup((_req, res) => res.end("{}"), { maxBodyBytes: 1024 });
+    const { port } = new URL(subswitch.url);
+
+    const timeline = await new Promise<{ responded: boolean; closedAfterMs: number }>((resolve, reject) => {
+      const started = Date.now();
+      let responded = false;
+      let dribble: NodeJS.Timeout | undefined;
+      const socket = net.connect(Number(port), "127.0.0.1", () => {
+        // Declare a body far larger than maxBodyBytes and never finish sending it.
+        socket.write(
+          `POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+            `content-type: application/json\r\ncontent-length: 1000000000\r\n\r\n`,
+        );
+        socket.write(JSON.stringify({ model: "claude-sonnet-4-6", pad: "A".repeat(4096) }));
+        // Keep uploading after the 413 — the case the bound exists for.
+        dribble = setInterval(() => socket.write("B".repeat(64)), 100);
+      });
+      socket.on("data", () => { responded = true; });
+      socket.on("close", () => {
+        if (dribble !== undefined) clearInterval(dribble);
+        resolve({ responded, closedAfterMs: Date.now() - started });
+      });
+      socket.on("error", () => { /* RST/EPIPE on destroy is the expected end state */ });
+      const giveUp = setTimeout(() => {
+        if (dribble !== undefined) clearInterval(dribble);
+        socket.destroy();
+        reject(new Error("socket still open 8 s after the 413 — the 2 s drain bound never fired"));
+      }, 8_000);
+      giveUp.unref();
+    });
+
+    assert.ok(timeline.responded, "the 413 must reach the client before the socket is destroyed");
+    assert.ok(
+      timeline.closedAfterMs < 6_000,
+      `a client that ignores the 413 must be cut off by the 2 s drain bound; socket stayed open ${timeline.closedAfterMs} ms`,
+    );
   });
 });
