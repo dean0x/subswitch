@@ -393,6 +393,14 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
         // Do NOT fall through into the merge — that would clobber the other
         // writer's refresh_token with our now-consumed one. Serve our own valid
         // refresh result from memory instead so the request still succeeds.
+        // RELI-02 (mirror): if the token endpoint returned a rotated refresh_token,
+        // escalate to error — the in-memory credential will be lost at process exit,
+        // and the next OAuth cycle will hit invalid_grant on the stale on-disk token.
+        // A warn here would make this silent in most dashboards (same rationale as the
+        // write-failure branch ~25 lines below).
+        if (tokens.refresh_token !== undefined) {
+          this.logger.log("error", this.events.authFileWriteFailed);
+        }
         const accountId = jwtAccountId(tokens.access_token);
         if (accountId === undefined) return fromFile;
         const fresh: CachedTokenMaterial = {

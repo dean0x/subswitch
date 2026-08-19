@@ -550,6 +550,64 @@ describe("CodexAuthManager", () => {
     assert.equal(store.writes.length, 0, "must not write when materialFrom fails on the newer file");
   });
 
+  /**
+   * I-036: When fileIsNewer is true but materialFrom fails on the newer file, and the
+   * token endpoint returned a rotated refresh_token, the rotated credential is served
+   * from memory but never persisted. This outcome must be logged at ERROR (matching the
+   * write-failure branch's escalation rule) so operators can diagnose invalid_grant on
+   * the next OAuth cycle.
+   *
+   * Falsifier: remove the `if (tokens.refresh_token !== undefined)` error-log block
+   * added in the materialFrom-failed fallback → the "error"-level assertion fails.
+   */
+  it("emits events.authFileWriteFailed at error when fileIsNewer+materialFrom-failed and refresh_token was rotated (I-036)", async () => {
+    const loggedCalls: { level: string; event: string }[] = [];
+    const recordingLogger = { log: (level: string, event: string) => { loggedCalls.push({ level, event }); } };
+    const events = providerEvents("codex");
+    const freshToken = accessToken(3_600_000);
+    const store = memoryStore(authFile(accessToken(60_000)));
+
+    const endpoint = fakeTokenEndpoint(() => ({
+      beforeRespond: () => {
+        // Disk file has a different refresh_token (guard fires) but a malformed
+        // access_token and no account_id — materialFrom returns err on the disk file.
+        store.content = JSON.stringify({
+          OPENAI_API_KEY: null,
+          auth_mode: "chatgpt",
+          last_refresh: new Date(NOW_MS + 5_000).toISOString(),
+          tokens: {
+            id_token: "id.old.x",
+            access_token: "not-a-valid-jwt",
+            refresh_token: "refresh-cli-rotated",
+            // no account_id — forces materialFrom to fail
+          },
+        });
+      },
+      // Token endpoint returned a rotated refresh_token — the credential that will be
+      // silently lost unless the error is surfaced.
+      response: tokenResponse(freshToken, "refresh-our-rotated"),
+    }));
+
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: recordingLogger,
+      events,
+      fetchImpl: endpoint.fetchImpl,
+      now: () => NOW_MS,
+    });
+
+    const result = await auth.getCredentials();
+    assert.ok(result.ok, "should succeed serving our own refresh result from memory");
+
+    const errorCalls = loggedCalls.filter((c) => c.level === "error" && c.event === events.authFileWriteFailed);
+    assert.equal(
+      errorCalls.length,
+      1,
+      `authFileWriteFailed must be logged at error when a rotated refresh_token goes unpersisted; logged: ${JSON.stringify(loggedCalls)}`,
+    );
+  });
+
   it("emits events.authFileWriteFailed when writeAtomic fails during token persistence", async () => {
     const loggedEvents: string[] = [];
     const recordingLogger = { log: (_level: string, event: string) => { loggedEvents.push(event); } };
