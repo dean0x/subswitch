@@ -16,7 +16,7 @@ subswitch translates Anthropic Messages API requests into OpenAI Responses API c
 
 The pipeline has three distinct stages: **resolve** (alias/family → canonical model in `server.ts`), **route** (dispatch decision in `router.ts`), and **send** (translation + fetch in `codex-handler.ts`). Keeping these stages separate is the load-bearing invariant of ADR-005 — the router accepts a typed `ModelResolution`, never a raw string, so name matching cannot creep back in.
 
-**Governing principle (ADR-010):** a relay fronting an origin API must be indistinguishable from the origin. A bound that reclaims a provably dead connection is legitimate; a bound that can terminate a request the origin was about to answer, or emit a status the origin never sends, is a defect. This principle drove the removal of the byte-budget slot system and the deprecation of the Anthropic-leg stream timeout.
+**Governing principle (ADR-010):** a relay fronting an origin API must be indistinguishable from the origin. A bound that reclaims a provably dead connection is legitimate; a bound that can terminate a request the origin was about to answer, or emit a status the origin never sends, is a defect. This principle drove the removal of the byte-budget slot system and the **removal** (not deprecation) of the Anthropic-leg stream timeout.
 
 ## Business Context
 
@@ -309,13 +309,15 @@ IncomingMessage (Anthropic wire)
 
 **`codex-recorder.ts` cannot capture SSE events from the live backend.** Its detection gates on `contentType.includes("text/event-stream")`, but the production `/responses` stream sends **no `Content-Type` header at all** (avoids PF-013). The recorder therefore silently degrades to pass-through mode. It works correctly only against local fixture upstreams.
 
-**The Codex leg has a stream idle timeout; the Anthropic leg does not — this is a genuine asymmetry.** `providers.codex.streamIdleTimeoutMs` is live and intentional (default 300 s). `anthropic.headerTimeoutMs` and `anthropic.streamIdleTimeoutMs` are **deprecated** and silently ignored (ADR-010: the relay must not bound a connected client's stream phase). `LEGACY_KEY_MOVES` migrates `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs` only; there is no Anthropic equivalent. Any code that assumes both legs have matching timeout behavior is wrong.
+**The Codex leg has a stream idle timeout; the Anthropic leg does not — this is a genuine asymmetry.** `providers.codex.streamIdleTimeoutMs` is live and intentional (default 300 s). The Anthropic leg has no post-connect timer at all by design (ADR-010): `connectTimeoutMs` bounds DNS+TCP establishment only. `anthropic.streamIdleTimeoutMs` was **removed** in 0.3.0 — it is a `removed`-kind row in `LEGACY_KEY_ENTRIES` and `loadConfig` returns `err` (the relay refuses to start) if it appears in config. `anthropic.headerTimeoutMs` was never shipped and is not in `LEGACY_KEY_ENTRIES`; it is rejected by `z.strictObject` as an unrecognised field. `LEGACY_KEY_ENTRIES` has a `moved` row migrating `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs`; there is no Anthropic equivalent. Any code that assumes both legs have matching timeout behavior is wrong.
+
+**Pooled outbound sockets already carry OS-level TCP keepalive.** The outbound `http.Agent` is constructed with `{ keepAlive: true, … }`, which causes Node to enable TCP keepalive (1 s initial delay) on every socket it pools. No explicit `setKeepAlive()` call is needed or present.
 
 **Test suite must run alone; globs are flat and non-recursive.** Test globs are `test/unit/*.test.ts` and `test/integration/*.test.ts` — they do NOT descend into subdirectories. The suite has a hard 30 s per-test timeout and no fake timers. Wall-clock assertions flake when run alongside parallel processes (e.g. `tsc`). Always run the suite alone when validating timing-sensitive behavior.
 
 ## Key Files
 
-- `src/server.ts` — Wiring site for resolve→route→send; `buildDeps` calls `buildRoutingTable` once; `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; ambiguous fail-open policy; `BufferBodyError` (server-local, not `ProxyError`); `attachClientErrorHandler`; `SERVER_TUNING`
+- `src/server.ts` — Wiring site for resolve→route→send; `buildDeps` calls `buildRoutingTable` once; `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; ambiguous fail-open policy; `BufferBodyError` (server-local, not `ProxyError`); `applyInboundPolicy` (from `src/inbound-policy.ts`) owns `SERVER_TUNING` + `clientError` handler
 - `src/models.ts` — Pure registry module (no repo imports); `MODEL_REGISTRY`, `PROVIDER_IDS`, `AliasesByProvider`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `routableModelCount`, `formatModelsReport`, `buildModelRows`, `buildAliasRows`
 - `src/router.ts` — Pure routing decision; accepts `ModelResolution` (not raw string); zero name matching; exhaustive switch; classification only — policy lives in server.ts
 - `src/codex-handler.ts` — `createCodexHandler<P>(deps): ProviderHandler` entry point; `CodexHandlerDeps<P>`, `CodexTransportConstants` interface; `buildHeaders` (exported pure module-level fn); canonical substitution; sessionId before loop; bounded retry; `AbortController` above `auth.getCredentials()`; `handleCountTokens` (estimate, not forwarded)
@@ -327,7 +329,7 @@ IncomingMessage (Anthropic wire)
 - `src/codex-response.ts` — `MAX_CONTENT_BLOCKS`; SSE parser (segment array; linear); Anthropic SSE translator state machine; `aggregateFrames`; `blockIndexByKey` NOT pruned on stop
 - `src/codex-auth.ts` — `CodexAuthManager`; all 7 auth events now table-derived via `events: ProviderEvents<"codex">`; `callTokenEndpoint` uses `AbortSignal.timeout(15_000)`; `forceRefresh()` 30s cooldown; `writeAtomic` self-heals EEXIST
 - `src/provider-events.ts` — `providerEvents<P>(id): ProviderEvents<P>`; 19-field table (11 handler/translator events + 1 insecureBaseUrlScheme + 7 auth events); compile-time log-injection control
-- `src/config.ts` — `providers.codex.streamIdleTimeoutMs` (default 300 s, live); `anthropic.streamIdleTimeoutMs` and `anthropic.headerTimeoutMs` (deprecated, ignored); `LEGACY_KEY_MOVES` migrates `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs`; `providers.codex.maxAggregateBytes` (64 MiB default); strict schemas via `z.strictObject`
+- `src/config.ts` — `providers.codex.streamIdleTimeoutMs` (default 300 s, live); `anthropic.streamIdleTimeoutMs` removed in 0.3.0 (ADR-010) — `removed`-kind row in `LEGACY_KEY_ENTRIES`, hard-errors on load; `anthropic.headerTimeoutMs` never shipped — rejected by `z.strictObject`, not in table; `LEGACY_KEY_ENTRIES` has a `moved` row for `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs`; `providers.codex.maxAggregateBytes` (64 MiB default); strict schemas via `z.strictObject`
 - `src/errors.ts` — `ProxyError` union (auth/upstream/translate/timeout); `BufferBodyError` is separate and local to `server.ts`; `AnthropicErrorType` includes `not_found_error`; `upstreamStatusToAnthropicError`; 504→timeout and 502→upstream are both intentional (ADR-010)
 - `src/agent-scan.ts` — `unknown_provider` severity is `"info"`; `ambiguous` severity is `"fail"`
 - `test/tools/` — `sse-parser.bench.ts` (the only guard against an SSE-parser perf regression)
@@ -336,7 +338,7 @@ IncomingMessage (Anthropic wire)
 
 ## Related
 
-- ADR-010 (Accepted): relay must be indistinguishable from the origin — drove removal of slot-based admission gate, deprecation of Anthropic-leg stream timeout, and fail-open policy for ambiguous/unknown-provider routes
+- ADR-010 (Accepted): relay must be indistinguishable from the origin — drove removal of slot-based admission gate, removal (not deprecation) of Anthropic-leg stream timeout, and fail-open policy for ambiguous/unknown-provider routes
 - ADR-006 (Accepted): Source the routable set from `MODEL_REGISTRY`, not a user-maintained `codex.models` list
 - ADR-005 (Accepted): Route by exact model-name membership; resolution strictly before `decideRoute`; `decideRoute` now accepts `ModelResolution` (not raw string) enforcing this structurally
 - ADR-008 (Accepted): Apply credential redaction once at the error render site (`toAnthropicErrorBody`); `redactCredentials` is called inside `toAnthropicErrorBody`, not at each relay call site

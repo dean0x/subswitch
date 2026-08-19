@@ -1,9 +1,9 @@
 ---
 feature: cli-ux
 name: CLI / init command / terminal UX
-description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, log event names, config load and provider config resolution, the models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, providerEvents, provider-events, log injection, FIELD_KEYS, renderToken, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, buildDeps, ProviderConfigs, PROVIDER_SCHEMAS, PROVIDER_RESOLVERS, detectUnknownProviderKeys, detectLegacyConfigKeys, DEPRECATED_KEYS, detectDeprecatedConfigKeys, DeprecatedConfigKey, credentialUsable, providersWithCredentials, enumerateDestinations, RoutingDestination, isLoopbackHost, strictObject, oauthTokenUrl, PROVIDER_AUTH_INSPECTORS, plain-object, SERVER_TUNING, attachClientErrorHandler, drainRejectedUpload, ADR-010."
+description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, log event names, config load and provider config resolution, the models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, providerEvents, provider-events, log injection, FIELD_KEYS, renderToken, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, buildDeps, ProviderConfigs, PROVIDER_SCHEMAS, PROVIDER_RESOLVERS, detectUnknownProviderKeys, detectLegacyConfigKeys, LEGACY_KEY_ENTRIES, renderLegacyKeyEntry, credentialUsable, providersWithCredentials, enumerateDestinations, RoutingDestination, isLoopbackHost, strictObject, oauthTokenUrl, PROVIDER_AUTH_INSPECTORS, plain-object, SERVER_TUNING, applyInboundPolicy, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, drainRejectedUpload, ADR-010."
 category: architecture
-directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts]
+directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts]
 created: 2026-07-23
 updated: 2026-08-19
 ---
@@ -60,20 +60,17 @@ Both `logger.ts` and `cli.ts` import this function. `FORCE_COLOR=0` and `FORCE_C
 - `Config.anthropic`: `{ baseUrl, connectTimeoutMs, maxUpstreamSockets, allowInsecureBaseUrl }`. The `headerTimeoutMs` and `streamIdleTimeoutMs` fields were **removed** — the relay must never bound the headers or stream-idle phase on a connected client (ADR-010).
 - `Config.limits`: `{ maxBodyBytes, pingIntervalMs }`. The admission-gate fields (`maxConcurrentRequests`, `maxInFlightBytes`, `maxQueueDepth`, `maxQueueWaitMs`) were **removed** — the byte-budget gate was an ADR-010 violation.
 
-**`resolveConfig` builds `anthropic` and `limits` field-by-field** (not by spreading `file.anthropic` or `file.limits`) so deprecated keys cannot accidentally reach the runtime `Config` even if the schema parses them.
+**`resolveConfig` builds `anthropic` and `limits` field-by-field** (not by spreading `file.anthropic` or `file.limits`) so removed keys cannot accidentally reach the runtime `Config` even if the schema were to parse them.
 
-**All top-level sub-schemas are `z.strictObject`.** `CodexProviderSchema`, `AnthropicSchema`, `LimitsSchema`, and `FileConfigSchema` all use `z.strictObject`. A typo'd leaf key is a hard load error rather than a silent revert to default (avoids PF-010). `AliasesSchema` stays `z.record` by design.
+**All top-level sub-schemas are `z.strictObject`.** `CodexProviderSchema`, `AnthropicSchema`, `LimitsSchema`, and `FileConfigSchema` all use `z.strictObject`; `reasoningCache` within `CodexProviderSchema` is also a `z.strictObject`. A typo'd leaf key is a hard load error rather than a silent revert to default (avoids PF-010). `AliasesSchema` stays `z.record` by design. The `ProviderFileConfig` type has been removed — provider configs are typed directly via their Zod schema inference.
 
 **https-or-loopback URL refinement.** `requireHttpsOrLoopback` is applied to `providers.codex.baseUrl`, `providers.codex.oauthTokenUrl`, and `anthropic.baseUrl`. `isLoopbackHost(hostname)` is **exported** so `buildDeps` can apply the same logic at startup (no duplication). The loopback exemption covers the e2e dev workflow at `http://127.0.0.1:4142`.
 
-**Two parallel mechanisms for rejected/soft-rejected config keys — know the distinction:**
+**One mechanism for rejected config keys — there is no soft-deprecation subsystem:**
 
-| Mechanism | Function | Effect | When to add a row |
-|---|---|---|---|
-| `LEGACY_KEY_MOVES` | `detectLegacyConfigKeys` | **Hard error** — load fails | A key was renamed/moved: old path has a new destination |
-| `DEPRECATED_KEYS` | `detectDeprecatedConfigKeys` | **Soft warning** — load succeeds, value ignored | A key's feature was removed: there is no destination for the value |
+`LEGACY_KEY_ENTRIES` (a `readonly LegacyKeyEntry[]`, private to `config.ts`) is the single table. Each entry is either a `moved` row (old path → new path, e.g. restructure migration) or a `removed` row (key outright deleted). `detectLegacyConfigKeys(raw)` walks it and `renderLegacyKeyEntry` formats each hit for the error message. Both kinds produce the same outcome: `loadConfig` returns `err` and the relay refuses to start. The table is append-only.
 
-Both tables are append-only. The six currently deprecated keys (`anthropic.headerTimeoutMs`, `anthropic.streamIdleTimeoutMs`, `limits.maxConcurrentRequests`, `limits.maxInFlightBytes`, `limits.maxQueueDepth`, `limits.maxQueueWaitMs`) stay in the Zod schemas as `.optional()` so existing operator configs continue to load — only their values are discarded. `LoadConfigResult.deprecatedKeys: readonly DeprecatedConfigKey[]` carries the matches to the `serve` command for warning display.
+The two genuinely removed keys in 0.3.0 are `anthropic.streamIdleTimeoutMs` (removed in 0.3.0, ADR-010) and `limits.maxConcurrentRequests` (removed in 0.3.0, ADR-010). `codex.models` is a `removed` row from 0.2.0 (ADR-006). The four never-shipped keys (`anthropic.headerTimeoutMs`, `limits.maxInFlightBytes`, `limits.maxQueueDepth`, `limits.maxQueueWaitMs`) are not in the table at all — they are rejected silently by `z.strictObject` as unrecognised fields.
 
 **Two raw pre-parse scans reject unrecognised keys (avoids PF-010):**
 - `detectLegacyConfigKeys(raw)` — pre-`providers.*` layout keys, each paired with its replacement path.
@@ -114,9 +111,7 @@ Key exports: `PROVIDER_IDS`, `ProviderId`, `AliasesByProvider`, `MODEL_REGISTRY`
 
 Per-command flag validation walks `parseArgs` **tokens**, not `values`. The main switch is exhaustive (`default` assigns to `never` and calls `fail()`).
 
-**`serve` now takes `LoadConfigResult`** (not a resolved `Config`) — matching the shape already used by `doctor` and `modelsJson`. On startup it emits one deprecation warning per deprecated key found in the config on two surfaces:
-1. `deps.logger.log("warn", "config_key_deprecated", { path })` — structured log (path only; `reason` cannot pass through `LogFields`, which is a closed allow-list by design).
-2. `errOut("subswitch: deprecated config key \"<path>\" — <reason>")` — human-readable stderr notice carrying the reason.
+**`serve` now takes `LoadConfigResult`** (not a resolved `Config`) — matching the shape already used by `doctor` and `modelsJson`. Legacy or removed config keys cause `loadConfig` to return `err` before `serve` is dispatched; there is no soft-deprecation path that lets startup proceed.
 
 **`models` subcommand.** The JSON branch returns before `resolveColorEnabled` is ever called — `FORCE_COLOR` cannot bleed into JSON output even on a real TTY.
 
@@ -128,13 +123,13 @@ Per-command flag validation walks `parseArgs` **tokens**, not `values`. The main
 
 **`SERVER_TUNING`** (exported `as const`): `{ requestTimeout: 600_000, headersTimeout: 120_000, keepAliveTimeout: 300_000, maxRequestsPerSocket: 0, maxHeaderSize: 64*1024 }`. Applied to `http.createServer` and then to the server instance post-construction. `maxHeaderSize` must go through `http.createServer({ maxHeaderSize }, …)` — it is not a settable property on the server object. Exported so tests can apply identical values to their own test servers (no fixture drift).
 
-**`attachClientErrorHandler(server, logger)`** (exported): registers a `clientError` listener that converts Node's bodyless 400/408/431 responses into Anthropic-shaped bodies carrying `x-subswitch-synthesized: 1`. Guards against writing to a non-writable socket or one that has already sent bytes.
+**`applyInboundPolicy(server, logger)`** (exported from `src/inbound-policy.ts`): the single entry point that owns both `SERVER_TUNING` application and the Anthropic-shaped `clientError` handler. It converts Node's bodyless 400/408/431 responses into Anthropic-shaped bodies carrying `x-subswitch-synthesized: 1` (set via `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` from `src/errors.ts`). Guards against writing to a non-writable socket or one that has already sent bytes with a per-request reply guard. `attachClientErrorHandler` no longer exists — the two halves are unified because applying the tuning without the error handler (or vice versa) reproduces the original defect.
 
 **`drainRejectedUpload(req)`** (module-local): called after sending a 413 so remaining upload data drains cleanly before TCP teardown. Uses FIN rather than RST, giving the client a chance to read the 413. A 2-second unref'd timer destroys the socket if draining stalls. Replaces the old `req.destroy()` which caused RST and risked the 413 being discarded.
 
 **`BufferBodyError`** (module-local type): `{ kind: "body_too_large" } | { kind: "client_disconnected" }`. Intentionally excluded from `ProxyError` so `proxyErrorToAnthropic` can never accidentally be called with them — any attempt is a compile error.
 
-**Byte-budget admission gate is GONE.** The old `inFlightBytes`, `queue`, `acquireSlot`, `drainQueue`, `releaseSlot`, `getReservationBytes`, `SlotError`, `QueueEntry`, and the synthesized 529/`rate_limited`/`disconnected_while_queued` labels were all removed as ADR-010 violations. `"overloaded_error"` survives in `src/errors.ts` only as a pass-through for upstream 529 responses — the relay must never synthesize it.
+**Byte-budget admission gate is GONE.** The old `inFlightBytes`, `queue`, `acquireSlot`, `drainQueue`, `releaseSlot`, `getReservationBytes`, `SlotError`, `QueueEntry`, and the synthesized 529/`rate_limited`/`disconnected_while_queued` labels were all removed as ADR-010 violations. `"overloaded_error"` was also removed from `AnthropicErrorType` — there is no producer for it; upstream 5xx including 529 maps to `"api_error"` via `upstreamStatusToAnthropicError`. Anthropic-leg upstream response bodies pass through untouched.
 
 **Ambiguous model routing fails open (ADR-010).** When `resolveModel` returns `"ambiguous"`, the relay now logs `warn ambiguous_model_name { model: "name (p1, p2)" }` and forwards to Anthropic unchanged — it does not synthesize a 400. This matches the `unknown_qualifier` precedent: the origin may support the name; at minimum, forwarding lets it answer with its own error.
 
@@ -142,7 +137,7 @@ Per-command flag validation walks `parseArgs` **tokens**, not `values`. The main
 
 **`route = "internal_error"`** is set on unhandled `dispatch()` rejections (previously unlabeled).
 
-**`src/errors.ts` changes:** `body_too_large` and `client_disconnected` were removed from `ProxyError` (now `BufferBodyError` in server.ts). `not_found_error` was added to `AnthropicErrorType`. `overloaded_error` remains — upstream pass-through only.
+**`src/errors.ts` changes:** `body_too_large` and `client_disconnected` were removed from `ProxyError` (now `BufferBodyError` in server.ts). `not_found_error` was added to `AnthropicErrorType`. `overloaded_error` was **removed** from `AnthropicErrorType` — upstream 5xx including 529 maps to `api_error` via the mapper. `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` are exported from `src/errors.ts` as the single chokepoint for the `x-subswitch-synthesized` header — all emitters and `RESPONSE_STRIP` in `anthropic-passthrough.ts` derive from them.
 
 ### src/init.ts — Functional-core / imperative-shell
 
@@ -192,9 +187,9 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 - `as const satisfies readonly (keyof LogFields)[]` — every listed key must exist in `LogFields`.
 - `type _FieldKeysComplete = Exclude<keyof LogFields, (typeof FIELD_KEYS)[number]> extends never ? true : never` — every field in `LogFields` must appear in `FIELD_KEYS`. Adding a field to `LogFields` without adding it to `FIELD_KEYS` is a compile error.
 
-`inFlightBytes` and `reservationBytes` were removed from `LogFields` (byte-gate removed). New/updated log events: `config_key_deprecated` (warn, from `serve`), `ambiguous_model_name` (warn, from `createProxyServer`), `client_error` (warn, from `attachClientErrorHandler`), `route = "internal_error"` (from unhandled dispatch rejections).
+`inFlightBytes` and `reservationBytes` were removed from `LogFields` (byte-gate removed). New/updated log events: `ambiguous_model_name` (warn, from `createProxyServer`), `client_error` (warn, from `applyInboundPolicy`'s `clientError` handler), `route = "internal_error"` (from unhandled dispatch rejections).
 
-**Log injection prevention:** `renderToken(value)` strips `[\r\n]` then quotes anything matching `/[\s="\\]/`. Applied to both field values AND the event token. The primary control is that every event name is a compile-time string literal.
+**Log injection prevention:** `renderToken(value)` strips all C0 control characters (U+0000–U+001F), DEL (U+007F), and C1 control characters (U+0080–U+009F) — not just `\r\n` — then quotes anything matching `/[\s="\\]/`. Applied to both field values AND the event token. The primary control is that every event name is a compile-time string literal.
 
 ## Non-interactive Safety Contract
 
@@ -233,7 +228,7 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 
 - **Adding a provider dispatch as a `switch` with a `default` arm, or as a `Partial`/`Map`** — every provider-keyed structure is a total `Record`/mapped type precisely so the completeness check is structural.
 
-- **Adding a config restructure without a `LEGACY_KEY_MOVES` row** — reintroduces PF-010. Adding a removed feature's key to `DEPRECATED_KEYS` instead of `LEGACY_KEY_MOVES` when it WAS renamed (i.e. the value has a new home) is equally wrong — the distinction matters.
+- **Adding a config restructure without a `LEGACY_KEY_ENTRIES` row** — reintroduces PF-010. Both renamed keys (`moved`) and removed keys (`removed`) go into `LEGACY_KEY_ENTRIES` as hard errors; there is no soft-deprecation path. A renamed key that lands in `removed` instead of `moved` loses its migration hint; a removed key with no entry gives a generic schema error instead of a named reason.
 
 - **Calling `out()` / `errOut()` from `serve` for runtime request logs** — use the structured logger.
 
@@ -245,7 +240,7 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 
 ## Gotchas
 
-**The byte-budget admission gate is gone. Any text describing a concurrency cap, byte-based admission, queueing, or a 503/529 from the relay is now false.** `"overloaded_error"` in `src/errors.ts` is inert — upstream pass-through only.
+**The byte-budget admission gate is gone. Any text describing a concurrency cap, byte-based admission, queueing, or a 503/529 from the relay is now false.** `"overloaded_error"` was removed from `AnthropicErrorType` — upstream 5xx including 529 maps to `"api_error"` via `upstreamStatusToAnthropicError`. The relay never synthesizes an `overloaded_error` body.
 
 **`FORCE_COLOR` beats `NO_COLOR` here — this inverts the no-color.org convention.** `FORCE_COLOR=1 NO_COLOR=1 subswitch models` emits ANSI. Do not "fix" it without a decision record.
 
@@ -261,7 +256,7 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 
 **`subswitch.config.example.json` must stay in sync with the strict schema.** A stale example with an unknown key is a hard load error. Any schema refactor must update the example simultaneously.
 
-**A deprecated key's VALUE is still schema-validated even though it is discarded.** An invalid value (e.g. a string where an int is expected) can still veto startup. Not a regression — the validators are byte-identical to pre-change — but a sharp edge when operators have malformed deprecated keys in their config.
+**Legacy or removed keys hard-error immediately via `LEGACY_KEY_ENTRIES`.** There is no path where a legacy key's value is validated before being discarded — the load fails at the pre-parse scan before Zod parses the schema at all.
 
 **`ambiguous` model routing fails open.** The relay forwards to Anthropic and logs a `warn`. It does NOT synthesize a 400. If you see an `ambiguous_model_name` warn in logs, it means two providers claim the same family name (only reachable once a second provider ships).
 
@@ -285,12 +280,13 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 ## Key Files
 
 - `src/tty.ts` — `resolveColorEnabled(env, isTTY)` — single color-enable source of truth
-- `src/cli.ts` — Binary entry point; `parseCliArgs` → `CliCommand` union; `serve` now takes `LoadConfigResult`; deprecation warning dual-surface (structured log + `errOut`); exhaustive switch with `never` guard
-- `src/config.ts` — `FileConfig`/`Config` split; `z.strictObject` for all top-level sub-schemas; https-or-loopback refinements; `isLoopbackHost` (exported); `DEPRECATED_KEYS` + `DeprecatedConfigKey` + `detectDeprecatedConfigKeys` (soft-deprecation); `LEGACY_KEY_MOVES` + `detectLegacyConfigKeys` (hard-error); `resolveConfig` field-by-field (no spreading deprecated fields); `enumerateDestinations` + `RoutingDestination`; totality anchors; `LoadConfigResult.deprecatedKeys`
+- `src/cli.ts` — Binary entry point; `parseCliArgs` → `CliCommand` union; `serve` now takes `LoadConfigResult` (load hard-errors on any legacy/removed key before dispatch); exhaustive switch with `never` guard
+- `src/config.ts` — `FileConfig`/`Config` split; `z.strictObject` for all top-level sub-schemas; https-or-loopback refinements; `isLoopbackHost` (exported); `LEGACY_KEY_ENTRIES` + `LegacyKeyEntry` + `renderLegacyKeyEntry` (exported) + `detectLegacyConfigKeys` — single hard-error mechanism for both renamed and removed keys; `resolveConfig` field-by-field (no spreading removed fields); `enumerateDestinations` + `RoutingDestination`; totality anchors
 - `src/provider-events.ts` — `providerEvents<P extends ProviderId>`; template-literal `ProviderEvents<P>`; 19-field table; compile-time log-injection control
-- `src/logger.ts` — `createConsoleLogger`; `FIELD_KEYS` bidirectional completeness check (`satisfies` + `Exclude`); `renderToken` escapes `"` and `\`; applied to values AND event token
-- `src/server.ts` — `buildDeps(config, logger?)` — the one wiring site; `SERVER_TUNING` (exported); `attachClientErrorHandler` (exported); `drainRejectedUpload` (module-local); `BufferBodyError` (module-local); no byte-budget gate; ambiguous fails open; 404 via `toAnthropicErrorBody`; `route = "internal_error"`
-- `src/errors.ts` — `ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (added `not_found_error`); `overloaded_error` inert for upstream pass-through only
+- `src/logger.ts` — `createConsoleLogger`; `FIELD_KEYS` bidirectional completeness check (`satisfies` + `Exclude`); `renderToken` strips all C0/DEL/C1 control characters then quotes — applied to values AND event token
+- `src/inbound-policy.ts` — `SERVER_TUNING` (exported `as const`); `applyInboundPolicy(server, logger)` (the single entry point — applies tuning AND registers the Anthropic-shaped `clientError` handler with per-request reply guard; `attachClientErrorHandler` no longer exists); `responseForClientError` (looks up Anthropic-shaped 400/408/431 response by error code)
+- `src/server.ts` — `buildDeps(config, logger?)` — the one wiring site; `drainRejectedUpload` (module-local); `BufferBodyError` (module-local); no byte-budget gate; ambiguous fails open; 404 via `toAnthropicErrorBody`; `route = "internal_error"`
+- `src/errors.ts` — `ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed — upstream 5xx incl. 529 → `api_error`); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` exported as single chokepoint for `x-subswitch-synthesized`; `redactCredentials` inside `toAnthropicErrorBody` (ADR-008)
 - `src/doctor.ts` — `runDoctor`; `PROVIDER_AUTH_INSPECTORS` (exported totality anchor); `makeLiveListAgentFiles` (absolute-path resolution critical); `probeTlsReachable` (hardcoded 443)
 - `src/init.ts` — Pure planning + `InitFsDeps` / `InitPrompts` seams; wizard prompts only port + settings-target
 - `src/agent-scan.ts` — `parseFrontmatterModel`; `checkAgentModels`; `unknown_provider` severity now `"info"` (ADR-010)
