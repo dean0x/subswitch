@@ -31,7 +31,7 @@ export interface Logger {
 
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
-const FIELD_KEYS = [
+export const FIELD_KEYS = [
   "model",
   "path",
   "route",
@@ -43,14 +43,9 @@ const FIELD_KEYS = [
   "cachedTokens",
   "sessionKey",
 ] as const satisfies readonly (keyof LogFields)[];
-
-/**
- * Compile-time check: every key in LogFields must appear in FIELD_KEYS.
- * Adding a field to LogFields without adding it to FIELD_KEYS is a compile error.
- */
-type _FieldKeysComplete = Exclude<keyof LogFields, (typeof FIELD_KEYS)[number]> extends never ? true : never;
-const _fieldKeysComplete: _FieldKeysComplete = true;
-void _fieldKeysComplete;
+// Completeness proof lives in test/unit/logger.types.test.ts (module-level type
+// proofs follow the *.types.test.ts convention; in-src guards are function-local
+// switch exhaustiveness checks only).
 
 /**
  * Render one token's value: control characters stripped, then quoted (with internal
