@@ -289,37 +289,49 @@ type BufferBodyError =
   | { readonly kind: "client_disconnected"; readonly message: string };
 
 /**
- * Safety timeout for drainRejectedUpload: destroy the socket if draining stalls.
+ * The two bounds on draining an upload the relay has already answered with a 413:
+ * how long the drain may run, and how much it may read.
  *
- * Colocated with the helper because a later batch will move drainRejectedUpload
- * to provider-transport.ts and this constant must travel with it.
+ * Both are colocated with drainRejectedUpload because a later batch moves the helper
+ * to provider-transport.ts and the bounds travel with it.
  *
- * The B7 integration test asserts closure between 1.5 s and 3 s, which remains
- * valid against this bound.
+ * Time alone does not bound volume.  Measured on loopback, a client at line rate
+ * pushes ~1 GB through the drain in ~215 ms, so a 2 s window admits gigabytes per
+ * rejected request.  REJECTED_UPLOAD_DRAIN_BYTES is what makes the volume finite.
+ *
+ * 32 MiB is the default `limits.maxBodyBytes` — the largest body the relay would
+ * have accepted — so a client that merely overshot the cap is never cut off
+ * mid-drain.  It is deliberately a constant rather than the configured maxBodyBytes:
+ * an operator who lowers the cap to, say, 1 MiB would otherwise have the relay
+ * destroy the socket of every client with more than 1 MiB still in flight, which is
+ * the RST this helper exists to prevent.
+ *
+ * The two bounds are pinned by opposite controls: B7 asserts a slow client is closed
+ * between 1.5 s and 3 s (time), B10 asserts a line-rate client stops being read far
+ * short of its declared length (bytes).
  */
 const REJECTED_UPLOAD_DRAIN_MS = 2_000;
+const REJECTED_UPLOAD_DRAIN_BYTES = 32 * 1024 * 1024;
 
 /**
  * Drain remaining upload data after a 413 so TCP can close with FIN rather than RST.
  *
  * When the server sends a 413 before the client finishes uploading, the socket still
- * has unread inbound bytes.  Calling req.socket.destroy() (or req.destroy()) with
- * unread data causes the kernel to send RST — the client may discard the response
- * before reading it.  Calling req.resume() drains the inbound data, allowing the
- * connection to close naturally with FIN, giving the client time to read the 413.
+ * has unread inbound bytes.  Destroying it then makes the kernel send RST, and the
+ * client may discard the 413 it had already received — delivering a response the
+ * client never reads is no better than delivering none.  Reading the rest of the
+ * upload lets the connection close with FIN instead, and keeps it reusable when the
+ * client finishes promptly.
  *
- * REJECTED_UPLOAD_DRAIN_MS destroys the socket if draining stalls — e.g. when the
- * client is sending a pathologically large body and does not honour the 413.
- * unref() ensures this timer never prevents the process from exiting.
+ * Both bounds destroy the socket outright: past either one the client is not
+ * honouring the 413 and the exchange is dead, so reclaiming it costs nothing the
+ * client can still use.  unref() keeps the timer from holding the process open, and
+ * the `done` latch keeps it from firing after a clean drain.
  *
- * The latch (`done`) prevents the timer from firing after a clean drain.
- *
- * Every disarm signal is taken from `req`, never from `res`.  The 413 has already
- * been written by the time this runs, so `res` emits "close" within a tick or two —
- * disarming on it cancelled the timer ~2 ms after arming it and left the bound dead
- * in exactly the case it exists for (measured: a client that keeps uploading after
- * the 413 was never cut off).  `req`'s "end"/"close"/"error" are the signals that
- * actually mean "the upload is finished or gone".
+ * Every disarm signal is taken from `req`, never from `res`.  `res` emits "close"
+ * within a tick or two of the 413 that precedes this call, so disarming on it would
+ * cancel the bound almost as soon as it is armed; `req`'s "end"/"close"/"error" are
+ * the signals that mean the upload is finished or gone.
  */
 const drainRejectedUpload = (req: IncomingMessage): void => {
   let done = false;
@@ -334,11 +346,37 @@ const drainRejectedUpload = (req: IncomingMessage): void => {
   req.on("end", finish);
   req.on("close", finish);
   req.on("error", finish);
+  let drained = 0;
+  req.on("data", (chunk: Buffer) => {
+    drained += chunk.length;
+    if (drained > REJECTED_UPLOAD_DRAIN_BYTES) {
+      finish();
+      req.socket?.destroy();
+    }
+  });
   req.resume();
 };
 
 const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buffer, BufferBodyError>> =>
   new Promise((resolve) => {
+    const tooLarge = (): Result<Buffer, BufferBodyError> =>
+      err({ kind: "body_too_large", message: `request body exceeds ${maxBytes} bytes` });
+
+    // A declared Content-Length over the cap settles the outcome before a byte
+    // arrives, so the body is never read: buffering up to maxBytes first would only
+    // pay memory for a 413 that is already decided.  The client sees exactly the same
+    // response either way — the origin also rejects on the declared length, so the
+    // relay's shape is unchanged (applies ADR-010).
+    //
+    // Number.isInteger rejects both a missing header (NaN) and a malformed one; a
+    // chunked or undeclared body has no length to check and is capped by the
+    // streaming counter below.
+    const declared = Number(req.headers["content-length"]);
+    if (Number.isInteger(declared) && declared > maxBytes) {
+      resolve(tooLarge());
+      return;
+    }
+
     const chunks: Buffer[] = [];
     let total = 0;
     let settled = false;
@@ -347,18 +385,22 @@ const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buff
       settled = true;
       resolve(result);
     };
-    req.on("data", (chunk: Buffer) => {
+    const onData = (chunk: Buffer): void => {
       total += chunk.length;
       if (total > maxBytes) {
-        // Release the accumulated prefix now rather than holding up to maxBodyBytes
-        // alive until the request object is collected — drainRejectedUpload keeps
-        // reading from this socket for up to 2 s after the 413.
+        // Detach before settling.  The caller answers 413 and hands the socket to
+        // drainRejectedUpload, which installs its own counting listener; leaving this
+        // one attached re-enters the rejected branch for every chunk still to arrive.
+        req.off("data", onData);
+        // Release the accumulated prefix now rather than holding up to maxBytes alive
+        // until the request object is collected — the drain keeps reading this socket.
         chunks.length = 0;
-        settle(err({ kind: "body_too_large", message: `request body exceeds ${maxBytes} bytes` }));
+        settle(tooLarge());
         return;
       }
       chunks.push(chunk);
-    });
+    };
+    req.on("data", onData);
     req.on("end", () => {
       // Already rejected (body_too_large): drainRejectedUpload is draining the rest of
       // the upload, so 'end' still fires here with nothing left to assemble.
@@ -403,6 +445,19 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     let route = "anthropic";
 
     res.on("close", () => {
+      // One record per request, and only one of the two shapes.  When no response
+      // ever reached the client there is no status to report: `res.statusCode` is
+      // Node's 200 initialiser, so `request_complete status=200` would render a
+      // client that vanished mid-upload identically to a served request.
+      if (!res.headersSent) {
+        logger.log("info", "client_disconnected", {
+          path: pathname,
+          route,
+          ...(model !== undefined ? { model } : {}),
+          latencyMs: Date.now() - startedAt,
+        });
+        return;
+      }
       logger.log("info", "request_complete", {
         path: pathname,
         route,
@@ -438,23 +493,35 @@ export const createProxyServer = (deps: ServerDeps): Server => {
 
       const body = await bufferBody(req, config.limits.maxBodyBytes);
       if (!body.ok) {
-        if (body.error.kind === "body_too_large") {
-          // Use `request_too_large` — the error type Anthropic's own API returns for this
-          // condition. `invalid_request_error` was incorrect; clients that key on the real API's
-          // error taxonomy would not recognize the old type for a 413.
-          //
-          // drainRejectedUpload() lets remaining upload data drain before TCP teardown so the
-          // kernel closes with FIN rather than RST — giving the client a chance to read this
-          // 413 before the connection closes. req.destroy() was removed because calling destroy()
-          // with unread inbound bytes causes RST, which may cause the client to discard the
-          // response (delivering a 413 the client never sees is no better than a raw RST).
-          // connection:close was also removed: it is a hop-by-hop header; Node's keep-alive
-          // agent manages connection lifecycle and does not need the relay to hint it.
-          res.writeHead(413, synthesizedHeaders());
-          res.end(toAnthropicErrorBody("request_too_large", body.error.message));
-          drainRejectedUpload(req);
+        switch (body.error.kind) {
+          case "body_too_large":
+            // `request_too_large` is the error type Anthropic's own API returns for a
+            // 413, so a client keyed on the origin's taxonomy recognises it (applies
+            // ADR-010).  The response carries no `connection: close`: that header is
+            // hop-by-hop, and the client's keep-alive agent owns the connection's
+            // lifecycle.  drainRejectedUpload then reads the rest of the upload under
+            // its own bounds so the socket closes with FIN — see its contract for why
+            // destroying it here would cost the client the 413 it was just sent.
+            res.writeHead(413, synthesizedHeaders());
+            res.end(toAnthropicErrorBody("request_too_large", body.error.message));
+            drainRejectedUpload(req);
+            return;
+
+          case "client_disconnected":
+            // The client is gone before the upload finished, so no response can reach
+            // it and nothing is written to `res`.  `res` has already emitted "close" by
+            // the time this runs (measured on Node 22.22: `res` "close" precedes `req`
+            // "error"), and the close handler above has recorded the disconnect.
+            return;
+
+          default: {
+            // Exhaustive check — a new BufferBodyError variant is a compile error here
+            // rather than a request that returns nothing and is logged as a success.
+            const _exhaustive: never = body.error;
+            void _exhaustive;
+            return;
+          }
         }
-        return;
       }
 
       // Parse the body JSON once. The parsed value is passed to the provider handler
@@ -557,7 +624,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
   // Inbound transport policy: the post-construction tuning knobs and the
   // clientError handler that owns the responses those knobs produce.  One call —
   // the two halves are not separately applicable by design (PF-021).
-  // `maxHeaderSize` is the exception: it is constructor-only and was passed into
+  // `maxHeaderSize` is the exception: it is constructor-only and is passed into
   // http.createServer above.
   applyInboundPolicy(server, logger);
 

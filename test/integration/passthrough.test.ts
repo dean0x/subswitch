@@ -1259,3 +1259,228 @@ describe("anthropic passthrough — drainRejectedUpload cuts off a client that i
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// B8: a client that vanishes mid-upload is not recorded as a completed 200
+//
+// bufferBody's `client_disconnected` outcome writes nothing to `res`, so at close
+// time `res.statusCode` is Node's 200 initialiser rather than a status the relay
+// sent.  Recording `request_complete status=200` for a request that never received
+// a response makes an abort indistinguishable from a success in the one line an
+// operator has.  Measured on Node 22.22: `res` "close" fires BEFORE `req` "error",
+// so the record has to be decided in the close handler, not in the dispatch arm.
+//
+// Non-vacuity: RED against a close handler that emits request_complete
+// unconditionally — the first assertion then finds request_complete with
+// status=200, and the second finds no client_disconnected record at all.
+// ---------------------------------------------------------------------------
+
+describe("server body ingestion — a client that vanishes mid-upload is not logged as a completed 200 (B8)", () => {
+  it("records client_disconnected instead of request_complete status=200", async () => {
+    const captured: Array<{ event: string; fields: Record<string, unknown> }> = [];
+
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_ok" }));
+    });
+    const subswitch = await startSubswitch(
+      { anthropic: { baseUrl: anthropic.url } },
+      {
+        logger: {
+          log(_level: string, event: string, fields: Record<string, unknown> = {}) {
+            captured.push({ event, fields });
+          },
+        },
+      },
+    );
+    cleanups.push(subswitch.close, anthropic.close);
+    const { port } = new URL(subswitch.url);
+
+    await new Promise<void>((resolve) => {
+      const socket = net.connect(Number(port), "127.0.0.1", () => {
+        // Declared length is under maxBodyBytes, so the streaming path is the one
+        // exercised; only a fraction of it is ever sent.
+        socket.write(
+          `POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+            `content-type: application/json\r\ncontent-length: 1048576\r\n\r\n`,
+        );
+        socket.write(JSON.stringify({ model: "claude-sonnet-4-6", pad: "A".repeat(512) }));
+        setTimeout(() => { socket.destroy(); resolve(); }, 100);
+      });
+      socket.on("error", () => { /* the peer may RST first; either way the client is gone */ });
+    });
+
+    // The record lands on `res` "close" — allow the event loop to drain.
+    await new Promise<void>((r) => setTimeout(r, 200));
+
+    assert.ok(
+      !captured.some((e) => e.event === "request_complete" && e.fields.status === 200),
+      `an abandoned upload must not be recorded as request_complete status=200; got ${JSON.stringify(captured)}`,
+    );
+    const disconnect = captured.find((e) => e.event === "client_disconnected");
+    assert.ok(disconnect !== undefined, `the abort must still be recorded; got ${JSON.stringify(captured)}`);
+    assert.equal(disconnect.fields.path, "/v1/messages", "the record must carry the request path");
+    assert.equal(typeof disconnect.fields.latencyMs, "number", "the record must carry a numeric latencyMs");
+    assert.equal(disconnect.fields.status, undefined, "there is no status to report — none must be invented");
+    assert.equal(anthropic.requests.length, 0, "an incomplete upload must not reach the upstream");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B9: a declared Content-Length over the cap is rejected before the body is read
+//
+// The declared length fixes the outcome before a byte arrives, so buffering up to
+// maxBodyBytes first only costs memory: a 40 MiB upload paid a full 32 MiB of
+// buffering to reach a 413 that was already decided.  The client-visible outcome is
+// unchanged (413 + request_too_large + synthesized marker); only timing and peak
+// memory differ, and the origin rejects on the declared length too (ADR-010).
+//
+// Non-vacuity: RED against code that ignores Content-Length — the client sends one
+// small chunk and stops, the relay waits for a cap it will never reach, and the
+// 3 s budget below rejects with the count of bytes actually sent.  The second case
+// pins the streaming cap for chunked bodies, which have no declared length at all.
+// ---------------------------------------------------------------------------
+
+describe("server body ingestion — declared Content-Length over the cap is answered before the body is read (B9)", () => {
+  const readReply = (port: string, write: (socket: net.Socket) => void, budgetMs: number): Promise<string> =>
+    new Promise<string>((resolve, reject) => {
+      let reply = "";
+      let settle: NodeJS.Timeout | undefined;
+      const socket = net.connect(Number(port), "127.0.0.1", () => write(socket));
+      socket.on("data", (chunk: Buffer) => {
+        reply += chunk.toString("utf8");
+        // Header block seen: give the body its own tick or two, then take the reply.
+        if (reply.includes("\r\n\r\n") && settle === undefined) {
+          settle = setTimeout(() => { socket.destroy(); resolve(reply); }, 50);
+        }
+      });
+      socket.on("error", () => { /* the relay destroys the socket after the drain bound */ });
+      const giveUp = setTimeout(() => {
+        socket.destroy();
+        reject(new Error(`no reply within ${budgetMs} ms — the relay is still reading a body whose outcome is already decided`));
+      }, budgetMs);
+      giveUp.unref();
+    });
+
+  it("answers 413 after one small chunk instead of buffering maxBodyBytes first", async () => {
+    const MAX_BODY = 1024 * 1024;
+    const FIRST_CHUNK = 4096;
+    const { anthropic, subswitch } = await setup(
+      (_req, res) => { res.writeHead(200); res.end("{}"); },
+      { maxBodyBytes: MAX_BODY },
+    );
+    const { port } = new URL(subswitch.url);
+
+    const reply = await readReply(
+      port,
+      (socket) => {
+        socket.write(
+          `POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+            `content-type: application/json\r\ncontent-length: ${MAX_BODY * 4}\r\n\r\n`,
+        );
+        // The only body bytes this client will ever send — a fraction of the cap.
+        socket.write("x".repeat(FIRST_CHUNK));
+      },
+      3_000,
+    );
+
+    assert.match(reply, /^HTTP\/1\.1 413 /, `declared oversize must be answered 413; got: ${JSON.stringify(reply.split("\r\n")[0])}`);
+    assert.match(reply, /x-subswitch-synthesized: 1/i, "the 413 must carry the synthesized marker");
+    assert.match(reply, /"request_too_large"/, `the 413 body must carry error type request_too_large; got: ${JSON.stringify(reply)}`);
+    assert.ok(FIRST_CHUNK < MAX_BODY, "the client must stop well short of the cap for this to prove anything");
+    assert.equal(anthropic.requests.length, 0, "an oversized request must not reach the upstream");
+  });
+
+  it("still caps a chunked body, which declares no length at all", async () => {
+    const MAX_BODY = 1024;
+    const { anthropic, subswitch } = await setup(
+      (_req, res) => { res.writeHead(200); res.end("{}"); },
+      { maxBodyBytes: MAX_BODY },
+    );
+    const { port } = new URL(subswitch.url);
+
+    const reply = await readReply(
+      port,
+      (socket) => {
+        socket.write(
+          `POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+            `content-type: application/json\r\ntransfer-encoding: chunked\r\n\r\n`,
+        );
+        const piece = "x".repeat(512);
+        // Four 512-byte chunks cross the 1 KiB cap with no Content-Length in sight.
+        for (let i = 0; i < 4; i += 1) socket.write(`200\r\n${piece}\r\n`);
+      },
+      3_000,
+    );
+
+    assert.match(reply, /^HTTP\/1\.1 413 /, `a chunked body over the cap must be answered 413; got: ${JSON.stringify(reply.split("\r\n")[0])}`);
+    assert.match(reply, /"request_too_large"/, `the 413 body must carry error type request_too_large; got: ${JSON.stringify(reply)}`);
+    assert.equal(anthropic.requests.length, 0, "an oversized request must not reach the upstream");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B10: the rejected-upload drain is bounded by bytes, not only by time
+//
+// The 2 s bound caps how long the drain runs, not how much it reads, and volume is
+// the resource at stake: measured on this loopback, a client at line rate pushes
+// 1 GB through the drain in ~215 ms, so the 2 s window admits gigabytes per
+// rejected request.
+//
+// The assertion is on BYTES, not elapsed time, precisely because of that rate — a
+// client that finishes its declared body inside the window closes early anyway, so
+// a timing assertion passes with or without the byte bound (measured: 247 ms on
+// unbounded code).  What the byte bound changes is how much the relay accepts
+// before reclaiming the socket, and the client's own `bytesWritten` at close reads
+// that number from outside the relay.
+//
+// Non-vacuity: RED against a drain with a time bound only — the client writes its
+// full 1 GB declaration and closes, so bytesWritten is ~1e9 rather than the ~32 MiB
+// the byte bound admits.  B7 above is the paired control for the other direction:
+// a slow client must still be cut off by the TIME bound, so a byte bound small
+// enough to fire on B7's dribble turns B7 red.
+// ---------------------------------------------------------------------------
+
+describe("server body ingestion — the rejected-upload drain is bounded by bytes as well as time (B10)", () => {
+  it("stops accepting a line-rate upload long before the declared body is delivered", async () => {
+    const DECLARED = 1_000_000_000;
+    // Well above the drain's 32 MiB byte bound (plus whatever the kernel and Node
+    // buffer ahead of it) and well below the declared length, so only the presence
+    // of a byte bound decides the outcome.
+    const CEILING = 200 * 1024 * 1024;
+    const { subswitch } = await setup((_req, res) => res.end("{}"), { maxBodyBytes: 1024 });
+    const { port } = new URL(subswitch.url);
+
+    const outcome = await new Promise<{ responded: boolean; written: number }>((resolve, reject) => {
+      let responded = false;
+      const chunk = Buffer.alloc(1024 * 1024, "B");
+      const socket = net.connect(Number(port), "127.0.0.1", () => {
+        socket.write(
+          `POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+            `content-type: application/json\r\ncontent-length: ${DECLARED}\r\n\r\n`,
+        );
+        // Stream as fast as the socket accepts and never stop — the case the byte
+        // bound exists for.  write() returns false on the first 1 MiB chunk, so the
+        // loop is one chunk per "drain", not a spin.
+        const pump = (): void => { while (!socket.destroyed && socket.write(chunk)); };
+        socket.on("drain", pump);
+        pump();
+      });
+      socket.on("data", () => { responded = true; });
+      socket.on("close", () => resolve({ responded, written: socket.bytesWritten }));
+      socket.on("error", () => { /* RST/EPIPE on destroy is the expected end state */ });
+      const giveUp = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("socket still open 8 s after the 413 — neither drain bound fired"));
+      }, 8_000);
+      giveUp.unref();
+    });
+
+    assert.ok(outcome.responded, "the 413 must reach the client before the socket is destroyed");
+    assert.ok(
+      outcome.written < CEILING,
+      `the drain must stop reading at its byte bound; the client got ${outcome.written} bytes onto the socket ` +
+        `(ceiling ${CEILING}, declared ${DECLARED}) — a drain bounded only by time accepts the whole declaration`,
+    );
+  });
+});
