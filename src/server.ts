@@ -1,7 +1,8 @@
 import http from "node:http";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, Server } from "node:http";
-import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, type AnthropicErrorType } from "./errors.js";
+import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
+import { applyInboundPolicy, SERVER_TUNING } from "./inbound-policy.js";
 import { type Result, ok, err } from "./result.js";
 import { aliasesByProvider, enumerateDestinations, isLoopbackHost, providerConfigFor, type Config } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
@@ -383,111 +384,6 @@ const synthesizedHeaders = (extra: Record<string, string> = {}): Record<string, 
   ...extra,
 });
 
-/**
- * HTTP server tuning knobs — applied once in createProxyServer.
- *
- * Exported so tests can apply the same values to test servers (no fixture drift).
- *
- * requestTimeout (600 s): Anthropic's own server-side ceiling for long-running
- * completions; the relay must never fire before the origin.
- * headersTimeout (120 s): maximum time to receive all request headers — protects
- * against slow-loris header attacks while allowing realistic clients.
- * keepAliveTimeout (300 s): matches the Anthropic keep-alive pool's idle-socket
- * timeout so the server does not close sockets the pool would still reuse.
- * maxRequestsPerSocket: 0 disables Node's built-in per-socket request ceiling
- * (its default is 0 as of Node 19, but explicit is safer).
- * maxHeaderSize: 64 KiB — generous for any legitimate Anthropic request but
- * bounds the header-overflow attack surface.
- */
-export const SERVER_TUNING = {
-  requestTimeout: 600_000,
-  headersTimeout: 120_000,
-  keepAliveTimeout: 300_000,
-  maxRequestsPerSocket: 0,
-  maxHeaderSize: 64 * 1024,
-} as const;
-
-/**
- * The response for one `clientError` code: the status Node itself would have
- * sent, shaped into the Anthropic error taxonomy.
- *
- * Registering a `clientError` listener SUPPRESSES Node's canned reply entirely,
- * so every status Node would have chosen must be reproduced here — a code this
- * table does not name silently becomes the 400 fallback.
- *
- * `ERR_HTTP_REQUEST_TIMEOUT` is the load-bearing entry.  Measured on Node 22.22,
- * BOTH `headersTimeout` and `requestTimeout` expiry arrive here under that code,
- * and Node's own reply for it is `408 Request Timeout`.  Letting it fall into the
- * 400 arm would emit a status neither Node nor the origin produces for a slow
- * client, and would additionally misdiagnose a slow request as a malformed one —
- * a relay-invented status on a connection that is merely slow (ADR-010).
- *
- * PF-021 records this response as un-interceptable.  That holds for Node's
- * DEFAULT reply only: attaching this listener does intercept it, which is
- * precisely why the status has to be restated rather than inherited.
- */
-const CLIENT_ERROR_RESPONSES: Readonly<
-  Record<string, { readonly status: number; readonly reason: string; readonly type: AnthropicErrorType; readonly message: string }>
-> = {
-  HPE_HEADER_OVERFLOW: {
-    status: 431,
-    reason: "Request Header Fields Too Large",
-    type: "request_too_large",
-    message: "request headers too large",
-  },
-  ERR_HTTP_REQUEST_TIMEOUT: {
-    status: 408,
-    reason: "Request Timeout",
-    type: "invalid_request_error",
-    message: "request timed out before it was fully received",
-  },
-};
-
-/** Fallback for a genuine parse failure (HPE_INVALID_METHOD, HPE_INVALID_VERSION, …). */
-const MALFORMED_REQUEST_RESPONSE = {
-  status: 400,
-  reason: "Bad Request",
-  type: "invalid_request_error",
-  message: "malformed request",
-} as const;
-
-/**
- * Handle `clientError` events (malformed requests, header overflow, inbound
- * timeouts) with an Anthropic-shaped response body and the synthesized marker.
- *
- * Node's built-in clientError response is bodyless (just a status line) and
- * bypasses the request listener entirely, so it can never carry our marker or
- * content-type.  Registering our own `clientError` handler replaces Node's
- * canned response with one that matches the Anthropic error shape — while
- * preserving the status Node would have sent (see CLIENT_ERROR_RESPONSES).
- *
- * Socket state guard: if the socket is not writable or has already sent bytes,
- * destroy it silently — there is nothing useful we can send.  This is also the
- * branch a slow-but-complete upload lands in: Node still reports the request
- * timeout after the handler has replied, and the reply must not be corrupted.
- */
-export const attachClientErrorHandler = (server: http.Server, logger: Logger): void => {
-  server.on("clientError", (err: Error, socket: import("node:net").Socket) => {
-    if (!(socket.writable && socket.bytesWritten === 0)) {
-      socket.destroy();
-      return;
-    }
-    const code = (err as NodeJS.ErrnoException).code ?? "";
-    const { status, reason, type, message } = CLIENT_ERROR_RESPONSES[code] ?? MALFORMED_REQUEST_RESPONSE;
-    logger.log("warn", "client_error", { ...(code !== "" ? { errorCode: code } : {}), status });
-    const body = toAnthropicErrorBody(type, message);
-    const head =
-      `HTTP/1.1 ${status} ${reason}\r\n` +
-      `content-type: application/json\r\n` +
-      `content-length: ${Buffer.byteLength(body)}\r\n` +
-      `${SYNTHESIZED_HEADER}: ${SYNTHESIZED_MARKER}\r\n` +
-      `connection: close\r\n` +
-      `\r\n`;
-    socket.end(head + body);
-    socket.destroy();
-  });
-};
-
 export const createProxyServer = (deps: ServerDeps): Server => {
   const { config, logger } = deps;
 
@@ -650,16 +546,12 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     });
   });
 
-  // Apply server-level HTTP tuning knobs. These must be set after construction
-  // (not in the createServer options object) to avoid Node version differences
-  // in which options are recognized.  SERVER_TUNING is exported so tests can
-  // apply the same values to their own test servers.
-  server.requestTimeout = SERVER_TUNING.requestTimeout;
-  server.headersTimeout = SERVER_TUNING.headersTimeout;
-  server.keepAliveTimeout = SERVER_TUNING.keepAliveTimeout;
-  server.maxRequestsPerSocket = SERVER_TUNING.maxRequestsPerSocket;
-
-  attachClientErrorHandler(server, logger);
+  // Inbound transport policy: the post-construction tuning knobs and the
+  // clientError handler that owns the responses those knobs produce.  One call —
+  // the two halves are not separately applicable by design (PF-021).
+  // `maxHeaderSize` is the exception: it is constructor-only and was passed into
+  // http.createServer above.
+  applyInboundPolicy(server, logger);
 
   return server;
 };

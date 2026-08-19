@@ -13,7 +13,9 @@ import net from "node:net";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { loadConfig, type Config } from "../../src/config.js";
-import { buildDeps, createProxyServer, SERVER_TUNING } from "../../src/server.js";
+import { buildDeps, createProxyServer } from "../../src/server.js";
+import { SERVER_TUNING } from "../../src/inbound-policy.js";
+import type { Logger, LogLevel } from "../../src/logger.js";
 import { startFakeUpstream } from "./fake-upstreams.js";
 
 /** Run `fn` with stderr captured, returning every line it wrote. */
@@ -658,16 +660,16 @@ describe("SERVER_TUNING — idle socket reuse after 6.5 s (B3)", () => {
 // request handler runs.  Its canned response is a BODYLESS 431 with Connection:
 // close — no JSON body, no x-subswitch-synthesized, never logged.
 //
-// attachClientErrorHandler replaces that with an Anthropic-shaped error body
+// applyInboundPolicy replaces that with an Anthropic-shaped error body
 // and the synthesized marker.  A raw TCP socket is needed because the Node http
 // client enforces its own (16 KiB) header limit before sending.
 //
-// Non-vacuity: without attachClientErrorHandler (or with the wrong maxHeaderSize),
+// Non-vacuity: without applyInboundPolicy (or with the wrong maxHeaderSize),
 // the response body would be empty, body-parse would fail, and the type assertion
 // would not pass.  The presence of the JSON Anthropic body is the discriminant.
 // ---------------------------------------------------------------------------
 
-describe("attachClientErrorHandler — Anthropic-shaped 431 on header overflow (B4)", () => {
+describe("applyInboundPolicy — Anthropic-shaped 431 on header overflow (B4)", () => {
   it("request with headers exceeding maxHeaderSize receives Anthropic-shaped 431 with synthesized marker", async () => {
     const configResult = loadConfig({
       configPath: "inline-b4.json",
@@ -734,7 +736,7 @@ describe("attachClientErrorHandler — Anthropic-shaped 431 on header overflow (
 // listener SUPPRESSES the canned 408 and delivers the expiry to the listener as
 // err.code === "ERR_HTTP_REQUEST_TIMEOUT" for BOTH knobs.
 //
-// So attachClientErrorHandler owns this status now.  Folding the timeout into the
+// So applyInboundPolicy owns this status now.  Folding the timeout into the
 // generic 400 arm would emit a status neither Node nor the origin sends for a slow
 // client, and would report a merely-slow request as a malformed one — a relay-
 // invented status on a live connection, which is the defect class ADR-010 forbids.
@@ -749,7 +751,7 @@ describe("attachClientErrorHandler — Anthropic-shaped 431 on header overflow (
 // values themselves are pinned separately by B1.
 // ---------------------------------------------------------------------------
 
-describe("attachClientErrorHandler — inbound timeout keeps 408, never 400 (B4b)", () => {
+describe("applyInboundPolicy — inbound timeout keeps 408, never 400 (B4b)", () => {
   it("a client that stalls mid-headers receives an Anthropic-shaped 408, not a 400", async () => {
     const configResult = loadConfig({
       configPath: "inline-b4b.json",
@@ -816,7 +818,7 @@ describe("attachClientErrorHandler — inbound timeout keeps 408, never 400 (B4b
 // ---------------------------------------------------------------------------
 // B4c: a genuinely malformed request still gets the Anthropic-shaped 400
 //
-// The 400 arm of attachClientErrorHandler had no test at all: its status, error
+// The 400 arm of applyInboundPolicy had no test at all: its status, error
 // type, message and the `client_error` warn could all be mutated to garbage with
 // the suite fully green.  It is also the fallback arm — any clientError code the
 // response table does not name lands here — so it is what a future Node adding a
@@ -827,7 +829,7 @@ describe("attachClientErrorHandler — inbound timeout keeps 408, never 400 (B4b
 // entry is widened to catch every code (the response would become a 408).
 // ---------------------------------------------------------------------------
 
-describe("attachClientErrorHandler — Anthropic-shaped 400 on a malformed request (B4c)", () => {
+describe("applyInboundPolicy — Anthropic-shaped 400 on a malformed request (B4c)", () => {
   it("an invalid request line receives an Anthropic-shaped 400 with the synthesized marker", async () => {
     const configResult = loadConfig({
       configPath: "inline-b4c.json",
@@ -877,6 +879,261 @@ describe("attachClientErrorHandler — Anthropic-shaped 400 on a malformed reque
     } finally {
       server.closeAllConnections();
       await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B4r / B4br: the shaped clientError reply must survive on a REUSED connection
+//
+// Taking ownership of Node's clientError response is per-CONNECTION, so every
+// guard on the shaped reply has to be per-REQUEST (PF-021).  `socket.bytesWritten`
+// is cumulative over the SOCKET's lifetime, not the request's: after the first
+// response on a keep-alive connection it is permanently non-zero, so a
+// `bytesWritten === 0` guard is permanently false and every later shaped reply is
+// silently discarded by socket.destroy() — no status line, no Anthropic body, no
+// synthesized marker, not even the `client_error` warn.  Since merely registering
+// the listener has already suppressed Node's canned reply, that converts a reply
+// into NO reply, which is strictly worse than the bare status line it replaced.
+//
+// This is the steady state, not an edge case: the branch sets keepAliveTimeout to
+// 300 s and maxRequestsPerSocket to 0, so a Claude Code agent's second and every
+// subsequent request rides a reused socket.
+//
+// B4 and B4b above cannot see any of this — both open a fresh socket, the one
+// state in which `bytesWritten === 0` holds.  These two controls repeat them on a
+// socket that has ALREADY completed one successful request/response.
+//
+// Non-vacuity (PF-011): proven RED by running against the per-socket predicate.
+// Both controls failed with "connection closed before a second, shaped response on
+// the reused connection; received 0 byte(s)", and the `client_error` assertions
+// had no record to match.
+// ---------------------------------------------------------------------------
+
+/** A raw TCP client that accumulates received bytes and lets a test await a byte-level condition. */
+interface RawClient {
+  readonly socket: net.Socket;
+  /** Resolve with everything received once `predicate` holds; reject on close-without-match or timeout. */
+  readonly waitFor: (predicate: (received: string) => boolean, what: string, timeoutMs?: number) => Promise<string>;
+  readonly close: () => void;
+}
+
+const openRawClient = async (port: number): Promise<RawClient> => {
+  const socket = net.connect(port, "127.0.0.1");
+  let received = "";
+  let closed = false;
+  const checks = new Set<() => void>();
+  const runChecks = (): void => { for (const check of [...checks]) check(); };
+  socket.on("data", (chunk: Buffer) => { received += chunk.toString("utf8"); runChecks(); });
+  socket.on("close", () => { closed = true; runChecks(); });
+  socket.on("error", () => { closed = true; runChecks(); });
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  return {
+    socket,
+    // Event-driven with a single bounded timer — no polling loop, and every wait
+    // has all three exits covered (match, peer close, timeout).
+    waitFor: (predicate, what, timeoutMs = 5_000) =>
+      new Promise<string>((resolve, reject) => {
+        const check = (): void => {
+          if (predicate(received)) { cleanup(); resolve(received); return; }
+          if (closed) {
+            cleanup();
+            reject(new Error(
+              `connection closed before ${what}; received ${received.length} byte(s): ${JSON.stringify(received.slice(0, 400))}`,
+            ));
+          }
+        };
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error(
+            `timed out after ${timeoutMs} ms waiting for ${what}; received ${received.length} byte(s): ${JSON.stringify(received.slice(0, 400))}`,
+          ));
+        }, timeoutMs);
+        const cleanup = (): void => { clearTimeout(timer); checks.delete(check); };
+        checks.add(check);
+        check();
+      }),
+    close: () => { socket.destroy(); },
+  };
+};
+
+/**
+ * True once `text` holds exactly one complete HTTP response.
+ *
+ * Both framings are handled deliberately: the health response is chunked (no
+ * content-length, terminated by the zero-length chunk), while the shaped
+ * clientError replies carry content-length.  Recognising only one of them would
+ * make the reused-connection controls fail on the FIXTURE rather than on the
+ * behaviour under test — a red for the wrong reason proves nothing (PF-011).
+ */
+const isOneCompleteResponse = (text: string): boolean => {
+  const separator = text.indexOf("\r\n\r\n");
+  if (separator < 0) return false;
+  const head = text.slice(0, separator);
+  const body = text.slice(separator + 4);
+  const contentLength = /\r\ncontent-length:\s*(\d+)/i.exec(head);
+  if (contentLength !== null) return Buffer.byteLength(body, "utf8") >= Number(contentLength[1]);
+  if (/\r\ntransfer-encoding:\s*chunked/i.test(head)) return body.endsWith("0\r\n\r\n");
+  return false;
+};
+
+interface ReusedConnectionFixture {
+  /** Every record the injected logger saw, so `client_error` can be asserted on the reused connection. */
+  readonly records: ReadonlyArray<{ level: LogLevel; event: string; status: number | undefined }>;
+  readonly client: RawClient;
+  /** Length of the first (successful) response — everything after it is the second reply. */
+  readonly firstResponseLength: number;
+  readonly close: () => Promise<void>;
+}
+
+/**
+ * Start a proxy server with a capturing logger, then complete ONE successful
+ * request/response on a raw keep-alive socket so the connection under test is
+ * genuinely reused (`socket.bytesWritten` is now non-zero) before the caller
+ * writes the request that triggers the clientError.
+ *
+ * `/__subswitch/health` is used for the first request because it is answered
+ * locally — no upstream fixture is needed, and it returns a content-length body
+ * so completion is detectable byte-exactly.
+ */
+const startWithCompletedRequest = async (
+  configName: string,
+  tune?: (server: http.Server) => void,
+): Promise<ReusedConnectionFixture> => {
+  const configResult = loadConfig({ configPath: configName, readFile: () => JSON.stringify({ logLevel: "error" }) });
+  assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
+
+  const records: Array<{ level: LogLevel; event: string; status: number | undefined }> = [];
+  const capturingLogger: Logger = {
+    log(level, event, fields) { records.push({ level, event, status: fields?.status }); },
+  };
+
+  const depsResult = buildDeps(configResult.value.config, capturingLogger);
+  assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
+
+  const server = createProxyServer(depsResult.value);
+  // Applied before listen(): Node starts connection tracking inside listen(), so a
+  // connectionsCheckingInterval set afterwards would never take effect.
+  tune?.(server);
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address() as AddressInfo;
+
+  const client = await openRawClient(port);
+  client.socket.write(`GET /__subswitch/health HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n\r\n`);
+  const first = await client.waitFor(isOneCompleteResponse, "the first (successful) response");
+  assert.match(
+    first,
+    /^HTTP\/1\.1 200 OK/,
+    `the first request must SUCCEED, otherwise the connection is not genuinely reused and the control is vacuous; got:\n${first.slice(0, 200)}`,
+  );
+
+  return {
+    records,
+    client,
+    firstResponseLength: first.length,
+    close: async () => {
+      client.close();
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    },
+  };
+};
+
+describe("inbound policy — Anthropic-shaped 431 on a REUSED keep-alive connection (B4r)", () => {
+  it("a header overflow on the SECOND request of a connection still gets the shaped 431 and a client_error warn", async () => {
+    const fixture = await startWithCompletedRequest("inline-b4r.json");
+
+    try {
+      const bigHeaderValue = "A".repeat(65 * 1024);
+      fixture.client.socket.write(
+        `GET /v1/messages HTTP/1.1\r\n` +
+        `Host: 127.0.0.1\r\n` +
+        `X-Overflow: ${bigHeaderValue}\r\n` +
+        `\r\n`,
+      );
+
+      const all = await fixture.client.waitFor(
+        (text) => text.length > fixture.firstResponseLength && text.slice(fixture.firstResponseLength).includes("\r\n\r\n"),
+        "a second, shaped response on the reused connection",
+      );
+      const second = all.slice(fixture.firstResponseLength);
+
+      assert.match(
+        second,
+        /^HTTP\/1\.1 431/,
+        `a header overflow must produce the same shaped 431 on request 2 as on request 1 — a guard read ` +
+          `per-socket instead of per-request silently discards it (PF-021). Got:\n${second.slice(0, 200)}`,
+      );
+      assert.ok(
+        second.toLowerCase().includes("x-subswitch-synthesized: 1"),
+        `431 on a reused connection must carry x-subswitch-synthesized: 1; got:\n${second.slice(0, 500)}`,
+      );
+
+      const bodyStart = second.indexOf("\r\n\r\n");
+      const body = JSON.parse(second.slice(bodyStart + 4)) as { type: string; error: { type: string; message: string } };
+      assert.equal(body.type, "error", "431 body outer type must be 'error'");
+      assert.equal(body.error.type, "request_too_large", "431 error.type must be 'request_too_large'");
+
+      assert.ok(
+        fixture.records.some((r) => r.event === "client_error" && r.level === "warn" && r.status === 431),
+        `the client_error warn must fire on a reused connection too — a silently destroyed socket leaves the ` +
+          `operator with no record at all. Got: ${JSON.stringify(fixture.records)}`,
+      );
+    } finally {
+      await fixture.close();
+    }
+  });
+});
+
+describe("inbound policy — Anthropic-shaped 408 on a REUSED keep-alive connection (B4br)", () => {
+  it("a mid-header stall on the SECOND request of a connection still gets the shaped 408 and a client_error warn", async () => {
+    const fixture = await startWithCompletedRequest("inline-b4br.json", (server) => {
+      // Node samples the timeout on connectionsCheckingInterval ticks, so both knobs
+      // must shrink together or the expiry never fires inside the test budget.
+      server.headersTimeout = 300;
+      server.requestTimeout = 0;
+      (server as unknown as { connectionsCheckingInterval: number }).connectionsCheckingInterval = 50;
+    });
+
+    try {
+      // Partial headers on the reused socket: no terminating blank line, so headersTimeout expires.
+      fixture.client.socket.write(`GET /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\n`);
+
+      const all = await fixture.client.waitFor(
+        (text) => text.length > fixture.firstResponseLength && text.slice(fixture.firstResponseLength).includes("\r\n\r\n"),
+        "a second, shaped response on the reused connection",
+      );
+      const second = all.slice(fixture.firstResponseLength);
+
+      assert.match(
+        second,
+        /^HTTP\/1\.1 408 Request Timeout/,
+        `an inbound header timeout on request 2 must keep Node's own 408 — the per-socket guard swallowed it ` +
+          `entirely, which is worse than the bare 408 the intercept replaced (PF-021, ADR-010). Got:\n${second.slice(0, 200)}`,
+      );
+      assert.ok(
+        second.toLowerCase().includes("x-subswitch-synthesized: 1"),
+        `408 on a reused connection must carry x-subswitch-synthesized: 1; got:\n${second.slice(0, 500)}`,
+      );
+
+      const bodyStart = second.indexOf("\r\n\r\n");
+      const body = JSON.parse(second.slice(bodyStart + 4)) as { type: string; error: { type: string; message: string } };
+      assert.equal(body.type, "error", "408 body outer type must be 'error'");
+      assert.match(
+        body.error.message,
+        /timed out/,
+        `408 message must describe a timeout, not a malformed request; got: ${JSON.stringify(body.error.message)}`,
+      );
+
+      assert.ok(
+        fixture.records.some((r) => r.event === "client_error" && r.level === "warn" && r.status === 408),
+        `the client_error warn must fire on a reused connection too. Got: ${JSON.stringify(fixture.records)}`,
+      );
+    } finally {
+      await fixture.close();
     }
   });
 });
