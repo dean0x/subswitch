@@ -55,6 +55,17 @@ describe("upstreamStatusToAnthropicError", () => {
     assert.deepEqual(upstreamStatusToAnthropicError(422), { status: 422, type: "invalid_request_error" });
     assert.deepEqual(upstreamStatusToAnthropicError(200), { status: 502, type: "api_error" });
   });
+
+  /**
+   * I-034 / ADR-010: the same HTTP status must carry the same error.type whether the relay
+   * or the origin produced it.  404 must map to not_found_error (matching the relay's own
+   * /__subswitch/* 404) and 413 must map to request_too_large (matching the relay's own
+   * body-too-large response) — not to invalid_request_error, which is the generic 4xx fallback.
+   */
+  it("I-034 — 404 maps to not_found_error and 413 maps to request_too_large (ADR-010)", () => {
+    assert.deepEqual(upstreamStatusToAnthropicError(404), { status: 404, type: "not_found_error" });
+    assert.deepEqual(upstreamStatusToAnthropicError(413), { status: 413, type: "request_too_large" });
+  });
 });
 
 describe("proxyErrorToAnthropic", () => {

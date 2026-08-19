@@ -78,33 +78,36 @@ export type ProxyError =
   | { readonly kind: "timeout"; readonly message: string };
 
 export type AnthropicErrorType =
-  | "invalid_request_error"
-  | "authentication_error"
-  | "permission_error"
-  | "request_too_large"
-  | "rate_limit_error"
-  | "api_error"
-  // overloaded_error is kept: upstream 529 responses pass through untouched.
-  // The relay must never synthesize this status — a relay-invented 529 on a
-  // connected client is a defect (ADR-010). Only the origin may produce it.
-  | "overloaded_error"
-  // not_found_error: used by the /__subswitch/* 404 response in src/server.ts.
+  | "invalid_request_error" // 400
+  | "authentication_error"  // 401
+  | "permission_error"      // 403
+  // not_found_error: resource or path not found; the origin's 404 error type.
   // Named here so toAnthropicErrorBody shapes it identically to every other
   // synthesized error — preventing path reflection and credential leakage
-  // (ADR-008, chokepoint pattern). This type is recognised by the Anthropic API.
-  // Consumer: the 404 arm in createProxyServer's /__subswitch/* handler.
-  | "not_found_error";
+  // (ADR-008, chokepoint pattern). Recognised by the Anthropic API.
+  | "not_found_error"       // 404
+  | "request_too_large"     // 413
+  | "rate_limit_error"      // 429
+  | "api_error";            // 5xx (including 529 origin-overloaded)
 
 export interface AnthropicError {
   readonly status: number;
   readonly type: AnthropicErrorType;
 }
 
-/** Map an upstream HTTP status onto the Anthropic error taxonomy Claude Code understands. */
+/**
+ * Map an upstream HTTP status onto the Anthropic error taxonomy Claude Code understands.
+ *
+ * Each arm mirrors the type the relay itself emits for the same status (ADR-010: the same
+ * HTTP status must carry the same error.type whether the relay or the origin produced it).
+ * Upstream 5xx — including 529 (origin overloaded) — maps to api_error.
+ */
 export const upstreamStatusToAnthropicError = (status: number): AnthropicError => {
   if (status === 400) return { status: 400, type: "invalid_request_error" };
   if (status === 401) return { status: 401, type: "authentication_error" };
   if (status === 403) return { status: 403, type: "permission_error" };
+  if (status === 404) return { status: 404, type: "not_found_error" };
+  if (status === 413) return { status: 413, type: "request_too_large" };
   if (status === 429) return { status: 429, type: "rate_limit_error" };
   if (status >= 400 && status < 500) return { status, type: "invalid_request_error" };
   return { status: status >= 500 ? status : 502, type: "api_error" };

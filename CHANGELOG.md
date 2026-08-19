@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.2.1] - 2026-08-19
+## [0.3.0] - 2026-08-19
 
 ### Fixed
 
@@ -138,29 +138,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (600 s — Anthropic's own server-side ceiling for long-running requests), `headersTimeout`
   (120 s — maximum time to receive all request headers), `keepAliveTimeout` (300 s —
   matches Anthropic's idle-socket keepalive window so the relay's pool never evicts a
-  socket the origin still considers live), and `maxRequestsPerSocket` (unlimited, matching
-  the Anthropic origin's behaviour).  Previously these values were whatever Node's
+  socket the origin still considers live), `maxRequestsPerSocket` (unlimited, matching
+  the Anthropic origin's behaviour), and `maxHeaderSize: 64 * 1024` (raises the inbound
+  header ceiling from Node's 16 KiB default to 64 KiB — also determines when the relay
+  fires a 431 Header Fields Too Large).  Previously these values were whatever Node's
   built-in defaults happened to be.
 
 ### Added
 
-- `request_too_large` added to the internal `AnthropicErrorType` union.
+- `request_too_large` and `not_found_error` added to the internal `AnthropicErrorType` union.
 
 ### Removed (BREAKING)
 
-- **Six config keys are now fully removed** and produce a hard error on load if present.
+- **Two config keys are now fully removed** and produce a hard error on load if present.
   Delete these keys from your `subswitch.config.json` before upgrading:
-  - `anthropic.headerTimeoutMs` — the relay does not bound the headers phase on a
-    connected client (ADR-010).
   - `anthropic.streamIdleTimeoutMs` — the relay does not bound the stream-idle phase on a
     connected client (ADR-010).
   - `limits.maxConcurrentRequests` — the admission gate was removed (ADR-010).
-  - `limits.maxInFlightBytes` — the byte-budget admission gate was removed (ADR-010).
-  - `limits.maxQueueDepth` — the admission queue was removed (ADR-010).
-  - `limits.maxQueueWaitMs` — the admission queue was removed (ADR-010).
 
-  If your config contains any of these, `subswitch` exits immediately with a message naming
-  every offending key.
+  If your config contains either of these, `subswitch` exits immediately with a message
+  naming every offending key.
 
 ## [0.2.0] - 2026-08-09
 
