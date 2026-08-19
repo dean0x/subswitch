@@ -21,19 +21,74 @@ export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
 // ---------------------------------------------------------------------------
 
 /**
+ * IPv4 dotted-quad regex — exactly four decimal groups, each 1-3 digits, anchored
+ * at both ends so there is no trailing label.
+ *
+ * The `^…$` anchors are load-bearing: `127.0.0.1.evil.test` has more than four
+ * groups; the `$` anchor stops it from matching the first four and ignoring the
+ * rest.  `127.1` has only two groups and likewise fails.
+ *
+ * Named CONFIG_IPV4_DOTTED to distinguish it from inbound-policy.ts's own copy.
+ * Both predicates now apply the same strict dotted-quad rigor; they are kept
+ * separate so neither can be relaxed in one place and silently inherited by the
+ * other. (ADR-009, PF-011)
+ */
+const CONFIG_IPV4_DOTTED = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+/**
  * True when a URL's hostname is a loopback address.
  *
  * Loopback addresses are exempt from the HTTPS requirement because the e2e dev
  * workflow intentionally points `baseUrl` at `http://127.0.0.1:4142`
  * (see `e2e/capture/codex-recorder.ts` and `e2e/README.md`).
  *
+ * Accepted forms (exhaustive):
+ *   - `localhost` (case-insensitive; `new URL()` normalises to lowercase)
+ *   - `::1` or `[::1]` — IPv6 loopback literal.  WHATWG URL `.hostname` preserves
+ *     brackets on IPv6 literals (e.g. `new URL("http://[::1]:3000").hostname`
+ *     returns `"[::1]"`, not `"::1"`), so both spellings must be accepted.
+ *   - `127.x.y.z` — all four decimal octets present, each 0-255, no trailing
+ *     labels.  The entire 127.0.0.0/8 block is loopback; exact dotted-quad
+ *     form is required (ADR-009 fail-closed contract).
+ *
+ * Refused (examples):
+ *   - `127.0.0.1.evil.test` — attacker-registrable domain prefixed with the
+ *     loopback literal.  The old `hostname.startsWith("127.")` predicate admitted
+ *     this, allowing a config pointing at that domain to start cleanly and send
+ *     OAuth credentials in cleartext.  (I-047)
+ *   - `127.1` — compressed two-group form; not a valid dotted-quad.
+ *   - `2130706433` — decimal representation of 127.0.0.1; not a dotted-quad.
+ *   - `foo.localhost`, `localhost.evil.test` — attacker-registrable sub-labels.
+ *   - `::ffff:127.x.y.z` (`[::ffff:7f00:1]` after WHATWG normalisation) — IPv4-
+ *     mapped loopback.  The hex form produced by `new URL().hostname` is complex
+ *     to validate rigorously, and no dev tooling writes this form in config files.
+ *     Not accepted; use `http://127.0.0.1` instead.
+ *
+ * Deliberate divergence from `inbound-policy.ts`'s `isLoopbackHostname`:
+ * that predicate operates on attacker-controlled Host/Origin headers from the
+ * wire and its caller (`hostnameFromAuthority`) strips IPv6 brackets before the
+ * comparison.  `isLoopbackHost` receives hostnames from `new URL().hostname`,
+ * which preserves brackets, so the two helpers cannot be unified without silently
+ * breaking one of the two trust boundaries.  Both are strict and documented here
+ * and in inbound-policy.ts; neither inherits relaxations from the other.
+ * (ADR-009, PF-011)
+ *
  * Exported so `buildDeps` can apply the same logic without duplication.
  */
-export const isLoopbackHost = (hostname: string): boolean =>
-  hostname === "localhost" ||
-  hostname === "::1" ||
-  hostname === "127.0.0.1" ||
-  hostname.startsWith("127.");
+export const isLoopbackHost = (hostname: string): boolean => {
+  // WHATWG URL .hostname preserves brackets on IPv6 literals ("[::1]" not "::1").
+  // Strip them before comparison so both direct calls and URL-sourced calls work.
+  const bare =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+
+  if (bare === "localhost" || bare === "::1") return true;
+  const octets = CONFIG_IPV4_DOTTED.exec(bare);
+  if (octets === null) return false;
+  if (octets[1] !== "127") return false;
+  return octets.slice(1).every((octet) => Number(octet) <= 255);
+};
 
 /**
  * Zod refinement: a URL must use https, or http to a loopback address.
@@ -46,7 +101,7 @@ const requireHttpsOrLoopback = (url: string): boolean => {
 };
 
 const HTTPS_REQUIRED_MESSAGE =
-  "must use https:// (or http:// to 127.*/localhost/::1 for local dev); " +
+  "must use https:// (or http:// to 127.x.y.z/localhost/[::1] for local dev); " +
   "an http:// URL to a non-loopback host sends credentials in cleartext";
 
 // ---------------------------------------------------------------------------

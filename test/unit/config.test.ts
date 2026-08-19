@@ -9,6 +9,7 @@ import {
   detectUnknownProviderKeys,
   aliasesByProvider,
   enumerateDestinations,
+  isLoopbackHost,
   type RoutingDestination,
 } from "../../src/config.js";
 import { PROVIDER_IDS } from "../../src/models.js";
@@ -909,5 +910,151 @@ describe("enumerateDestinations", () => {
       destinations.length > PROVIDER_IDS.length,
       "destinations must outnumber PROVIDER_IDS alone — Anthropic must be present",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isLoopbackHost — exact-form loopback predicate (ADR-009, PF-011)
+//
+// The old implementation used `hostname.startsWith("127.")`, which admits
+// `127.0.0.1.evil.test` — an attacker-registrable domain.  The fix tightens
+// the predicate to exact loopback forms only.
+//
+// RED controls: the tests marked RED were run against the UNFIXED code first
+// to confirm they produced wrongly-clean results, then re-run after the fix
+// to confirm they now return the correct refusal.  (avoids PF-011)
+// ---------------------------------------------------------------------------
+
+describe("isLoopbackHost — exact loopback forms only (ADR-009, PF-011)", () => {
+  // ---- GREEN: accepted forms ----
+
+  it("accepts 'localhost'", () => {
+    assert.ok(isLoopbackHost("localhost"), "localhost must be accepted");
+  });
+
+  it("accepts '::1'", () => {
+    assert.ok(isLoopbackHost("::1"), "::1 must be accepted");
+  });
+
+  it("accepts '127.0.0.1' (canonical loopback)", () => {
+    assert.ok(isLoopbackHost("127.0.0.1"), "127.0.0.1 must be accepted");
+  });
+
+  it("accepts '127.0.0.2' (loopback subnet)", () => {
+    assert.ok(isLoopbackHost("127.0.0.2"), "127.0.0.2 must be accepted — the whole 127.0.0.0/8 block is loopback");
+  });
+
+  it("accepts '127.255.255.255' (last address in 127.0.0.0/8)", () => {
+    assert.ok(isLoopbackHost("127.255.255.255"), "127.255.255.255 must be accepted");
+  });
+
+  // ---- RED (I-047): formerly admitted by startsWith("127.") ----
+
+  it("RED I-047: refuses '127.0.0.1.evil.test' — startsWith('127.') used to admit this", () => {
+    // RED control: run against the UNFIXED predicate to confirm it returned true
+    // (wrongly clean); this assertion must now be false with the fixed code.
+    assert.ok(!isLoopbackHost("127.0.0.1.evil.test"), "127.0.0.1.evil.test must be REFUSED — attacker-registrable domain");
+  });
+
+  it("RED I-047: refuses '127.1' (short-form — not all four octets)", () => {
+    assert.ok(!isLoopbackHost("127.1"), "127.1 must be REFUSED — compressed form, not a valid dotted-quad");
+  });
+
+  it("refuses 'foo.localhost' (subdomain of localhost, NOT the loopback interface)", () => {
+    assert.ok(!isLoopbackHost("foo.localhost"), "foo.localhost must be REFUSED — attacker-registrable sub-label");
+  });
+
+  it("refuses 'localhost.evil.test' (starts with localhost literal but is a different domain)", () => {
+    assert.ok(!isLoopbackHost("localhost.evil.test"), "localhost.evil.test must be REFUSED");
+  });
+
+  it("refuses '2130706433' (decimal representation of 127.0.0.1 — not a dotted-quad)", () => {
+    assert.ok(!isLoopbackHost("2130706433"), "numeric 127.0.0.1 must be REFUSED");
+  });
+
+  it("refuses '127.256.0.0' (octet out of range — not a valid IPv4 address)", () => {
+    assert.ok(!isLoopbackHost("127.256.0.0"), "127.256.0.0 must be REFUSED — octet 256 exceeds 255");
+  });
+
+  it("refuses 'api.anthropic.com'", () => {
+    assert.ok(!isLoopbackHost("api.anthropic.com"), "external host must not be loopback");
+  });
+
+  // ---- Integration: ADR-009 startup vetting via requireHttpsOrLoopback ----
+
+  it("RED I-047 — ADR-009 integration: anthropic.baseUrl http://127.0.0.1.evil.test/ must fail config validation", () => {
+    // Before the fix this loaded cleanly (startsWith test passed), sending the
+    // sk-ant-* key in cleartext to 127.0.0.1.evil.test. After the fix the Zod
+    // refinement rejects it at parse time.
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ anthropic: { baseUrl: "http://127.0.0.1.evil.test/" } }),
+    });
+    assert.ok(!result.ok, "http://127.0.0.1.evil.test/ for anthropic.baseUrl must be REFUSED by ADR-009 vetting");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /https/i, "error must cite the https requirement");
+  });
+
+  it("RED I-047 — ADR-009 integration: oauthTokenUrl http://127.0.0.1.evil.test/ must fail config validation", () => {
+    // Same shape for the OAuth token URL, which carries the long-lived refresh token —
+    // more damaging to expose than a short-lived access token.
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { oauthTokenUrl: "http://127.0.0.1.evil.test/oauth" } } }),
+    });
+    assert.ok(!result.ok, "http://127.0.0.1.evil.test/ for oauthTokenUrl must be REFUSED by ADR-009 vetting");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /https/i);
+  });
+
+  // ---- Unchanged GREEN paths (regression guard) ----
+
+  it("regression: anthropic.baseUrl http://127.0.0.1:8080 still accepted", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ anthropic: { baseUrl: "http://127.0.0.1:8080" } }),
+    });
+    assert.ok(result.ok, `http://127.0.0.1:8080 must still be accepted; got: ${!result.ok ? result.error.message : ""}`);
+  });
+
+  it("regression: providers.codex.baseUrl http://localhost:4141 still accepted", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ providers: { codex: { baseUrl: "http://localhost:4141/" } } }),
+    });
+    assert.ok(result.ok, `http://localhost:4141 must still be accepted; got: ${!result.ok ? result.error.message : ""}`);
+  });
+
+  it("regression: providers.codex.oauthTokenUrl http://[::1]:3000 still accepted", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ providers: { codex: { oauthTokenUrl: "http://[::1]:3000/oauth" } } }),
+    });
+    assert.ok(result.ok, `http://[::1]:3000 oauthTokenUrl must still be accepted; got: ${!result.ok ? result.error.message : ""}`);
+  });
+
+  it("regression: https://api.anthropic.com unaffected by loopback change", () => {
+    const result = loadConfig({ readFile: () => { throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); }, env: {} });
+    assert.ok(result.ok, "default HTTPS config must be accepted");
+    assert.equal(result.value.config.anthropic.baseUrl, "https://api.anthropic.com");
+  });
+
+  it("regression: allowInsecureBaseUrl opt-out still bypasses ADR-009 host vetting", () => {
+    // This tests that the schema-level refinement (requireHttpsOrLoopback) is NOT
+    // what the allowInsecureBaseUrl flag bypasses — that flag operates at server.ts
+    // startup, not at config parse time. A genuinely non-loopback HTTP URL still
+    // fails at schema parse regardless of allowInsecureBaseUrl.
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({ anthropic: { baseUrl: "http://my-proxy.internal/api", allowInsecureBaseUrl: true } }),
+    });
+    // allowInsecureBaseUrl bypasses buildDeps host-name check (server.ts), but
+    // requireHttpsOrLoopback in the Zod schema still blocks http:// non-loopback.
+    // The intent: allowInsecureBaseUrl opts out of the trusted-host NAME check only;
+    // the SCHEME check via requireHttpsOrLoopback is a separate control.
+    assert.ok(!result.ok, "http:// to a non-loopback host must still fail schema-level refinement even with allowInsecureBaseUrl");
   });
 });
