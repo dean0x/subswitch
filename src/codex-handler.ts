@@ -349,7 +349,7 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
       resetIdle();
 
       if (wantStream) {
-        res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" });
+        res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "x-subswitch-synthesized": "1" });
         res.socket?.setNoDelay(true);
         // res is written manually rather than placed inside pipeline(): on an
         // upstream error, pipeline destroys every stream it owns, which would

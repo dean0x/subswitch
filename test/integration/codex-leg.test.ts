@@ -914,4 +914,44 @@ describe("codex leg", () => {
     assert.equal(sent["model"], "gpt-9-sol", "config override target must be sent upstream");
     assert.equal(anthropic.requests.length, 0, "config override must route to Codex, not Anthropic");
   });
+
+  // ---------------------------------------------------------------------------
+  // L3: x-subswitch-synthesized marker on codex-leg responses
+  // ---------------------------------------------------------------------------
+  //
+  // Every byte the codex leg returns is synthesized by the relay (Codex SSE is
+  // translated to Anthropic format; nothing is forwarded verbatim).  Both the
+  // streaming path (res.writeHead(200)) and the non-streaming path (respondJson)
+  // must carry x-subswitch-synthesized: 1.
+
+  it("L3: codex-leg streaming response carries x-subswitch-synthesized: 1", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
+    assert.equal(response.status, 200);
+    // Without fix: null (SSE writeHead had no marker).
+    // With fix: "1" (added to the SSE writeHead in codex-handler.ts).
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      "1",
+      "codex-leg streaming response must carry x-subswitch-synthesized: 1",
+    );
+    await response.text(); // drain
+  });
+
+  it("L3: codex-leg non-streaming response carries x-subswitch-synthesized: 1", async () => {
+    const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
+    const response = await postMessages(
+      rig.subswitch,
+      JSON.stringify({ model: "gpt-5.5", max_tokens: 64, messages: [{ role: "user", content: "hi" }] }),
+    );
+    assert.equal(response.status, 200);
+    // Without fix: null (respondJson did not include the marker).
+    // With fix: "1" (added to respondJson default headers in provider-transport.ts).
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      "1",
+      "codex-leg non-streaming response must carry x-subswitch-synthesized: 1",
+    );
+    await response.json(); // drain
+  });
 });

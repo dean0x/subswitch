@@ -50,6 +50,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   up to `headerTimeoutMs` (default 660 s) to fail, not 10 s** — tune this knob down
   if you need faster detection of stalled upstreams.
 
+- **Anthropic passthrough — `x-subswitch-synthesized: 1` header marks every relay-generated response; stripped from proxied responses** (stacks on #30).
+  Previously a relay fault (502 connection failure, 504 timeout, 500 internal proxy error, 413 body too large,
+  503 concurrency gate) was indistinguishable from an upstream outage on the client side.  Every response the
+  relay synthesises itself now carries `x-subswitch-synthesized: 1`; this covers the Anthropic-leg error
+  paths, all codex-leg responses (both streaming SSE and aggregated JSON — the codex leg translates
+  Codex→Anthropic format so every byte it returns is relay-synthesised), and every relay-generated error in
+  `server.ts`.  On the proxied path the header is actively stripped from upstream responses via the hop-by-hop
+  filter so an origin that sets it cannot impersonate the relay.  Bodies and status codes are unchanged — the
+  header is purely additive.  See the new `## x-subswitch-synthesized` section in the README for the
+  operator-facing wire contract.
+
+- **Anthropic passthrough — client abort no longer logs a spurious `anthropic_upstream_error` warn** (stacks on #30).
+  `res.on("close")` was calling `upstream.destroy()` without first setting `settled = true`.  The destroy
+  emits `'error'` on the next tick; with `settled = false` the error handler logged `anthropic_upstream_error`
+  and attempted to write a 502 into an already-closed response.  A client hanging up is a normal event;
+  it now sets `settled = true` before the destroy so the error handler returns early.  Additionally, the
+  error handler now sets `settled = true` before writing the 502 so a theoretically possible second
+  `'error'` emission cannot double-write.
+
 - **Anthropic passthrough — duplicate `anthropic_upstream_error` warn eliminated**
   (fixes #27).  When a pre-header timeout fired, the timeout handler called
   `upstream.destroy()` before writing the 504.  Destroying an in-flight

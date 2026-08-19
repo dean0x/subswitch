@@ -664,4 +664,158 @@ describe("anthropic passthrough", () => {
     assert.equal(upstreamEvents[0]!.event, "anthropic_upstream_timeout");
     assert.equal(upstreamEvents[0]!.level, "warn");
   });
+
+  // ---------------------------------------------------------------------------
+  // L3: x-subswitch-synthesized marker header
+  // ---------------------------------------------------------------------------
+  //
+  // Every response the relay generates itself — 502 (connection failure),
+  // 504 (timeout), 500 (internal proxy error), 413 (body too large), 503
+  // (concurrency gate) — carries x-subswitch-synthesized: 1 so operators can
+  // distinguish relay faults from upstream faults.  Responses proxied from the
+  // origin (including upstream errors such as 429) must NOT carry this header.
+  // Additionally, x-subswitch-synthesized is stripped from proxied responses
+  // so that an origin setting it cannot impersonate the relay's marker.
+
+  it("L3: x-subswitch-synthesized: 1 is present on a relay-synthesised 504 timeout response", async () => {
+    const anthropic = await startFakeUpstream((_req, _res) => {
+      // Never responds — triggers headerTimeoutMs.
+    });
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: anthropic.url, headerTimeoutMs: 80 },
+    });
+    cleanups.push(subswitch.close, anthropic.close);
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+
+    // Without fix: header absent. With fix: "1".
+    assert.equal(response.status, 504);
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      "1",
+      "relay-synthesised 504 must carry x-subswitch-synthesized: 1",
+    );
+  });
+
+  it("L3: x-subswitch-synthesized is ABSENT on a successfully proxied origin response", async () => {
+    const { subswitch } = await setup((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "ok" }));
+    });
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+
+    assert.equal(response.status, 200);
+    // Must be absent — the origin produced this response, not the relay.
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      null,
+      "proxied origin 200 must NOT carry x-subswitch-synthesized",
+    );
+  });
+
+  it("L3: x-subswitch-synthesized is ABSENT on a proxied origin ERROR response such as 429", async () => {
+    // A 429 that the upstream produced must reach the client unchanged —
+    // the relay must not inject x-subswitch-synthesized on responses it merely forwarded.
+    const { subswitch } = await setup((_req, res) => {
+      res.writeHead(429, { "content-type": "application/json", "retry-after": "30" });
+      res.end(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "too many requests" } }));
+    });
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+
+    assert.equal(response.status, 429);
+    // Without the marker: null. The relay must only mark what IT produces.
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      null,
+      "proxied upstream 429 error must NOT carry x-subswitch-synthesized",
+    );
+  });
+
+  it("L3: x-subswitch-synthesized set by the upstream is STRIPPED from the proxied response", async () => {
+    // An upstream that sets x-subswitch-synthesized must not have it forwarded
+    // to the client — the relay strips it so the marker is authoritative (only
+    // the relay can assert it).
+    const { subswitch } = await setup((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json", "x-subswitch-synthesized": "upstream-injected" });
+      res.end(JSON.stringify({ id: "ok" }));
+    });
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+
+    assert.equal(response.status, 200);
+    // Without fix: "upstream-injected" (forwarded verbatim).
+    // With fix: null (stripped by filterRawHeaders adding it to HOP_BY_HOP).
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      null,
+      "upstream-set x-subswitch-synthesized must be stripped from the proxied response",
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Change 3: client abort must not produce anthropic_upstream_error warn
+  // ---------------------------------------------------------------------------
+
+  it("Change 3: aborting the client mid-request produces no anthropic_upstream_error warn", async () => {
+    // Upstream never responds (stalls); client aborts after 60 ms.
+    // res.on("close") fires → settled=true → upstream.destroy() → error fires
+    // → settled guard prevents spurious warn and 502 attempt.
+    const captured: Array<{ level: string; event: string }> = [];
+
+    const anthropic = await startFakeUpstream((_req, _res) => {
+      // Stall — never send a response.
+    });
+    const subswitch = await startSubswitch(
+      { anthropic: { baseUrl: anthropic.url, headerTimeoutMs: 10_000 } },
+      { logger: { log(level, event) { captured.push({ level, event }); } } },
+    );
+    cleanups.push(subswitch.close, anthropic.close);
+
+    const controller = new AbortController();
+    const fetchPromise = fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+      signal: controller.signal,
+    });
+
+    // Abort before upstream has a chance to respond.
+    setTimeout(() => controller.abort(), 60);
+
+    try {
+      await fetchPromise;
+    } catch {
+      // Expected: AbortError from the client-side abort.
+    }
+
+    // Allow the event loop to drain so any stray error events settle.
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+    const warnLogs = captured.filter((e) => e.event === "anthropic_upstream_error");
+    // Without fix: settled=false when res closes → upstream.destroy() → error fires → warn logged.
+    // With fix: settled=true before destroy() → error fires → settled guard returns early → no warn.
+    assert.equal(
+      warnLogs.length,
+      0,
+      `client abort must not produce anthropic_upstream_error warn; got: ${JSON.stringify(warnLogs)}`,
+    );
+  });
 });

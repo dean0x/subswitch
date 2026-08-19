@@ -12,6 +12,9 @@ import type { Logger } from "./logger.js";
  *
  * Per RFC 7230 §6.1. `host` is also excluded: Node sets it on the outbound
  * connection. `connection` is managed by the keep-alive agent.
+ *
+ * `x-subswitch-synthesized` is also stripped from proxied responses so that
+ * the marker is authoritative: only the relay itself can assert it.
  */
 const HOP_BY_HOP = new Set([
   "host",
@@ -24,6 +27,7 @@ const HOP_BY_HOP = new Set([
   "trailer",
   "transfer-encoding",
   "upgrade",
+  "x-subswitch-synthesized",
 ]);
 
 /**
@@ -97,10 +101,6 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
 
   // Create a keep-alive agent for persistent connections to the upstream.
   // This matches Claude Code's own direct connection behaviour (parity).
-  //
-  // Residual risk: a stale pooled socket can ECONNRESET a POST; the existing
-  // upstream.on("error") handler returns a clean 502 and Claude Code retries.
-  // This is the same behaviour as any keep-alive HTTP client.
   const agentOpts: http.AgentOptions = { keepAlive: true, maxSockets: options.maxUpstreamSockets, scheduling: "lifo" };
   const agent = options.agent ?? (target.protocol === "https:" ? new https.Agent(agentOpts) : new http.Agent(agentOpts));
 
@@ -132,6 +132,8 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
         // Response direction: writeHead accepts a flat [name, value, ...] array
         // directly (Node's _storeHeader Array branch), preserving the upstream's
         // original header casing, order, and duplicates byte-for-byte.
+        // filterRawHeaders strips x-subswitch-synthesized so an origin that sets
+        // it cannot impersonate the relay's synthesized-response marker.
         res.writeHead(upstreamRes.statusCode ?? 502, filterRawHeaders(upstreamRes.rawHeaders));
         res.socket?.setNoDelay(true);
         upstreamRes.pipe(res);
@@ -214,7 +216,7 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       options.logger.log("warn", "anthropic_upstream_timeout", { path: req.url ?? "/" });
       if (!res.headersSent) {
         settled = true;
-        res.writeHead(504, { "content-type": "application/json" });
+        res.writeHead(504, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
         res.end(toAnthropicErrorBody("api_error", "upstream timed out"));
       } else {
         res.destroy();
@@ -224,17 +226,35 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
 
     upstream.on("error", () => {
       if (settled) return;
+      // Log and surface as 502 only when the client response is still open.
+      // Set settled before writing so a second 'error' emission (practically
+      // unreachable after socket destroy, but possible in theory) cannot
+      // double-write.
       options.logger.log("warn", "anthropic_upstream_error", { path: req.url ?? "/" });
       if (!res.headersSent) {
-        res.writeHead(502, { "content-type": "application/json" });
+        settled = true;
+        res.writeHead(502, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
         res.end(toAnthropicErrorBody("api_error", "upstream connection failed"));
       } else {
         res.destroy();
       }
     });
 
+    // Change 3: set settled before destroy() so the error event emitted by
+    // destroy() on the next tick does not trigger a spurious
+    // anthropic_upstream_error warn or attempt to write a 502 into an already-
+    // closed response.  A client abort is an entirely normal event — it must
+    // produce no warn log and no synthetic HTTP response.
+    //
+    // Note: the timeout handler does not check `settled` before calling
+    // upstream.destroy() because it sets `settled = true` itself before the
+    // destroy, so by the time the 'error' event fires on the next tick the
+    // guard has already been set and the error handler returns early.
     res.on("close", () => {
-      if (!res.writableFinished) upstream.destroy();
+      if (!res.writableFinished) {
+        settled = true;
+        upstream.destroy();
+      }
     });
 
     if (body !== undefined) {
