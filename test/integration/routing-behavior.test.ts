@@ -194,11 +194,13 @@ describe("routing — unknown provider qualifier fails open to Anthropic (F6g / 
 
     // Real registry resolution: "codex:gpt-5.6-sol" → resolved as Codex.
     // Uses default resolver (no synthetic seam) so the real registry is exercised.
+    //
+    // Minimal Responses-API stream: response.created → response.completed.
+    // The codex leg translates this sequence into Anthropic SSE and aggregates
+    // it for the non-streaming request the test sends (stream not set).
     const sseBody =
-      "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"gpt-5.6-sol\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n" +
-      "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
-      "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n" +
-      "data: {\"type\":\"message_stop\"}\n\n";
+      "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_routing1\",\"model\":\"gpt-5.6-sol\",\"status\":\"in_progress\"}}\n\n" +
+      "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_routing1\",\"model\":\"gpt-5.6-sol\",\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n";
 
     const codex = await startFakeUpstream((_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
