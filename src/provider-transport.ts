@@ -55,8 +55,8 @@ export const createFrameWriter = (
     // The signal may ALREADY be aborted here — a total/idle timer can fire while
     // an earlier frame was draining. addEventListener on an aborted signal never
     // dispatches, so registering below without this check waits forever: the
-    // request's cleanup never runs and its concurrency slot leaks for the life of
-    // the process. Checked after res.write so an in-flight frame still goes out.
+    // request's cleanup never runs and resources associated with the request are held
+    // for the life of the process. Checked after res.write so an in-flight frame still goes out.
     if (signal.aborted) {
       resolve();
       return;

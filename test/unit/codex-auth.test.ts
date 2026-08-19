@@ -209,9 +209,8 @@ describe("CodexAuthManager", () => {
    * RELI-04: callTokenEndpoint must pass a timeout signal to the fetch implementation.
    *
    * Without AbortSignal.timeout(15_000), a hung OAuth server holds the single-flight
-   * refreshInflight promise open indefinitely — all 32 concurrent requests share one
-   * hung promise, filling all concurrency slots and returning 503 until undici's ~300 s
-   * default fires.
+   * refreshInflight promise open indefinitely — every concurrent request that needs a token
+   * shares the one hung promise, blocking until undici's ~300 s default fires.
    *
    * Mutation that MUST turn this RED: remove `signal: AbortSignal.timeout(15_000)` from
    * the callTokenEndpoint fetch call → capturedSignal is undefined → assertion fails.
@@ -249,8 +248,7 @@ describe("CodexAuthManager", () => {
    *
    * A persistent upstream 401 that survives a freshly-minted token cannot be resolved by
    * re-running the same OAuth cycle. Without this floor, each request in a 401 storm runs
-   * its own token-endpoint call + fsync'd credential rewrite, permanently degrading the
-   * server once all concurrency slots fill.
+   * its own token-endpoint call and fsync'd credential rewrite, flooding the token endpoint.
    *
    * Mutation that MUST turn this RED: remove the cooldown guard (always refresh).
    * Without it the second forceRefresh() within the window calls the token endpoint;

@@ -160,11 +160,20 @@ describe("checkAgentModels", () => {
   });
 
   it("returns 'unknown_provider' finding when the model uses an unrecognised provider prefix", () => {
+    // Non-vacuity: this test would fail if kind were changed to any other value, and the
+    // severity assertion below ensures the test fails if severity is changed back to "fail".
     const files = [{ path: "/agent.md", text: "---\nmodel: kimi:k2-ultra\n---\n" }];
     const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 1);
     assert.equal(findings[0]!.kind, "unknown_provider");
     assert.equal(findings[0]!.qualifier, "kimi");
+    // ADR-010: an unknown qualifier forwards to Anthropic and works — this is informational,
+    // not a failure. By contrast "ambiguous" stays "fail" because that is subswitch-derived.
+    assert.equal(
+      findings[0]!.severity,
+      "info",
+      "unknown_provider must be severity 'info' (ADR-010); changing it back to 'fail' breaks exit-code contract",
+    );
   });
 
   // ------------------------------------------------------------------
@@ -282,14 +291,23 @@ describe("checkAgentModels", () => {
     assert.ok(findings.some((f) => f.file === "/also-bad.md"), "also-bad.md should produce a finding");
   });
 
-  it("'retired', 'provider_unconfigured', and 'preview_only' findings are informational (kind is NOT 'unresolvable')", () => {
-    // All three informational kinds must have kind that is not a failing kind.
-    const failingKinds = new Set(["unresolvable", "ambiguous", "unknown_provider"]);
+  it("'retired', 'provider_unconfigured', and 'preview_only' findings are informational (severity is 'info')", () => {
+    // Derive the failing/passing distinction from finding.severity — the single source of
+    // truth — rather than re-stating which kinds fail in a hand-written Set (which was
+    // exactly the duplicated source of truth eliminated by AgentFindingBase's doc comment).
+    //
+    // Non-vacuity: assert.equal(severity, "info") fails if severity is "fail" — so this test
+    // would fail if provider_unconfigured were promoted to "fail". That is the mutation we
+    // must catch.
 
     // provider_unconfigured case
     const files = [{ path: "/agent.md", text: "---\nmodel: gpt-5.6-sol\n---\n" }];
     const findings = checkAgentModels(files, table, noConfiguredProviders);
     assert.equal(findings.length, 1);
-    assert.ok(!failingKinds.has(findings[0]!.kind), `provider_unconfigured must not be a failing kind; got: ${findings[0]!.kind}`);
+    assert.equal(
+      findings[0]!.severity,
+      "info",
+      `provider_unconfigured must be severity 'info'; got: ${findings[0]!.severity}`,
+    );
   });
 });

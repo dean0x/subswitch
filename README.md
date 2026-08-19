@@ -263,9 +263,6 @@ Minimal example — only override what you need:
         "fast": "gpt-5.6-sol"
       }
     }
-  },
-  "limits": {
-    "maxInFlightBytes": 1073741824
   }
 }
 ```
@@ -278,8 +275,6 @@ All keys and their defaults:
 | `logLevel` | `"info"` | Log verbosity: `debug`, `info`, `warn`, or `error` |
 | `anthropic.baseUrl` | `"https://api.anthropic.com"` | Anthropic passthrough base URL |
 | `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection establishment timeout (see note below) |
-| `anthropic.headerTimeoutMs` | `660000` (11 min) | **Anthropic leg only** — time from TCP connect to first response byte; defaults to 60 s above Anthropic's own ~600 s server-side ceiling so the relay never fires before the origin does (the relay's clock starts earlier than the origin's — see note below) |
-| `anthropic.streamIdleTimeoutMs` | `300000` (5 min) | Anthropic stream idle timeout (headers→stream-end, reset by every chunk) |
 | `anthropic.maxUpstreamSockets` | `256` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
 | `anthropic.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `anthropic.baseUrl` points at a host other than `api.anthropic.com`. Set to `true` only when routing through a trusted proxy in front of Anthropic's API. Loopback addresses are always exempt. |
 | `providers.codex.baseUrl` | `"https://chatgpt.com/backend-api/codex"` | Codex backend base URL — override to route subswitch through the wire recorder |
@@ -296,16 +291,52 @@ All keys and their defaults:
 | `providers.codex.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` points at a host other than `chatgpt.com` or `auth.openai.com`. This prevents credential forwarding to an untrusted host. Set to `true` only when routing through a trusted proxy. Loopback addresses are always exempt. |
 | `limits.maxBodyBytes` | `33554432` (32 MiB) | Maximum request body bytes buffered before the routing decision |
 | `limits.pingIntervalMs` | `15000` (15 s) | Interval between SSE ping frames sent to clients during long Codex streams |
-| `limits.maxInFlightBytes` | `2147483648` (2 GiB) | Total budget for simultaneous in-flight request bodies in bytes. Requests that would exceed the budget are **queued** (not rejected) until space opens; queuing is FIFO so no request starves. A single request larger than the budget is still admitted when the server is idle (single-request progress). The budget rarely fires under normal load (~100 concurrent × a few MB each ≈ 300 MB). Worst case at budget: ~6.6 GiB RSS at 3.3× amplification. Chunked `/v1/messages` requests reserve `maxBodyBytes` (32 MiB) during body buffering only; the reservation is reconciled to the actual size once the body is read. |
-| `limits.maxQueueDepth` | `1000` | Maximum requests that may wait in the admission queue simultaneously. When this bound is exceeded the server returns HTTP **529 overloaded_error** — the correct Anthropic status for overload. |
-| `limits.maxQueueWaitMs` | `60000` (60 s) | Maximum time a queued request will wait for a budget slot before receiving HTTP 529 overloaded_error. |
-| `limits.maxConcurrentRequests` | `32` | **Deprecated** — superseded by `maxInFlightBytes`. Kept in the schema so existing config files do not error. The value is no longer used by the admission gate; replace with `maxInFlightBytes`. |
 
-> **Why `connectTimeoutMs`, `headerTimeoutMs`, and `maxUpstreamSockets` are Anthropic-leg-only**: the
+> **Why `connectTimeoutMs` and `maxUpstreamSockets` are Anthropic-leg-only**: the
 > Anthropic passthrough uses a node:http agent with an explicit keep-alive pool, so
-> all three knobs have meaningful effect there. The Codex leg uses Node's global `fetch`
+> both knobs have meaningful effect there. The Codex leg uses Node's global `fetch`
 > (undici's global dispatcher), which these knobs do not control — shipping them as
 > per-provider keys would be config that bounds nothing on the Codex side.
+
+### Deprecated config keys
+
+The following keys are **accepted but ignored** — they parse without error so existing
+config files still start, but their values are not wired into the runtime. `subswitch serve`
+emits a `config_key_deprecated` warning on stderr for each one present. Remove them from
+your config file to silence the warning.
+
+| Key | Reason |
+|-----|--------|
+| `anthropic.headerTimeoutMs` | Removed — `connectTimeoutMs` is the only Anthropic-leg timer; the relay does not cap time-to-first-byte (ADR-010) |
+| `anthropic.streamIdleTimeoutMs` | Removed — the relay does not cap stream idle time on the Anthropic leg (ADR-010) |
+| `limits.maxConcurrentRequests` | Removed — the admission gate was deleted; subswitch imposes no per-request limit |
+| `limits.maxInFlightBytes` | Removed — the byte-budget admission gate was deleted |
+| `limits.maxQueueDepth` | Removed — the admission queue was deleted |
+| `limits.maxQueueWaitMs` | Removed — the admission queue was deleted |
+
+### Server connection tuning
+
+subswitch configures its inbound `http.Server` with the following fixed values:
+
+| Property | Value | Rationale |
+|----------|-------|-----------|
+| `requestTimeout` | `600 000` ms (10 min) | Matches the maximum Codex/Anthropic request lifetime |
+| `headersTimeout` | `120 000` ms (2 min) | Allows slow Claude Code uploads; fires before `requestTimeout` |
+| `keepAliveTimeout` | `300 000` ms (5 min) | **Deliberately long.** Claude Code's connection pool keeps sockets open for reuse. At Node's default 5 s, an idle socket gets a FIN/RST from subswitch; if that close races an outgoing POST, undici will **not** retry the resulting ECONNRESET for a non-idempotent request (PF-018). 300 s means sockets outlive any realistic inter-request gap. |
+| `maxRequestsPerSocket` | `0` (unlimited) | Prevents connection cycling on long-lived agents |
+| `maxHeaderSize` | `65 536` bytes (64 KiB) | Anthropic's own limit; subswitch returns a `431 Request Header Fields Too Large` (Anthropic-shaped) when exceeded |
+
+When a client sends a request body larger than `limits.maxBodyBytes`, subswitch returns
+413 and then **drains the remaining upload bytes** before closing the connection. This
+lets the client read the 413 response; without the drain, the TCP write-buffer fills and
+the client's `recv()` never sees the 413 body.
+
+### Token counting on the Codex leg
+
+`/v1/messages/count_tokens` requests that route to the Codex leg return an **estimate**
+rather than forwarding to Anthropic. This is deliberate: forwarding to Anthropic would
+count tokens against a different model's vocabulary and return a misleading count.
+The estimate is the least-wrong option available.
 
 ### `subswitch models --json`
 
@@ -410,8 +441,8 @@ x-subswitch-synthesized: 1
 This header is present on:
 
 - **Anthropic-leg relay errors**: 502 (upstream connection failure), 504
-  (upstream timeout), 413 (request body too large), 529 (concurrency gate),
-  500 (internal proxy error).
+  (upstream connect timeout), 413 (request body too large), 431 (request headers
+  too large), 500 (internal proxy error).
 - **Codex-leg responses**: every byte returned on the codex leg is synthesized
   by the relay (it translates OpenAI Responses format → Anthropic Messages
   format), so the header is present on both streaming and non-streaming codex

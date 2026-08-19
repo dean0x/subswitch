@@ -39,10 +39,17 @@ export type AgentFinding =
       readonly severity: "fail";
       readonly providers: readonly string[];
     })
-  /** Looks like "provider:id" but the prefix is not in PROVIDER_IDS. */
+  /**
+   * Looks like "provider:id" but the prefix is not in PROVIDER_IDS.
+   *
+   * Severity is "info", not "fail" (ADR-010): an unknown qualifier does not make the
+   * request fail — subswitch forwards it to Anthropic unchanged, where it succeeds or
+   * fails on Anthropic's own terms. By contrast `ambiguous` stays "fail" because an
+   * ambiguous name is a subswitch-derived routing conflict that WILL 404 at the origin.
+   */
   | (AgentFindingBase & {
       readonly kind: "unknown_provider";
-      readonly severity: "fail";
+      readonly severity: "info";
       readonly qualifier: string;
     })
   /** Resolves to a known canonical that is marked retired in the registry. */
@@ -155,7 +162,9 @@ export const parseFrontmatterModel = (text: string): string | undefined => {
  * Finding kinds (in resolution order):
  * - unresolvable  (fail): resolveModel returns "unresolved".
  * - ambiguous     (fail): resolveModel returns "ambiguous".
- * - unknown_provider (fail): resolveModel returns "unknown_qualifier".
+ * - unknown_provider (info): resolveModel returns "unknown_qualifier". Informational because
+ *   subswitch forwards the request to Anthropic unchanged — the qualifier does not block
+ *   the request; only `ambiguous` stays "fail" because that conflict is subswitch-derived.
  * - retired       (info): resolves to a registry entry marked retired.
  * - provider_unconfigured (info): resolves ok but provider is not in configuredProviders.
  * - preview_only  (info): resolves to a registry entry marked preview.
@@ -188,7 +197,7 @@ export const checkAgentModels = (
         break;
 
       case "unknown_qualifier":
-        findings.push({ file: path, model, kind: "unknown_provider", severity: "fail", qualifier: resolution.qualifier });
+        findings.push({ file: path, model, kind: "unknown_provider", severity: "info", qualifier: resolution.qualifier });
         break;
 
       case "resolved": {

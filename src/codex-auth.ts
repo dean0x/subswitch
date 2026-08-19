@@ -221,8 +221,8 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
     // serve the cached credential rather than hammering the token endpoint again.
     // A persistent upstream 401 that survives a freshly-minted token cannot be resolved
     // by re-running the same OAuth cycle; each cycle costs one token-endpoint call and
-    // one fsync'd rewrite of auth.json. Without this floor, 32 concurrent requests all
-    // getting 401 would fill all concurrency slots with simultaneous refresh + fsync cycles.
+    // one fsync'd rewrite of auth.json. Without this floor, every concurrent request getting
+    // 401 would launch its own token-endpoint call and fsync'd credential rewrite simultaneously.
     //
     // The cooldown only applies when we have a cached token — if the previous refresh
     // produced no usable credential, we always try again.
@@ -316,8 +316,8 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
     try {
       // RELI-04: bound the token-endpoint call to 15 s. Without a timeout, a hung OAuth
       // server holds the single-flight promise open indefinitely — all concurrent requests
-      // share the one refreshInflight promise, so all 32 concurrency slots fill and
-      // everything else 503s until undici's ~300 s default finally fires.
+      // share the one refreshInflight promise, blocking every pending request that needs
+      // a token until the hung promise resolves or the 15 s AbortSignal.timeout fires.
       response = await this.fetchImpl(this.oauthTokenUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },

@@ -33,7 +33,7 @@ describe("writeFrame abort-signal drain race", () => {
     // A total/idle timer can abort while an earlier frame is draining, so the very
     // next writeFrame sees an already-aborted signal. addEventListener never fires
     // on one, so without an explicit check this promise never settles — the request
-    // cleanup never runs and its concurrency slot leaks for the life of the process.
+    // cleanup never runs and resources associated with the request are held for the life of the process.
     controller.abort();
     const writeFrame = makeWriteFrame(res, controller.signal);
 

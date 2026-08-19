@@ -41,7 +41,10 @@ export const decideRoute = (
 
     case "unknown_qualifier":
       // "kimee:k2" — provider prefix not in PROVIDER_IDS. Distinguishable from unresolved
-      // so Phase F can emit an "unknown_provider" finding rather than "unresolvable".
+      // so doctor can emit a precise "unknown_provider" finding rather than "unresolvable".
+      // The finding is informational (severity: "info") — the request still forwards to
+      // Anthropic unchanged; only "ambiguous" is "fail" because that conflict is
+      // subswitch-derived and will 404 at the origin (ADR-010).
       return { kind: "unknown_provider", qualifier: resolution.qualifier };
 
     case "resolved": {

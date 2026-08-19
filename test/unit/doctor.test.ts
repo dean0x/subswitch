@@ -442,6 +442,53 @@ describe("runDoctor — agent model scan", () => {
     // No other failures from enoentAuthIO + allPass TLS/subswitch.
     assert.equal(exitCode, 0, "provider_unconfigured finding must not cause failure");
   });
+
+  // ---------------------------------------------------------------------------
+  // unknown_provider severity — ADR-010: informational, not exit-1
+  //
+  // Non-vacuity requirement: the exit-0 test below is VACUOUS without a positive
+  // control proving doctor CAN exit 1. That control is the existing
+  // "returns exit code 1 when an agent file has an unresolvable model" test above —
+  // it uses the same IO wiring and a different model to prove exit 1 is reachable.
+  // Both tests together prove the distinction is real, not an accident of the harness.
+  // ---------------------------------------------------------------------------
+
+  it("unknown_provider finding alone does NOT cause exit code 1 (ADR-010: relay cannot honestly call this a failure)", async () => {
+    // "kimi:k2-ultra" has an unknown_qualifier resolution — the prefix "kimi" is not in
+    // PROVIDER_IDS. subswitch forwards it to Anthropic unchanged, so flagging it as a
+    // failure would be a lie (ADR-010). The finding must be severity "info" → exit 0.
+    //
+    // Mutation that MUST turn this RED: change `severity: "info"` back to `severity: "fail"`
+    // in the unknown_qualifier arm of checkAgentModels → exitCode becomes 1 → assertion fails.
+    const lines: string[] = [];
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      listAgentFiles: async () => ["/project/.claude/agents/exotic.md"],
+      readTextFile: async () => "---\nmodel: kimi:k2-ultra\n---\n",
+    });
+    assert.equal(exitCode, 0, "unknown_provider finding must not cause exit code 1 — it is informational (ADR-010)");
+  });
+
+  it("unknown_provider finding renders with 'info' tag, not 'FAIL'", async () => {
+    // Mutation that MUST turn this RED: change severity back to "fail" → doctor renders
+    // FAIL (or whatever failStr emits) instead of "info" → the includes-check fails.
+    const lines: string[] = [];
+    await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      listAgentFiles: async () => ["/project/.claude/agents/exotic.md"],
+      readTextFile: async () => "---\nmodel: kimi:k2-ultra\n---\n",
+    });
+    const output = lines.join("\n");
+    assert.ok(output.includes("kimi:k2-ultra"), "output must mention the model name");
+    assert.ok(output.includes("kimi"), "output must mention the unknown qualifier");
+    // Must NOT emit a FAIL row for unknown_provider (it is info).
+    const findingLine = lines.find((l) => l.includes("kimi:k2-ultra"));
+    assert.ok(findingLine !== undefined, "must have a line for the unknown_provider finding");
+    assert.ok(
+      !findingLine.includes("FAIL"),
+      "unknown_provider finding line must not carry 'FAIL' — it is informational",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

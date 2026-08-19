@@ -52,7 +52,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Anthropic passthrough — `x-subswitch-synthesized: 1` header marks every relay-generated response; stripped from proxied responses** (stacks on #30).
   Previously a relay fault (502 connection failure, 504 timeout, 500 internal proxy error, 413 body too large,
-  529 concurrency gate) was indistinguishable from an upstream outage on the client side.  Every response the
+  431 header fields too large) was indistinguishable from an upstream outage on the client side.  Every response the
   relay synthesises itself now carries `x-subswitch-synthesized: 1`; this covers the Anthropic-leg error
   paths, all codex-leg responses (both streaming SSE and aggregated JSON — the codex leg translates
   Codex→Anthropic format so every byte it returns is relay-synthesised), and every relay-generated error in
@@ -98,7 +98,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Deprecated
 
-- `limits.maxConcurrentRequests` — superseded by `limits.maxInFlightBytes`. Existing config files that set this key continue to load without error but the value is no longer used by the admission gate. Remove it and set `maxInFlightBytes` instead.
+- `limits.maxConcurrentRequests`, `limits.maxInFlightBytes`, `limits.maxQueueDepth`, `limits.maxQueueWaitMs` — the admission gate was removed entirely; these keys are no longer honoured. `anthropic.headerTimeoutMs`, `anthropic.streamIdleTimeoutMs` — relay-side response timers were removed (ADR-010: the relay must not bound what the origin was about to answer). All six keys still parse without error and will produce a `config_key_deprecated` warning on startup. Remove them from your config.
 
 ## [0.2.0] - 2026-08-09
 
