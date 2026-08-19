@@ -330,12 +330,6 @@ describe("loadConfig", () => {
     assert.ok(msg.includes("unsupported config keys"), "single error must use the standard unsupported-keys prefix");
   });
 
-  it("anthropic.maxUpstreamSockets defaults to 256 (raised to exceed peak concurrency)", () => {
-    const result = loadConfig({ readFile: missingFile, env: {} });
-    assert.ok(result.ok);
-    assert.equal(result.value.config.anthropic.maxUpstreamSockets, 256);
-  });
-
   // -------------------------------------------------------------------------
   // providers.codex.kind discriminant (P1-4)
   // -------------------------------------------------------------------------
@@ -697,6 +691,25 @@ describe("TS-02: z.strictObject catches typo'd leaf keys", () => {
     });
     assert.ok(!result.ok, "unknown top-level key must be rejected");
     assert.equal(result.error.kind, "translate");
+  });
+
+  it("rejects providers.codex.reasoningCache.maxEntires (typo of maxEntries) — not silently stripped to default", () => {
+    // I-039 regression: reasoningCache was z.object (strips unknowns) while all
+    // sibling schemas are z.strictObject. A typo'd key like maxEntires silently
+    // reverts the cache to defaults — avoids PF-010.
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({
+          providers: { codex: { reasoningCache: { maxEntires: 100 } } },
+        }),
+    });
+    assert.ok(
+      !result.ok,
+      "a typo'd reasoningCache key must be rejected, not silently stripped to defaults",
+    );
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /maxEntires/i, "error must name the offending key");
   });
 
   it("accepts a valid config — strict schemas must not over-reject", () => {

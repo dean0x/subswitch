@@ -147,7 +147,7 @@ const CodexProviderSchema = z
     // Both sides are checked against isReservedAnthropicName (PF-007).
     aliases: AliasesSchema,
     reasoningCache: z
-      .object({
+      .strictObject({
         maxEntries: z.number().int().positive().default(4096),
         maxBytes: z.number().int().positive().default(64 * 1024 * 1024),
       })
@@ -229,7 +229,7 @@ const ProvidersSchema = z.object(PROVIDER_SCHEMAS).prefault({});
 
 const LimitsSchema = z
   .strictObject({
-    /** Maximum request body bytes buffered before the Codex routing decision. */
+    /** Maximum request body bytes buffered before the routing decision. */
     maxBodyBytes: z.number().int().positive().default(32 * 1024 * 1024),
     /** Interval between SSE ping frames sent to clients during long Codex streams. */
     pingIntervalMs: z.number().int().positive().default(15_000),
@@ -246,9 +246,6 @@ const FileConfigSchema = z.strictObject({
 
 /** Raw on-disk config shape — what FileConfigSchema.safeParse() produces. */
 export type FileConfig = z.infer<typeof FileConfigSchema>;
-
-/** Raw on-disk shape of a single `providers.<id>` block, for any ProviderId. */
-export type ProviderFileConfig = FileConfig["providers"][ProviderId];
 
 // ---------------------------------------------------------------------------
 // Resolved Config interface (runtime shape)
