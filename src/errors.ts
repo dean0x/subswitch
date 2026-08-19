@@ -53,13 +53,12 @@ export const redactCredentials = (text: string): string =>
  * that reasoning's third application).
  *
  * Six emitters across four modules AND the response-direction stripper
- * (`RESPONSE_STRIP` in anthropic-passthrough.ts) must agree on this name.  When
- * they were seven independent string literals, a rename that reached the
- * emitters but not the stripper would let an origin-set marker pass through to
- * the client while the relay's own responses carried a different name — the
- * exact impersonation the stripper exists to block, and invisible to every test
- * because the tests restate the literal too.  Deriving all seven from here makes
- * that divergence unrepresentable.
+ * (`RESPONSE_STRIP` in anthropic-passthrough.ts) must agree on this name.  As seven
+ * independent string literals, a rename that reached the emitters but not the
+ * stripper would let an origin-set marker pass through to the client while the
+ * relay's own responses carried a different name — the exact impersonation the
+ * stripper exists to block, and invisible to every test that restates the literal
+ * too.  Deriving all seven from here makes that divergence unrepresentable.
  *
  * The wire name is an operator contract (documented in README).  It is pinned to
  * its literal spelling by an independent assertion in test/unit/errors.test.ts —

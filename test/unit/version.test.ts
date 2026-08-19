@@ -35,9 +35,10 @@ describe("version constants", () => {
   });
 });
 
-// A release literal lives in five places. version.test.ts previously compared
-// only two of them, so a bump that missed the lockfile or the changelog heading
-// still shipped green (avoids PF-014).
+// A release literal lives in five places: src/version.ts, package.json, both
+// version fields in package-lock.json, and the newest CHANGELOG.md heading. All
+// five are pinned to package.json here and above, so a bump that misses the
+// lockfile or the changelog heading turns this file RED (avoids PF-014).
 describe("release version literals", () => {
   it("package-lock.json top-level version matches package.json version", () => {
     assert.equal(lock.version, pkg.version);

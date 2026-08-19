@@ -246,14 +246,11 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
     // Terminal outcome 3 (upstream error): settle() prevents a double-warn if
     // destroy() from the timeout handler produces an ECONNRESET on the next tick.
     //
-    // On the unbuffered path the client is often still uploading when this fires,
-    // and its bytes are piped into the upstream that has already failed.  The
-    // upload is unpiped and handed to drainRejectedUpload, which reads it out
-    // under the same time and byte bounds the 413 and 504 paths use.  Without
-    // that, the 502 is written but the connection is dead weight: Node cannot
-    // parse the next request out of a body it never consumed, so the socket is
-    // held until server.requestTimeout (600 s) with the client still pushing
-    // into it (measured — I-079 sibling, applies ADR-010).
+    // The unbuffered path needs the same upload drain as the timeout handler above,
+    // for the same reason and under the same bounds — the client is often still
+    // uploading into an upstream that has already failed, and a 502 written onto a
+    // connection whose body was never consumed leaves it dead weight until
+    // server.requestTimeout (measured — I-079 sibling, applies ADR-010).
     upstream.on("error", () => {
       if (!settle()) return;
       options.logger.log("warn", "anthropic_upstream_error", { path: req.url ?? "/" });

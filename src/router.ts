@@ -42,12 +42,9 @@ export const decideRoute = (
     case "unknown_qualifier":
       // "kimee:k2" — provider prefix not in PROVIDER_IDS. Distinguishable from unresolved
       // so doctor can emit a precise "unknown_provider" finding rather than "unresolvable".
-      // The finding is informational (severity: "info", avoids PF-006): an unknown qualifier
-      // may be a legitimate future model name (e.g. a namespaced id the origin already accepts)
-      // so the relay forwards it to Anthropic unchanged — doctor warns, not fails, because the
-      // request works at runtime. "ambiguous" is different: two providers claiming the same
-      // family name is a subswitch-derived config defect that requires operator action to
-      // resolve, so doctor marks it "fail" to surface it in CI (avoids PF-006).
+      // The relay forwards the name to Anthropic unchanged, so the request still works at
+      // runtime. The finding's severity — "info" here, "fail" for "ambiguous" — and why the
+      // two differ are documented once, on AgentFinding in agent-scan.ts.
       return { kind: "unknown_provider", qualifier: resolution.qualifier };
 
     case "resolved": {

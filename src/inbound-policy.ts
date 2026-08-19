@@ -88,14 +88,16 @@ const IPV4_DOTTED = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
  * True when `hostname` names the loopback interface — for a hostname taken off
  * the wire.
  *
- * Deliberately NOT `config.ts`'s `isLoopbackHost`, and the difference is the whole
- * point of this gate.  That predicate accepts any name beginning `127.` because it
- * judges an OPERATOR-authored config URL, where a prefix test is a convenience.
- * A Host header is ATTACKER-authored, and `127.0.0.1.evil.test` starts with `127.`
- * — that is the exact shape of a public rebinding domain (nip.io, sslip.io, or any
- * attacker-registered equivalent), so reusing the lenient predicate would have
- * shipped a gate that admits precisely the attack it exists to stop.  Pinned by
- * the "starts with a loopback literal" controls in both test files.
+ * Deliberately NOT `config.ts`'s `isLoopbackHost`, though both are equally strict: a
+ * name that merely starts with a loopback literal — `127.0.0.1.evil.test`, the shape
+ * of a public rebinding domain (nip.io, sslip.io, or any attacker-registered
+ * equivalent) — is refused by both.  They stay separate because they are fed from
+ * different places: this one judges what `hostnameFromAuthority` parsed out of a wire
+ * `Host`/`Origin` authority, port and IPv6 brackets already stripped, while
+ * `isLoopbackHost` judges `new URL().hostname`, which keeps the brackets on an IPv6
+ * literal.  Neither inherits a relaxation from the other, and each documents its own
+ * accepted set at its own definition.  Pinned by the "starts with a loopback literal"
+ * controls in both test files.
  *
  * Accepted: `localhost`, `::1`, and all of 127.0.0.0/8 in dotted-quad form.
  * Everything else — `foo.localhost`, `localhost.`, `127.1`, `2130706433` — is
@@ -312,6 +314,9 @@ export const responseForClientError = (code: string): { readonly status: number;
     ? CLIENT_ERROR_RESPONSES[code]!
     : MALFORMED_REQUEST_RESPONSE;
 
+/** Servers that have already been configured — prevents double-registration. */
+const appliedServers = new WeakSet<http.Server>();
+
 /**
  * Apply the relay's inbound transport policy to `server`: the post-construction
  * tuning knobs and the `clientError` handler that owns the responses those knobs
@@ -336,20 +341,13 @@ export const responseForClientError = (code: string): { readonly status: number;
  * reports the request timeout after the handler has replied, and the reply must
  * not be corrupted.
  */
-
-/** Servers that have already been configured — prevents double-registration. */
-const appliedServers = new WeakSet<http.Server>();
-
 export const applyInboundPolicy = (server: http.Server, logger: Logger): void => {
   if (appliedServers.has(server)) return;
   appliedServers.add(server);
 
-  // Apply the four post-construction timer/counter knobs.  These have
-  // corresponding http.Server properties; maxHeaderSize is constructor-only
-  // (no http.Server property) and is passed in the options object at
-  // http.createServer in server.ts — the one SERVER_TUNING member not applied
-  // here.  SERVER_TUNING is exported so tests can apply the same values to their
-  // own test servers.
+  // The four knobs that have http.Server properties.  maxHeaderSize is the one
+  // SERVER_TUNING member not applied here — it is constructor-only, so server.ts
+  // passes it to http.createServer instead (see SERVER_TUNING's own doc).
   server.requestTimeout = SERVER_TUNING.requestTimeout;
   server.headersTimeout = SERVER_TUNING.headersTimeout;
   server.keepAliveTimeout = SERVER_TUNING.keepAliveTimeout;
@@ -385,12 +383,13 @@ export const applyInboundPolicy = (server: http.Server, logger: Logger): void =>
     res.on("finish", () => { writtenAtLastResponse.set(socket, socket.bytesWritten); });
   });
 
-  // `socket` is annotated as the Duplex @types/node actually declares.  Listener
-  // parameters are bivariant, so the previous `net.Socket` annotation was an
-  // assertion in all but name — invisible to a grep for `as` — and a Duplex that is
-  // not a net.Socket would have made `bytesWritten` undefined, failed `=== 0`, and
-  // taken the entire 400/408/431 taxonomy dark with no compile error.  Narrowing
-  // with `instanceof` makes that case an explicit, deliberate destroy instead.
+  // `socket` is annotated as the Duplex @types/node actually declares, then narrowed
+  // with `instanceof` rather than asserted.  Listener parameters are bivariant, so a
+  // `net.Socket` annotation here would be an assertion in all but name — invisible to
+  // a grep for `as` — and a Duplex that is not a net.Socket would leave `bytesWritten`
+  // undefined, fail the baseline comparison, and take the entire 400/408/431 taxonomy
+  // dark with no compile error.  The narrowing makes that an explicit, deliberate
+  // destroy instead.
   //
   // `NodeJS.ErrnoException` widens `Error` only with optional members, so it is
   // satisfied by any Error the runtime passes — it removes the cast without

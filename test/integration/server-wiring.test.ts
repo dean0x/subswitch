@@ -736,7 +736,7 @@ describe("applyInboundPolicy — Anthropic-shaped 431 on header overflow (B4)", 
 // listener SUPPRESSES the canned 408 and delivers the expiry to the listener as
 // err.code === "ERR_HTTP_REQUEST_TIMEOUT" for BOTH knobs.
 //
-// So applyInboundPolicy owns this status now.  Folding the timeout into the
+// So applyInboundPolicy owns this status.  Folding the timeout into the
 // generic 400 arm would emit a status neither Node nor the origin sends for a slow
 // client, and would report a merely-slow request as a malformed one — a relay-
 // invented status on a live connection, which is the defect class ADR-010 forbids.
@@ -818,9 +818,9 @@ describe("applyInboundPolicy — inbound timeout keeps 408, never 400 (B4b)", ()
 // ---------------------------------------------------------------------------
 // B4c: a genuinely malformed request still gets the Anthropic-shaped 400
 //
-// The 400 arm of applyInboundPolicy had no test at all: its status, error
-// type, message and the `client_error` warn could all be mutated to garbage with
-// the suite fully green.  It is also the fallback arm — any clientError code the
+// MUTATION PROOF for the 400 arm of applyInboundPolicy: without this test its
+// status, error type, message and the `client_error` warn can all be mutated to
+// garbage with the suite fully green.  It is also the fallback arm — any clientError code the
 // response table does not name lands here — so it is what a future Node adding a
 // new code will produce, and it is the control that stops the B4b 408 fix from
 // being over-applied to every code.
@@ -896,7 +896,7 @@ describe("applyInboundPolicy — Anthropic-shaped 400 on a malformed request (B4
 // the listener has already suppressed Node's canned reply, that converts a reply
 // into NO reply, which is strictly worse than the bare status line it replaced.
 //
-// This is the steady state, not an edge case: the branch sets keepAliveTimeout to
+// This is the steady state, not an edge case: SERVER_TUNING sets keepAliveTimeout to
 // 300 s and maxRequestsPerSocket to 0, so a Claude Code agent's second and every
 // subsequent request rides a reused socket.
 //
@@ -996,8 +996,8 @@ interface ReusedConnectionFixture {
  * writes the request that triggers the clientError.
  *
  * `/__subswitch/health` is used for the first request because it is answered
- * locally — no upstream fixture is needed, and it returns a content-length body
- * so completion is detectable byte-exactly.
+ * locally — no upstream fixture is needed — and its chunked body ends with the
+ * zero-length chunk, so completion is detectable byte-exactly.
  */
 const startWithCompletedRequest = async (
   configName: string,

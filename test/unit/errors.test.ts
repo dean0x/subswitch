@@ -14,7 +14,7 @@ import {
  * U3.3 — the synthesized marker's wire name and value.
  *
  * README documents `x-subswitch-synthesized: 1` as an operator contract, and every
- * emitter plus the response-direction stripper in anthropic-passthrough.ts now derives
+ * emitter plus the response-direction stripper in anthropic-passthrough.ts derives
  * from these two constants (ADR-008 chokepoint; ADR-010's third application).  Because
  * the name exists once in src/, this assertion is the single place a rename is caught.
  *

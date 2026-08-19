@@ -17,7 +17,7 @@
  * 403/permission_error).  Every body renders through `toAnthropicErrorBody`
  * (applies ADR-008).
  *
- * Every control below was proven RED against HEAD before the gate existed
+ * Every control below was proven RED against a build without the gate
  * (avoids PF-011): the foreign-Host requests were forwarded upstream and answered
  * 200, and the Codex-routed one reached the auth layer.
  */
@@ -96,13 +96,13 @@ describe("host gate — a foreign Host is answered 403 and never forwarded (G1)"
       !response.body.toString("utf8").includes("evil.test"),
       `the rejected Host must never be reflected into the response body; got ${response.body.toString("utf8")}`,
     );
-    // The load-bearing assertion: RED on HEAD, where this request was forwarded verbatim.
+    // The load-bearing assertion: RED without the gate, where this request is forwarded verbatim.
     assert.equal(anthropic.requests.length, 0, "a rejected request must never reach the Anthropic upstream");
   });
 });
 
 // ---------------------------------------------------------------------------
-// G2: every loopback spelling still works — regression guard, GREEN before and after
+// G2: every loopback spelling still works — the gate must cost no legitimate client
 // ---------------------------------------------------------------------------
 
 describe("host gate — loopback Host spellings are unaffected (G2)", () => {

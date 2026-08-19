@@ -29,9 +29,9 @@ export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
  * rest.  `127.1` has only two groups and likewise fails.
  *
  * Named CONFIG_IPV4_DOTTED to distinguish it from inbound-policy.ts's own copy.
- * Both predicates now apply the same strict dotted-quad rigor; they are kept
- * separate so neither can be relaxed in one place and silently inherited by the
- * other. (ADR-009, PF-011)
+ * Both predicates apply the same strict dotted-quad rule; they are kept separate
+ * so neither can be relaxed in one place and silently inherited by the other.
+ * (ADR-009, PF-011)
  */
 const CONFIG_IPV4_DOTTED = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
@@ -53,9 +53,9 @@ const CONFIG_IPV4_DOTTED = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
  *
  * Refused (examples):
  *   - `127.0.0.1.evil.test` — attacker-registrable domain prefixed with the
- *     loopback literal.  The old `hostname.startsWith("127.")` predicate admitted
- *     this, allowing a config pointing at that domain to start cleanly and send
- *     OAuth credentials in cleartext.  (I-047)
+ *     loopback literal.  A prefix test on `127.` admits it, letting a config that
+ *     points at that domain start cleanly and send OAuth credentials in
+ *     cleartext.  (I-047)
  *   - `127.1` — compressed two-group form; not a valid dotted-quad.
  *   - `2130706433` — decimal representation of 127.0.0.1; not a dotted-quad.
  *   - `foo.localhost`, `localhost.evil.test` — attacker-registrable sub-labels.

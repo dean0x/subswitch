@@ -252,12 +252,12 @@ describe("createConsoleLogger", () => {
   // -------------------------------------------------------------------------
   // Control-character hardening (I-048).
   //
-  // renderToken stripped only [\r\n], leaving ESC (0x1B), BEL (0x07), DEL
-  // (0x7F), and C1 bytes (0x80-0x9F) through to the operator's TTY.
-  // OSC 0 rewrites the window title; cursor-movement + erase sequences
-  // overwrite previously printed log lines -- defeating the anti-forgery
-  // guarantee the comment block claims. Fixed at the single renderToken
-  // chokepoint (ADR-008); RED proven before fix (PF-011).
+  // Stripping only [\r\n] lets ESC (0x1B), BEL (0x07), DEL (0x7F) and C1 bytes
+  // (0x80-0x9F) through to the operator's TTY. OSC 0 rewrites the window title;
+  // cursor-movement + erase sequences overwrite already-printed log lines --
+  // defeating the anti-forgery guarantee renderToken's contract states in
+  // src/logger.ts. The full range is stripped at that single chokepoint
+  // (ADR-008); RED against a [\r\n]-only stripper (PF-011).
   // -------------------------------------------------------------------------
 
   it("strips ESC, BEL, DEL, and C1 bytes from field values -- control characters must not reach the sink", () => {

@@ -977,16 +977,17 @@ describe("anthropic passthrough", () => {
 // document the terminal path coverage.  They are not proofs of a previously
 // observable failure.
 //
-// Terminal-path coverage table (named by test, not by line number — line numbers
-// in this table had already drifted once and a stale pointer reads as coverage):
+// Terminal-path coverage table (named by test, not by line number — a stale line
+// pointer reads as coverage it does not provide):
 //   response-headers-received  → 0 upstream events
 //        — "forwards method, path+query, auth headers, and body verbatim" and the
 //          header-fidelity tests, none of which tolerate an upstream warn
 //   connect timeout            → 1 event (anthropic_upstream_timeout)
-//        — "connectTimeoutMs fires during TCP connect to a non-routable upstream"
+//        — "connectTimeoutMs fires during TCP connect to a non-routable upstream
+//          (192.0.2.1)"
 //   client disconnect          → 0 upstream events
 //        — "aborting the client mid-request produces no anthropic_upstream_error warn"
-//          (pre-headers) and "B6: mid-stream client abort reclaims the upstream socket"
+//          (pre-headers) and "mid-stream client abort reclaims the upstream socket (B6)"
 //          (post-headers; also pins that the teardown itself still happens)
 //   upstream error (ECONNRESET) → 1 event (anthropic_upstream_error) — asserted below
 // ---------------------------------------------------------------------------
@@ -1119,8 +1120,8 @@ describe("anthropic passthrough — request_complete log fields on a live reques
 // arriving at the origin and must equal the number of aborts, so "the path ran and
 // was reclaimed" is distinguishable from "the path never ran" (avoids PF-011).  The
 // status assertion sits outside the try for the same reason — inside it, the catch
-// swallowed the AssertionError and a relay that answered 502 without contacting the
-// origin passed (measured).
+// would swallow the AssertionError and a relay that answered 502 without contacting
+// the origin would pass (measured).
 //
 // A dedicated agent is injected via the documented `agent` test seam so the
 // counters belong to this test alone and cannot be perturbed by another test's
@@ -1347,9 +1348,9 @@ describe("server body ingestion — a client that vanishes mid-upload is not log
 // B9: a declared Content-Length over the cap is rejected before the body is read
 //
 // The declared length fixes the outcome before a byte arrives, so buffering up to
-// maxBodyBytes first only costs memory: a 40 MiB upload paid a full 32 MiB of
-// buffering to reach a 413 that was already decided.  The client-visible outcome is
-// unchanged (413 + request_too_large + synthesized marker); only timing and peak
+// maxBodyBytes first would only cost memory: a 40 MiB upload paying a full 32 MiB of
+// buffering to reach a 413 that is already decided.  The client-visible outcome is the
+// same either way (413 + request_too_large + synthesized marker); only timing and peak
 // memory differ, and the origin rejects on the declared length too (ADR-010).
 //
 // Non-vacuity: RED against code that ignores Content-Length — the client sends one
@@ -1588,7 +1589,7 @@ describe("anthropic passthrough — an origin that dies mid-body terminates the 
 // wins, logs anthropic_upstream_error, and writes a 502 for a request the origin
 // never failed — a client fault reported as an origin fault, and a status the
 // origin never emitted (ADR-010).  This is the same discipline the res "close"
-// sibling five lines above already follows (PF-022).
+// handler in src/anthropic-passthrough.ts follows (PF-022).
 //
 // The client error is emitted directly rather than produced by killing the client
 // socket, and deliberately so: killing the socket fires `res` "close" as well, and
@@ -1675,13 +1676,13 @@ describe("anthropic passthrough — a client error on the unbuffered path claims
 // body) the client's upload is piped straight into the upstream.  When the connect
 // budget expires the relay writes its 504 and destroys the upstream, and the client
 // is still uploading into a request body nothing will ever read.  Node cannot parse
-// the next request out of a body it never consumed, so before the fix the socket sat
+// the next request out of a body it never consumed, so without a drain the socket sits
 // there until server.requestTimeout (600 s) — measured: 504 delivered, connection
 // still open and still being written to 8 s later, `req._dump()` powerless because
 // `req.pipe(upstream)` already set `_consuming`.
 //
-// The 413 path solved this once already; this asserts the passthrough leg reaches the
-// same end state through the same helper (drainRejectedUpload, provider-transport.ts).
+// This asserts the passthrough leg reaches the same end state as the 413 path, through
+// the same helper (drainRejectedUpload, provider-transport.ts).
 //
 // Both bounds of the assertion matter: the response must arrive COMPLETE (draining
 // before teardown is what keeps the client from losing a response it was already
@@ -1778,8 +1779,8 @@ describe("anthropic passthrough — an unbuffered 504 reclaims a client that is 
 // connection fails (ECONNRESET from an origin that accepts TCP then destroys
 // immediately) the relay writes its 502 but the client is still uploading into
 // a request body nothing will ever read.  Node cannot parse the next request
-// out of a body it never consumed, so before the fix the socket sat there
-// until server.requestTimeout (600 s) — identical to the 504 defect B13 pins.
+// out of a body it never consumed, so without a drain the socket sits there
+// until server.requestTimeout (600 s) — identical to the 504 case B13 pins.
 //
 // An origin that accepts TCP and destroys the socket immediately gives a
 // deterministic ECONNRESET → 502 without TEST-NET-1 topology dependence, so

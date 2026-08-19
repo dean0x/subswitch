@@ -186,7 +186,8 @@ describe("routing — unknown provider qualifier fails open to Anthropic (F6g / 
 
       // C8: unknown_provider_qualifier warn must fire with the qualifier field.
       // Non-vacuity: without the logger injection, this would always pass vacuously.
-      // Removing the warn log from server.ts (line ~571) causes this assertion to fail.
+      // Removing the unknown_provider_qualifier warn from server.ts's unknown-qualifier
+      // arm causes this assertion to fail.
       const warnLog = captured.find((e) => e.event === "unknown_provider_qualifier");
       assert.ok(warnLog !== undefined, "unknown_provider_qualifier warn must be logged");
       // I-051: warn must carry the full requested model name ("kimee:k2"), not just the qualifier ("kimee").

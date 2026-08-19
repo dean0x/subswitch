@@ -137,14 +137,15 @@ const REJECTED_UPLOAD_DRAIN_BYTES = 32 * 1024 * 1024;
  * rather than RST, and so the connection is reclaimed rather than wedged.
  *
  * Call this wherever the relay answers a request whose upload is still in flight and
- * whose body it will never read.  Two callers qualify: the inbound 413 in server.ts,
- * and the connect-timeout 504 on the Anthropic leg's unbuffered path.  Both leave the
- * socket with unread inbound bytes.  Destroying it then makes the kernel send RST and
- * the client may discard the response it had already received; leaving it alone is no
- * better — Node cannot parse the next request out of a body it never consumed, so the
- * connection is held until `server.requestTimeout` (600 s) with the client stuck
- * mid-upload.  Reading the rest of the upload closes with FIN instead, and keeps the
- * connection reusable when the client finishes promptly.
+ * whose body it will never read: the inbound 413 and the loopback-gate 403 in
+ * server.ts, and the connect-timeout 504 and upstream-error 502 on the Anthropic leg's
+ * unbuffered path.  Every one of them leaves the socket with unread inbound bytes.
+ * Destroying it then makes the kernel send RST and the client may discard the response
+ * it had already received; leaving it alone is no better — Node cannot parse the next
+ * request out of a body it never consumed, so the connection is held until
+ * `server.requestTimeout` (600 s) with the client stuck mid-upload.  Reading the rest
+ * of the upload closes with FIN instead, and keeps the connection reusable when the
+ * client finishes promptly.
  *
  * On the passthrough leg the caller must `req.unpipe()` first: the upload is piped
  * into the upstream, and `req._dump()` cannot rescue a stream whose `_consuming` flag

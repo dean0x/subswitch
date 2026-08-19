@@ -288,9 +288,9 @@ describe("loadConfig", () => {
   });
 
   it("a key that never shipped in a release is rejected by strict parsing, not by the legacy-key table", () => {
-    // `limits.maxInFlightBytes` was introduced and removed inside a single unreleased
-    // branch, so no config that has ever existed can carry it. A legacy-table row for it
-    // would be unreachable guidance; `LimitsSchema` is a z.strictObject, so the key is
+    // `limits.maxInFlightBytes` never shipped in a release, so no config on disk can
+    // carry it. A legacy-table row for it would be unreachable guidance; `LimitsSchema`
+    // is a z.strictObject, so the key is
     // still a hard load error — with Zod's unrecognized-key message. (avoids PF-020: key
     // REMOVAL is the breaking direction, and strict parsing already covers it.)
     const result = loadConfig({
@@ -483,7 +483,7 @@ describe("detectLegacyConfigKeys", () => {
     assert.ok(entry !== undefined, "codex.models must be detected as a removed key");
     assert.equal(entry.kind, "removed", "codex.models must be flagged as a removed key");
     // Same reason shape as every other removal: what changed, then version and ADR.
-    // MUTATION PROOF: the pre-0.3.0 hand-appended entry carried no version and no ADR.
+    // MUTATION PROOF: a reason that omits either the version or the ADR fails this regex.
     assert.ok(entry.kind === "removed" && /removed in 0\.2\.0 \(ADR-006\)/.test(entry.reason), "reason must state the version and ADR like its siblings");
   });
 
@@ -536,9 +536,9 @@ describe("detectLegacyConfigKeys", () => {
 // ---------------------------------------------------------------------------
 // renderLegacyKeyEntry — one renderer for both gates (loadConfig and init)
 //
-// The instruction text used to be an inline ternary written verbatim in config.ts
-// and init.ts. Two copies drift, and a ternary has no exhaustive arm: a third
-// `kind` compiled clean and rendered as a *delete* instruction in both places.
+// One renderer rather than an inline ternary per call site: two copies of the
+// instruction text drift apart, and a ternary has no exhaustive arm, so a third
+// `kind` would compile clean and render as a *delete* instruction at both gates.
 // ---------------------------------------------------------------------------
 
 describe("renderLegacyKeyEntry", () => {
@@ -631,14 +631,15 @@ describe("detectUnknownProviderKeys", () => {
 // ---------------------------------------------------------------------------
 // TS-02: z.strictObject catches typo'd leaf keys (avoids PF-010)
 //
-// Before this fix, CodexProviderSchema, AnthropicSchema, LimitsSchema and
-// FileConfigSchema used z.object (which STRIPS unknown keys). A typo'd key
-// like `userAgnet` parsed clean and silently fell back to the default, giving
-// the user no diagnostic and a proxy running on an unexpected value.
+// CodexProviderSchema, its nested reasoningCache schema, AnthropicSchema,
+// LimitsSchema and FileConfigSchema are all z.strictObject, so an unknown key is
+// an error. Under z.object (which STRIPS unknown keys) a typo like `userAgnet`
+// parses clean and silently falls back to the default, giving the operator no
+// diagnostic and a proxy running on a value they never chose.
 //
-// MUTATION PROOF: removing z.strictObject (reverting to z.object) on any of
-// these schemas causes the test for that schema to pass vacuously — the typo'd
-// config parses without error and the assertion `!result.ok` fails.
+// MUTATION PROOF: relaxing any one of these schemas to z.object turns the test
+// for that schema RED — the typo'd config parses without error, so `!result.ok`
+// does not hold.
 // ---------------------------------------------------------------------------
 
 describe("TS-02: z.strictObject catches typo'd leaf keys", () => {
@@ -916,9 +917,9 @@ describe("enumerateDestinations", () => {
 // ---------------------------------------------------------------------------
 // isLoopbackHost — exact-form loopback predicate (ADR-009, PF-011)
 //
-// The old implementation used `hostname.startsWith("127.")`, which admits
-// `127.0.0.1.evil.test` — an attacker-registrable domain.  The fix tightens
-// the predicate to exact loopback forms only.
+// `isLoopbackHost` accepts exact loopback forms only.  A prefix test such as
+// `hostname.startsWith("127.")` admits `127.0.0.1.evil.test` — an attacker-
+// registrable domain — which is what these controls exist to keep out.
 //
 // RED controls: the tests marked RED were run against the UNFIXED code first
 // to confirm they produced wrongly-clean results, then re-run after the fix
@@ -948,11 +949,11 @@ describe("isLoopbackHost — exact loopback forms only (ADR-009, PF-011)", () =>
     assert.ok(isLoopbackHost("127.255.255.255"), "127.255.255.255 must be accepted");
   });
 
-  // ---- RED (I-047): formerly admitted by startsWith("127.") ----
+  // ---- RED (I-047): forms a startsWith("127.") prefix test would admit ----
 
-  it("RED I-047: refuses '127.0.0.1.evil.test' — startsWith('127.') used to admit this", () => {
-    // RED control: run against the UNFIXED predicate to confirm it returned true
-    // (wrongly clean); this assertion must now be false with the fixed code.
+  it("RED I-047: refuses '127.0.0.1.evil.test' — a startsWith('127.') prefix test admits this", () => {
+    // RED control: a prefix-test predicate returns true here (wrongly clean); the
+    // exact-form predicate must return false.
     assert.ok(!isLoopbackHost("127.0.0.1.evil.test"), "127.0.0.1.evil.test must be REFUSED — attacker-registrable domain");
   });
 
@@ -983,9 +984,9 @@ describe("isLoopbackHost — exact loopback forms only (ADR-009, PF-011)", () =>
   // ---- Integration: ADR-009 startup vetting via requireHttpsOrLoopback ----
 
   it("RED I-047 — ADR-009 integration: anthropic.baseUrl http://127.0.0.1.evil.test/ must fail config validation", () => {
-    // Before the fix this loaded cleanly (startsWith test passed), sending the
-    // sk-ant-* key in cleartext to 127.0.0.1.evil.test. After the fix the Zod
-    // refinement rejects it at parse time.
+    // A prefix-test predicate loads this cleanly, sending the sk-ant-* key in
+    // cleartext to 127.0.0.1.evil.test; the exact-form predicate makes the Zod
+    // refinement reject it at parse time.
     const result = loadConfig({
       configPath: "x",
       readFile: () => JSON.stringify({ anthropic: { baseUrl: "http://127.0.0.1.evil.test/" } }),
