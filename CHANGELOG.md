@@ -25,17 +25,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Previously, control fell through into the merge and wrote our refresh result anyway,
   defeating the guard even when it had correctly fired.
 
-- **Anthropic passthrough — `connectTimeoutMs` now genuinely bounds TCP connection
-  establishment** (fixes #27).
+- **Anthropic passthrough — `connectTimeoutMs` now genuinely bounds DNS resolution and
+  TCP establishment** (fixes #27).
   Previously `upstream.setTimeout(connectTimeoutMs)` was called on the `ClientRequest`
   object, but Node's implementation defers that call via an internal `'connect'`
   listener — so it fired only after TCP connect, meaning `connectTimeoutMs` was never in
   force for any measurable interval.  Measured against a blackholed IP (`192.0.2.1`,
   TEST-NET-1) with `connectTimeoutMs=700`, the request previously failed after
   **75 019 ms** (the macOS kernel TCP timeout).  The fix arms the timer **directly on the
-  socket** inside the `'socket'` event handler, before `'connect'` fires, so the
-  connect-phase budget is in force for the full TCP handshake window.  The same measured
-  scenario now fails at ~700 ms.
+  socket** inside the `'socket'` event handler, before DNS resolves, so the budget covers
+  the full connect window: DNS lookup plus TCP SYN/ACK.  The same measured scenario now
+  fails at ~700 ms.  **Upgrade note:** operators with a slow DNS resolver may now see
+  `connectTimeoutMs` 504s that 0.2.0 would have passed through — the budget is now
+  enforced for the first time.
 
 - **Anthropic passthrough — `x-subswitch-synthesized: 1` header marks every relay-generated response; stripped from proxied responses** (stacks on #30).
   Previously a relay fault (502 connection failure, 504 timeout, 500 internal proxy error, 413 body too large,
@@ -48,50 +50,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   header is purely additive.  See the new `## x-subswitch-synthesized` section in the README for the
   operator-facing wire contract.
 
-- **Anthropic passthrough — client abort no longer logs a spurious `anthropic_upstream_error` warn** (stacks on #30).
-  `res.on("close")` was calling `upstream.destroy()` without first setting `settled = true`.  The destroy
-  emits `'error'` on the next tick; with `settled = false` the error handler logged `anthropic_upstream_error`
-  and attempted to write a 502 into an already-closed response.  A client hanging up is a normal event;
-  it now sets `settled = true` before the destroy so the error handler returns early.  Additionally, the
-  error handler now sets `settled = true` before writing the 502 so a theoretically possible second
-  `'error'` emission cannot double-write.
-
-- **Anthropic passthrough — duplicate `anthropic_upstream_error` warn eliminated**
-  (fixes #27).  When a pre-header timeout fired, the timeout handler called
-  `upstream.destroy()` before writing the 504.  Destroying an in-flight
-  `ClientRequest` causes it to emit `error` (ECONNRESET) on the next tick; the
-  error handler's `responded` guard was inert on the pre-header path, so both
-  `anthropic_upstream_timeout` and `anthropic_upstream_error` were logged.  A new
-  `settled` flag is now set by whichever handler responds first; the error handler
-  returns early when `settled` is true, ensuring exactly one warn event per timeout.
-
-- **Anthropic passthrough — a client abort after response headers no longer leaks the
-  upstream socket.**  `res.on("close")` gated `upstream.destroy()` on the `settle()`
-  latch, but the response callback claims that latch as soon as headers are relayed, so
-  a mid-stream abort skipped the teardown entirely.  `pipe()` does not propagate
-  destination teardown to the source, leaving the upstream response half-read and its
-  socket permanently outside the agent's free pool.  Measured: 5 mid-stream aborts left
-  5 sockets held.  The upstream is now destroyed on every abort; `settle()` still
-  arbitrates the warn log and the client-visible outcome, which is all it was ever meant
-  to arbitrate.
-
-- **Inbound request timeouts keep their `408` instead of being reported as `400`.**
-  Attaching a `clientError` listener suppresses Node's canned reply, so the handler added
-  for the 400/431 shaping also swallowed the `408 Request Timeout` that `requestTimeout`
-  and `headersTimeout` produce — both arrive as `err.code === "ERR_HTTP_REQUEST_TIMEOUT"`
-  on Node 22 — and re-emitted it as `400 malformed request`.  That invents a status the
-  origin never sends for a slow client and misdiagnoses a slow request as a malformed one
-  (ADR-010).  The status Node would have sent is now preserved and given the same
-  Anthropic-shaped body and `x-subswitch-synthesized: 1` marker.  PF-021 records this
-  response as un-interceptable; that holds for Node's *default* reply only.
-
-- **The `drainRejectedUpload` 2 s safety bound now actually fires.**  It was disarmed on
-  `res` "close", but the 413 has already been written when the drain starts, so `res`
-  closed within a tick and cancelled the timer ~2 ms after it was armed (measured).  A
-  client that ignored the 413 and kept uploading was therefore never cut off — the bound
-  described in the code existed only in its comment (PF-019).  Disarm now happens only on
-  `req` "end"/"close"/"error", the signals that actually mean the upload is finished or
-  gone, and a test pins that the socket is destroyed at ~2 s.
+- **Anthropic passthrough — a pre-header upstream timeout no longer produces a spurious
+  `anthropic_upstream_error` warn** (fixes #27).  In 0.2.0, when the Anthropic upstream
+  timed out before sending response headers, the relay emitted two simultaneous warn
+  events — `anthropic_upstream_timeout` and `anthropic_upstream_error` — because
+  destroying the timed-out request caused a second error event that the error handler
+  logged unconditionally.  In 0.3.0, at most one warn event fires per upstream request:
+  whichever terminal outcome responds first claims the log slot; any subsequent error
+  event is silently discarded.
 
 - **404 responses now use the same Anthropic-shaped error body as all other synthesized
   errors.**  Previously an unknown path returned a bare 404 with no body.  The body now
@@ -132,7 +98,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   origin regardless of which upstream handles it.
 
 - **413 now uses error type `request_too_large`** instead of `invalid_request_error`,
-  matching the Anthropic API's own error taxonomy for oversized bodies.
+  matching the Anthropic API's own error taxonomy for oversized bodies.  A 413 response
+  now also drains the remaining upload bytes before closing the connection, with a 2-second
+  hard cutoff; in 0.2.0 the connection closed immediately, which could prevent the client
+  from reading the 413 body if its TCP write buffer was still filling.
 
 - **`SERVER_TUNING` constants set explicitly on the HTTP server**: `requestTimeout`
   (600 s — Anthropic's own server-side ceiling for long-running requests), `headersTimeout`
@@ -142,7 +111,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the Anthropic origin's behaviour), and `maxHeaderSize: 64 * 1024` (raises the inbound
   header ceiling from Node's 16 KiB default to 64 KiB — also determines when the relay
   fires a 431 Header Fields Too Large).  Previously these values were whatever Node's
-  built-in defaults happened to be.
+  built-in defaults happened to be.  Inbound timeouts (`requestTimeout`,
+  `headersTimeout`) that expire now return an Anthropic-shaped `408` with
+  `x-subswitch-synthesized: 1`; in 0.2.0 Node emitted its own unshapeable bare `408`
+  that no relay code produced or logged.
 
 ### Added
 
@@ -170,6 +142,9 @@ exits immediately with:
 ```
 outdated config layout in subswitch.config.json — move `codex` to `providers.codex`; move `reasoningCache` to `providers.codex.reasoningCache`; move `limits.connectTimeoutMs` to `anthropic.connectTimeoutMs`; move `limits.maxUpstreamSockets` to `anthropic.maxUpstreamSockets`; move `limits.streamIdleTimeoutMs` to `anthropic.streamIdleTimeoutMs and/or providers.codex.streamIdleTimeoutMs`; move `limits.requestTimeoutMs` to `providers.codex.requestTimeoutMs`; move `limits.maxSseEventBytes` to `providers.codex.maxSseEventBytes`; move `codex.models` to `(removed — routing now follows the built-in model registry; use providers.codex.aliases for custom names)`. Edit the file to match subswitch.config.example.json, or delete it to run on defaults.
 ```
+
+> [As of 0.3.0, `anthropic.streamIdleTimeoutMs` was removed — migrate directly to
+> `providers.codex.streamIdleTimeoutMs`.]
 
 **Two ways forward:**
 
@@ -251,6 +226,9 @@ What moved and what was removed:
 | `limits.requestTimeoutMs` | `providers.codex.requestTimeoutMs` |
 | `limits.maxSseEventBytes` | `providers.codex.maxSseEventBytes` |
 | `codex.models` | **Removed** — routing now follows the built-in model registry; use `providers.codex.aliases` for custom names |
+
+> [As of 0.3.0, `anthropic.streamIdleTimeoutMs` was removed — migrate directly to
+> `providers.codex.streamIdleTimeoutMs`.]
 
 Two `subswitch init` flags were also removed:
 

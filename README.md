@@ -274,7 +274,7 @@ All keys and their defaults:
 | `port` | `4141` | Port the proxy listens on |
 | `logLevel` | `"info"` | Log verbosity: `debug`, `info`, `warn`, or `error` |
 | `anthropic.baseUrl` | `"https://api.anthropic.com"` | Anthropic passthrough base URL |
-| `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection establishment timeout (see note below) |
+| `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — DNS resolution and TCP connection establishment timeout (see note below) |
 | `anthropic.maxUpstreamSockets` | `256` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
 | `anthropic.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `anthropic.baseUrl` points at a host other than `api.anthropic.com`. Set to `true` only when routing through a trusted proxy in front of Anthropic's API. Loopback addresses are always exempt. |
 | `providers.codex.baseUrl` | `"https://chatgpt.com/backend-api/codex"` | Codex backend base URL — override to route subswitch through the wire recorder |
@@ -297,6 +297,13 @@ All keys and their defaults:
 > both knobs have meaningful effect there. The Codex leg uses Node's global `fetch`
 > (undici's global dispatcher), which these knobs do not control — shipping them as
 > per-provider keys would be config that bounds nothing on the Codex side.
+
+> **Operator caveats for `connectTimeoutMs`**: (1) **No effect on pooled sockets.**
+> With `maxUpstreamSockets: 256` and keep-alive on, steady-state traffic reuses
+> existing connections — there is no connect phase — so the budget does nothing after
+> warm-up. (2) **TLS negotiation is not covered.** On `https://api.anthropic.com`,
+> the budget ends when the TCP connection is established (`'connect'` event); the TLS
+> handshake occurs after and is not bounded by this knob.
 
 > **BREAKING (0.3.0):** Two config keys were removed: `anthropic.streamIdleTimeoutMs`
 > and `limits.maxConcurrentRequests`. If your config contains either of these,

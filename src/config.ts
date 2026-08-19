@@ -60,16 +60,18 @@ const AnthropicSchema = z
       .refine(requireHttpsOrLoopback, { message: `anthropic.baseUrl ${HTTPS_REQUIRED_MESSAGE}` })
       .default("https://api.anthropic.com"),
     /**
-     * TCP connection-establishment timeout for the Anthropic leg (milliseconds).
-     * Bounds only the time to establish a new TCP connection; the timer is armed
-     * directly on the socket (not via `ClientRequest.setTimeout`, which defers
-     * internally and cannot bound the connect phase — PF-019).
+     * DNS resolution and TCP connection-establishment budget for the Anthropic
+     * leg (milliseconds).  The timer is armed directly on the socket inside the
+     * `'socket'` event handler, before DNS resolves (not via
+     * `ClientRequest.setTimeout`, which defers internally and cannot bound this
+     * phase — PF-019).  The budget therefore covers the full connect window:
+     * DNS lookup plus TCP SYN/ACK.
      *
-     * This is the ONLY timer the Anthropic leg arms. On `'connect'` it is disarmed
-     * outright: neither the headers phase nor the stream phase is bounded, because
-     * the relay must never terminate a request the origin was about to answer
-     * (ADR-010). A connect that has not completed is a connection the origin has
-     * not yet seen, which is what makes this bound legitimate.
+     * On `'connect'` the timer is disarmed outright: neither the headers phase
+     * nor the stream phase is bounded, because the relay must never terminate a
+     * request the origin was about to answer (ADR-010). A connect that has not
+     * completed is a connection the origin has not yet seen, which is what makes
+     * this bound legitimate.
      *
      * On HTTPS connections, `'connect'` fires after TCP establishment but before
      * the TLS handshake, so TLS negotiation is NOT covered by this budget.
