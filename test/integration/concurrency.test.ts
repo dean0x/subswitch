@@ -117,16 +117,18 @@ describe("concurrency — all requests reach upstream without relay interference
     }
   });
 
-  it("health endpoint always reaches relay regardless of in-flight requests", async () => {
-    // Non-vacuity: if health were blocked by in-flight traffic, the fetch() call
-    // would hang until the 30 s test deadline, triggering a hard timeout failure.
+  it("health endpoint answers while the only upstream socket is held by an in-flight POST (P0-health)", async () => {
+    // Non-vacuity: maxUpstreamSockets: 1 so the parked POST consumes the only upstream
+    // connection.  If health required an upstream socket it would queue behind the POST,
+    // hanging until the 30 s test deadline — RED.  The in-flight POST confirms the socket
+    // is genuinely held (not already released) when health is checked.
     // Positive control: after health check, the parked POST is released and must
     // also return 200 — confirming it was genuinely in-flight, not already dropped.
     const parked = await startParkingUpstream();
     cleanups.push(parked.close);
 
     const subswitch = await startSubswitch({
-      anthropic: { baseUrl: parked.url },
+      anthropic: { baseUrl: parked.url, maxUpstreamSockets: 1 },
     });
     cleanups.push(subswitch.close);
 
