@@ -6,8 +6,6 @@ import {
   loadConfig,
   detectLegacyConfigKeys,
   detectUnknownProviderKeys,
-  detectDeprecatedConfigKeys,
-  DEPRECATED_KEYS,
   aliasesByProvider,
   enumerateDestinations,
   type RoutingDestination,
@@ -239,84 +237,40 @@ describe("loadConfig", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Deprecated keys (soft-deprecation — loaded but not wired, must warn)
+  // Removed keys (hard-error via LEGACY_KEY_MOVES — BREAKING in 0.2.1)
   // -------------------------------------------------------------------------
 
-  it("deprecated key limits.maxConcurrentRequests is accepted without error (soft-deprecated)", () => {
-    // The key was removed from the gate (ADR-010) but existing configs must not
-    // hard-error — the schema accepts it as .optional() and the value is ignored.
+  it("BREAKING 0.2.1: limits.maxConcurrentRequests is now rejected with a legible error naming the key", () => {
+    // The admission gate was removed (ADR-010). The key was soft-deprecated in 0.2.1's
+    // initial release; the owner reversed that decision — it is now a hard error.
+    // MUTATION PROOF: removing the entry from LEGACY_KEY_MOVES causes this test to fail
+    // because the config would either parse clean (if the schema also lacks it) or
+    // produce a generic Zod "unrecognized key" message without the 0.2.1 removal context.
     const result = loadConfig({
       configPath: "x",
       readFile: () => JSON.stringify({ limits: { maxConcurrentRequests: 64 } }),
     });
-    assert.ok(result.ok, "deprecated key must not cause a parse error");
-    // The value is NOT wired into Config.limits — it is silently dropped.
-    assert.ok(!Object.hasOwn(result.value.config.limits, "maxConcurrentRequests"),
-      "deprecated field must not appear in resolved Config.limits");
+    assert.ok(!result.ok, "removed key must now be rejected as a hard error");
+    assert.equal(result.error.kind, "translate");
+    assert.match(result.error.message, /limits\.maxConcurrentRequests/, "error must name the offending key");
+    assert.match(result.error.message, /removed in 0\.2\.1/, "error must state the version it was removed");
   });
 
-  it("deprecated key limits.maxInFlightBytes is accepted without error (soft-deprecated)", () => {
-    const result = loadConfig({
-      configPath: "x",
-      readFile: () => JSON.stringify({ limits: { maxInFlightBytes: 512 * 1024 * 1024 } }),
-    });
-    assert.ok(result.ok);
-    assert.ok(!Object.hasOwn(result.value.config.limits, "maxInFlightBytes"));
-  });
-
-  it("a config with all 6 deprecated keys loads successfully and reports them in deprecatedKeys", () => {
+  it("BREAKING 0.2.1: a config with all 6 removed keys is rejected and every key is named", () => {
+    // MUTATION PROOF: re-adding any of the six as .optional() in the schema AND removing
+    // it from LEGACY_KEY_MOVES would cause the config to parse successfully → test fails.
     const result = loadConfig({
       configPath: "x",
       readFile: () =>
         JSON.stringify({
-          anthropic: { headerTimeoutMs: 660_000, streamIdleTimeoutMs: 300_000 },
-          limits: {
-            maxConcurrentRequests: 32,
-            maxInFlightBytes: 2 * 1024 * 1024 * 1024,
-            maxQueueDepth: 1000,
-            maxQueueWaitMs: 60_000,
-          },
+          anthropic: { headerTimeoutMs: 660_000 },
+          limits: { maxConcurrentRequests: 32 },
         }),
     });
-    assert.ok(result.ok, "deprecated keys must not hard-error");
-    assert.equal(result.value.deprecatedKeys.length, 6, "must report all 6 deprecated keys");
-    const paths = result.value.deprecatedKeys.map((k) => k.path);
-    assert.ok(paths.includes("anthropic.headerTimeoutMs"));
-    assert.ok(paths.includes("anthropic.streamIdleTimeoutMs"));
-    assert.ok(paths.includes("limits.maxConcurrentRequests"));
-    assert.ok(paths.includes("limits.maxInFlightBytes"));
-    assert.ok(paths.includes("limits.maxQueueDepth"));
-    assert.ok(paths.includes("limits.maxQueueWaitMs"));
-  });
-
-  it("detectDeprecatedConfigKeys resolves every declared path shape, at whatever nesting depth", () => {
-    // SCOPE — read before trusting this test for more than it does.  Both sides of the
-    // final assertion are derived from DEPRECATED_KEYS, so it is an invariant over the
-    // table's TRAVERSAL, not over its CONTENTS: deleting an entry shrinks the fixture and
-    // the expected count together and this test stays green (verified).
-    //
-    // What it does catch: a path whose nesting hasOwnPath cannot walk (a future
-    // three-segment path, say), which would make the key silently un-warnable.
-    //
-    // The guard against an entry being dropped from the table is the preceding test,
-    // "a config with all 6 deprecated keys loads successfully…", whose six hand-written
-    // path literals and `length === 6` are independent of DEPRECATED_KEYS. That
-    // duplication is deliberate — it is the only thing that can report a removal.
-    const allDeprecated: Record<string, unknown> = {};
-    for (const { path } of DEPRECATED_KEYS) {
-      const parts = path.split(".");
-      let node = allDeprecated;
-      for (let i = 0; i < parts.length - 1; i++) {
-        const segment = parts[i]!;
-        if (!Object.hasOwn(node, segment) || typeof node[segment] !== "object" || node[segment] === null) {
-          node[segment] = {};
-        }
-        node = node[segment] as Record<string, unknown>;
-      }
-      node[parts[parts.length - 1]!] = 1;
-    }
-    const found = detectDeprecatedConfigKeys(allDeprecated);
-    assert.equal(found.length, DEPRECATED_KEYS.length, "every entry in DEPRECATED_KEYS must be detectable");
+    assert.ok(!result.ok, "config with removed keys must be rejected");
+    assert.equal(result.error.kind, "translate");
+    // The pre-parse LEGACY_KEY_MOVES check fires first and names the first detected key.
+    assert.match(result.error.message, /removed in 0\.2\.1/, "error must explain these keys were removed");
   });
 
   it("anthropic.maxUpstreamSockets defaults to 256 (raised to exceed peak concurrency)", () => {

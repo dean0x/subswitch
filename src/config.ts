@@ -78,19 +78,6 @@ const AnthropicSchema = z
      */
     connectTimeoutMs: z.number().int().positive().default(10_000),
     /**
-     * @deprecated The relay must never bound the headers phase on a connected client
-     * (ADR-010). Kept in the schema so existing config files with this key do not
-     * hard-error on load; the value is silently ignored. Remove from your config.
-     */
-    headerTimeoutMs: z.number().int().positive().optional(),
-    /**
-     * @deprecated The relay must never bound the stream-idle phase on a connected client
-     * (ADR-010). Kept in the schema so existing config files with this key do not
-     * hard-error on load; the value is silently ignored. Remove from your config.
-     * Use providers.codex.streamIdleTimeoutMs for the Codex leg instead.
-     */
-    streamIdleTimeoutMs: z.number().int().positive().optional(),
-    /**
      * Maximum sockets in the keep-alive pool for the Anthropic passthrough.
      *
      * 256 gives comfortable headroom over the realistic peak of ~100 concurrent
@@ -246,27 +233,6 @@ const LimitsSchema = z
     maxBodyBytes: z.number().int().positive().default(32 * 1024 * 1024),
     /** Interval between SSE ping frames sent to clients during long Codex streams. */
     pingIntervalMs: z.number().int().positive().default(15_000),
-    /**
-     * @deprecated The admission gate has been removed (ADR-010). Kept in the schema
-     * so existing config files do not hard-error on load. Remove from your config.
-     */
-    maxConcurrentRequests: z.number().int().positive().optional(),
-    /**
-     * @deprecated The byte-based admission gate has been removed (ADR-010). Kept in
-     * the schema so existing config files do not hard-error on load. Remove from
-     * your config.
-     */
-    maxInFlightBytes: z.number().int().positive().optional(),
-    /**
-     * @deprecated The admission queue has been removed (ADR-010). Kept in the schema
-     * so existing config files do not hard-error on load. Remove from your config.
-     */
-    maxQueueDepth: z.number().int().positive().optional(),
-    /**
-     * @deprecated The admission queue has been removed (ADR-010). Kept in the schema
-     * so existing config files do not hard-error on load. Remove from your config.
-     */
-    maxQueueWaitMs: z.number().int().positive().optional(),
   })
   .prefault({});
 
@@ -532,6 +498,13 @@ const LEGACY_KEY_MOVES: readonly (readonly [path: string, replacement: string])[
   ["limits.streamIdleTimeoutMs", "providers.codex.streamIdleTimeoutMs"],
   ["limits.requestTimeoutMs", "providers.codex.requestTimeoutMs"],
   ["limits.maxSseEventBytes", "providers.codex.maxSseEventBytes"],
+  // Six keys removed in 0.2.1 — hard-error so the operator knows to delete them.
+  ["anthropic.headerTimeoutMs", "(removed in 0.2.1 — delete this key; the relay does not bound the headers phase on a connected client, ADR-010)"],
+  ["anthropic.streamIdleTimeoutMs", "(removed in 0.2.1 — delete this key; the relay does not bound the stream-idle phase on a connected client, ADR-010)"],
+  ["limits.maxConcurrentRequests", "(removed in 0.2.1 — delete this key; the admission gate was removed, ADR-010)"],
+  ["limits.maxInFlightBytes", "(removed in 0.2.1 — delete this key; the byte-budget admission gate was removed, ADR-010)"],
+  ["limits.maxQueueDepth", "(removed in 0.2.1 — delete this key; the admission queue was removed, ADR-010)"],
+  ["limits.maxQueueWaitMs", "(removed in 0.2.1 — delete this key; the admission queue was removed, ADR-010)"],
 ];
 
 /** Read a dotted path using own-property checks only (prototype-pollution safe). */
@@ -590,59 +563,6 @@ export const detectUnknownProviderKeys = (raw: unknown): readonly string[] => {
 };
 
 // ---------------------------------------------------------------------------
-// Deprecated config keys — warn but do not reject (soft-deprecation path)
-// ---------------------------------------------------------------------------
-
-/**
- * One entry in the deprecated-key table.
- *
- * A deprecated key differs from a legacy key in that it is still accepted by the
- * schema (as `.optional()`) so existing user configs continue to load — the value
- * is simply not wired into the runtime `Config`. The operator receives a `warn`
- * log and a stderr notice so they know to remove it.
- */
-export interface DeprecatedConfigKey {
-  /** Dotted config path (e.g. "anthropic.headerTimeoutMs"). */
-  readonly path: string;
-  /** Human-readable reason to include in the warning. */
-  readonly reason: string;
-}
-
-/**
- * Keys that are accepted by the schema (so configs don't break) but whose values
- * are no longer wired into the runtime Config. Soft-deprecation: warn on load,
- * do not reject.
- *
- * Six keys are deprecated:
- *   - anthropic.headerTimeoutMs      — relay must never bound headers phase (ADR-010)
- *   - anthropic.streamIdleTimeoutMs  — relay must never bound stream phase (ADR-010)
- *   - limits.maxConcurrentRequests   — admission gate removed (ADR-010)
- *   - limits.maxInFlightBytes        — admission gate removed (ADR-010)
- *   - limits.maxQueueDepth           — admission gate removed (ADR-010)
- *   - limits.maxQueueWaitMs          — admission gate removed (ADR-010)
- */
-export const DEPRECATED_KEYS: readonly DeprecatedConfigKey[] = [
-  { path: "anthropic.headerTimeoutMs", reason: "the relay no longer bounds the headers phase on a connected client (ADR-010); remove this key" },
-  { path: "anthropic.streamIdleTimeoutMs", reason: "the relay no longer bounds the stream-idle phase on a connected client (ADR-010); remove this key" },
-  { path: "limits.maxConcurrentRequests", reason: "the admission gate has been removed (ADR-010); remove this key" },
-  { path: "limits.maxInFlightBytes", reason: "the admission gate has been removed (ADR-010); remove this key" },
-  { path: "limits.maxQueueDepth", reason: "the admission gate has been removed (ADR-010); remove this key" },
-  { path: "limits.maxQueueWaitMs", reason: "the admission gate has been removed (ADR-010); remove this key" },
-];
-
-/**
- * Return the subset of DEPRECATED_KEYS whose dotted paths are present in the raw
- * config object. Pure: no I/O. Own-property walks only (prototype-pollution safe).
- *
- * Unlike detectLegacyConfigKeys (hard error), deprecated keys are soft: the config
- * loads successfully, but the caller is expected to warn. (avoids PF-010)
- */
-export const detectDeprecatedConfigKeys = (raw: unknown): readonly DeprecatedConfigKey[] => {
-  if (!isPlainObject(raw)) return [];
-  return DEPRECATED_KEYS.filter((entry) => hasOwnPath(raw, entry.path));
-};
-
-// ---------------------------------------------------------------------------
 // resolveConfig — FileConfig → Config transformation
 // ---------------------------------------------------------------------------
 
@@ -692,8 +612,6 @@ export const resolveConfig = (file: FileConfig): Config => ({
   anthropic: {
     baseUrl: file.anthropic.baseUrl,
     connectTimeoutMs: file.anthropic.connectTimeoutMs,
-    // headerTimeoutMs and streamIdleTimeoutMs are deprecated — parsed by schema
-    // so existing configs don't hard-error, but not wired into Config (ADR-010).
     maxUpstreamSockets: file.anthropic.maxUpstreamSockets,
     allowInsecureBaseUrl: file.anthropic.allowInsecureBaseUrl,
   },
@@ -703,9 +621,6 @@ export const resolveConfig = (file: FileConfig): Config => ({
   limits: {
     maxBodyBytes: file.limits.maxBodyBytes,
     pingIntervalMs: file.limits.pingIntervalMs,
-    // maxConcurrentRequests, maxInFlightBytes, maxQueueDepth, maxQueueWaitMs are
-    // deprecated — admission gate removed (ADR-010). Parsed by schema so existing
-    // configs don't hard-error, but not wired into Config.
   },
 });
 
@@ -735,15 +650,6 @@ export interface LoadConfigResult {
    * failing the exit code. (avoids PF-006)
    */
   readonly configuredProviders: ReadonlySet<ProviderId>;
-  /**
-   * Deprecated config keys that were present in the config file.
-   *
-   * Non-empty when the user has keys in their config that are accepted by the schema
-   * (soft-deprecated) but whose values are no longer wired into the runtime Config.
-   * The `serve` command logs a `warn` and prints a stderr notice for each entry so
-   * the operator knows to remove them. Empty array when no deprecated keys are present.
-   */
-  readonly deprecatedKeys: readonly DeprecatedConfigKey[];
 }
 
 /**
@@ -863,7 +769,6 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     configPath: resolvedPath,
     fileFound,
     configuredProviders: detectConfiguredProviders(raw),
-    deprecatedKeys: detectDeprecatedConfigKeys(raw),
   });
 };
 

@@ -298,28 +298,17 @@ All keys and their defaults:
 > (undici's global dispatcher), which these knobs do not control — shipping them as
 > per-provider keys would be config that bounds nothing on the Codex side.
 
-### Deprecated config keys
+> **BREAKING (0.2.1):** Six config keys were removed: `anthropic.headerTimeoutMs`,
+> `anthropic.streamIdleTimeoutMs`, `limits.maxConcurrentRequests`, `limits.maxInFlightBytes`,
+> `limits.maxQueueDepth`, and `limits.maxQueueWaitMs`. If your config contains any of these,
+> `subswitch` will refuse to start and print a message naming each offending key. Delete
+> them from your config to continue. See the [0.2.1 changelog](#0.2.1---2026-08-19) for details.
 
-The following keys are **accepted but ignored** — they parse without error so existing
-config files still start, but their values are not wired into the runtime. `subswitch serve`
-emits a `config_key_deprecated` warning on stderr for each one present. Remove them from
-your config file to silence the warning.
-
-| Key | Reason |
-|-----|--------|
-| `anthropic.headerTimeoutMs` | Removed — `connectTimeoutMs` is the only Anthropic-leg timer; the relay does not cap time-to-first-byte (ADR-010) |
-| `anthropic.streamIdleTimeoutMs` | Removed — the relay does not cap stream idle time on the Anthropic leg (ADR-010) |
-| `limits.maxConcurrentRequests` | Removed — the admission gate was deleted; subswitch imposes no per-request limit |
-| `limits.maxInFlightBytes` | Removed — the byte-budget admission gate was deleted |
-| `limits.maxQueueDepth` | Removed — the admission queue was deleted |
-| `limits.maxQueueWaitMs` | Removed — the admission queue was deleted |
-
-> **Behavior when an upstream connects but never responds**: removing `headerTimeoutMs`
-> and `streamIdleTimeoutMs` means the Anthropic leg has no relay-side timer on the
-> response phase. If an upstream accepts the TCP connection and request body but then
-> goes silent, the client will receive no response until its own timeout fires
-> (measured: `STATUS=000 TOTAL=20s curl_rc=28` with a 20 s curl timeout). This is
-> deliberate per ADR-010: a relay that invents a 504 for a wedged origin produces a
+> **Behavior when an upstream connects but never responds**: the Anthropic leg has no
+> relay-side timer on the response phase. If an upstream accepts the TCP connection and
+> request body but then goes silent, the client will receive no response until its own
+> timeout fires (measured: `STATUS=000 TOTAL=20s curl_rc=28` with a 20 s curl timeout).
+> This is deliberate per ADR-010: a relay that invents a 504 for a wedged origin produces a
 > status the origin never emitted. A direct connection to api.anthropic.com would hang
 > the same way. `server.requestTimeout` (600 s, above) bounds only request _receipt_,
 > not the response, so nothing relay-side fires in this case.

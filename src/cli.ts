@@ -236,7 +236,7 @@ const serve = async (
   quiet: boolean,
   portStr?: string,
 ): Promise<void> => {
-  const { config, configPath, fileFound, deprecatedKeys } = result;
+  const { config, configPath, fileFound } = result;
 
   // Validate --port if given, with byte-identical wording to init port validation. [F3/F15]
   let effectivePort = config.port;
@@ -281,13 +281,6 @@ const serve = async (
     path: configPath,
     eventType: fileFound ? "loaded" : "defaults",
   });
-
-  // Warn on deprecated config keys — accepted by schema so existing configs
-  // don't break, but the values are no longer wired into the runtime Config.
-  for (const { path, reason } of deprecatedKeys) {
-    deps.logger.log("warn", "config_key_deprecated", { path });
-    errOut(`subswitch: deprecated config key "${path}" — ${reason}`);
-  }
 
   deps.logger.log("info", "listening", { path: `http://127.0.0.1:${effectiveConfig.port}` });
 

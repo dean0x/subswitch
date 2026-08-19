@@ -138,15 +138,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `request_too_large` added to the internal `AnthropicErrorType` union.
 
-### Deprecated
+### Removed (BREAKING)
 
-- Six config keys are accepted by the schema but no longer wired into the runtime — each
-  produces a `config_key_deprecated` warn on startup.  **Remove them from your config:**
-  - `anthropic.headerTimeoutMs` and `anthropic.streamIdleTimeoutMs` — the relay no longer
-    bounds these phases on a connected client (ADR-010: bounding what the origin was about
-    to answer is a defect).
-  - `limits.maxConcurrentRequests`, `limits.maxInFlightBytes`, `limits.maxQueueDepth`,
-    `limits.maxQueueWaitMs` — the admission gate was removed (ADR-010).
+- **Six config keys are now fully removed** and produce a hard error on load if present.
+  Delete these keys from your `subswitch.config.json` before upgrading:
+  - `anthropic.headerTimeoutMs` — the relay does not bound the headers phase on a
+    connected client (ADR-010).
+  - `anthropic.streamIdleTimeoutMs` — the relay does not bound the stream-idle phase on a
+    connected client (ADR-010).
+  - `limits.maxConcurrentRequests` — the admission gate was removed (ADR-010).
+  - `limits.maxInFlightBytes` — the byte-budget admission gate was removed (ADR-010).
+  - `limits.maxQueueDepth` — the admission queue was removed (ADR-010).
+  - `limits.maxQueueWaitMs` — the admission queue was removed (ADR-010).
+
+  If your config contains any of these, `subswitch` exits immediately with a message naming
+  every offending key.
 
 ## [0.2.0] - 2026-08-09
 

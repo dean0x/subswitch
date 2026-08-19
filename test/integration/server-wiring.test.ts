@@ -430,27 +430,12 @@ describe("buildDeps — SEC-04 host-rejection gate (anthropic.baseUrl)", () => {
 // z.strictObject rejects unknown keys. If `subswitch.config.example.json` has
 // a key the schema does not know, this test fails — forcing the example and the
 // schema to stay in sync after every schema change.
-//
-// Additionally: the shipped example must never contain deprecated keys.  The
-// DEPRECATED_KEYS table has 6 entries (anthropic.headerTimeoutMs,
-// anthropic.streamIdleTimeoutMs, limits.maxConcurrentRequests,
-// limits.maxInFlightBytes, limits.maxQueueDepth, limits.maxQueueWaitMs).
-// limits.maxConcurrentRequests was NEVER present in the example; the other five
-// were deprecated when the admission gate was removed (ADR-010).
 // ---------------------------------------------------------------------------
 
 describe("loadConfig — example config schema sync (PF-010)", () => {
-  it("subswitch.config.example.json parses cleanly and advertises no deprecated keys", () => {
+  it("subswitch.config.example.json parses cleanly against the current schema", () => {
     const result = loadConfig({ configPath: join(process.cwd(), "subswitch.config.example.json") });
     assert.ok(result.ok, `example config must parse: ${!result.ok ? result.error.message : ""}`);
-    // No deprecated key should ever appear in the shipped example — users would
-    // see a 'config_key_deprecated' warn on startup and wonder why.
-    // MUTATION: add any DEPRECATED_KEYS path to the example file → test fails.
-    assert.deepEqual(
-      result.value.deprecatedKeys,
-      [],
-      `example config must not contain deprecated keys; found: ${JSON.stringify(result.value.deprecatedKeys.map((k) => k.path))}`,
-    );
     // Values spot-check: allowInsecureBaseUrl must be false in the example so
     // users don't accidentally opt in to credential forwarding.
     assert.strictEqual(result.value.config.anthropic.allowInsecureBaseUrl, false, "anthropic.allowInsecureBaseUrl must be false in example");

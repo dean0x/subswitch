@@ -264,7 +264,7 @@ describe("routing — oversized body returns request_too_large (L4)", () => {
     // maxBodyBytes: 64 bytes — tiny, so we can trigger the limit easily.
     const subswitch = await startSubswitch({
       anthropic: { baseUrl: anthropic.url },
-      limits: { maxBodyBytes: 64, maxInFlightBytes: 2 * 1024 * 1024 * 1024 },
+      limits: { maxBodyBytes: 64 },
     });
     cleanups.push(subswitch.close);
 
