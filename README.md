@@ -446,6 +446,7 @@ how the request was dispatched. Valid values:
 | `anthropic:ambiguous` | Fail-open forward: two providers claim the same family name; relay forwards to Anthropic and emits `ambiguous_model_name` warn |
 | `anthropic:fallback` | Fail-open forward: colon-qualified name whose prefix is not a registered provider; relay forwards to Anthropic and emits `unknown_provider_qualifier` warn |
 | `codex:{endpoint}:{model}` | Request routed to the Codex provider leg (e.g. `codex:messages:gpt-5.6-sol`, `codex:count_tokens:gpt-5.6-sol`) |
+| `host_rejected` | Request refused by the loopback `Host`/`Origin` gate before routing; relay returned a synthesized 403 |
 | `internal_error` | Unhandled exception during request handling; relay returned a synthesized 500 |
 
 The `anthropic:ambiguous` and `anthropic:fallback` values both carry the `anthropic` prefix so
@@ -460,6 +461,7 @@ fail-open forwards distinguishable from intended Anthropic routes in log queries
 | `client_disconnected` | `info` | path, route, model, latencyMs | Emitted instead of `request_complete` when the client closed the connection before any response headers were sent (e.g. cancelled upload). No `status` field — `res.statusCode` would be Node's 200 initialiser, not a real status. |
 | `ambiguous_model_name` | `warn` | model | Two providers claim the same family name. `model` carries the ambiguous name annotated with the provider list: `"name (p1, p2)"`. Request is forwarded to Anthropic (route `anthropic:ambiguous`). |
 | `unknown_provider_qualifier` | `warn` | model | Colon-qualified model name whose prefix is not a registered provider. `model` is the full as-requested name (e.g. `"kimee:k2"`). Request is forwarded to Anthropic (route `anthropic:fallback`). |
+| `host_rejected` | `warn` | path, errorCode, status | The [loopback `Host`/`Origin` gate](#loopback-hostorigin-gate) refused the request. `errorCode` is the reason (`missing_host`, `foreign_host`, `foreign_origin`) followed by the offending value, lower-cased, restricted to the authority charset and capped at 64 characters. The value appears here and nowhere else — it is never reflected into the response body. |
 
 ## `x-subswitch-synthesized`
 
@@ -534,6 +536,25 @@ commit conventions. By participating you agree to the
 subswitch is a loopback-only proxy that handles subscription credentials. Report
 vulnerabilities privately — see [SECURITY.md](SECURITY.md). Do not open a public
 issue for security reports.
+
+### Loopback `Host`/`Origin` gate
+
+subswitch listens on `127.0.0.1` and requires no authentication, so reachability is
+its only access control — and DNS rebinding defeats reachability. A web page served
+from `http://evil.test:4141` whose name resolves to `127.0.0.1` is *same-origin*
+with the proxy as far as the browser is concerned: it can send requests **and read
+the responses**, including Codex completions billed to your ChatGPT subscription.
+The one thing that page cannot change is the `Host` header, which names the domain
+the page was loaded from rather than the address it resolved to. So every request
+is checked before it is routed: the `Host` must name a loopback address
+(`localhost`, `::1`, or any `127.0.0.0/8` address in dotted-quad form), and an
+`Origin` header, when present, must be a loopback origin. Anything else is answered
+`403` with an Anthropic-shaped `permission_error` body, is never forwarded to an
+upstream, and never reaches provider credentials — `/__subswitch/*` included.
+Clients that talk to the proxy directly (Claude Code, `curl`) send a loopback
+`Host` and no `Origin` at all, so they are unaffected, and a page served from
+another loopback port keeps working — the gate stops the cross-site case, not
+local development.
 
 ## License
 

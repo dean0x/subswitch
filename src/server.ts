@@ -2,7 +2,7 @@ import http from "node:http";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, Server } from "node:http";
 import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
-import { applyInboundPolicy, SERVER_TUNING } from "./inbound-policy.js";
+import { applyInboundPolicy, hostGateVerdict, SERVER_TUNING } from "./inbound-policy.js";
 import { type Result, ok, err } from "./result.js";
 import { aliasesByProvider, enumerateDestinations, isLoopbackHost, providerConfigFor, type Config } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
@@ -400,6 +400,38 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     });
 
     const dispatch = async (): Promise<void> => {
+      // Loopback Host/Origin gate — first, for every path and every method.
+      //
+      // The relay binds 127.0.0.1 and requires no authentication, so reachability is
+      // its only access control, and DNS rebinding defeats reachability: a page on
+      // http://evil.test:4141 that resolves to 127.0.0.1 is same-origin with the relay
+      // in the browser's eyes and can read the response — including Codex output paid
+      // for with the operator's OAuth material.  The Host header is the one thing that
+      // page cannot change, so it is what the gate reads (hostGateVerdict, inbound-policy.ts).
+      //
+      // Placed above the /__subswitch/* branch deliberately: those endpoints are
+      // relay-owned, disclose its topology, and are exactly as reachable from a
+      // rebound page as /v1/messages is.  Placed above bufferBody so a rejected upload
+      // is never accumulated.
+      const gate = hostGateVerdict(req.headers);
+      if (gate.kind === "reject") {
+        route = "host_rejected";
+        // The rejected value is sanitised and capped by hostGateVerdict; the body
+        // carries a fixed message and never echoes it back to the caller.
+        logger.log("warn", "host_rejected", { path: pathname, errorCode: `${gate.reason} ${gate.observed}`, status: 403 });
+        // 403/permission_error: a status and type the origin itself emits (applies
+        // ADR-010 — a Host naming a domain this relay does not serve is a request the
+        // origin would never have received), rendered through the error chokepoint
+        // (applies ADR-008).
+        res.writeHead(403, synthesizedHeaders());
+        res.end(toAnthropicErrorBody("permission_error", gate.message));
+        // The upload may still be in flight.  Same reasoning as the 413 below:
+        // destroying the socket here makes the kernel send RST and the client may
+        // discard the 403 it was just sent.
+        drainRejectedUpload(req);
+        return;
+      }
+
       // /__subswitch/* namespace: handled locally, never forwarded upstream.
       if (pathname.startsWith("/__subswitch/")) {
         if (req.method === "GET" && pathname === "/__subswitch/health") {

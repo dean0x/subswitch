@@ -2,9 +2,16 @@
 //
 // This module owns one concern: how the relay treats a client connection BEFORE
 // (and independently of) any routing decision — the server-level timeout and
-// counter knobs, and the response taxonomy for the client errors those knobs and
-// Node's HTTP parser produce.  Nothing here knows about providers, models, or
-// upstreams; server.ts owns the composition root, dispatch, and body ingestion.
+// counter knobs, the response taxonomy for the client errors those knobs and
+// Node's HTTP parser produce, and the loopback Host/Origin gate that decides
+// whether a request is addressed to this relay at all.  Nothing here knows about
+// providers, models, or upstreams; server.ts owns the composition root, dispatch,
+// and body ingestion.
+//
+// The gate and the clientError handler are independent layers on the same
+// connection and never interact: clientError fires for requests Node's parser
+// could not turn into a request at all (no request listener, no ServerResponse),
+// while the gate runs inside dispatch on a fully parsed request.
 //
 // It is deliberately a SINGLE entry point.  PF-021's lesson is that the timeouts
 // and the response taxonomy for their expiry are one policy, not two: applying
@@ -20,6 +27,190 @@ import type http from "node:http";
 import type { Duplex } from "node:stream";
 import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, type AnthropicErrorType } from "./errors.js";
 import type { Logger } from "./logger.js";
+
+// ---------------------------------------------------------------------------
+// Loopback Host/Origin gate
+// ---------------------------------------------------------------------------
+
+/** Which check refused the request. Carried into the log, never into the body. */
+export type HostGateRejection = "missing_host" | "foreign_host" | "foreign_origin";
+
+export type HostGateVerdict =
+  | { readonly kind: "allow" }
+  | {
+      readonly kind: "reject";
+      readonly reason: HostGateRejection;
+      /** Fixed, client-visible text. Never contains any client-supplied value. */
+      readonly message: string;
+      /** The offending value, sanitised and capped — for the operator's log only. */
+      readonly observed: string;
+    };
+
+/**
+ * The client-visible message for each rejection.
+ *
+ * Fixed strings by construction: reflecting the rejected Host or Origin back into
+ * the body would hand an attacker an echo surface on an endpoint that answers
+ * before any authentication, and would put wire-controlled text through the one
+ * response the relay authors itself.  The value goes to the operator's log
+ * (sanitised) and nowhere else.
+ */
+const HOST_GATE_MESSAGES: Readonly<Record<HostGateRejection, string>> = {
+  missing_host: "request carries no Host header naming this relay's loopback listener",
+  foreign_host: "request Host is not a loopback address this relay answers for",
+  foreign_origin: "request Origin is not a loopback origin",
+};
+
+/**
+ * Characters an authority (or a serialized origin) can legitimately contain.
+ * Everything else — control characters, quotes, whitespace, `=` — becomes `?`
+ * before the value reaches a log line.
+ *
+ * The logger's own renderToken strips controls and quotes ambiguous tokens, so
+ * this is defence in depth; the point here is that the sanitised value is also
+ * safe for any other sink (a file, a dashboard, a grep pipeline).
+ */
+const UNSAFE_AUTHORITY_CHARS = /[^a-z0-9.:/[\]_-]/g;
+const OBSERVED_MAX_CHARS = 64;
+
+const sanitizeObserved = (raw: string): string =>
+  raw.slice(0, OBSERVED_MAX_CHARS).toLowerCase().replace(UNSAFE_AUTHORITY_CHARS, "?");
+
+/**
+ * `::ffff:127.0.0.1` is the IPv4-mapped IPv6 spelling of `127.0.0.1` — the same
+ * address, so it unwraps to the dotted quad and is judged by the same rule.
+ * Only a well-formed mapped IPv4 literal unwraps; `::ffff:evil.test` does not match.
+ */
+const IPV4_MAPPED = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/;
+const IPV4_DOTTED = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+/**
+ * True when `hostname` names the loopback interface — for a hostname taken off
+ * the wire.
+ *
+ * Deliberately NOT `config.ts`'s `isLoopbackHost`, and the difference is the whole
+ * point of this gate.  That predicate accepts any name beginning `127.` because it
+ * judges an OPERATOR-authored config URL, where a prefix test is a convenience.
+ * A Host header is ATTACKER-authored, and `127.0.0.1.evil.test` starts with `127.`
+ * — that is the exact shape of a public rebinding domain (nip.io, sslip.io, or any
+ * attacker-registered equivalent), so reusing the lenient predicate would have
+ * shipped a gate that admits precisely the attack it exists to stop.  Pinned by
+ * the "starts with a loopback literal" controls in both test files.
+ *
+ * Accepted: `localhost`, `::1`, and all of 127.0.0.0/8 in dotted-quad form.
+ * Everything else — `foo.localhost`, `localhost.`, `127.1`, `2130706433` — is
+ * refused.  Browsers normalise every one of those to a spelling in the accepted
+ * set before they reach the Host header, so refusing them costs no real client.
+ */
+const isLoopbackHostname = (hostname: string): boolean => {
+  if (hostname === "localhost" || hostname === "::1") return true;
+  const octets = IPV4_DOTTED.exec(hostname);
+  if (octets === null) return false;
+  if (octets[1] !== "127") return false;
+  return octets.slice(1).every((octet) => Number(octet) <= 255);
+};
+
+/**
+ * Extract the hostname from an HTTP authority (`Host` header value or the
+ * host part of an Origin), or undefined when it is not parseable as one.
+ *
+ * Returning undefined rather than a best guess is the load-bearing part: a naive
+ * `replace(/:\d+$/, "")` turns the bare IPv6 literal `::1` into `:`, and any
+ * "strip after the last colon" rule can be steered by a crafted value.  Anything
+ * this function cannot read confidently is refused by the caller.
+ */
+const hostnameFromAuthority = (authority: string): string | undefined => {
+  const value = authority.trim().toLowerCase();
+  if (value === "") return undefined;
+
+  if (value.startsWith("[")) {
+    const close = value.indexOf("]");
+    if (close < 0) return undefined;
+    const trailing = value.slice(close + 1);
+    if (trailing !== "" && !/^:\d+$/.test(trailing)) return undefined;
+    const inner = value.slice(1, close);
+    return inner === "" ? undefined : (IPV4_MAPPED.exec(inner)?.[1] ?? inner);
+  }
+
+  const firstColon = value.indexOf(":");
+  if (firstColon < 0) return value;
+  // Two or more colons without brackets is a bare IPv6 literal (RFC 3986 requires
+  // brackets when a port follows, so there is no port to strip).  Judge it whole:
+  // splitting on a colon here is what would turn `::1` into `:`.
+  if (value.indexOf(":", firstColon + 1) >= 0) return IPV4_MAPPED.exec(value)?.[1] ?? value;
+
+  const host = value.slice(0, firstColon);
+  const port = value.slice(firstColon + 1);
+  if (host === "" || !/^\d*$/.test(port)) return undefined;
+  return host;
+};
+
+/** True when a serialized origin (`http://localhost:3000`, `null`, …) is loopback. */
+const isLoopbackOrigin = (origin: string): boolean => {
+  let parsed: URL;
+  try {
+    parsed = new URL(origin.trim());
+  } catch {
+    // Includes the opaque origin `null` (sandboxed iframe, cross-origin redirect)
+    // and the ", "-joined value Node produces for a duplicated Origin header.
+    return false;
+  }
+  const hostname = hostnameFromAuthority(parsed.hostname);
+  return hostname !== undefined && isLoopbackHostname(hostname);
+};
+
+/**
+ * Decide whether a request is addressed to this relay, from its headers alone.
+ *
+ * subswitch binds 127.0.0.1 and requires no authentication, so reachability is its
+ * only access control — and DNS rebinding defeats reachability.  A page on
+ * `http://evil.test:4141` whose name resolves to 127.0.0.1 is SAME-ORIGIN with the
+ * relay as far as the browser is concerned: the fetch needs no credential the page
+ * cannot supply, and the response is fully readable.  `gpt-*` names route to the
+ * Codex leg, which attaches the operator's `~/.codex/auth.json`.  The one thing the
+ * attacker cannot change is the `Host` header the browser puts on the request: it
+ * names the domain the page was loaded from, never the address it resolved to.
+ *
+ * Two independent checks, Host first:
+ *  - Host must name a loopback address.  This is the control that stops rebinding.
+ *  - Origin, when present, must be a loopback origin.  Defence in depth: a browser
+ *    always sends Origin on a cross-origin request, while Claude Code and curl send
+ *    none, so an absent Origin is allowed and only a present, non-loopback one is
+ *    refused.  This catches plain cross-origin CSRF, where the response is opaque
+ *    to the attacker but the request still bills the operator's subscription.
+ *
+ * Rejecting is compatible with the relay's transparency rule (applies ADR-010): a
+ * request whose Host names a domain the relay does not serve is one the origin
+ * would never have received, so refusing it invents no behaviour the origin would
+ * have had to produce — and the refusal itself uses 403 / permission_error, a
+ * status and type Anthropic emits.
+ *
+ * Total and pure: headers in, verdict out — no I/O, no throw.
+ */
+export const hostGateVerdict = (headers: http.IncomingHttpHeaders): HostGateVerdict => {
+  // Node keeps the FIRST Host header when a request carries several (measured on
+  // Node 22), so a smuggled second one cannot override a rejected first.
+  const hostHeader = headers.host;
+  const reject = (reason: HostGateRejection, raw: string): HostGateVerdict => ({
+    kind: "reject",
+    reason,
+    message: HOST_GATE_MESSAGES[reason],
+    observed: sanitizeObserved(raw),
+  });
+
+  if (hostHeader === undefined || hostHeader.trim() === "") {
+    // Reachable on HTTP/1.0, which has no Host requirement; Node rejects an
+    // HTTP/1.1 request with no Host itself, before the request listener runs.
+    return reject("missing_host", hostHeader ?? "");
+  }
+  const hostname = hostnameFromAuthority(hostHeader);
+  if (hostname === undefined || !isLoopbackHostname(hostname)) return reject("foreign_host", hostHeader);
+
+  const origin = headers.origin;
+  if (origin !== undefined && origin !== "" && !isLoopbackOrigin(origin)) return reject("foreign_origin", origin);
+
+  return { kind: "allow" };
+};
 
 /**
  * HTTP server tuning knobs — applied once in createProxyServer.
