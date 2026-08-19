@@ -139,11 +139,6 @@ const defaultConfig = (): Config => {
   return result.value.config;
 };
 
-// The defaultConfig — non-vacuity guard describe block was deleted (avoids PF-011,
-// PF-012).  The guard compared defaultConfig() against the identical loadConfig()
-// call that defaultConfig() IS — a tautology that cannot fail.  The real protection
-// lives in test/unit/config.test.ts, which pins exact default values as literals.
-
 const allPassIO = (lines: string[]) => ({
   write: (line: string) => lines.push(line),
   readAuthFile: async (): Promise<string> =>

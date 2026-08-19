@@ -103,10 +103,6 @@ describe("routing — ambiguous family forwards to Anthropic (F7)", () => {
     }
   });
 
-  // Second F7 variant removed: it only re-checked status 200 and upstream reach, both
-  // of which are already asserted (with the stronger ambiguous_model_name warn check)
-  // in the test above.  Keeping a weaker duplicate adds no discriminating power and
-  // creates false confidence that the warn-log property has extra coverage (avoids PF-011).
 });
 
 // ---------------------------------------------------------------------------
@@ -240,6 +236,7 @@ describe("routing — unknown provider qualifier fails open to Anthropic (F6g / 
       // Must route to Codex, not to the anthropic upstream.
       assert.equal(codex.requests.length, 1, "codex: prefix must route to the Codex upstream");
       assert.equal(anthropic.requests.length, 0, "codex: prefix must NOT route to Anthropic");
+      assert.equal(response.status, 200, "codex: prefix routing must succeed with status 200");
       await response.body?.cancel();
     } finally {
       for (const cleanup of cleanups.reverse()) await cleanup();

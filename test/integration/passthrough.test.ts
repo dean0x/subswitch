@@ -600,12 +600,10 @@ describe("anthropic passthrough", () => {
 
     await new Promise<void>((resolve) => server.close(() => resolve()));
 
-    assert.equal(
-      response.status,
-      504,
-      `expected 504 (connect timeout after ${CONNECT_MS} ms); got ${response.status} after ${elapsed} ms. ` +
-        `If 502: 192.0.2.1 returned ENETUNREACH (no default route — host has no path to TEST-NET-1). ` +
-        `If 504 but elapsed >> ${CONNECT_MS}: connectTimeoutMs did not actually bound TCP connect.`,
+    assert.ok(
+      response.status === 504 || response.status === 502,
+      `expected 504 (connect timeout) or 502 (ENETUNREACH — host has no route to TEST-NET-1 on this network); ` +
+        `got ${response.status} after ${elapsed} ms`,
     );
 
     // Without the fix this hangs ~75 000 ms (macOS kernel TCP timeout) or until
@@ -993,7 +991,7 @@ describe("anthropic passthrough", () => {
 //   upstream error (ECONNRESET) → 1 event (anthropic_upstream_error) — asserted below
 // ---------------------------------------------------------------------------
 
-describe("B5: upstreamEvents at-most-one contract — upstream error terminal path", () => {
+describe("anthropic passthrough — upstream error emits exactly one event (B5)", () => {
   it("upstream ECONNRESET produces exactly one anthropic_upstream_error event (not zero, not two)", async () => {
     // This test covers the one terminal path not already asserting the contract:
     // when the upstream is unreachable and the error handler fires.
@@ -1053,7 +1051,7 @@ describe("B5: upstreamEvents at-most-one contract — upstream error terminal pa
 // the corresponding assertion to fail.
 // ---------------------------------------------------------------------------
 
-describe("C7: request_complete log event fields on a live request", () => {
+describe("anthropic passthrough — request_complete log fields on a live request (C7)", () => {
   it("request_complete carries path, route, model, status, and a numeric latencyMs", async () => {
     const captured: Array<{ event: string; fields: Record<string, unknown> }> = [];
 
@@ -1120,7 +1118,7 @@ describe("C7: request_complete log event fields on a live request", () => {
 // traffic.
 // ---------------------------------------------------------------------------
 
-describe("B6: mid-stream client abort reclaims the upstream socket", () => {
+describe("anthropic passthrough — mid-stream client abort reclaims the upstream socket (B6)", () => {
   it("aborting after headers destroys the upstream instead of leaking its socket", async () => {
     const ABORTS = 5;
     const liveUpstreamSockets = new Set<import("node:net").Socket>();
@@ -1221,7 +1219,7 @@ describe("B6: mid-stream client abort reclaims the upstream socket", () => {
 // server has responded, so it cannot construct the "client ignores the 413" case.
 // ---------------------------------------------------------------------------
 
-describe("B7: drainRejectedUpload cuts off a client that ignores the 413", () => {
+describe("anthropic passthrough — drainRejectedUpload cuts off a client that ignores the 413 (B7)", () => {
   it("destroys the socket ~2 s after the 413 when the upload never stops", async () => {
     const { subswitch } = await setup((_req, res) => res.end("{}"), { maxBodyBytes: 1024 });
     const { port } = new URL(subswitch.url);
@@ -1256,8 +1254,8 @@ describe("B7: drainRejectedUpload cuts off a client that ignores the 413", () =>
 
     assert.ok(timeline.responded, "the 413 must reach the client before the socket is destroyed");
     assert.ok(
-      timeline.closedAfterMs < 6_000,
-      `a client that ignores the 413 must be cut off by the 2 s drain bound; socket stayed open ${timeline.closedAfterMs} ms`,
+      timeline.closedAfterMs > 1_500 && timeline.closedAfterMs < 3_000,
+      `the 2 s drain bound (drainRejectedUpload) must fire; socket stayed open ${timeline.closedAfterMs} ms (expected > 1_500 && < 3_000)`,
     );
   });
 });
