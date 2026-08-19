@@ -123,6 +123,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Anthropic unchanged (ADR-010: the relay has no authority to adjudicate a registry
   conflict it did not cause).
 
+- **`doctor` `unknown_provider` finding downgraded from `fail` to `info`.** An agent
+  frontmatter naming a colon-qualified model with an unknown prefix (e.g. `myco:mymodel`)
+  previously produced a severity `fail` finding and caused `subswitch doctor` to exit 1.
+  Because the relay now forwards those requests to Anthropic unchanged, the finding is
+  informational — the agent works, just not via Codex.  `ambiguous` (two providers claim
+  the same family name) remains `fail`: that conflict is relay-derived and will 404 at the
+  origin regardless of which upstream handles it.
+
 - **413 now uses error type `request_too_large`** instead of `invalid_request_error`,
   matching the Anthropic API's own error taxonomy for oversized bodies.
 

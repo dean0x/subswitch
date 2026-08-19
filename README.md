@@ -447,8 +447,8 @@ This header is present on:
   by the relay (it translates OpenAI Responses format → Anthropic Messages
   format), so the header is present on both streaming and non-streaming codex
   responses, and on all codex-leg error responses.
-- **Relay management endpoints**: `/__subswitch/health`, `/__subswitch/404`,
-  and all other relay-internal routes.
+- **Relay management endpoints**: `/__subswitch/health` (200 OK), and any
+  unrecognized `/__subswitch/*` path (404 — fixed body, path not reflected).
 
 The header is **absent** on responses proxied verbatim from the Anthropic
 origin — including upstream errors (429 rate-limit, 529 overloaded, 500
