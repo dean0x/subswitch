@@ -1,6 +1,9 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import type { LogLevel } from "../../src/logger.js";
+import { createAnthropicForwarder } from "../../src/anthropic-passthrough.js";
 import { startSubswitch, startFakeUpstream, rawHttpRequest, type SubswitchInstance, type FakeUpstream } from "./fake-upstreams.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -574,5 +577,91 @@ describe("anthropic passthrough", () => {
       `expected exactly 1 anthropic_upstream_timeout event, got: ${JSON.stringify(timeoutEvents)}`,
     );
     assert.equal(timeoutEvents[0]!.level, "warn");
+  });
+
+  // ---------------------------------------------------------------------------
+  // connectTimeoutMs non-vacuity — proves the timer fires during TCP connect
+  // ---------------------------------------------------------------------------
+  //
+  // This test requires a host/port that accepts SYN packets but never sends
+  // SYN-ACK, keeping socket.connecting === true for the duration of the budget.
+  // 192.0.2.1 (TEST-NET-1, RFC 5737) is used: it is documentation-only, has no
+  // real host, and on systems with a default route the SYN is forwarded but
+  // never answered — a true blackhole.
+  //
+  // CI note: on isolated containers with NO default route the kernel returns
+  // ENETUNREACH immediately, producing a 502 error rather than a 504 timeout.
+  // If this test fails with 502 on CI, the host has no route to 192.0.2.1 and
+  // the blackhole approach is not viable there.
+  //
+  // Non-vacuity: without the fix (upstream.setTimeout instead of socket.setTimeout),
+  // this test hangs until the macOS/Linux kernel TCP timeout (~75 s) or the
+  // 30 s --test-timeout limit, confirming the test discriminates the two states.
+
+  it("connectTimeoutMs fires during TCP connect to a non-routable upstream (192.0.2.1)", async () => {
+    const CONNECT_MS = 250;
+    const captured: Array<{ level: LogLevel; event: string }> = [];
+
+    // Call createAnthropicForwarder directly so we can use plain HTTP without
+    // the config-layer HTTPS-or-loopback validation.  The agent test seam is
+    // not needed here — the real socket must connect (and fail) so socket.connecting
+    // is genuinely true during the budget window.
+    const forwarder = createAnthropicForwarder({
+      baseUrl: "http://192.0.2.1:80",
+      connectTimeoutMs: CONNECT_MS,
+      headerTimeoutMs: 30_000,
+      streamIdleTimeoutMs: 30_000,
+      maxUpstreamSockets: 1,
+      logger: {
+        log(level: LogLevel, event: string) {
+          captured.push({ level, event });
+        },
+      },
+    });
+
+    const server = http.createServer((req, res) => forwarder(req, res));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+
+    const start = Date.now();
+    const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "test" }),
+    });
+    const elapsed = Date.now() - start;
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    assert.equal(
+      response.status,
+      504,
+      `expected 504 (connect timeout after ${CONNECT_MS} ms); got ${response.status} after ${elapsed} ms. ` +
+        `If 502: 192.0.2.1 returned ENETUNREACH (no default route — host has no path to TEST-NET-1). ` +
+        `If 504 but elapsed >> ${CONNECT_MS}: connectTimeoutMs did not actually bound TCP connect.`,
+    );
+
+    // Without the fix this hangs ~75 000 ms (macOS kernel TCP timeout) or until
+    // the 30 s test timeout — well above the 4× upper bound below.
+    assert.ok(
+      elapsed < CONNECT_MS * 4,
+      `connect should time out at ~${CONNECT_MS} ms; elapsed ${elapsed} ms is too high — ` +
+        `connectTimeoutMs is not bounding TCP connect (unfixed code hangs ~75 000 ms or test-timeout)`,
+    );
+    assert.ok(
+      elapsed >= CONNECT_MS * 0.5,
+      `timer fired before the connectTimeoutMs budget (elapsed: ${elapsed} ms < ${CONNECT_MS * 0.5} ms)`,
+    );
+
+    // The settled de-dup guard must hold on the connect-timeout path too:
+    // exactly one anthropic_upstream_timeout warn, no anthropic_upstream_error.
+    const upstreamEvents = captured.filter((e) => e.event.startsWith("anthropic_upstream"));
+    assert.equal(
+      upstreamEvents.length,
+      1,
+      `expected exactly 1 upstream warn event; got: ${JSON.stringify(upstreamEvents)}`,
+    );
+    assert.equal(upstreamEvents[0]!.event, "anthropic_upstream_timeout");
+    assert.equal(upstreamEvents[0]!.level, "warn");
   });
 });

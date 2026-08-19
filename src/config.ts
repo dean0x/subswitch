@@ -61,8 +61,15 @@ const AnthropicSchema = z
       .default("https://api.anthropic.com"),
     /**
      * TCP connection-establishment timeout for the Anthropic leg (milliseconds).
-     * Bounds only the time to establish a new TCP connection; once connected (or when
-     * a keep-alive socket is reused), the timer is re-armed to `headerTimeoutMs`.
+     * Bounds only the time to establish a new TCP connection; the timer is armed
+     * directly on the socket (not via `ClientRequest.setTimeout`, which defers
+     * internally and cannot bound the connect phase).
+     * Once TCP connects the timer is re-armed to `headerTimeoutMs`.
+     *
+     * On HTTPS connections, `'connect'` fires after TCP establishment but before
+     * the TLS handshake, so TLS negotiation falls under `headerTimeoutMs`.
+     *
+     * Has no effect on reused pooled sockets (no connect phase).
      */
     connectTimeoutMs: z.number().int().positive().default(10_000),
     /**

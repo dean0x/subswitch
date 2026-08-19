@@ -55,8 +55,15 @@ export interface PassthroughOptions {
   readonly baseUrl: string;
   /**
    * Bounds TCP connection establishment only (milliseconds).
-   * Once connected (or for a reused pooled socket), the timer is re-armed to
-   * `headerTimeoutMs`.
+   * The timer is armed directly on the socket (not via `ClientRequest.setTimeout`,
+   * which defers internally and cannot bound the connect phase).  Once TCP connects,
+   * the timer is re-armed to `headerTimeoutMs`.
+   *
+   * On HTTPS connections, `'connect'` fires after TCP establishment but before the
+   * TLS handshake, so TLS negotiation falls under `headerTimeoutMs`, not this budget.
+   *
+   * For pooled/keep-alive sockets (no connect phase), `headerTimeoutMs` is armed
+   * immediately and this budget has no effect.
    */
   readonly connectTimeoutMs: number;
   /**
@@ -132,19 +139,47 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       },
     );
 
-    // `connectTimeoutMs` bounds TCP connection establishment only.  Once the
-    // socket connects (or when a pooled socket is reused — no 'connect' event
-    // fires on a reused socket), we re-arm the timer to `headerTimeoutMs`
-    // so that long upstream think-time before the first response byte is not
-    // mistakenly cut off at the short connect budget.
-    // The `else` branch handles the pooled/keep-alive case: `socket.connecting`
-    // is already false, so we must arm the header-wait budget immediately.
-    upstream.setTimeout(options.connectTimeoutMs);
+    // Timer arming — three-budget design:
+    //
+    // 1. connectTimeoutMs — bounds TCP establishment, armed DIRECTLY on the
+    //    socket (not via upstream.setTimeout).  ClientRequest.setTimeout()
+    //    defers internally via its own 'connect' listener, so it would fire
+    //    only after connect — in the same tick as the headerTimeoutMs rearm,
+    //    leaving connectTimeoutMs never actually in force.
+    //
+    //    Node v22's internal socket-timeout handler (onTimeout) skips
+    //    req.emit('timeout') when socket.connecting is true, so we must
+    //    propagate the timeout manually via upstream.emit('timeout').
+    //    On HTTPS, 'connect' fires after TCP but BEFORE the TLS handshake, so
+    //    TLS negotiation falls under headerTimeoutMs, not connectTimeoutMs.
+    //
+    // 2. headerTimeoutMs — armed on 'connect' (or immediately for a pooled
+    //    socket where no 'connect' event will ever fire).  Bounds the window
+    //    from TCP-connected to first response byte.  upstream.setTimeout() in
+    //    the connected state propagates normally via Node's internal handler.
+    //
+    // 3. streamIdleTimeoutMs — armed in the response callback once headers
+    //    arrive; reset by every received chunk.
     upstream.on("socket", (socket) => {
       socket.setNoDelay(true);
-      const rearm = () => upstream.setTimeout(options.headerTimeoutMs);
-      if (socket.connecting) socket.once("connect", rearm);
-      else rearm(); // pooled socket — no 'connect' event will ever fire
+      if (socket.connecting) {
+        socket.setTimeout(options.connectTimeoutMs);
+        const onConnectTimeout = () => {
+          socket.removeListener("connect", onConnect);
+          socket.setTimeout(0); // disarm before manual propagation
+          upstream.emit("timeout"); // triggers our handler → 504
+        };
+        const onConnect = () => {
+          socket.removeListener("timeout", onConnectTimeout);
+          socket.setTimeout(0); // cancel connect budget
+          upstream.setTimeout(options.headerTimeoutMs);
+        };
+        socket.once("timeout", onConnectTimeout);
+        socket.once("connect", onConnect);
+      } else {
+        // Pooled/keep-alive socket — no connect phase; arm header budget immediately.
+        upstream.setTimeout(options.headerTimeoutMs);
+      }
     });
 
     // Request direction: build a Map from the filtered rawHeaders so that
