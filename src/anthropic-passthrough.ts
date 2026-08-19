@@ -81,7 +81,7 @@ export interface PassthroughOptions {
    */
   readonly connectTimeoutMs: number;
   readonly logger: Logger;
-  /** Maximum sockets in the keep-alive pool. Config key: limits.maxUpstreamSockets. */
+  /** Maximum sockets in the keep-alive pool. Config key: anthropic.maxUpstreamSockets. */
   readonly maxUpstreamSockets: number;
   /**
    * Test seam — provide a pre-built Agent to override the auto-created one.

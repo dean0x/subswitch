@@ -314,6 +314,16 @@ your config file to silence the warning.
 | `limits.maxQueueDepth` | Removed — the admission queue was deleted |
 | `limits.maxQueueWaitMs` | Removed — the admission queue was deleted |
 
+> **Behavior when an upstream connects but never responds**: removing `headerTimeoutMs`
+> and `streamIdleTimeoutMs` means the Anthropic leg has no relay-side timer on the
+> response phase. If an upstream accepts the TCP connection and request body but then
+> goes silent, the client will receive no response until its own timeout fires
+> (measured: `STATUS=000 TOTAL=20s curl_rc=28` with a 20 s curl timeout). This is
+> deliberate per ADR-010: a relay that invents a 504 for a wedged origin produces a
+> status the origin never emitted. A direct connection to api.anthropic.com would hang
+> the same way. `server.requestTimeout` (600 s, above) bounds only request _receipt_,
+> not the response, so nothing relay-side fires in this case.
+
 ### Server connection tuning
 
 subswitch configures its inbound `http.Server` with the following fixed values:

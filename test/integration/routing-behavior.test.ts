@@ -170,8 +170,10 @@ describe("routing — unknown provider qualifier fails open to Anthropic (F6g / 
         body: JSON.stringify({ model: "kimee:k2", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
       });
 
-      // Must NOT return 400 — the relay has no authority to reject names it doesn't recognise.
-      assert.notEqual(response.status, 400, "unknown provider qualifier must NOT return 400 (fail-open)");
+      // Must return 200 — the relay has no authority to reject names it doesn't recognise.
+      // Non-vacuity: assert.equal(200) fails on any other status, including 400 and 500,
+      // so a broken relay that returns 400 or 504 turns this red.
+      assert.equal(response.status, 200, "unknown provider qualifier must be forwarded with 200 (fail-open)");
 
       // Must reach Anthropic (fail-open routing).
       assert.equal(anthropic.requests.length, 1, "request must be forwarded to Anthropic upstream");
@@ -438,7 +440,7 @@ describe("routing — table built once via ownKeys trap (P2)", () => {
 // the literal motivating name has end-to-end coverage.
 //
 // Non-vacuity: if the relay returned 400 for unknown qualifiers, this test would
-// fail at assert.notEqual(response.status, 400).
+// fail at assert.equal(response.status, 200).
 // ---------------------------------------------------------------------------
 
 describe("routing — 'claude-sonnet-9:preview' routes to Anthropic via the real registry (L1-real)", () => {

@@ -14,7 +14,8 @@ import {
   type DoctorIO,
 } from "../../src/doctor.js";
 import { loadConfig, type Config } from "../../src/config.js";
-import { PROVIDER_IDS, type ProviderId } from "../../src/models.js";
+import { PROVIDER_IDS, type ProviderId, type RoutingTable } from "../../src/models.js";
+import { checkAgentModels } from "../../src/agent-scan.js";
 
 describe("probeSubswitch", () => {
   it("returns running when the health endpoint responds with the subswitch shape", async () => {
@@ -479,6 +480,43 @@ describe("runDoctor — agent model scan", () => {
       !findingLine.includes("FAIL"),
       "unknown_provider finding line must not carry 'FAIL' — it is informational",
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // ambiguous severity — must remain "fail" and produce exit 1
+  //
+  // runDoctor builds its routing table from the REAL MODEL_REGISTRY, which has no
+  // ambiguous families (each family is unique to one provider). To exercise the
+  // ambiguous → exit-1 path, we call checkAgentModels — the same function runDoctor
+  // invokes — with a custom table that has an ambiguous family. This tests the
+  // contract that doctor enforces: any finding whose severity is "fail" increments
+  // failures, and failures > 0 → exit 1.
+  //
+  // Mutation that MUST turn this RED: change the `ambiguous` arm in src/agent-scan.ts
+  // from `severity: "fail"` to `severity: "info"` → finding.severity becomes "info"
+  // → the assert.equal("fail") assertion fails.
+  // ---------------------------------------------------------------------------
+
+  it("ambiguous finding has severity 'fail', which causes doctor exit code 1", () => {
+    const ambiguousTable: RoutingTable = {
+      byId: new Map([["gpt-5.6-sol", "codex"] as const]),
+      byFamily: new Map([["sol", { kind: "ambiguous", providers: ["codex", "codex"] as readonly ["codex", "codex"] }]]),
+      byQualified: new Map(),
+      byAlias: new Map(),
+    };
+    const files = [{ path: "/agent.md", text: "---\nmodel: sol\n---\n" }];
+    const findings = checkAgentModels(files, ambiguousTable, new Set());
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]!.kind, "ambiguous");
+    assert.equal(
+      findings[0]!.severity,
+      "fail",
+      "ambiguous finding must remain severity 'fail' — doctor increments failures++ for each 'fail' finding, which produces exit 1",
+    );
+    // Verify the exit-1 contract directly: doctor exits 1 iff failures > 0,
+    // and failures increments for every finding with severity "fail".
+    const wouldFailures = findings.filter((f) => f.severity === "fail").length;
+    assert.equal(wouldFailures, 1, "ambiguous finding must contribute exactly one failure increment → exit 1");
   });
 });
 

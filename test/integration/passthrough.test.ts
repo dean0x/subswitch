@@ -750,7 +750,9 @@ describe("anthropic passthrough", () => {
 
     assert.equal(response.status, 200);
     // Without fix: "upstream-injected" (forwarded verbatim).
-    // With fix: null (stripped by filterRawHeaders adding it to HOP_BY_HOP).
+    // With fix: null (stripped by RESPONSE_STRIP, the response-only set that extends
+    // HOP_BY_HOP with x-subswitch-synthesized — split out in item 7 so the synthesized
+    // marker is only stripped from responses, never from relay→upstream requests).
     assert.equal(
       response.headers.get("x-subswitch-synthesized"),
       null,

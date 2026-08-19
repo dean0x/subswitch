@@ -140,6 +140,7 @@ describe("checkAgentModels", () => {
     const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 1);
     assert.equal(findings[0]!.kind, "unresolvable");
+    assert.equal(findings[0]!.severity, "fail", "unresolvable finding must have severity 'fail' (drives doctor exit 1)");
     assert.equal(findings[0]!.model, "my-unknown-model");
     assert.equal(findings[0]!.file, "/agent.md");
   });
@@ -156,6 +157,7 @@ describe("checkAgentModels", () => {
     const findings = checkAgentModels(files, ambiguousTable, configuredProviders);
     assert.equal(findings.length, 1);
     assert.equal(findings[0]!.kind, "ambiguous");
+    assert.equal(findings[0]!.severity, "fail", "ambiguous finding must have severity 'fail' — must not be demoted to 'info' (ambiguous is a subswitch-derived routing conflict, not an informational note)");
     assert.ok(Array.isArray(findings[0]!.providers), "ambiguous finding must include providers list");
   });
 
