@@ -42,10 +42,16 @@ export type AgentFinding =
   /**
    * Looks like "provider:id" but the prefix is not in PROVIDER_IDS.
    *
-   * Severity is "info", not "fail" (ADR-010): an unknown qualifier does not make the
-   * request fail — subswitch forwards it to Anthropic unchanged, where it succeeds or
-   * fails on Anthropic's own terms. By contrast `ambiguous` stays "fail" because an
-   * ambiguous name is a subswitch-derived routing conflict that WILL 404 at the origin.
+   * Severity is "info", not "fail" (avoids PF-006): an unknown qualifier is a possibly
+   * legitimate future model name (e.g. a namespaced or variant id the origin supports
+   * that subswitch has not yet registered). The relay forwards to Anthropic unchanged;
+   * the request succeeds or fails on Anthropic's own terms. Doctor warnings are the
+   * right signal — fail would exit 1 in CI for something that works fine at runtime.
+   *
+   * By contrast `ambiguous` stays "fail": two providers claiming the same family name
+   * is a subswitch-derived config defect (an operator-fixable collision in aliases or
+   * provider registration), not a legitimate future name, and the resulting forward
+   * would be ambiguously routed regardless of what the origin does.
    */
   | (AgentFindingBase & {
       readonly kind: "unknown_provider";
