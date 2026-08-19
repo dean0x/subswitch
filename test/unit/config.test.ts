@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   loadConfig,
   detectLegacyConfigKeys,
+  renderLegacyKeyEntry,
   detectUnknownProviderKeys,
   aliasesByProvider,
   enumerateDestinations,
@@ -237,15 +238,15 @@ describe("loadConfig", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Removed keys (hard-error via LEGACY_KEY_MOVES — BREAKING in 0.2.1)
+  // Removed keys (hard-error via LEGACY_KEY_ENTRIES — BREAKING in 0.3.0)
   // -------------------------------------------------------------------------
 
-  it("BREAKING 0.2.1: limits.maxConcurrentRequests is now rejected with a legible error naming the key", () => {
-    // The admission gate was removed (ADR-010). The key was soft-deprecated in 0.2.1's
-    // initial release; the owner reversed that decision — it is now a hard error.
-    // MUTATION PROOF: removing the entry from LEGACY_KEY_MOVES causes this test to fail
-    // because the config would either parse clean (if the schema also lacks it) or
-    // produce a generic Zod "unrecognized key" message without the 0.2.1 removal context.
+  it("BREAKING 0.3.0: limits.maxConcurrentRequests is now rejected with a legible error naming the key", () => {
+    // The admission gate was removed (ADR-010), so a v0.2.0 config carrying the key
+    // must be rejected with an instruction rather than silently ignored.
+    // MUTATION PROOF: removing the entry from LEGACY_KEY_ENTRIES causes this test to fail
+    // because the config would produce a generic Zod "unrecognized key" message without
+    // the 0.3.0 removal context.
     // MUTATION PROOF: changing the renderer to reuse "move X to Y" for removed keys would
     // produce "move `limits.maxConcurrentRequests` to `(removed…)`" — the delete-phrasing
     // assertions below would both fail.
@@ -257,42 +258,53 @@ describe("loadConfig", () => {
     assert.equal(result.error.kind, "translate");
     // Phrasing: delete `<key>` — <reason>
     assert.match(result.error.message, /delete `limits\.maxConcurrentRequests`/, "error must use delete-phrasing for removed keys");
-    assert.match(result.error.message, /removed in 0\.2\.1 \(ADR-010\)/, "error must state the version and ADR");
+    assert.match(result.error.message, /removed in 0\.3\.0 \(ADR-010\)/, "error must state the version and ADR");
     assert.ok(!result.error.message.includes("move `limits.maxConcurrentRequests`"), "must not use move-phrasing for a removed key");
   });
 
-  it("BREAKING 0.2.1: a config with all 6 removed keys is rejected and every key is named with delete-phrasing", () => {
-    // MUTATION PROOF: re-adding any of the six as .optional() in the schema AND removing
-    // it from LEGACY_KEY_MOVES would cause the config to parse successfully → test fails.
-    // MUTATION PROOF: reverting to the "move X to Y" renderer would produce "move `anthropic.headerTimeoutMs`
-    // to `(removed…)`" — the delete-phrasing assertion and the no-move assertion both fail.
+  it("BREAKING 0.3.0: a config with both v0.2.0-era removals is rejected and each key is named with delete-phrasing", () => {
+    // Exactly two keys survived into a released config and were removed in 0.3.0.
+    // MUTATION PROOF: re-adding either as .optional() in the schema AND removing it from
+    // LEGACY_KEY_ENTRIES would cause the config to parse successfully → test fails.
+    // MUTATION PROOF: reverting to the "move X to Y" renderer would produce
+    // "move `anthropic.streamIdleTimeoutMs` to `(removed…)`" — the delete-phrasing
+    // assertion and the no-move assertion both fail.
     const result = loadConfig({
       configPath: "x",
       readFile: () =>
         JSON.stringify({
-          anthropic: { headerTimeoutMs: 660_000, streamIdleTimeoutMs: 30_000 },
-          limits: {
-            maxConcurrentRequests: 32,
-            maxInFlightBytes: 1_000_000,
-            maxQueueDepth: 100,
-            maxQueueWaitMs: 5_000,
-          },
+          anthropic: { streamIdleTimeoutMs: 30_000 },
+          limits: { maxConcurrentRequests: 32 },
         }),
     });
     assert.ok(!result.ok, "config with removed keys must be rejected");
     assert.equal(result.error.kind, "translate");
     // Every key must be named using delete-phrasing, not move-phrasing.
     const msg = result.error.message;
-    assert.ok(msg.includes("delete `anthropic.headerTimeoutMs`"), "must name anthropic.headerTimeoutMs with delete-phrasing");
     assert.ok(msg.includes("delete `anthropic.streamIdleTimeoutMs`"), "must name anthropic.streamIdleTimeoutMs with delete-phrasing");
     assert.ok(msg.includes("delete `limits.maxConcurrentRequests`"), "must name limits.maxConcurrentRequests with delete-phrasing");
-    assert.ok(msg.includes("delete `limits.maxInFlightBytes`"), "must name limits.maxInFlightBytes with delete-phrasing");
-    assert.ok(msg.includes("delete `limits.maxQueueDepth`"), "must name limits.maxQueueDepth with delete-phrasing");
-    assert.ok(msg.includes("delete `limits.maxQueueWaitMs`"), "must name limits.maxQueueWaitMs with delete-phrasing");
     assert.ok(!msg.includes("move `anthropic."), "must not use move-phrasing for removed keys");
   });
 
-  it("BREAKING 0.2.1: a config with both a moved key and a removed key produces one error with correct phrasing for each", () => {
+  it("a key that never shipped in a release is rejected by strict parsing, not by the legacy-key table", () => {
+    // `limits.maxInFlightBytes` was introduced and removed inside a single unreleased
+    // branch, so no config that has ever existed can carry it. A legacy-table row for it
+    // would be unreachable guidance; `LimitsSchema` is a z.strictObject, so the key is
+    // still a hard load error — with Zod's unrecognized-key message. (avoids PF-020: key
+    // REMOVAL is the breaking direction, and strict parsing already covers it.)
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ limits: { maxInFlightBytes: 1_000_000 } }),
+    });
+    assert.ok(!result.ok, "an unknown limits key must still fail to load");
+    assert.equal(result.error.kind, "translate");
+    const msg = result.error.message;
+    assert.match(msg, /invalid config: limits: Unrecognized key: "maxInFlightBytes"/, "must surface Zod's unrecognized-key message");
+    assert.ok(!msg.includes("delete `limits.maxInFlightBytes`"), "must not carry a legacy-table row for a never-released key");
+    assert.ok(!msg.includes("unsupported config keys"), "must not reach the legacy-key gate at all");
+  });
+
+  it("BREAKING 0.3.0: a config with both a moved key and a removed key produces one error with correct phrasing for each", () => {
     // This test exercises the single-pass detection: both a genuine move and a hard removal
     // appear in one config, and the renderer must phrase each correctly.
     // MUTATION PROOF: a renderer that treats all entries as "moved" would produce
@@ -313,9 +325,9 @@ describe("loadConfig", () => {
     // Moved key must use move-phrasing
     assert.match(msg, /move `limits\.streamIdleTimeoutMs` to `providers\.codex\.streamIdleTimeoutMs`/, "moved key must use move-phrasing");
     // Removed key must use delete-phrasing
-    assert.match(msg, /delete `limits\.maxConcurrentRequests` — the admission gate was removed in 0\.2\.1 \(ADR-010\)/, "removed key must use delete-phrasing");
+    assert.match(msg, /delete `limits\.maxConcurrentRequests` — the admission gate was removed in 0\.3\.0 \(ADR-010\)/, "removed key must use delete-phrasing");
     // Both appear in a single error message
-    assert.ok(msg.includes("outdated config layout"), "single error must use the standard outdated-config prefix");
+    assert.ok(msg.includes("unsupported config keys"), "single error must use the standard unsupported-keys prefix");
   });
 
   it("anthropic.maxUpstreamSockets defaults to 256 (raised to exceed peak concurrency)", () => {
@@ -468,12 +480,23 @@ describe("detectLegacyConfigKeys", () => {
     assert.ok(found.some((f) => f.path === "limits.maxSseEventBytes"));
   });
 
-  it("detects 'codex.models' (deleted — use registry)", () => {
+  it("detects 'codex.models' (removed — the routable set comes from the registry)", () => {
     const legacy = { codex: { models: ["gpt-5.5"] } };
     const found = detectLegacyConfigKeys(legacy);
     // Both 'codex' and 'codex.models' trigger
-    assert.ok(found.some((f) => f.path === "codex.models"), "codex.models must be detected as a deleted key");
-    assert.ok(found.some((f) => f.kind === "removed"), "codex.models must be flagged as a removed key");
+    const entry = found.find((f) => f.path === "codex.models");
+    assert.ok(entry !== undefined, "codex.models must be detected as a removed key");
+    assert.equal(entry.kind, "removed", "codex.models must be flagged as a removed key");
+    // Same reason shape as every other removal: what changed, then version and ADR.
+    // MUTATION PROOF: the pre-0.3.0 hand-appended entry carried no version and no ADR.
+    assert.ok(entry.kind === "removed" && /removed in 0\.2\.0 \(ADR-006\)/.test(entry.reason), "reason must state the version and ADR like its siblings");
+  });
+
+  it("codex.models is rendered last so the operator instruction order is stable", () => {
+    // The 0.2.0 CHANGELOG quotes this message verbatim; codex.models is its final clause.
+    const found = detectLegacyConfigKeys({ codex: { models: ["gpt-5.5"] }, reasoningCache: { enabled: true } });
+    assert.ok(found.length >= 2);
+    assert.equal(found[found.length - 1]?.path, "codex.models", "codex.models must remain the last entry");
   });
 
   it("loadConfig rejects a file with any legacy key — silently reverting settings is the worst failure mode", () => {
@@ -484,7 +507,7 @@ describe("detectLegacyConfigKeys", () => {
     });
     assert.ok(!result.ok, "legacy config must be rejected");
     assert.equal(result.error.kind, "translate");
-    assert.ok(result.error.message.includes("outdated config layout"), "error must name the problem");
+    assert.ok(result.error.message.includes("unsupported config keys"), "error must name the problem");
     assert.ok(result.error.message.includes("codex"), "error must name the detected key");
   });
 
@@ -512,6 +535,33 @@ describe("detectLegacyConfigKeys", () => {
     });
     // Must fail — not silently succeed with empty aliases
     assert.ok(!result.ok, "pre-restructure config must be rejected, not silently stripped to defaults");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderLegacyKeyEntry — one renderer for both gates (loadConfig and init)
+//
+// The instruction text used to be an inline ternary written verbatim in config.ts
+// and init.ts. Two copies drift, and a ternary has no exhaustive arm: a third
+// `kind` compiled clean and rendered as a *delete* instruction in both places.
+// ---------------------------------------------------------------------------
+
+describe("renderLegacyKeyEntry", () => {
+  it("renders a moved entry as a move instruction naming the destination", () => {
+    const rendered = renderLegacyKeyEntry({ kind: "moved", path: "limits.requestTimeoutMs", to: "providers.codex.requestTimeoutMs" });
+    assert.equal(rendered, "move `limits.requestTimeoutMs` to `providers.codex.requestTimeoutMs`");
+  });
+
+  it("renders a removed entry as a delete instruction carrying the reason", () => {
+    const rendered = renderLegacyKeyEntry({ kind: "removed", path: "limits.maxConcurrentRequests", reason: "the admission gate was removed in 0.3.0 (ADR-010)" });
+    assert.equal(rendered, "delete `limits.maxConcurrentRequests` — the admission gate was removed in 0.3.0 (ADR-010)");
+  });
+
+  it("is the renderer the loadConfig gate uses, so the table and the error text cannot drift", () => {
+    const expected = renderLegacyKeyEntry({ kind: "removed", path: "limits.maxConcurrentRequests", reason: "the admission gate was removed in 0.3.0 (ADR-010)" });
+    const loaded = loadConfig({ configPath: "x", readFile: () => JSON.stringify({ limits: { maxConcurrentRequests: 32 } }) });
+    assert.ok(!loaded.ok);
+    assert.ok(loaded.error.message.includes(expected), "loadConfig must render through the shared renderer");
   });
 });
 

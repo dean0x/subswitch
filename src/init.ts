@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
-import { DEFAULT_PORT, DEFAULT_CODEX_AUTH_FILE, expandHome, detectLegacyConfigKeys } from "./config.js";
+import { DEFAULT_PORT, DEFAULT_CODEX_AUTH_FILE, expandHome, detectLegacyConfigKeys, renderLegacyKeyEntry } from "./config.js";
 import { isPlainObject } from "./plain-object.js";
 
 // ---------------------------------------------------------------------------
@@ -255,14 +255,8 @@ export const planConfigWrite = (
     return err({
       kind: "legacy_config",
       message:
-        `outdated config layout in ${path} — ` +
-        legacyKeys
-          .map((l) =>
-            l.kind === "moved"
-              ? `move \`${l.path}\` to \`${l.to}\``
-              : `delete \`${l.path}\` — ${l.reason}`,
-          )
-          .join("; ") +
+        `unsupported config keys in ${path} — ` +
+        legacyKeys.map(renderLegacyKeyEntry).join("; ") +
         `. Edit the file to match subswitch.config.example.json, or delete it and run init again.`,
     });
   }

@@ -496,6 +496,30 @@ type LegacyKeyRemoval = { readonly kind: "removed"; readonly path: string; reado
 export type LegacyKeyEntry = LegacyKeyMove | LegacyKeyRemoval;
 
 /**
+ * Render one legacy-key entry as a single operator instruction.
+ *
+ * Both gates that reject a legacy config — `loadConfig` and init's pre-write check
+ * in init.ts — render through here, so the instruction a user gets from `subswitch
+ * init` is byte-identical to the one `subswitch serve` gave them. The exhaustive
+ * `never` arm makes a new `kind` a compile error instead of a silent fallthrough to
+ * a "delete" instruction.
+ */
+export const renderLegacyKeyEntry = (entry: LegacyKeyEntry): string => {
+  switch (entry.kind) {
+    case "moved":
+      return `move \`${entry.path}\` to \`${entry.to}\``;
+    case "removed":
+      return `delete \`${entry.path}\` — ${entry.reason}`;
+    default: {
+      // Exhaustive check — compiler enforces that all LegacyKeyEntry arms are handled.
+      const _exhaustive: never = entry;
+      void _exhaustive;
+      return "";
+    }
+  }
+};
+
+/**
  * Keys that moved when the config was restructured to `providers.<id>.*`,
  * plus keys that were removed outright. Zod's default object behaviour STRIPS
  * unknown keys, so without this check a pre-restructure config parses
@@ -506,7 +530,7 @@ export type LegacyKeyEntry = LegacyKeyMove | LegacyKeyRemoval;
  * Silent reversion is the worst failure mode available here, so a legacy key is
  * a hard error naming its replacement (or removal reason) rather than a warning.
  */
-const LEGACY_KEY_MOVES: readonly LegacyKeyEntry[] = [
+const LEGACY_KEY_ENTRIES: readonly LegacyKeyEntry[] = [
   { kind: "moved", path: "codex", to: "providers.codex" },
   { kind: "moved", path: "reasoningCache", to: "providers.codex.reasoningCache" },
   { kind: "moved", path: "limits.connectTimeoutMs", to: "anthropic.connectTimeoutMs" },
@@ -514,13 +538,14 @@ const LEGACY_KEY_MOVES: readonly LegacyKeyEntry[] = [
   { kind: "moved", path: "limits.streamIdleTimeoutMs", to: "providers.codex.streamIdleTimeoutMs" },
   { kind: "moved", path: "limits.requestTimeoutMs", to: "providers.codex.requestTimeoutMs" },
   { kind: "moved", path: "limits.maxSseEventBytes", to: "providers.codex.maxSseEventBytes" },
-  // Six keys removed in 0.2.1 — hard-error so the operator knows to delete them.
-  { kind: "removed", path: "anthropic.headerTimeoutMs", reason: "the relay does not bound the headers phase on a connected client, removed in 0.2.1 (ADR-010)" },
-  { kind: "removed", path: "anthropic.streamIdleTimeoutMs", reason: "the relay does not bound the stream-idle phase on a connected client, removed in 0.2.1 (ADR-010)" },
-  { kind: "removed", path: "limits.maxConcurrentRequests", reason: "the admission gate was removed in 0.2.1 (ADR-010)" },
-  { kind: "removed", path: "limits.maxInFlightBytes", reason: "the byte-budget admission gate was removed in 0.2.1 (ADR-010)" },
-  { kind: "removed", path: "limits.maxQueueDepth", reason: "the admission queue was removed in 0.2.1 (ADR-010)" },
-  { kind: "removed", path: "limits.maxQueueWaitMs", reason: "the admission queue was removed in 0.2.1 (ADR-010)" },
+  // Removed in 0.3.0 — hard-error so an operator upgrading from 0.2.0 knows to delete them.
+  // A row earns its place here only if a RELEASED config could carry the key; anything
+  // else is caught by strict parsing with Zod's unrecognized-key message.
+  { kind: "removed", path: "anthropic.streamIdleTimeoutMs", reason: "the relay does not bound the stream-idle phase on a connected client, removed in 0.3.0 (ADR-010)" },
+  { kind: "removed", path: "limits.maxConcurrentRequests", reason: "the admission gate was removed in 0.3.0 (ADR-010)" },
+  // Kept last: the message this table renders is quoted verbatim in the 0.2.0 changelog,
+  // and codex.models is its closing clause.
+  { kind: "removed", path: "codex.models", reason: "the routable set now comes from the built-in model registry (use providers.codex.aliases for custom names), removed in 0.2.0 (ADR-006)" },
 ];
 
 /** Read a dotted path using own-property checks only (prototype-pollution safe). */
@@ -544,16 +569,8 @@ const hasOwnPath = (root: Record<string, unknown>, path: string): boolean => {
 export const detectLegacyConfigKeys = (raw: unknown): readonly LegacyKeyEntry[] => {
   if (!isPlainObject(raw)) return [];
   const found: LegacyKeyEntry[] = [];
-  for (const entry of LEGACY_KEY_MOVES) {
+  for (const entry of LEGACY_KEY_ENTRIES) {
     if (hasOwnPath(raw, entry.path)) found.push(entry);
-  }
-  // `codex.models` was deleted outright — the routable set now comes from the registry.
-  if (hasOwnPath(raw, "codex.models")) {
-    found.push({
-      kind: "removed",
-      path: "codex.models",
-      reason: "routing now follows the built-in model registry; use providers.codex.aliases for custom names",
-    });
   }
   return found;
 };
@@ -752,14 +769,8 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     return err({
       kind: "translate",
       message:
-        `outdated config layout in ${resolvedPath} — ` +
-        legacy
-          .map((l) =>
-            l.kind === "moved"
-              ? `move \`${l.path}\` to \`${l.to}\``
-              : `delete \`${l.path}\` — ${l.reason}`,
-          )
-          .join("; ") +
+        `unsupported config keys in ${resolvedPath} — ` +
+        legacy.map(renderLegacyKeyEntry).join("; ") +
         `. Edit the file to match subswitch.config.example.json, or delete it to run on defaults.`,
     });
   }
