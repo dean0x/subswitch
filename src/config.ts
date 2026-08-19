@@ -481,30 +481,46 @@ export const expandHome = (path: string): string =>
 // ---------------------------------------------------------------------------
 
 /**
+ * A key that MOVED to a new dotted path — tell the operator where it went.
+ * Rendered as: move `<path>` to `<to>`
+ */
+type LegacyKeyMove = { readonly kind: "moved"; readonly path: string; readonly to: string };
+
+/**
+ * A key that was REMOVED entirely — tell the operator why and which version.
+ * Rendered as: delete `<path>` — <reason>
+ */
+type LegacyKeyRemoval = { readonly kind: "removed"; readonly path: string; readonly reason: string };
+
+/** Discriminated union for an entry in the legacy-key detection table. */
+export type LegacyKeyEntry = LegacyKeyMove | LegacyKeyRemoval;
+
+/**
  * Keys that moved when the config was restructured to `providers.<id>.*`,
- * mapped to their new location. Zod's default object behaviour STRIPS unknown
- * keys, so without this check a pre-restructure config parses successfully and
- * every setting in it is silently discarded — custom aliases vanish, custom
- * baseUrl/authFile/userAgent revert to defaults, and nothing is reported.
+ * plus keys that were removed outright. Zod's default object behaviour STRIPS
+ * unknown keys, so without this check a pre-restructure config parses
+ * successfully and every setting in it is silently discarded — custom aliases
+ * vanish, custom baseUrl/authFile/userAgent revert to defaults, and nothing is
+ * reported.
  *
  * Silent reversion is the worst failure mode available here, so a legacy key is
- * a hard error naming its replacement rather than a warning.
+ * a hard error naming its replacement (or removal reason) rather than a warning.
  */
-const LEGACY_KEY_MOVES: readonly (readonly [path: string, replacement: string])[] = [
-  ["codex", "providers.codex"],
-  ["reasoningCache", "providers.codex.reasoningCache"],
-  ["limits.connectTimeoutMs", "anthropic.connectTimeoutMs"],
-  ["limits.maxUpstreamSockets", "anthropic.maxUpstreamSockets"],
-  ["limits.streamIdleTimeoutMs", "providers.codex.streamIdleTimeoutMs"],
-  ["limits.requestTimeoutMs", "providers.codex.requestTimeoutMs"],
-  ["limits.maxSseEventBytes", "providers.codex.maxSseEventBytes"],
+const LEGACY_KEY_MOVES: readonly LegacyKeyEntry[] = [
+  { kind: "moved", path: "codex", to: "providers.codex" },
+  { kind: "moved", path: "reasoningCache", to: "providers.codex.reasoningCache" },
+  { kind: "moved", path: "limits.connectTimeoutMs", to: "anthropic.connectTimeoutMs" },
+  { kind: "moved", path: "limits.maxUpstreamSockets", to: "anthropic.maxUpstreamSockets" },
+  { kind: "moved", path: "limits.streamIdleTimeoutMs", to: "providers.codex.streamIdleTimeoutMs" },
+  { kind: "moved", path: "limits.requestTimeoutMs", to: "providers.codex.requestTimeoutMs" },
+  { kind: "moved", path: "limits.maxSseEventBytes", to: "providers.codex.maxSseEventBytes" },
   // Six keys removed in 0.2.1 — hard-error so the operator knows to delete them.
-  ["anthropic.headerTimeoutMs", "(removed in 0.2.1 — delete this key; the relay does not bound the headers phase on a connected client, ADR-010)"],
-  ["anthropic.streamIdleTimeoutMs", "(removed in 0.2.1 — delete this key; the relay does not bound the stream-idle phase on a connected client, ADR-010)"],
-  ["limits.maxConcurrentRequests", "(removed in 0.2.1 — delete this key; the admission gate was removed, ADR-010)"],
-  ["limits.maxInFlightBytes", "(removed in 0.2.1 — delete this key; the byte-budget admission gate was removed, ADR-010)"],
-  ["limits.maxQueueDepth", "(removed in 0.2.1 — delete this key; the admission queue was removed, ADR-010)"],
-  ["limits.maxQueueWaitMs", "(removed in 0.2.1 — delete this key; the admission queue was removed, ADR-010)"],
+  { kind: "removed", path: "anthropic.headerTimeoutMs", reason: "the relay does not bound the headers phase on a connected client, removed in 0.2.1 (ADR-010)" },
+  { kind: "removed", path: "anthropic.streamIdleTimeoutMs", reason: "the relay does not bound the stream-idle phase on a connected client, removed in 0.2.1 (ADR-010)" },
+  { kind: "removed", path: "limits.maxConcurrentRequests", reason: "the admission gate was removed in 0.2.1 (ADR-010)" },
+  { kind: "removed", path: "limits.maxInFlightBytes", reason: "the byte-budget admission gate was removed in 0.2.1 (ADR-010)" },
+  { kind: "removed", path: "limits.maxQueueDepth", reason: "the admission queue was removed in 0.2.1 (ADR-010)" },
+  { kind: "removed", path: "limits.maxQueueWaitMs", reason: "the admission queue was removed in 0.2.1 (ADR-010)" },
 ];
 
 /** Read a dotted path using own-property checks only (prototype-pollution safe). */
@@ -518,24 +534,25 @@ const hasOwnPath = (root: Record<string, unknown>, path: string): boolean => {
 };
 
 /**
- * Detect keys from the pre-`providers.*` config layout.
+ * Detect keys from the pre-`providers.*` config layout, plus keys that were
+ * removed entirely.
  *
  * Pure: no I/O. Returns the legacy paths present, in declaration order, each
- * paired with its replacement. Empty array means the config has no legacy keys.
+ * tagged with its kind (moved or removed). Empty array means the config is
+ * clean.
  */
-export const detectLegacyConfigKeys = (
-  raw: unknown,
-): readonly { readonly path: string; readonly replacement: string }[] => {
+export const detectLegacyConfigKeys = (raw: unknown): readonly LegacyKeyEntry[] => {
   if (!isPlainObject(raw)) return [];
-  const found: { readonly path: string; readonly replacement: string }[] = [];
-  for (const [path, replacement] of LEGACY_KEY_MOVES) {
-    if (hasOwnPath(raw, path)) found.push({ path, replacement });
+  const found: LegacyKeyEntry[] = [];
+  for (const entry of LEGACY_KEY_MOVES) {
+    if (hasOwnPath(raw, entry.path)) found.push(entry);
   }
   // `codex.models` was deleted outright — the routable set now comes from the registry.
   if (hasOwnPath(raw, "codex.models")) {
     found.push({
+      kind: "removed",
       path: "codex.models",
-      replacement: "(removed — routing now follows the built-in model registry; use providers.codex.aliases for custom names)",
+      reason: "routing now follows the built-in model registry; use providers.codex.aliases for custom names",
     });
   }
   return found;
@@ -736,7 +753,13 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
       kind: "translate",
       message:
         `outdated config layout in ${resolvedPath} — ` +
-        legacy.map((l) => `move \`${l.path}\` to \`${l.replacement}\``).join("; ") +
+        legacy
+          .map((l) =>
+            l.kind === "moved"
+              ? `move \`${l.path}\` to \`${l.to}\``
+              : `delete \`${l.path}\` — ${l.reason}`,
+          )
+          .join("; ") +
         `. Edit the file to match subswitch.config.example.json, or delete it to run on defaults.`,
     });
   }

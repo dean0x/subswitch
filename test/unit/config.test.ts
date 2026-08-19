@@ -246,31 +246,76 @@ describe("loadConfig", () => {
     // MUTATION PROOF: removing the entry from LEGACY_KEY_MOVES causes this test to fail
     // because the config would either parse clean (if the schema also lacks it) or
     // produce a generic Zod "unrecognized key" message without the 0.2.1 removal context.
+    // MUTATION PROOF: changing the renderer to reuse "move X to Y" for removed keys would
+    // produce "move `limits.maxConcurrentRequests` to `(removed…)`" — the delete-phrasing
+    // assertions below would both fail.
     const result = loadConfig({
       configPath: "x",
       readFile: () => JSON.stringify({ limits: { maxConcurrentRequests: 64 } }),
     });
     assert.ok(!result.ok, "removed key must now be rejected as a hard error");
     assert.equal(result.error.kind, "translate");
-    assert.match(result.error.message, /limits\.maxConcurrentRequests/, "error must name the offending key");
-    assert.match(result.error.message, /removed in 0\.2\.1/, "error must state the version it was removed");
+    // Phrasing: delete `<key>` — <reason>
+    assert.match(result.error.message, /delete `limits\.maxConcurrentRequests`/, "error must use delete-phrasing for removed keys");
+    assert.match(result.error.message, /removed in 0\.2\.1 \(ADR-010\)/, "error must state the version and ADR");
+    assert.ok(!result.error.message.includes("move `limits.maxConcurrentRequests`"), "must not use move-phrasing for a removed key");
   });
 
-  it("BREAKING 0.2.1: a config with all 6 removed keys is rejected and every key is named", () => {
+  it("BREAKING 0.2.1: a config with all 6 removed keys is rejected and every key is named with delete-phrasing", () => {
     // MUTATION PROOF: re-adding any of the six as .optional() in the schema AND removing
     // it from LEGACY_KEY_MOVES would cause the config to parse successfully → test fails.
+    // MUTATION PROOF: reverting to the "move X to Y" renderer would produce "move `anthropic.headerTimeoutMs`
+    // to `(removed…)`" — the delete-phrasing assertion and the no-move assertion both fail.
     const result = loadConfig({
       configPath: "x",
       readFile: () =>
         JSON.stringify({
-          anthropic: { headerTimeoutMs: 660_000 },
-          limits: { maxConcurrentRequests: 32 },
+          anthropic: { headerTimeoutMs: 660_000, streamIdleTimeoutMs: 30_000 },
+          limits: {
+            maxConcurrentRequests: 32,
+            maxInFlightBytes: 1_000_000,
+            maxQueueDepth: 100,
+            maxQueueWaitMs: 5_000,
+          },
         }),
     });
     assert.ok(!result.ok, "config with removed keys must be rejected");
     assert.equal(result.error.kind, "translate");
-    // The pre-parse LEGACY_KEY_MOVES check fires first and names the first detected key.
-    assert.match(result.error.message, /removed in 0\.2\.1/, "error must explain these keys were removed");
+    // Every key must be named using delete-phrasing, not move-phrasing.
+    const msg = result.error.message;
+    assert.ok(msg.includes("delete `anthropic.headerTimeoutMs`"), "must name anthropic.headerTimeoutMs with delete-phrasing");
+    assert.ok(msg.includes("delete `anthropic.streamIdleTimeoutMs`"), "must name anthropic.streamIdleTimeoutMs with delete-phrasing");
+    assert.ok(msg.includes("delete `limits.maxConcurrentRequests`"), "must name limits.maxConcurrentRequests with delete-phrasing");
+    assert.ok(msg.includes("delete `limits.maxInFlightBytes`"), "must name limits.maxInFlightBytes with delete-phrasing");
+    assert.ok(msg.includes("delete `limits.maxQueueDepth`"), "must name limits.maxQueueDepth with delete-phrasing");
+    assert.ok(msg.includes("delete `limits.maxQueueWaitMs`"), "must name limits.maxQueueWaitMs with delete-phrasing");
+    assert.ok(!msg.includes("move `anthropic."), "must not use move-phrasing for removed keys");
+  });
+
+  it("BREAKING 0.2.1: a config with both a moved key and a removed key produces one error with correct phrasing for each", () => {
+    // This test exercises the single-pass detection: both a genuine move and a hard removal
+    // appear in one config, and the renderer must phrase each correctly.
+    // MUTATION PROOF: a renderer that treats all entries as "moved" would produce
+    // "move `limits.streamIdleTimeoutMs` to `providers.codex.streamIdleTimeoutMs`; move
+    //  `limits.maxConcurrentRequests` to `(removed…)`" — the delete-phrasing assertion fails.
+    // MUTATION PROOF: a renderer that treats all entries as "removed" would produce
+    // "delete `limits.streamIdleTimeoutMs` — …" — the move-phrasing assertion fails.
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () =>
+        JSON.stringify({
+          limits: { streamIdleTimeoutMs: 60_000, maxConcurrentRequests: 32 },
+        }),
+    });
+    assert.ok(!result.ok, "config with legacy keys must be rejected");
+    assert.equal(result.error.kind, "translate");
+    const msg = result.error.message;
+    // Moved key must use move-phrasing
+    assert.match(msg, /move `limits\.streamIdleTimeoutMs` to `providers\.codex\.streamIdleTimeoutMs`/, "moved key must use move-phrasing");
+    // Removed key must use delete-phrasing
+    assert.match(msg, /delete `limits\.maxConcurrentRequests` — the admission gate was removed in 0\.2\.1 \(ADR-010\)/, "removed key must use delete-phrasing");
+    // Both appear in a single error message
+    assert.ok(msg.includes("outdated config layout"), "single error must use the standard outdated-config prefix");
   });
 
   it("anthropic.maxUpstreamSockets defaults to 256 (raised to exceed peak concurrency)", () => {
@@ -382,21 +427,21 @@ describe("detectLegacyConfigKeys", () => {
     const legacy = { codex: { baseUrl: "https://example.com" } };
     const found = detectLegacyConfigKeys(legacy);
     assert.ok(found.some((f) => f.path === "codex"), "must detect legacy top-level codex key");
-    assert.ok(found.some((f) => f.replacement.includes("providers.codex")));
+    assert.ok(found.some((f) => f.kind === "moved" && f.to.includes("providers.codex")));
   });
 
   it("detects top-level 'reasoningCache' key (moved to providers.codex.reasoningCache)", () => {
     const legacy = { reasoningCache: { maxEntries: 100 } };
     const found = detectLegacyConfigKeys(legacy);
     assert.ok(found.some((f) => f.path === "reasoningCache"));
-    assert.ok(found.some((f) => f.replacement.includes("providers.codex.reasoningCache")));
+    assert.ok(found.some((f) => f.kind === "moved" && f.to.includes("providers.codex.reasoningCache")));
   });
 
   it("detects 'limits.connectTimeoutMs' (moved to anthropic.connectTimeoutMs)", () => {
     const legacy = { limits: { connectTimeoutMs: 5000 } };
     const found = detectLegacyConfigKeys(legacy);
     assert.ok(found.some((f) => f.path === "limits.connectTimeoutMs"));
-    assert.ok(found.some((f) => f.replacement.includes("anthropic.connectTimeoutMs")));
+    assert.ok(found.some((f) => f.kind === "moved" && f.to.includes("anthropic.connectTimeoutMs")));
   });
 
   it("detects 'limits.maxUpstreamSockets' (moved to anthropic.maxUpstreamSockets)", () => {
@@ -428,7 +473,7 @@ describe("detectLegacyConfigKeys", () => {
     const found = detectLegacyConfigKeys(legacy);
     // Both 'codex' and 'codex.models' trigger
     assert.ok(found.some((f) => f.path === "codex.models"), "codex.models must be detected as a deleted key");
-    assert.ok(found.some((f) => f.replacement.includes("removed")));
+    assert.ok(found.some((f) => f.kind === "removed"), "codex.models must be flagged as a removed key");
   });
 
   it("loadConfig rejects a file with any legacy key — silently reverting settings is the worst failure mode", () => {

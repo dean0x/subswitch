@@ -256,7 +256,13 @@ export const planConfigWrite = (
       kind: "legacy_config",
       message:
         `outdated config layout in ${path} — ` +
-        legacyKeys.map((l) => `move \`${l.path}\` to \`${l.replacement}\``).join("; ") +
+        legacyKeys
+          .map((l) =>
+            l.kind === "moved"
+              ? `move \`${l.path}\` to \`${l.to}\``
+              : `delete \`${l.path}\` — ${l.reason}`,
+          )
+          .join("; ") +
         `. Edit the file to match subswitch.config.example.json, or delete it and run init again.`,
     });
   }
