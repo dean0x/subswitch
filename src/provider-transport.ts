@@ -6,6 +6,11 @@ import { proxyErrorToAnthropic, toAnthropicErrorBody, type ProxyError } from "./
 
 /**
  * Send a JSON response, no-op if headers were already sent.
+ *
+ * Every response emitted by a provider handler is synthesized by the relay
+ * (the codex leg translates Codex→Anthropic; no byte is forwarded verbatim).
+ * `x-subswitch-synthesized: 1` is therefore always correct here and is
+ * included by default so callers cannot forget it.
  */
 export const respondJson = (
   res: ServerResponse,
@@ -14,7 +19,7 @@ export const respondJson = (
   extraHeaders: Record<string, string> = {},
 ): void => {
   if (res.headersSent) return;
-  res.writeHead(status, { "content-type": "application/json", ...extraHeaders });
+  res.writeHead(status, { "content-type": "application/json", "x-subswitch-synthesized": "1", ...extraHeaders });
   res.end(body);
 };
 

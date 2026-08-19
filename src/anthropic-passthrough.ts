@@ -12,6 +12,9 @@ import type { Logger } from "./logger.js";
  *
  * Per RFC 7230 §6.1. `host` is also excluded: Node sets it on the outbound
  * connection. `connection` is managed by the keep-alive agent.
+ *
+ * `x-subswitch-synthesized` is also stripped from proxied responses so that
+ * the marker is authoritative: only the relay itself can assert it.
  */
 const HOP_BY_HOP = new Set([
   "host",
@@ -24,6 +27,7 @@ const HOP_BY_HOP = new Set([
   "trailer",
   "transfer-encoding",
   "upgrade",
+  "x-subswitch-synthesized",
 ]);
 
 /**
@@ -97,11 +101,6 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
 
   // Create a keep-alive agent for persistent connections to the upstream.
   // This matches Claude Code's own direct connection behaviour (parity).
-  //
-  // A stale pooled socket can ECONNRESET a POST (server-side idle timeout
-  // while the socket sat in the pool).  Node's agent does NOT auto-retry that.
-  // The error handler below retries ONCE on a fresh socket (agent: false) so
-  // the client never sees a relay-synthesised 502 for a healthy upstream.
   const agentOpts: http.AgentOptions = { keepAlive: true, maxSockets: options.maxUpstreamSockets, scheduling: "lifo" };
   const agent = options.agent ?? (target.protocol === "https:" ? new https.Agent(agentOpts) : new http.Agent(agentOpts));
 
@@ -133,6 +132,8 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
         // Response direction: writeHead accepts a flat [name, value, ...] array
         // directly (Node's _storeHeader Array branch), preserving the upstream's
         // original header casing, order, and duplicates byte-for-byte.
+        // filterRawHeaders strips x-subswitch-synthesized so an origin that sets
+        // it cannot impersonate the relay's synthesized-response marker.
         res.writeHead(upstreamRes.statusCode ?? 502, filterRawHeaders(upstreamRes.rawHeaders));
         res.socket?.setNoDelay(true);
         upstreamRes.pipe(res);
@@ -190,28 +191,22 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
     // (A,A,B); per-name value order is preserved (RFC 7230 §3.2.2) and adjacent
     // duplicates are byte-exact.  Anthropic clients do not interleave duplicate
     // header names, so this is safe in practice.
-    //
-    // Extracted as a helper so the retry path can apply the same headers to a
-    // fresh ClientRequest without duplicating the logic.
-    const applyRequestHeaders = (target: http.ClientRequest): void => {
-      const filteredRaw = filterRawHeaders(req.rawHeaders);
-      const headerMap = new Map<string, { name: string; values: string[] }>();
-      for (let i = 0; i + 1 < filteredRaw.length; i += 2) {
-        const name = filteredRaw[i]!;
-        const value = filteredRaw[i + 1]!;
-        const key = name.toLowerCase();
-        const entry = headerMap.get(key);
-        if (entry === undefined) {
-          headerMap.set(key, { name, values: [value] });
-        } else {
-          entry.values.push(value);
-        }
+    const filteredRaw = filterRawHeaders(req.rawHeaders);
+    const headerMap = new Map<string, { name: string; values: string[] }>();
+    for (let i = 0; i + 1 < filteredRaw.length; i += 2) {
+      const name = filteredRaw[i]!;
+      const value = filteredRaw[i + 1]!;
+      const key = name.toLowerCase();
+      const entry = headerMap.get(key);
+      if (entry === undefined) {
+        headerMap.set(key, { name, values: [value] });
+      } else {
+        entry.values.push(value);
       }
-      for (const { name, values } of headerMap.values()) {
-        target.setHeader(name, values.length === 1 ? values[0]! : values);
-      }
-    };
-    applyRequestHeaders(upstream);
+    }
+    for (const { name, values } of headerMap.values()) {
+      upstream.setHeader(name, values.length === 1 ? values[0]! : values);
+    }
 
     upstream.on("timeout", () => {
       // Log and write the 504 BEFORE destroy() to narrow the race window with
@@ -229,61 +224,12 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
       upstream.destroy();
     });
 
-    upstream.on("error", (upstreamErr: NodeJS.ErrnoException) => {
+    upstream.on("error", () => {
       if (settled) return;
-
-      // Connection-level failures (ECONNRESET / EPIPE / socket hang up) that
-      // arrive before any response byte are the stale-pooled-socket scenario:
-      // the upstream is healthy but the keep-alive socket was closed server-side
-      // between requests.  Retry ONCE on a fresh socket (agent: false bypasses
-      // the pool entirely) so the client never sees a relay-synthesised 502 for
-      // a working upstream.  Only safe when the body is fully buffered and
-      // nothing has been written to the client response yet.
-      const isConnectionError =
-        upstreamErr.code === "ECONNRESET" ||
-        upstreamErr.code === "EPIPE" ||
-        (upstreamErr.message?.includes("socket hang up") ?? false);
-
-      if (isConnectionError && body !== undefined && !res.headersSent) {
-        options.logger.log("info", "anthropic_upstream_retry", { path: req.url ?? "/" });
-
-        const retry = client.request(
-          {
-            protocol: target.protocol,
-            hostname: target.hostname,
-            ...(target.port !== "" ? { port: Number(target.port) } : {}),
-            method: req.method ?? "GET",
-            path,
-            agent: false, // force fresh TCP connection; bypass stale pooled socket
-          },
-          (retryRes) => {
-            settled = true;
-            res.writeHead(retryRes.statusCode ?? 502, filterRawHeaders(retryRes.rawHeaders));
-            res.socket?.setNoDelay(true);
-            retryRes.pipe(res);
-            retryRes.on("error", () => res.destroy());
-          },
-        );
-
-        applyRequestHeaders(retry);
-        retry.setTimeout(options.headerTimeoutMs);
-        retry.on("timeout", () => { retry.destroy(); });
-        retry.on("socket", (s) => { s.setNoDelay(true); });
-        retry.on("error", () => {
-          if (settled) return;
-          settled = true;
-          // Both attempts failed — present a transport failure rather than
-          // manufacturing an HTTP status the origin cannot produce.
-          res.destroy();
-        });
-        retry.end(body);
-        return;
-      }
-
-      // Non-retryable path: log and surface as 502 only when the client
-      // response is still open.  Set settled before writing so a second 'error'
-      // emission (practically unreachable after socket destroy, but possible in
-      // theory) cannot double-write.
+      // Log and surface as 502 only when the client response is still open.
+      // Set settled before writing so a second 'error' emission (practically
+      // unreachable after socket destroy, but possible in theory) cannot
+      // double-write.
       options.logger.log("warn", "anthropic_upstream_error", { path: req.url ?? "/" });
       if (!res.headersSent) {
         settled = true;
@@ -299,6 +245,11 @@ export const createAnthropicForwarder = (options: PassthroughOptions): Anthropic
     // anthropic_upstream_error warn or attempt to write a 502 into an already-
     // closed response.  A client abort is an entirely normal event — it must
     // produce no warn log and no synthetic HTTP response.
+    //
+    // Note: the timeout handler does not check `settled` before calling
+    // upstream.destroy() because it sets `settled = true` itself before the
+    // destroy, so by the time the 'error' event fires on the next tick the
+    // guard has already been set and the error handler returns early.
     res.on("close", () => {
       if (!res.writableFinished) {
         settled = true;

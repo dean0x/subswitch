@@ -395,6 +395,36 @@ is not a TTY (useful in terminals that misreport TTY state); `CI` — also suppr
 color and disables interactive `init` prompts (treated as a non-interactive
 environment).
 
+## `x-subswitch-synthesized`
+
+Every HTTP response that subswitch generates itself — rather than proxying
+verbatim from an upstream — carries the response header:
+
+```
+x-subswitch-synthesized: 1
+```
+
+This header is present on:
+
+- **Anthropic-leg relay errors**: 502 (upstream connection failure), 504
+  (upstream timeout), 413 (request body too large), 503 (concurrency gate),
+  500 (internal proxy error).
+- **Codex-leg responses**: every byte returned on the codex leg is synthesized
+  by the relay (it translates OpenAI Responses format → Anthropic Messages
+  format), so the header is present on both streaming and non-streaming codex
+  responses, and on all codex-leg error responses.
+- **Relay management endpoints**: `/__subswitch/health`, `/__subswitch/404`,
+  and all other relay-internal routes.
+
+The header is **absent** on responses proxied verbatim from the Anthropic
+origin — including upstream errors (429 rate-limit, 529 overloaded, 500
+upstream internal error, etc.).  The header is also **stripped** from any
+upstream response that carries it, so the marker is authoritative: its presence
+means the relay synthesised the response; its absence means the upstream did.
+
+Operators can use this header in load-balancer health rules, log filters, or
+alerting to distinguish relay faults from upstream outages.
+
 ## Testing
 
 ```sh

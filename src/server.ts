@@ -309,6 +309,20 @@ const peekModel = (parsed: unknown): string | undefined => {
   return result.success ? result.data.model : undefined;
 };
 
+/**
+ * Base headers for every response the relay generates itself (as opposed to
+ * responses proxied verbatim from an upstream).  The `x-subswitch-synthesized`
+ * marker is included here so callers cannot forget it and future synthesized
+ * response sites are correct by default.
+ *
+ * Pass extra headers (e.g. `{ connection: "close" }`) as `extra`.
+ */
+const synthesizedHeaders = (extra: Record<string, string> = {}): Record<string, string> => ({
+  "content-type": "application/json",
+  "x-subswitch-synthesized": "1",
+  ...extra,
+});
+
 export const createProxyServer = (deps: ServerDeps): Server => {
   const { config, logger } = deps;
   let activeRequests = 0;
@@ -334,11 +348,11 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       // /__subswitch/* namespace: handled locally, never forwarded upstream.
       if (pathname.startsWith("/__subswitch/")) {
         if (req.method === "GET" && pathname === "/__subswitch/health") {
-          res.writeHead(200, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
+          res.writeHead(200, synthesizedHeaders());
           res.end(buildHealthBody(config));
           return;
         }
-        res.writeHead(404, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
+        res.writeHead(404, synthesizedHeaders());
         res.end(JSON.stringify({ error: "not found" }));
         return;
       }
@@ -349,7 +363,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       res.on("close", () => { activeRequests--; });
       if (activeRequests > config.limits.maxConcurrentRequests) {
         route = "rate_limited";
-        res.writeHead(503, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
+        res.writeHead(503, synthesizedHeaders());
         res.end(toAnthropicErrorBody("overloaded_error", "too many concurrent requests — try again shortly"));
         return;
       }
@@ -364,7 +378,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       const body = await bufferBody(req, config.limits.maxBodyBytes);
       if (!body.ok) {
         if (body.error.kind === "body_too_large") {
-          res.writeHead(413, { "content-type": "application/json", connection: "close", "x-subswitch-synthesized": "1" });
+          res.writeHead(413, synthesizedHeaders({ connection: "close" }));
           res.end(toAnthropicErrorBody("invalid_request_error", body.error.message));
           req.destroy();
         }
@@ -417,7 +431,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           // Two providers claim the same family name. Reject with 400 naming both.
           route = "ambiguous";
           logger.log("warn", "ambiguous_model_name", { model: decision.name });
-          res.writeHead(400, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
+          res.writeHead(400, synthesizedHeaders());
           res.end(
             toAnthropicErrorBody(
               "invalid_request_error",
@@ -431,7 +445,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           // "kimee:k2" — provider prefix not in PROVIDER_IDS. Reject with 400.
           route = "unknown_provider";
           logger.log("warn", "unknown_provider_qualifier", { model: decision.qualifier });
-          res.writeHead(400, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
+          res.writeHead(400, synthesizedHeaders());
           res.end(
             toAnthropicErrorBody(
               "invalid_request_error",
@@ -453,7 +467,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     dispatch().catch((cause: unknown) => {
       logger.log("error", "request_failed", { path: pathname, errorCode: cause instanceof Error ? cause.name : "unknown" });
       if (!res.headersSent) {
-        res.writeHead(500, { "content-type": "application/json", "x-subswitch-synthesized": "1" });
+        res.writeHead(500, synthesizedHeaders());
         res.end(toAnthropicErrorBody("api_error", "internal proxy error"));
       } else if (!res.writableEnded) {
         res.destroy();
