@@ -11,6 +11,7 @@
  *   (e) inFlightBytes returns to zero when idle (no counter leak)
  *   (f) Queue-bound exhaustion returns 529 + overloaded_error (not 503)
  *   (g) Health endpoint is never subject to the gate
+ *   (h) FIFO is preserved — later arrivals cannot barge past queued requests (anti-starvation)
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
@@ -26,24 +27,31 @@ after(async () => {
 
 // ---------------------------------------------------------------------------
 // Shared upstream that parks a single request and lets the test release it.
+// Also records the URL of the parked request so tests can assert request identity.
 // ---------------------------------------------------------------------------
 
 interface ParkingUpstream {
   readonly url: string;
   /** If a request is parked, holds its ServerResponse so the test can release it. */
   parkedRes: ServerResponse | null;
-  /** Release the parked request with a 200 response. */
+  /** URL path+query of the currently parked request — allows identity assertions. */
+  parkedUrl: string | null;
+  /** Release the parked request with a 200 { ok: true } response. */
   release(): void;
   close(): Promise<void>;
 }
 
 const startParkingUpstream = async (): Promise<ParkingUpstream> => {
-  const state: { parkedRes: ServerResponse | null } = { parkedRes: null };
+  const state: { parkedRes: ServerResponse | null; parkedUrl: string | null } = {
+    parkedRes: null,
+    parkedUrl: null,
+  };
   const server = http.createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
     req.on("end", () => {
       state.parkedRes = res;
+      state.parkedUrl = req.url ?? null;
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -52,11 +60,14 @@ const startParkingUpstream = async (): Promise<ParkingUpstream> => {
     url: `http://127.0.0.1:${port}`,
     get parkedRes() { return state.parkedRes; },
     set parkedRes(v) { state.parkedRes = v; },
+    get parkedUrl() { return state.parkedUrl; },
+    set parkedUrl(v) { state.parkedUrl = v; },
     release() {
       if (state.parkedRes) {
         state.parkedRes.writeHead(200, { "content-type": "application/json" });
         state.parkedRes.end(JSON.stringify({ ok: true }));
         state.parkedRes = null;
+        state.parkedUrl = null;
       }
     },
     close: () =>
@@ -105,6 +116,7 @@ describe("byte-based admission gate — admitted under budget (P0-2a)", () => {
 
     // Second request — should also be admitted (GETs take 0 bytes).
     parked.parkedRes = null;
+    // (parkedUrl is updated automatically when the next request parks)
     const controller2 = new AbortController();
     const req2 = fetch(`${subswitch.url}/v1/probe-2`, { method: "GET", signal: controller2.signal });
 
@@ -123,57 +135,83 @@ describe("byte-based admission gate — admitted under budget (P0-2a)", () => {
 //
 // This is the core assertion of the whole change. The old gate would have
 // returned 503 immediately; the new gate must queue and then serve the request.
+//
+// Non-vacuity verification: with queueing disabled (huge maxInFlightBytes both
+// requests are immediately admitted without ever entering the queue — a test
+// that passes in that world is vacuous.  These tests are non-vacuous because:
+//   b1: asserts res2.status === 200 and { ok: true } body — a 504 or queued-forever
+//       failure would not satisfy this.  With queueing disabled req2 is admitted
+//       immediately and parks in upstream before parked.release() is called for
+//       req1, so parked.parkedRes would already be non-null after req1 parks and
+//       the test would fail at the "req2 must queue" assertion.
+//   b2: explicitly asserts parked.parkedRes === null BEFORE controller1.abort(),
+//       which fails when queueing is disabled (req2 is immediately admitted).
 // ---------------------------------------------------------------------------
 
 describe("byte-based admission gate — queueing not rejection (P0-2b)", () => {
-  it("a POST request queued due to budget pressure succeeds once the slot opens", async () => {
+  it("a POST request queued due to budget pressure succeeds with 200 once the slot opens", async () => {
     const parked = await startParkingUpstream();
     cleanups.push(parked.close);
 
-    // Budget: exactly 100 bytes.
-    // First POST sends content-length: 100 → fills the budget exactly.
-    // Second POST sends content-length: 100 → queued (100 + 100 > 100).
-    // Releasing the first frees 100 bytes → second is admitted and reaches upstream.
+    // Budget: 10 bytes exactly.
+    // req1 (content-length: 10) fills the budget.
+    // req2 (content-length: 10) would exceed it (10 + 10 > 10) → must queue.
+    // Completing req1 frees the slot → drainQueue admits req2 → req2 gets a real 200.
+    const BUDGET = 10;
     const subswitch = await startSubswitch({
       anthropic: { baseUrl: parked.url },
-      limits: { maxInFlightBytes: 100, maxQueueWaitMs: 10_000 },
+      limits: { maxInFlightBytes: BUDGET, maxQueueWaitMs: 10_000 },
     });
     cleanups.push(subswitch.close);
 
-    const body = Buffer.alloc(10, "x"); // 10-byte body; content-length: 10
+    const body = Buffer.alloc(BUDGET, "x");
 
-    // Request 1: admitted immediately (10 bytes ≤ 100 byte budget).
-    const controller1 = new AbortController();
-    const req1 = fetch(`${subswitch.url}/v1/messages`, {
+    // Step 1: fire req1 — fills the budget exactly.
+    const req1Promise = fetch(`${subswitch.url}/v1/messages?id=b1-req1`, {
       method: "POST",
       headers: { "content-length": String(body.length) },
-      body,
-      signal: controller1.signal,
+      body: Buffer.from(body),
     });
-
-    // Poll until req1 is parked in upstream (budget is held).
     const req1Parked = await pollUntil(() => parked.parkedRes !== null, 2000);
-    assert.ok(req1Parked, "first request must park in upstream");
+    assert.ok(req1Parked, "req1 must park in upstream — it fills the budget");
+    assert.ok(parked.parkedUrl?.includes("b1-req1"), `upstream must hold req1, got url: ${parked.parkedUrl}`);
 
-    // Request 2: would use 10 more bytes. Budget allows it since 10 + 10 = 20 ≤ 100.
-    // Actually both fit, so let's use a tighter budget test.
-    // Let me release req1 first and verify req2 succeeded after.
-    // Release req1 to free the slot.
+    // Save req1's response before resetting the parking slot, so we can complete it later.
+    // Resetting parked.parkedRes to null lets us detect whether req2 parks (i.e., jumps the queue).
+    const req1Res = parked.parkedRes!;
     parked.parkedRes = null;
-    parked.release();
 
-    // Await both requests — both must succeed (2xx or upstream-defined response).
-    const res2 = await fetch(`${subswitch.url}/v1/messages`, {
+    // Step 2: fire req2 — budget is full so it must queue, not be immediately admitted.
+    const req2Promise = fetch(`${subswitch.url}/v1/messages?id=b1-req2`, {
       method: "POST",
       headers: { "content-length": String(body.length) },
-      body,
+      body: Buffer.from(body),
     });
-    // Any non-error response from our fake upstream is a success.
-    assert.ok(res2.status < 529, `second request must not receive 529 overloaded; got ${res2.status}`);
-    await res2.body?.cancel();
 
-    controller1.abort();
-    try { await req1; } catch { /* AbortError or upstream closed */ }
+    // Give req2 30 ms to reach the gate and enter the queue.
+    await new Promise<void>((r) => setTimeout(r, 30));
+
+    // Positive assertion: req2 must NOT have reached upstream yet (it must be queued).
+    // With queueing disabled (huge budget) req2 would park immediately and this fails.
+    assert.equal(parked.parkedRes, null, "req2 must still be queued — budget is full");
+
+    // Step 3: complete req1 by sending its response — this releases the slot.
+    // drainQueue runs and admits req2.
+    req1Res.writeHead(200, { "content-type": "application/json" });
+    req1Res.end(JSON.stringify({ ok: true }));
+    await req1Promise;
+
+    // Step 4: req2 must now be admitted and park in the upstream.
+    const req2Reached = await pollUntil(() => parked.parkedRes !== null, 3000);
+    assert.ok(req2Reached, "req2 must reach upstream after req1 releases the slot");
+    assert.ok(parked.parkedUrl?.includes("b1-req2"), `upstream must now hold req2, got url: ${parked.parkedUrl}`);
+
+    // Step 5: complete req2 — it must receive the upstream's real 200 response.
+    parked.release();
+    const res2 = await req2Promise;
+    assert.equal(res2.status, 200, "queued request must succeed with 200 from upstream (not a relay-invented error)");
+    const responseBody = (await res2.json()) as { ok: boolean };
+    assert.equal(responseBody.ok, true, "upstream response body must be forwarded byte-identical");
   });
 
   it("a queued POST is admitted and reaches upstream after the blocking request completes", async () => {
@@ -193,7 +231,7 @@ describe("byte-based admission gate — queueing not rejection (P0-2b)", () => {
 
     // Step 1: fill the budget with req1.
     const controller1 = new AbortController();
-    void fetch(`${subswitch.url}/v1/messages`, {
+    void fetch(`${subswitch.url}/v1/messages?id=b2-req1`, {
       method: "POST",
       headers: { "content-length": String(body.length) },
       body: Buffer.from(body),
@@ -203,12 +241,12 @@ describe("byte-based admission gate — queueing not rejection (P0-2b)", () => {
     // Poll until req1 holds the budget (parked in upstream).
     const req1Parked = await pollUntil(() => parked.parkedRes !== null, 2000);
     assert.ok(req1Parked, "first request must park in upstream — it fills the budget");
+    assert.ok(parked.parkedUrl?.includes("b2-req1"), `upstream must hold req1, got url: ${parked.parkedUrl}`);
 
     // Step 2: fire req2 (will queue since budget is full) and wait for it to queue.
-    // We detect "queued" by verifying that after a short window the upstream still has
-    // only one parked request (req1's).
-    parked.parkedRes = null; // reset so we can detect req2's arrival
-    const req2Promise = fetch(`${subswitch.url}/v1/messages`, {
+    parked.parkedRes = null;
+    // (parkedUrl is updated automatically when the next request parks)
+    const req2Promise = fetch(`${subswitch.url}/v1/messages?id=b2-req2`, {
       method: "POST",
       headers: { "content-length": String(body.length) },
       body: Buffer.from(body),
@@ -216,6 +254,11 @@ describe("byte-based admission gate — queueing not rejection (P0-2b)", () => {
 
     // Give req2 time to reach the gate and be queued.
     await new Promise<void>((r) => setTimeout(r, 50));
+
+    // Key non-vacuity assertion: req2 must still be queued at this point.
+    // With queueing disabled (huge budget) req2 would be admitted immediately and
+    // parked.parkedRes would be non-null here — proving this assertion is load-bearing.
+    assert.equal(parked.parkedRes, null, "req2 must still be queued — budget is full");
 
     // Step 3: release req1 by aborting the client.
     // The proxy sees the client disconnect, fires "close"/"finish", releases the budget,
@@ -225,6 +268,7 @@ describe("byte-based admission gate — queueing not rejection (P0-2b)", () => {
     // Step 4: poll for req2 to reach the upstream.
     const req2Reached = await pollUntil(() => parked.parkedRes !== null, 3000);
     assert.ok(req2Reached, "second request must reach upstream after first is aborted (queued, not permanently rejected)");
+    assert.ok(parked.parkedUrl?.includes("b2-req2"), `upstream must now hold req2, got url: ${parked.parkedUrl}`);
 
     // Clean up.
     parked.release();
@@ -290,7 +334,7 @@ describe("byte-based admission gate — disconnect while queued (P0-2d)", () => 
 
     // Step 1: fill the budget with req1.
     const controller1 = new AbortController();
-    void fetch(`${subswitch.url}/v1/messages`, {
+    void fetch(`${subswitch.url}/v1/messages?id=d-req1`, {
       method: "POST",
       headers: { "content-length": String(body.length) },
       body: Buffer.from(body),
@@ -298,10 +342,11 @@ describe("byte-based admission gate — disconnect while queued (P0-2d)", () => 
     }).catch(() => { /* AbortError expected at cleanup */ });
     const req1Parked = await pollUntil(() => parked.parkedRes !== null, 2000);
     assert.ok(req1Parked, "req1 must park");
+    assert.ok(parked.parkedUrl?.includes("d-req1"), `upstream must hold req1, got url: ${parked.parkedUrl}`);
 
     // Step 2: queue req2 (budget full, it must wait).
     const controller2 = new AbortController();
-    void fetch(`${subswitch.url}/v1/messages`, {
+    void fetch(`${subswitch.url}/v1/messages?id=d-req2`, {
       method: "POST",
       headers: { "content-length": String(body.length) },
       body: Buffer.from(body),
@@ -324,7 +369,7 @@ describe("byte-based admission gate — disconnect while queued (P0-2d)", () => 
     // budget freed from step 4). If req2's disconnection leaked the reservation,
     // req3 would queue forever instead of reaching upstream.
     const controller3 = new AbortController();
-    void fetch(`${subswitch.url}/v1/messages`, {
+    void fetch(`${subswitch.url}/v1/messages?id=d-req3`, {
       method: "POST",
       headers: { "content-length": String(body.length) },
       body: Buffer.from(body),
@@ -333,6 +378,8 @@ describe("byte-based admission gate — disconnect while queued (P0-2d)", () => 
 
     const req3Admitted = await pollUntil(() => parked.parkedRes !== null, 3000);
     assert.ok(req3Admitted, "req3 must be admitted after req2 disconnect + req1 release (no reservation leak)");
+    // Identity assertion: must be req3 (not a leaked/zombie req2) that reached upstream.
+    assert.ok(parked.parkedUrl?.includes("d-req3"), `upstream must hold req3, got url: ${parked.parkedUrl}`);
 
     controller1.abort();
     controller3.abort();
@@ -362,7 +409,7 @@ describe("byte-based admission gate — counter returns to zero when idle (P0-2e
 
     // Cycle 1: fill the budget, then abort the client (closes socket → releases slot).
     const controller1 = new AbortController();
-    const req1 = fetch(`${subswitch.url}/v1/messages`, {
+    const req1 = fetch(`${subswitch.url}/v1/messages?id=e-cycle1`, {
       method: "POST",
       headers: { "content-length": String(body.length) },
       body: Buffer.from(body),
@@ -371,9 +418,11 @@ describe("byte-based admission gate — counter returns to zero when idle (P0-2e
 
     const cycle1Parked = await pollUntil(() => parked.parkedRes !== null, 2000);
     assert.ok(cycle1Parked, "cycle 1 must park in upstream");
+    assert.ok(parked.parkedUrl?.includes("e-cycle1"), `upstream must hold cycle1, got url: ${parked.parkedUrl}`);
 
     // Abort releases the client socket → proxy's res.close fires → budget decremented.
     parked.parkedRes = null;
+    // (parkedUrl is updated automatically when the next request parks)
     controller1.abort();
     await req1;
 
@@ -382,7 +431,7 @@ describe("byte-based admission gate — counter returns to zero when idle (P0-2e
 
     // Cycle 2: budget must be 0 so this request is admitted immediately.
     const controller2 = new AbortController();
-    const req2 = fetch(`${subswitch.url}/v1/messages`, {
+    const req2 = fetch(`${subswitch.url}/v1/messages?id=e-cycle2`, {
       method: "POST",
       headers: { "content-length": String(body.length) },
       body: Buffer.from(body),
@@ -391,6 +440,8 @@ describe("byte-based admission gate — counter returns to zero when idle (P0-2e
 
     const cycle2Admitted = await pollUntil(() => parked.parkedRes !== null, 2000);
     assert.ok(cycle2Admitted, "cycle 2 must reach upstream — counter must have returned to 0 after cycle 1");
+    // Identity: must be cycle2, not a stale cycle1 entry.
+    assert.ok(parked.parkedUrl?.includes("e-cycle2"), `upstream must hold cycle2, got url: ${parked.parkedUrl}`);
 
     controller2.abort();
     await req2;
@@ -459,6 +510,10 @@ describe("byte-based admission gate — queue-bound exhaustion returns 529 (P0-2
 
 // ---------------------------------------------------------------------------
 // (g) Health endpoint is never gated.
+//
+// Non-vacuity / positive control: before checking health, we verify that a
+// second non-health POST IS gated (queued, not admitted) while the first holds
+// the budget. This proves the gate is engaged, not simply removed.
 // ---------------------------------------------------------------------------
 
 describe("byte-based admission gate — health never gated (P0-2g)", () => {
@@ -469,27 +524,140 @@ describe("byte-based admission gate — health never gated (P0-2g)", () => {
     // Minimal budget (1 byte) + 10-byte request fills it immediately.
     const subswitch = await startSubswitch({
       anthropic: { baseUrl: parked.url },
-      limits: { maxInFlightBytes: 1 },
+      limits: { maxInFlightBytes: 1, maxQueueWaitMs: 10_000 },
     });
     cleanups.push(subswitch.close);
 
     const body = Buffer.alloc(10, "x");
-    const controller = new AbortController();
+
+    // req1: admitted via single-request progress (server idle despite budget = 1 byte).
+    const controller1 = new AbortController();
     void fetch(`${subswitch.url}/v1/messages`, {
       method: "POST",
       headers: { "content-length": String(body.length) },
       body,
-      signal: controller.signal,
+      signal: controller1.signal,
     }).catch(() => { /* AbortError expected at cleanup */ });
 
-    // Wait for the request to be admitted and hold the budget.
+    // Wait for req1 to be admitted and hold the budget.
     await pollUntil(() => parked.parkedRes !== null, 2000);
+    assert.ok(parked.parkedRes !== null, "req1 must park in upstream (holding the byte budget)");
+
+    // Positive control: a second non-health POST must be QUEUED (not admitted immediately).
+    // This proves the gate is actually engaged — if the gate were disabled, req2 would
+    // bypass and park in the upstream immediately.
+    const controller2 = new AbortController();
+    void fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-length": String(body.length) },
+      body: Buffer.from(body),
+      signal: controller2.signal,
+    }).catch(() => { /* aborted */ });
+
+    // Reset parkedRes so we can detect whether req2 sneaks through.
+    parked.parkedRes = null;
+    // (parkedUrl is updated automatically when the next request parks)
+
+    // Give req2 time to reach the gate.
+    await new Promise<void>((r) => setTimeout(r, 30));
+
+    assert.equal(parked.parkedRes, null, "positive control: a second POST must be queued — gate is engaged");
 
     // Health must NEVER be gated — it is handled before the admission check.
     const healthRes = await fetch(`${subswitch.url}/__subswitch/health`);
     assert.equal(healthRes.status, 200, "health endpoint must return 200 even with budget exhausted");
     await healthRes.body?.cancel();
 
-    controller.abort();
+    controller1.abort();
+    controller2.abort();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (h) FIFO — later arrivals cannot barge past queued requests.
+//
+// Scenario: A fills the budget, B queues (cannot fit), then five small C
+// requests arrive.  The Cs must not barge past the waiting B.
+// After releasing A, B must be admitted next (FIFO), then the Cs.
+//
+// Non-vacuity: with the FIFO guard removed (old code: no queue.length === 0
+// check), each C would be immediately admitted (fits the freed slot), so B
+// would starve and eventually time out with 529.  The test asserts B's URL
+// is the FIRST arrival after A is released, which fails without the fix.
+// ---------------------------------------------------------------------------
+
+describe("byte-based admission gate — FIFO: no barging past queued requests (P0-2h)", () => {
+  it("a large queued request is admitted before later-arriving small ones", async () => {
+    // Record all arrivals in order so we can assert B arrived before the Cs.
+    const arrivals: string[] = [];
+    const parkedList: ServerResponse[] = [];
+
+    const server = http.createServer((req: IncomingMessage, res: ServerResponse) => {
+      const url = req.url ?? "";
+      req.on("data", () => {});
+      req.on("end", () => {
+        arrivals.push(url);
+        parkedList.push(res);
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const upstreamUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const BUDGET = 60;
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: upstreamUrl },
+      limits: { maxInFlightBytes: BUDGET, maxQueueWaitMs: 10_000 },
+    });
+    cleanups.push(subswitch.close);
+    cleanups.push(() => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }));
+
+    const post = (id: string, n: number): AbortController => {
+      const c = new AbortController();
+      const b = Buffer.alloc(n, "x");
+      void fetch(`${subswitch.url}/v1/messages?id=${id}`, {
+        method: "POST",
+        headers: { "content-length": String(n) },
+        body: b,
+        signal: c.signal,
+      }).catch(() => {});
+      return c;
+    };
+    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+    // A fills the budget (60 bytes).
+    const cA = post("A", BUDGET);
+    // Wait for A to park.
+    await pollUntil(() => arrivals.length >= 1, 2000);
+    assert.equal(arrivals[0], "/v1/messages?id=A", "A must be first arrival");
+
+    // B queues (60 + 60 > 60 — cannot fit while A holds the slot).
+    const cB = post("B", BUDGET);
+    await sleep(80); // B must be in the queue
+
+    // Five Cs arrive — each is 1 byte. They MUST NOT barge past B.
+    const cCs: AbortController[] = [];
+    for (let i = 0; i < 5; i++) {
+      cCs.push(post(`C${i}`, 1));
+      await sleep(20);
+    }
+    await sleep(100); // let any barging attempts settle
+
+    // With the FIFO guard, Cs cannot be admitted while B is queued.
+    assert.equal(arrivals.length, 1, `only A should have arrived at upstream; got ${JSON.stringify(arrivals)}`);
+
+    // Release A — drainQueue runs. B must be admitted first (FIFO).
+    // Release all parked responses first so connection slots are freed.
+    for (const r of parkedList) { r.writeHead(200); r.end("{}"); }
+    parkedList.length = 0;
+
+    // Wait for B to arrive.
+    await pollUntil(() => arrivals.length >= 2, 3000);
+    assert.equal(arrivals[1], "/v1/messages?id=B", `B must be admitted before any C; arrivals: ${JSON.stringify(arrivals)}`);
+
+    // Clean up.
+    cA.abort();
+    cB.abort();
+    cCs.forEach((c) => c.abort());
+    for (const r of parkedList) { try { r.writeHead(200); r.end("{}"); } catch {} }
   });
 });

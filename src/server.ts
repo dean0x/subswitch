@@ -308,17 +308,8 @@ const peekModel = (parsed: unknown): string | undefined => {
   return result.success ? result.data.model : undefined;
 };
 
-/**
- * Sentinel error thrown when a client disconnects while its request is in the
- * admission queue. Used to short-circuit the dispatch catch handler — no error
- * response should be sent to an already-closed connection.
- */
-class DisconnectedWhileQueued extends Error {
-  constructor() {
-    super("client disconnected while queued");
-    this.name = "DisconnectedWhileQueued";
-  }
-}
+/** Discriminated error kind returned by acquireSlot when the slot cannot be granted. */
+type SlotError = { readonly kind: "queue_full" | "queue_timeout" | "disconnected" };
 
 /**
  * One entry in the byte-based admission queue.
@@ -329,7 +320,6 @@ class DisconnectedWhileQueued extends Error {
 interface QueueEntry {
   readonly reservationBytes: number;
   readonly resolve: () => void;
-  readonly reject: (err: Error) => void;
   readonly timer: ReturnType<typeof setTimeout>;
 }
 
@@ -386,6 +376,13 @@ export const createProxyServer = (deps: ServerDeps): Server => {
    * estimate that prevents absent content-length from becoming a bypass.
    * Non-buffered requests (non-POST, non-/v1/messages) contribute 0 bytes:
    * they stream through the http.Agent without accumulating in Node.js heap.
+   *
+   * Chunked-request ceiling (before reconciliation): with the default 32 MiB
+   * maxBodyBytes and 2 GiB budget, the flat reservation allows ~64 concurrent
+   * chunked /v1/messages requests before the gate starts queueing.  The
+   * reconciliation block in dispatch() corrects each reservation to the actual
+   * buffered size once bufferBody() returns, so the ceiling only applies during
+   * the brief buffering window — not for the full request lifetime.
    */
   const getReservationBytes = (incomingReq: IncomingMessage, pathname: string): number => {
     const contentLength = incomingReq.headers["content-length"];
@@ -404,25 +401,32 @@ export const createProxyServer = (deps: ServerDeps): Server => {
   /**
    * Acquire a byte slot from the budget.
    *
-   * Returns immediately when the budget has room. Queues the request when the
-   * budget is full — the returned Promise resolves when the slot opens. Rejects
-   * when the queue is full (caller returns 529) or when the client disconnects
-   * while queued (DisconnectedWhileQueued — caller should silently return).
+   * Returns `ok(undefined)` immediately when the budget has room and the queue is
+   * empty (FIFO: new arrivals do not jump over waiting requests).  Queues the
+   * request when the budget is full — the Result resolves ok when the slot opens.
+   * Returns err when the queue is full (caller returns 529) or when the client
+   * disconnects while queued (kind "disconnected" — caller should silently return).
+   *
+   * FIFO guarantee: immediate admission is only granted when queue.length === 0.
+   * A stream of small requests cannot barge past a large queued request (no
+   * starvation-to-529 path).
    */
-  const acquireSlot = (req: IncomingMessage, reservationBytes: number): Promise<void> => {
-    // Immediate admission: budget available, OR server is idle (single-request progress).
-    if (inFlightBytes === 0 || inFlightBytes + reservationBytes <= config.limits.maxInFlightBytes) {
+  const acquireSlot = (req: IncomingMessage, reservationBytes: number): Promise<Result<void, SlotError>> => {
+    // Immediate admission: queue empty AND (budget available OR server idle for single-request progress).
+    // Checking queue.length === 0 preserves FIFO: new arrivals must join the queue when
+    // waiters are already present, preventing starvation of large queued requests.
+    if (queue.length === 0 && (inFlightBytes === 0 || inFlightBytes + reservationBytes <= config.limits.maxInFlightBytes)) {
       inFlightBytes += reservationBytes;
-      return Promise.resolve();
+      return Promise.resolve(ok(undefined));
     }
 
     // Queue full — last resort 529.
     if (queue.length >= config.limits.maxQueueDepth) {
-      return Promise.reject(new Error("queue_full"));
+      return Promise.resolve(err({ kind: "queue_full" as const }));
     }
 
     // Queue the request.
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<Result<void, SlotError>>((resolve) => {
       // Use a mutable slot reference so both closures can find the entry by identity
       // without a temporal-dead-zone problem.  The slot is filled synchronously before
       // either callback can fire (setTimeout with positive delay, event loop).
@@ -436,7 +440,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           clearTimeout(entrySlot.timer);
           entrySlot = undefined;
           drainQueue(); // a slot opened — try admitting the next waiter
-          reject(new DisconnectedWhileQueued());
+          resolve(err({ kind: "disconnected" as const }));
         }
       };
 
@@ -447,7 +451,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           queue.splice(idx, 1);
           req.removeListener("close", onDisconnect);
           entrySlot = undefined;
-          reject(new Error("queue_timeout"));
+          resolve(err({ kind: "queue_timeout" as const }));
         }
       }, config.limits.maxQueueWaitMs);
 
@@ -456,9 +460,8 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         resolve: () => {
           req.removeListener("close", onDisconnect);
           entrySlot = undefined;
-          resolve();
+          resolve(ok(undefined));
         },
-        reject,
         timer,
       };
 
@@ -503,12 +506,18 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       // Requests that exceed the in-flight budget are QUEUED, not rejected — a relay-invented
       // rejection that the origin would not have produced is a defect.
       // If the queue itself is full, HTTP 529 overloaded_error is the correct Anthropic status.
-      const reservationBytes = getReservationBytes(req, pathname);
-      try {
-        await acquireSlot(req, reservationBytes);
-      } catch (slotErr: unknown) {
-        if (slotErr instanceof DisconnectedWhileQueued) {
+      //
+      // `reservationBytes` is a `let` so chunked requests can be reconciled to their actual
+      // size after bufferBody completes (see reconciliation block below).  The releaseSlot
+      // closure captures the binding, so updating the variable updates what it decrements.
+      let reservationBytes = getReservationBytes(req, pathname);
+      const slotResult = await acquireSlot(req, reservationBytes);
+      if (!slotResult.ok) {
+        if (slotResult.error.kind === "disconnected") {
           // Client disconnected while waiting in queue — nothing to send, clean exit.
+          // Set route to a sentinel value so request_complete does not log a spurious
+          // "anthropic / status 200" for a request that was never served.
+          route = "disconnected_while_queued";
           return;
         }
         // Queue full or queue timeout — 529 overloaded_error (not 503, per Anthropic taxonomy).
@@ -530,9 +539,15 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       const releaseSlot = (): void => {
         if (released) return;
         released = true;
-        inFlightBytes = Math.max(0, inFlightBytes - reservationBytes);
-        // Invariant: inFlightBytes ≥ 0.  Math.max(0, …) is the defensive bound; in correct
-        // operation this branch is never taken (every release matches an acquire).
+        const delta = inFlightBytes - reservationBytes;
+        if (delta < 0) {
+          // A negative delta indicates a double-release or mismatched acquire/release pair.
+          // We log rather than throw: crashing a running relay on an accounting slip is worse
+          // than the slip itself; the clamp keeps the counter non-negative.  Operators should
+          // treat this as a bug-level event requiring investigation.
+          logger.log("error", "inFlightBytes_underflow", { inFlightBytes, reservationBytes });
+        }
+        inFlightBytes = Math.max(0, delta);
         drainQueue();
       };
       res.once("finish", releaseSlot);
@@ -556,6 +571,34 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           req.destroy();
         }
         return;
+      }
+
+      // Chunked-reservation reconciliation (Required 5 / FIFO / starvation mitigation):
+      //
+      // For chunked POST /v1/messages (no content-length header), getReservationBytes
+      // reserved config.limits.maxBodyBytes (e.g. 32 MiB) as a conservative estimate to
+      // prevent absent content-length from becoming a bypass.  Now that bufferBody has
+      // returned we know the actual size.
+      //
+      // Holding the full 32 MiB reservation until response completion limits the effective
+      // concurrency for chunked requests: 2 GiB budget ÷ 32 MiB/slot = ~64 concurrent
+      // chunked requests, below the ~100 peak stated in the budget rationale.  Reconciling
+      // to the actual size frees the excess immediately so subsequent requests queue less
+      // aggressively.
+      //
+      // Safety: `reservationBytes` is a `let` declared before releaseSlot (same dispatch()
+      // scope).  releaseSlot captures the binding, so updating it here changes what it
+      // decrements.  Correctness: inFlightBytes already holds the original flat reservation;
+      // subtracting (reservationBytes - actual) keeps inFlightBytes = Σ actual reservations.
+      // The reconciled actual can never underflow: inFlightBytes ≥ reservationBytes (we
+      // reserved it) and actual ≥ 0, so inFlightBytes - (reservationBytes - actual) ≥ actual ≥ 0.
+      if (req.headers["content-length"] === undefined) {
+        const actual = body.value.length;
+        if (actual < reservationBytes) {
+          inFlightBytes -= reservationBytes - actual;
+          reservationBytes = actual;
+          drainQueue(); // reduced budget may now admit a waiting request
+        }
       }
 
       // Parse the body JSON once. The parsed value is passed to the provider handler
@@ -636,8 +679,6 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     };
 
     dispatch().catch((cause: unknown) => {
-      // DisconnectedWhileQueued: client left before being admitted — nothing to send.
-      if (cause instanceof DisconnectedWhileQueued) return;
       logger.log("error", "request_failed", { path: pathname, errorCode: cause instanceof Error ? cause.name : "unknown" });
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });

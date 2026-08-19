@@ -428,3 +428,69 @@ describe("routing — table built once via ownKeys trap (P2)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// L1 (real-registry): "claude-sonnet-9:preview" routes to Anthropic, not 400.
+//
+// The CHANGELOG motivation for the F6g / L1 fix is that namespaced model ids
+// like "claude-sonnet-9:preview" must not be rejected with a relay-invented 400
+// citing the provider registry.  The existing F6g test uses a synthetic resolver
+// to drive the unknown_qualifier path; this test exercises the REAL registry so
+// the literal motivating name has end-to-end coverage.
+//
+// Non-vacuity: if the relay returned 400 for unknown qualifiers, this test would
+// fail at assert.notEqual(response.status, 400).
+// ---------------------------------------------------------------------------
+
+describe("routing — 'claude-sonnet-9:preview' routes to Anthropic via the real registry (L1-real)", () => {
+  it("forwards claude-sonnet-9:preview to Anthropic (200, byte-identical body) — real registry, no synthetic seam", async () => {
+    const cleanups: Array<() => Promise<void>> = [];
+
+    // Fake Anthropic that returns a recognisable response body.
+    const anthropicUpstream = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_real_registry_l1" }));
+    });
+    cleanups.push(anthropicUpstream.close);
+
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-l1-real-"));
+    const authFilePath = join(dir, "auth.json");
+    await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
+
+    // startSubswitch with NO `resolve` override — the real registry resolver is used.
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: anthropicUpstream.url },
+      providers: { codex: { authFile: authFilePath } },
+    });
+    cleanups.push(subswitch.close);
+
+    try {
+      const response = await fetch(`${subswitch.url}/v1/messages`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer sk-ant",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-9:preview",
+          max_tokens: 16,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+
+      // Must NOT return 400 — the relay must not police names it does not recognise.
+      assert.notEqual(response.status, 400, "'claude-sonnet-9:preview' must not return 400 (relay must fail open)");
+
+      // Must reach Anthropic (the real registry knows no provider for 'claude-sonnet-9:preview').
+      assert.equal(anthropicUpstream.requests.length, 1, "request must be forwarded to Anthropic");
+      assert.equal(response.status, 200, "Anthropic response must be forwarded with status 200");
+
+      // Response body must be forwarded byte-identical (no relay mangling).
+      const parsed = (await response.json()) as { id: string };
+      assert.equal(parsed.id, "msg_real_registry_l1", "response body must be forwarded byte-identical from upstream");
+    } finally {
+      for (const cleanup of cleanups.reverse()) await cleanup();
+    }
+  });
+});

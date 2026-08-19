@@ -55,7 +55,6 @@ export type AnthropicErrorType =
   | "invalid_request_error"
   | "authentication_error"
   | "permission_error"
-  | "not_found_error"
   | "request_too_large"
   | "rate_limit_error"
   | "api_error"
