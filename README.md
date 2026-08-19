@@ -435,6 +435,32 @@ is not a TTY (useful in terminals that misreport TTY state); `CI` — also suppr
 color and disables interactive `init` prompts (treated as a non-interactive
 environment).
 
+### `route` field values
+
+The `route` field on `request_complete` and `client_disconnected` events identifies
+how the request was dispatched. Valid values:
+
+| Value | When |
+|-------|------|
+| `anthropic` | Request forwarded to Anthropic verbatim (normal passthrough — unresolved or plain Anthropic model names) |
+| `anthropic:ambiguous` | Fail-open forward: two providers claim the same family name; relay forwards to Anthropic and emits `ambiguous_model_name` warn |
+| `anthropic:fallback` | Fail-open forward: colon-qualified name whose prefix is not a registered provider; relay forwards to Anthropic and emits `unknown_provider_qualifier` warn |
+| `codex:{endpoint}:{model}` | Request routed to the Codex provider leg (e.g. `codex:messages:gpt-5.6-sol`, `codex:count_tokens:gpt-5.6-sol`) |
+| `internal_error` | Unhandled exception during request handling; relay returned a synthesized 500 |
+
+The `anthropic:ambiguous` and `anthropic:fallback` values both carry the `anthropic` prefix so
+leg-level filtering (`route starts with anthropic`) continues to work. The suffix makes
+fail-open forwards distinguishable from intended Anthropic routes in log queries and alerting.
+
+### Log events
+
+| Event | Level | Fields | Notes |
+|-------|-------|--------|-------|
+| `request_complete` | `info` | path, route, model, status, latencyMs | Emitted once per request that received a response. `model` is omitted when not present in the request body. |
+| `client_disconnected` | `info` | path, route, model, latencyMs | Emitted instead of `request_complete` when the client closed the connection before any response headers were sent (e.g. cancelled upload). No `status` field — `res.statusCode` would be Node's 200 initialiser, not a real status. |
+| `ambiguous_model_name` | `warn` | model | Two providers claim the same family name. `model` carries the ambiguous name annotated with the provider list: `"name (p1, p2)"`. Request is forwarded to Anthropic (route `anthropic:ambiguous`). |
+| `unknown_provider_qualifier` | `warn` | model | Colon-qualified model name whose prefix is not a registered provider. `model` is the full as-requested name (e.g. `"kimee:k2"`). Request is forwarded to Anthropic (route `anthropic:fallback`). |
+
 ## `x-subswitch-synthesized`
 
 Every HTTP response that subswitch generates itself — rather than proxying

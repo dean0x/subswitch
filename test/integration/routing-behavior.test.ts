@@ -59,7 +59,7 @@ describe("routing — ambiguous family forwards to Anthropic (F7)", () => {
     const authFilePath = join(dir, "auth.json");
     await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
 
-    const captured: Array<{ event: string; model: string | undefined }> = [];
+    const captured: Array<{ event: string; fields: Record<string, unknown> }> = [];
     const subswitch = await startSubswitch(
       {
         anthropic: { baseUrl: anthropic.url },
@@ -67,7 +67,7 @@ describe("routing — ambiguous family forwards to Anthropic (F7)", () => {
       },
       {
         resolve,
-        logger: { log(_level, event, fields?: Record<string, unknown>) { captured.push({ event, model: fields?.model as string | undefined }); } },
+        logger: { log(_level: string, event: string, fields: Record<string, unknown> = {}) { captured.push({ event, fields }); } },
       },
     );
     cleanups.push(subswitch.close);
@@ -92,12 +92,18 @@ describe("routing — ambiguous family forwards to Anthropic (F7)", () => {
       await response.body?.cancel();
 
       // A warn log must be emitted with both provider names in the model field.
-      await new Promise<void>((r) => setTimeout(r, 20));
+      await new Promise<void>((r) => setTimeout(r, 50));
       const warnLog = captured.find((e) => e.event === "ambiguous_model_name");
       assert.ok(warnLog !== undefined, "ambiguous_model_name warn must be logged");
-      assert.ok(warnLog.model?.includes("fast"), "warn log model field must include the ambiguous name");
-      assert.ok(warnLog.model?.includes("codex"), "warn log model field must include first provider");
-      assert.ok(warnLog.model?.includes("kimi"), "warn log model field must include second provider");
+      assert.ok((warnLog.fields.model as string | undefined)?.includes("fast"), "warn log model field must include the ambiguous name");
+      assert.ok((warnLog.fields.model as string | undefined)?.includes("codex"), "warn log model field must include first provider");
+      assert.ok((warnLog.fields.model as string | undefined)?.includes("kimi"), "warn log model field must include second provider");
+
+      // C1 (I-022): request_complete.route must identify fail-open ambiguous forwards as distinct
+      // from intended Anthropic routes so operators can filter them separately (applies ADR-010, avoids PF-023).
+      const completionLog = captured.find((e) => e.event === "request_complete");
+      assert.ok(completionLog !== undefined, "request_complete must be logged after ambiguous forward");
+      assert.equal(completionLog.fields.route, "anthropic:ambiguous", "request_complete route must be anthropic:ambiguous, not plain anthropic");
     } finally {
       for (const cleanup of cleanups.reverse()) await cleanup();
     }
@@ -183,7 +189,14 @@ describe("routing — unknown provider qualifier fails open to Anthropic (F6g / 
       // Removing the warn log from server.ts (line ~571) causes this assertion to fail.
       const warnLog = captured.find((e) => e.event === "unknown_provider_qualifier");
       assert.ok(warnLog !== undefined, "unknown_provider_qualifier warn must be logged");
-      assert.equal(warnLog.fields.model, "kimee", "warn must carry the unknown qualifier as model field");
+      // I-051: warn must carry the full requested model name ("kimee:k2"), not just the qualifier ("kimee").
+      assert.equal(warnLog.fields.model, "kimee:k2", "warn must carry the full requested model name, not just the qualifier");
+
+      // C1 (I-022): request_complete.route must identify fail-open unknown-qualifier forwards as distinct
+      // from intended Anthropic routes so operators can filter them separately (applies ADR-010, avoids PF-023).
+      const completionLog = captured.find((e) => e.event === "request_complete");
+      assert.ok(completionLog !== undefined, "request_complete must be logged after unknown-qualifier forward");
+      assert.equal(completionLog.fields.route, "anthropic:fallback", "request_complete route must be anthropic:fallback, not plain anthropic");
     } finally {
       for (const cleanup of cleanups.reverse()) await cleanup();
     }

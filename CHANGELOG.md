@@ -119,6 +119,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `request_too_large` and `not_found_error` added to the internal `AnthropicErrorType` union.
+- **`client_disconnected` log event** — emitted (at `info` level) when the client closes the
+  connection before any response headers are sent (e.g. a cancelled upload). Fields: `path`,
+  `route`, `model` (optional), `latencyMs`. `request_complete` is **not** emitted for the same
+  request — the two events are mutually exclusive. This distinguishes an abandoned request from a
+  served one: without this event, a vanished client would either produce no log entry or a
+  misleading `request_complete status=200` (Node's default initialiser, not a real status).
+- **Two new `route` values for fail-open forwards** — `anthropic:ambiguous` (two providers claim
+  the same family name) and `anthropic:fallback` (colon-qualified name with an unknown prefix).
+  Both carry the `anthropic` prefix so leg-level filtering continues to work; the suffix makes
+  fail-open forwards distinguishable from intended Anthropic routes in `request_complete` and
+  `client_disconnected` log queries.
+
+### Changed
+
+- **`route` field: three values retired on this branch.** Operators filtering logs on `route`
+  should update their queries:
+  - `"rate_limited"` — removed with the admission gate; requests are no longer rejected at the
+    relay level for rate-limit reasons.
+  - `"ambiguous"` — replaced by `"anthropic:ambiguous"` (fail-open forward; see above).
+  - `"unknown_provider"` — replaced by `"anthropic:fallback"` (fail-open forward; see above).
 
 ### Removed (BREAKING)
 

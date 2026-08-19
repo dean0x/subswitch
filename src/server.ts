@@ -583,7 +583,9 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           // annotated with the provider list ("name (p1, p2)") so operators can identify and
           // disambiguate the alias.
           logger.log("warn", "ambiguous_model_name", { model: `${decision.name} (${decision.providers.join(", ")})` });
-          route = "anthropic";
+          // Distinct route label so request_complete is distinguishable from an intended
+          // Anthropic route in post-hoc log analysis (applies ADR-010, avoids PF-023).
+          route = "anthropic:ambiguous";
           deps.forwardAnthropic(req, res, body.value);
           return;
         }
@@ -593,9 +595,13 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           // Fail open: forward to Anthropic and log a diagnostic warning. The origin may
           // support the name (future namespaced/variant ids); a relay-invented 400 that names
           // OUR provider registry in the error message is confusing and incorrect.
-          // The log preserves diagnostic value for operators without breaking the client.
-          logger.log("warn", "unknown_provider_qualifier", { model: decision.qualifier });
-          route = "anthropic";
+          // Log the full as-requested model name (e.g. "kimee:k2") so operators see what the
+          // client sent, not just the extracted qualifier — the qualifier alone loses the model
+          // part of the name and is less actionable (I-051).
+          logger.log("warn", "unknown_provider_qualifier", { model: model ?? decision.qualifier });
+          // Distinct route label so request_complete is distinguishable from an intended
+          // Anthropic route in post-hoc log analysis (applies ADR-010, avoids PF-023).
+          route = "anthropic:fallback";
           deps.forwardAnthropic(req, res, body.value);
           return;
         }
