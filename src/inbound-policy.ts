@@ -26,12 +26,20 @@ import type { Logger } from "./logger.js";
  *
  * Exported so tests can apply the same values to test servers (no fixture drift).
  *
+ * The member names (`requestTimeout`, `headersTimeout`, `keepAliveTimeout`,
+ * `maxRequestsPerSocket`, `maxHeaderSize`) mirror `http.Server`'s own property
+ * names verbatim; they are unrelated to the `providers.*.requestTimeoutMs`
+ * config knobs.
+ *
  * requestTimeout (600 s): Anthropic's own server-side ceiling for long-running
  * completions; the relay must never fire before the origin.
  * headersTimeout (120 s): maximum time to receive all request headers — protects
  * against slow-loris header attacks while allowing realistic clients.
- * keepAliveTimeout (300 s): matches the Anthropic keep-alive pool's idle-socket
- * timeout so the server does not close sockets the pool would still reuse.
+ * keepAliveTimeout (300 s): guards against PF-018. Node's 5 s default can close
+ * an idle inbound keep-alive socket at the exact moment a client starts writing
+ * its next POST on it; the client gets ECONNRESET on a non-idempotent request
+ * the relay cannot retry. 300 s makes that window negligible for long-running
+ * agents.
  * maxRequestsPerSocket: 0 disables Node's built-in per-socket request ceiling
  * (its default is 0 as of Node 19, but explicit is safer).
  * maxHeaderSize: 64 KiB — generous for any legitimate Anthropic request but
@@ -94,9 +102,33 @@ const MALFORMED_REQUEST_RESPONSE = {
 } as const;
 
 /**
+ * Prototype-safe lookup: returns the mapped response for a known error code, or
+ * MALFORMED_REQUEST_RESPONSE as the fallback.
+ *
+ * A bare bracket read (`CLIENT_ERROR_RESPONSES[code]`) reaches Object.prototype
+ * for reserved names ("constructor", "__proto__"), returning a truthy value that
+ * is not a response descriptor; `?? MALFORMED_REQUEST_RESPONSE` does not fire
+ * and the socket receives `HTTP/1.1 undefined undefined`.  Object.hasOwn avoids
+ * the prototype chain (avoids PF-021's pattern of hidden prototype paths;
+ * matches Object.hasOwn usage at config.ts:hasOwnPath and models.ts:byAlias).
+ *
+ * @internal Exported for unit testing only.
+ */
+export const responseForClientError = (code: string): { readonly status: number; readonly reason: string; readonly type: AnthropicErrorType; readonly message: string } =>
+  Object.hasOwn(CLIENT_ERROR_RESPONSES, code)
+    // Non-null assertion: Object.hasOwn guarantees the key is a direct property.
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    ? CLIENT_ERROR_RESPONSES[code]!
+    : MALFORMED_REQUEST_RESPONSE;
+
+/**
  * Apply the relay's inbound transport policy to `server`: the post-construction
  * tuning knobs and the `clientError` handler that owns the responses those knobs
  * produce.  One call, so the two halves cannot be applied independently (PF-021).
+ *
+ * Idempotent: a second call on the same server is a no-op.  Calling `server.on`
+ * twice would register two `clientError` listeners and double-reply into the
+ * same socket.
  *
  * clientError handling: malformed requests, header overflow and inbound timeouts
  * get an Anthropic-shaped response body and the synthesized marker.
@@ -113,11 +145,20 @@ const MALFORMED_REQUEST_RESPONSE = {
  * reports the request timeout after the handler has replied, and the reply must
  * not be corrupted.
  */
+
+/** Servers that have already been configured — prevents double-registration. */
+const appliedServers = new WeakSet<http.Server>();
+
 export const applyInboundPolicy = (server: http.Server, logger: Logger): void => {
-  // Apply server-level HTTP tuning knobs. These must be set after construction
-  // (not in the createServer options object) to avoid Node version differences
-  // in which options are recognized.  SERVER_TUNING is exported so tests can
-  // apply the same values to their own test servers.
+  if (appliedServers.has(server)) return;
+  appliedServers.add(server);
+
+  // Apply the four post-construction timer/counter knobs.  These have
+  // corresponding http.Server properties; maxHeaderSize is constructor-only
+  // (no http.Server property) and is passed in the options object at
+  // http.createServer in server.ts — the one SERVER_TUNING member not applied
+  // here.  SERVER_TUNING is exported so tests can apply the same values to their
+  // own test servers.
   server.requestTimeout = SERVER_TUNING.requestTimeout;
   server.headersTimeout = SERVER_TUNING.headersTimeout;
   server.keepAliveTimeout = SERVER_TUNING.keepAliveTimeout;
@@ -176,7 +217,7 @@ export const applyInboundPolicy = (server: http.Server, logger: Logger): void =>
       return;
     }
     const code = err.code ?? "";
-    const { status, reason, type, message } = CLIENT_ERROR_RESPONSES[code] ?? MALFORMED_REQUEST_RESPONSE;
+    const { status, reason, type, message } = responseForClientError(code);
     logger.log("warn", "client_error", { ...(code !== "" ? { errorCode: code } : {}), status });
     const body = toAnthropicErrorBody(type, message);
     const head =
@@ -186,7 +227,8 @@ export const applyInboundPolicy = (server: http.Server, logger: Logger): void =>
       `${SYNTHESIZED_HEADER}: ${SYNTHESIZED_MARKER}\r\n` +
       `connection: close\r\n` +
       `\r\n`;
-    socket.end(head + body);
-    socket.destroy();
+    // Flush the response before destroying; without the callback, destroy() can
+    // race the kernel buffer and truncate the body before the client reads it.
+    socket.end(head + body, () => socket.destroy());
   });
 };
