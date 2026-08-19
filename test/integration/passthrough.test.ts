@@ -115,7 +115,7 @@ describe("anthropic passthrough", () => {
     assert.equal(response.status, 413);
     const body = (await response.json()) as { type: string; error: { type: string } };
     assert.equal(body.type, "error");
-    assert.equal(body.error.type, "invalid_request_error");
+    assert.equal(body.error.type, "request_too_large");
     assert.equal(anthropic.requests.length, 0);
   });
 
