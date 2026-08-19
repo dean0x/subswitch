@@ -73,7 +73,7 @@ const makeMinimalConfig = (overrides: {
         allowInsecureBaseUrl: codexAllowInsecureBaseUrl,
       },
     },
-    limits: { maxBodyBytes: 1024, pingIntervalMs: 15_000, maxConcurrentRequests: 32 },
+    limits: { maxBodyBytes: 1024, pingIntervalMs: 15_000, maxConcurrentRequests: 32, maxInFlightBytes: 2 * 1024 * 1024 * 1024, maxQueueDepth: 1000, maxQueueWaitMs: 60_000 },
   };
 };
 

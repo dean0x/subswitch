@@ -52,7 +52,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Anthropic passthrough — `x-subswitch-synthesized: 1` header marks every relay-generated response; stripped from proxied responses** (stacks on #30).
   Previously a relay fault (502 connection failure, 504 timeout, 500 internal proxy error, 413 body too large,
-  503 concurrency gate) was indistinguishable from an upstream outage on the client side.  Every response the
+  529 concurrency gate) was indistinguishable from an upstream outage on the client side.  Every response the
   relay synthesises itself now carries `x-subswitch-synthesized: 1`; this covers the Anthropic-leg error
   paths, all codex-leg responses (both streaming SSE and aggregated JSON — the codex leg translates
   Codex→Anthropic format so every byte it returns is relay-synthesised), and every relay-generated error in
@@ -81,6 +81,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the real defect was the duplicate warn log only.  A new `settled` flag is now
   set by whichever handler responds first; the error handler returns early when
   `settled` is true, ensuring exactly one warn event per timeout.
+
+### Changed
+
+- **Byte-based admission with queueing** replaces count-based rejection. Requests that would exceed the new `limits.maxInFlightBytes` budget (default 2 GiB) are **queued** until space opens rather than rejected with a relay-invented error. When the queue itself is exhausted, the server returns HTTP **529 overloaded_error** — the correct Anthropic status for this condition (the previous 503 was not a documented Anthropic status code). A single request larger than the budget is still admitted when the server is otherwise idle (single-request progress guarantee). Admission is FIFO: later arrivals cannot jump ahead of waiting requests regardless of size. Budget rationale: measured RSS amplification is ~3.3× raw body size; at realistic peak (~100 concurrent × a few MB each ≈ 300 MB), the 2 GiB default gives ~6× headroom so the gate effectively never fires under ordinary load. Chunked-encoding note: `/v1/messages` requests without `content-length` initially reserve the full `maxBodyBytes` (32 MiB by default) as an anti-bypass measure; that reservation is reconciled to the actual buffered size once the body is read, so the 32 MiB slot is only held for the brief buffering window, not the full request lifetime.
+- **`anthropic.maxUpstreamSockets` default raised from 32 to 256.** With byte-based admission no longer capping concurrent requests at 32, the old socket pool of 32 sockets would have created silent agent-level queuing (~2 extra request-latency waves at 100 concurrent). 256 gives comfortable headroom over realistic peak concurrency.
+- **Colon-bearing model names with unknown prefixes now forward to Anthropic** instead of returning a relay-invented 400. When a model name like `claude-sonnet-9:preview` contains a colon whose prefix is not a registered provider, the relay logs a diagnostic warning and forwards to Anthropic unchanged. Real `codex:` qualified names continue to route to the Codex provider as before.
+- **413 now uses error type `request_too_large`** instead of `invalid_request_error`, matching the Anthropic API's own error taxonomy for oversized bodies.
+
+### Added
+
+- `limits.maxInFlightBytes` config key (default `2147483648` = 2 GiB) — total byte budget for simultaneous in-flight request bodies.
+- `limits.maxQueueDepth` config key (default `1000`) — maximum requests waiting in the admission queue.
+- `limits.maxQueueWaitMs` config key (default `60000`) — maximum milliseconds a queued request waits before receiving 529.
+- `request_too_large` added to the internal `AnthropicErrorType` union.
+
+### Deprecated
+
+- `limits.maxConcurrentRequests` — superseded by `limits.maxInFlightBytes`. Existing config files that set this key continue to load without error but the value is no longer used by the admission gate. Remove it and set `maxInFlightBytes` instead.
 
 ## [0.2.0] - 2026-08-09
 

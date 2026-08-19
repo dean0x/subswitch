@@ -119,7 +119,7 @@ describe("anthropic passthrough", () => {
     assert.equal(response.status, 413);
     const body = (await response.json()) as { type: string; error: { type: string } };
     assert.equal(body.type, "error");
-    assert.equal(body.error.type, "invalid_request_error");
+    assert.equal(body.error.type, "request_too_large");
     assert.equal(anthropic.requests.length, 0);
   });
 
@@ -670,7 +670,7 @@ describe("anthropic passthrough", () => {
   // ---------------------------------------------------------------------------
   //
   // Every response the relay generates itself — 502 (connection failure),
-  // 504 (timeout), 500 (internal proxy error), 413 (body too large), 503
+  // 504 (timeout), 500 (internal proxy error), 413 (body too large), 529
   // (concurrency gate) — carries x-subswitch-synthesized: 1 so operators can
   // distinguish relay faults from upstream faults.  Responses proxied from the
   // origin (including upstream errors such as 429) must NOT carry this header.

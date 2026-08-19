@@ -323,9 +323,168 @@ const synthesizedHeaders = (extra: Record<string, string> = {}): Record<string, 
   ...extra,
 });
 
+/** Discriminated error kind returned by acquireSlot when the slot cannot be granted. */
+type SlotError = { readonly kind: "queue_full" | "queue_timeout" | "disconnected" };
+
+/**
+ * One entry in the byte-based admission queue.
+ *
+ * `resolve` is called to admit the request (inFlightBytes already incremented by drainQueue).
+ * `timer` is the queue-wait timeout handle — cleared on admission or removal.
+ */
+interface QueueEntry {
+  readonly reservationBytes: number;
+  readonly resolve: () => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
 export const createProxyServer = (deps: ServerDeps): Server => {
   const { config, logger } = deps;
-  let activeRequests = 0;
+
+  // ---------------------------------------------------------------------------
+  // Byte-based admission gate
+  //
+  // Replace the count-based 503 gate with a byte-budget gate that queues instead
+  // of rejecting.  Rationale: measured RSS amplification is ~3.3× raw body bytes
+  // (~10 MB RSS per 3.01 MB request body), so body bytes is the real resource.
+  // Count-based rejection at 32 was ~3× below realistic peak (100 concurrent),
+  // causing ordinary traffic to receive errors the origin would not produce.
+  //
+  // Single-request progress: if a request alone exceeds the budget and the server
+  // is otherwise idle (inFlightBytes === 0), it is still admitted — it will be
+  // caught by maxBodyBytes if genuinely oversized.
+  //
+  // Invariant: inFlightBytes ≥ 0 at all times; returns to 0 when all requests
+  // complete.  Violated inFlightBytes is corrected defensively (never negative).
+  // ---------------------------------------------------------------------------
+  let inFlightBytes = 0;
+  const queue: QueueEntry[] = [];
+
+  /**
+   * Drain queued requests into available budget slots.
+   *
+   * Called after each reservation is released. Walk the queue front-to-back and
+   * admit entries that fit. Stop at the first entry that does not fit — FIFO order
+   * is preserved to prevent starvation.
+   */
+  const drainQueue = (): void => {
+    while (queue.length > 0) {
+      const next = queue[0]!;
+      // Admit if budget is available, or if the server is idle (single-request progress).
+      if (inFlightBytes > 0 && inFlightBytes + next.reservationBytes > config.limits.maxInFlightBytes) {
+        break;
+      }
+      queue.shift();
+      clearTimeout(next.timer);
+      inFlightBytes += next.reservationBytes;
+      next.resolve();
+    }
+  };
+
+  /**
+   * Estimate the byte reservation for a request before the body is read.
+   *
+   * Uses `content-length` when present (capped at maxBodyBytes to prevent
+   * inflation from malicious headers).  For POST /v1/messages without
+   * content-length (chunked encoding), falls back to maxBodyBytes — the only
+   * path that actually buffers the body, so this is a conservative-but-honest
+   * estimate that prevents absent content-length from becoming a bypass.
+   * Non-buffered requests (non-POST, non-/v1/messages) contribute 0 bytes:
+   * they stream through the http.Agent without accumulating in Node.js heap.
+   *
+   * Chunked-request ceiling (before reconciliation): with the default 32 MiB
+   * maxBodyBytes and 2 GiB budget, the flat reservation allows ~64 concurrent
+   * chunked /v1/messages requests before the gate starts queueing.  The
+   * reconciliation block in dispatch() corrects each reservation to the actual
+   * buffered size once bufferBody() returns, so the ceiling only applies during
+   * the brief buffering window — not for the full request lifetime.
+   */
+  const getReservationBytes = (incomingReq: IncomingMessage, pathname: string): number => {
+    const contentLength = incomingReq.headers["content-length"];
+    if (contentLength !== undefined) {
+      const parsed = parseInt(contentLength, 10);
+      if (!isNaN(parsed) && parsed >= 0) {
+        return Math.min(parsed, config.limits.maxBodyBytes);
+      }
+    }
+    if (incomingReq.method === "POST" && pathname.startsWith("/v1/messages")) {
+      return config.limits.maxBodyBytes;
+    }
+    return 0;
+  };
+
+  /**
+   * Acquire a byte slot from the budget.
+   *
+   * Returns `ok(undefined)` immediately when the budget has room and the queue is
+   * empty (FIFO: new arrivals do not jump over waiting requests).  Queues the
+   * request when the budget is full — the Result resolves ok when the slot opens.
+   * Returns err when the queue is full (caller returns 529) or when the client
+   * disconnects while queued (kind "disconnected" — caller should silently return).
+   *
+   * FIFO guarantee: immediate admission is only granted when queue.length === 0.
+   * A stream of small requests cannot barge past a large queued request (no
+   * starvation-to-529 path).
+   */
+  const acquireSlot = (req: IncomingMessage, reservationBytes: number): Promise<Result<void, SlotError>> => {
+    // Immediate admission: queue empty AND (budget available OR server idle for single-request progress).
+    // Checking queue.length === 0 preserves FIFO: new arrivals must join the queue when
+    // waiters are already present, preventing starvation of large queued requests.
+    if (queue.length === 0 && (inFlightBytes === 0 || inFlightBytes + reservationBytes <= config.limits.maxInFlightBytes)) {
+      inFlightBytes += reservationBytes;
+      return Promise.resolve(ok(undefined));
+    }
+
+    // Queue full — last resort 529.
+    if (queue.length >= config.limits.maxQueueDepth) {
+      return Promise.resolve(err({ kind: "queue_full" as const }));
+    }
+
+    // Queue the request.
+    return new Promise<Result<void, SlotError>>((resolve) => {
+      // Use a mutable slot reference so both closures can find the entry by identity
+      // without a temporal-dead-zone problem.  The slot is filled synchronously before
+      // either callback can fire (setTimeout with positive delay, event loop).
+      let entrySlot: QueueEntry | undefined;
+
+      const onDisconnect = (): void => {
+        if (entrySlot === undefined) return;
+        const idx = queue.indexOf(entrySlot);
+        if (idx !== -1) {
+          queue.splice(idx, 1);
+          clearTimeout(entrySlot.timer);
+          entrySlot = undefined;
+          drainQueue(); // a slot opened — try admitting the next waiter
+          resolve(err({ kind: "disconnected" as const }));
+        }
+      };
+
+      const timer = setTimeout(() => {
+        if (entrySlot === undefined) return;
+        const idx = queue.indexOf(entrySlot);
+        if (idx !== -1) {
+          queue.splice(idx, 1);
+          req.removeListener("close", onDisconnect);
+          entrySlot = undefined;
+          resolve(err({ kind: "queue_timeout" as const }));
+        }
+      }, config.limits.maxQueueWaitMs);
+
+      const entry: QueueEntry = {
+        reservationBytes,
+        resolve: () => {
+          req.removeListener("close", onDisconnect);
+          entrySlot = undefined;
+          resolve(ok(undefined));
+        },
+        timer,
+      };
+
+      entrySlot = entry;
+      req.once("close", onDisconnect);
+      queue.push(entry);
+    });
+  };
 
   return http.createServer((req, res) => {
     const startedAt = Date.now();
@@ -357,16 +516,57 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         return;
       }
 
-      // Concurrency gate — reject with 503 when active requests exceed the configured limit.
+      // Byte-based admission gate.
       // Checked here (after /__subswitch/* is handled above) so health checks are never gated.
-      activeRequests++;
-      res.on("close", () => { activeRequests--; });
-      if (activeRequests > config.limits.maxConcurrentRequests) {
+      // Requests that exceed the in-flight budget are QUEUED, not rejected — a relay-invented
+      // rejection that the origin would not have produced is a defect.
+      // If the queue itself is full, HTTP 529 overloaded_error is the correct Anthropic status.
+      //
+      // `reservationBytes` is a `let` so chunked requests can be reconciled to their actual
+      // size after bufferBody completes (see reconciliation block below).  The releaseSlot
+      // closure captures the binding, so updating the variable updates what it decrements.
+      let reservationBytes = getReservationBytes(req, pathname);
+      const slotResult = await acquireSlot(req, reservationBytes);
+      if (!slotResult.ok) {
+        if (slotResult.error.kind === "disconnected") {
+          // Client disconnected while waiting in queue — nothing to send, clean exit.
+          // Set route to a sentinel value so request_complete does not log a spurious
+          // "anthropic / status 200" for a request that was never served.
+          route = "disconnected_while_queued";
+          return;
+        }
+        // Queue full or queue timeout — 529 overloaded_error (not 503, per Anthropic taxonomy).
         route = "rate_limited";
-        res.writeHead(503, synthesizedHeaders());
-        res.end(toAnthropicErrorBody("overloaded_error", "too many concurrent requests — try again shortly"));
+        res.writeHead(529, synthesizedHeaders());
+        res.end(toAnthropicErrorBody("overloaded_error", "server overloaded — too many concurrent requests, try again shortly"));
         return;
       }
+      // Release reservation when the response is done.
+      //
+      // Use "finish" (data fully flushed to the OS) rather than "close" (socket dropped):
+      // with HTTP/1.1 keep-alive the socket may stay open long after the response is sent,
+      // so "close" would hold the reservation far longer than necessary. "finish" fires as
+      // soon as res.end() flushes, which is when the buffered body is no longer needed.
+      //
+      // Also listen on "close" as a safety net: if the client drops before "finish" fires
+      // (e.g. mid-stream abort), "close" ensures the reservation is still released.
+      let released = false;
+      const releaseSlot = (): void => {
+        if (released) return;
+        released = true;
+        const delta = inFlightBytes - reservationBytes;
+        if (delta < 0) {
+          // A negative delta indicates a double-release or mismatched acquire/release pair.
+          // We log rather than throw: crashing a running relay on an accounting slip is worse
+          // than the slip itself; the clamp keeps the counter non-negative.  Operators should
+          // treat this as a bug-level event requiring investigation.
+          logger.log("error", "inFlightBytes_underflow", { inFlightBytes, reservationBytes });
+        }
+        inFlightBytes = Math.max(0, delta);
+        drainQueue();
+      };
+      res.once("finish", releaseSlot);
+      res.once("close", releaseSlot);
 
       // Only /v1/messages* bodies are buffered, and only to peek the model for
       // routing; the raw bytes are forwarded untouched so Content-Length holds.
@@ -378,11 +578,42 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       const body = await bufferBody(req, config.limits.maxBodyBytes);
       if (!body.ok) {
         if (body.error.kind === "body_too_large") {
+          // Use `request_too_large` — the error type Anthropic's own API returns for this
+          // condition. `invalid_request_error` was incorrect; clients that key on the real API's
+          // error taxonomy would not recognize the old type for a 413.
           res.writeHead(413, synthesizedHeaders({ connection: "close" }));
-          res.end(toAnthropicErrorBody("invalid_request_error", body.error.message));
+          res.end(toAnthropicErrorBody("request_too_large", body.error.message));
           req.destroy();
         }
         return;
+      }
+
+      // Chunked-reservation reconciliation (Required 5 / FIFO / starvation mitigation):
+      //
+      // For chunked POST /v1/messages (no content-length header), getReservationBytes
+      // reserved config.limits.maxBodyBytes (e.g. 32 MiB) as a conservative estimate to
+      // prevent absent content-length from becoming a bypass.  Now that bufferBody has
+      // returned we know the actual size.
+      //
+      // Holding the full 32 MiB reservation until response completion limits the effective
+      // concurrency for chunked requests: 2 GiB budget ÷ 32 MiB/slot = ~64 concurrent
+      // chunked requests, below the ~100 peak stated in the budget rationale.  Reconciling
+      // to the actual size frees the excess immediately so subsequent requests queue less
+      // aggressively.
+      //
+      // Safety: `reservationBytes` is a `let` declared before releaseSlot (same dispatch()
+      // scope).  releaseSlot captures the binding, so updating it here changes what it
+      // decrements.  Correctness: inFlightBytes already holds the original flat reservation;
+      // subtracting (reservationBytes - actual) keeps inFlightBytes = Σ actual reservations.
+      // The reconciled actual can never underflow: inFlightBytes ≥ reservationBytes (we
+      // reserved it) and actual ≥ 0, so inFlightBytes - (reservationBytes - actual) ≥ actual ≥ 0.
+      if (req.headers["content-length"] === undefined) {
+        const actual = body.value.length;
+        if (actual < reservationBytes) {
+          inFlightBytes -= reservationBytes - actual;
+          reservationBytes = actual;
+          drainQueue(); // reduced budget may now admit a waiting request
+        }
       }
 
       // Parse the body JSON once. The parsed value is passed to the provider handler
@@ -442,16 +673,14 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         }
 
         case "unknown_provider": {
-          // "kimee:k2" — provider prefix not in PROVIDER_IDS. Reject with 400.
-          route = "unknown_provider";
+          // "claude-sonnet-9:preview" or "kimee:k2" — colon prefix is not a known provider id.
+          // Fail open: forward to Anthropic and log a diagnostic warning. The origin may
+          // support the name (future namespaced/variant ids); a relay-invented 400 that names
+          // OUR provider registry in the error message is confusing and incorrect.
+          // The log preserves diagnostic value for operators without breaking the client.
           logger.log("warn", "unknown_provider_qualifier", { model: decision.qualifier });
-          res.writeHead(400, synthesizedHeaders());
-          res.end(
-            toAnthropicErrorBody(
-              "invalid_request_error",
-              `unknown provider '${decision.qualifier}' — known providers: ${PROVIDER_IDS.join(", ")}`,
-            ),
-          );
+          route = "anthropic";
+          deps.forwardAnthropic(req, res, body.value);
           return;
         }
 

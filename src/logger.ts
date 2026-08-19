@@ -23,6 +23,9 @@ export interface LogFields {
    *  Verifies key stability across turns without revealing the full key.
    *  Truncated: non-reversible. */
   readonly sessionKey?: string;
+  /** Byte-gate accounting fields — present only on inFlightBytes_underflow events. */
+  readonly inFlightBytes?: number;
+  readonly reservationBytes?: number;
 }
 
 export interface Logger {

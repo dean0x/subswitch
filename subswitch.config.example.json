@@ -6,7 +6,7 @@
     "connectTimeoutMs": 10000,
     "headerTimeoutMs": 660000,
     "streamIdleTimeoutMs": 300000,
-    "maxUpstreamSockets": 32,
+    "maxUpstreamSockets": 256,
     "allowInsecureBaseUrl": false
   },
   "providers": {
@@ -30,6 +30,8 @@
   "limits": {
     "maxBodyBytes": 33554432,
     "pingIntervalMs": 15000,
-    "maxConcurrentRequests": 32
+    "maxInFlightBytes": 2147483648,
+    "maxQueueDepth": 1000,
+    "maxQueueWaitMs": 60000
   }
 }

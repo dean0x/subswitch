@@ -29,7 +29,7 @@ describe("loadConfig", () => {
     assert.equal(result.value.config.anthropic.connectTimeoutMs, 10_000);
     assert.equal(result.value.config.anthropic.headerTimeoutMs, 660_000);
     assert.equal(result.value.config.anthropic.streamIdleTimeoutMs, 300_000);
-    assert.equal(result.value.config.anthropic.maxUpstreamSockets, 32);
+    assert.equal(result.value.config.anthropic.maxUpstreamSockets, 256);
     assert.equal(result.value.config.providers.codex.baseUrl, "https://chatgpt.com/backend-api/codex");
     assert.equal(result.value.config.providers.codex.oauthTokenUrl, "https://auth.openai.com/oauth/token");
     assert.equal(result.value.config.providers.codex.authFile, join(homedir(), ".codex/auth.json"));
@@ -42,6 +42,9 @@ describe("loadConfig", () => {
     assert.equal(result.value.config.limits.maxBodyBytes, 32 * 1024 * 1024);
     assert.equal(result.value.config.limits.pingIntervalMs, 15_000);
     assert.equal(result.value.config.limits.maxConcurrentRequests, 32);
+    assert.equal(result.value.config.limits.maxInFlightBytes, 2 * 1024 * 1024 * 1024);
+    assert.equal(result.value.config.limits.maxQueueDepth, 1000);
+    assert.equal(result.value.config.limits.maxQueueWaitMs, 60_000);
     assert.equal(result.value.fileFound, false);
   });
 
@@ -256,6 +259,43 @@ describe("loadConfig", () => {
     });
     assert.ok(result.ok);
     assert.equal(result.value.config.limits.maxConcurrentRequests, 64);
+  });
+
+  // -------------------------------------------------------------------------
+  // limits.maxInFlightBytes / maxQueueDepth / maxQueueWaitMs (byte-based gate)
+  // -------------------------------------------------------------------------
+
+  it("limits.maxInFlightBytes defaults to 2 GiB", () => {
+    const result = loadConfig({ readFile: missingFile, env: {} });
+    assert.ok(result.ok);
+    assert.equal(result.value.config.limits.maxInFlightBytes, 2 * 1024 * 1024 * 1024);
+  });
+
+  it("limits.maxInFlightBytes can be overridden via config file", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ limits: { maxInFlightBytes: 512 * 1024 * 1024 } }),
+    });
+    assert.ok(result.ok);
+    assert.equal(result.value.config.limits.maxInFlightBytes, 512 * 1024 * 1024);
+  });
+
+  it("limits.maxQueueDepth defaults to 1000", () => {
+    const result = loadConfig({ readFile: missingFile, env: {} });
+    assert.ok(result.ok);
+    assert.equal(result.value.config.limits.maxQueueDepth, 1000);
+  });
+
+  it("limits.maxQueueWaitMs defaults to 60000", () => {
+    const result = loadConfig({ readFile: missingFile, env: {} });
+    assert.ok(result.ok);
+    assert.equal(result.value.config.limits.maxQueueWaitMs, 60_000);
+  });
+
+  it("anthropic.maxUpstreamSockets defaults to 256 (raised to exceed peak concurrency)", () => {
+    const result = loadConfig({ readFile: missingFile, env: {} });
+    assert.ok(result.ok);
+    assert.equal(result.value.config.anthropic.maxUpstreamSockets, 256);
   });
 
   // -------------------------------------------------------------------------
