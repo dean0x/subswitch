@@ -143,6 +143,14 @@ describe("anthropic passthrough", () => {
       body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
     });
     assert.equal(response.status, 502);
+    // C6: relay-synthesized 502 must carry x-subswitch-synthesized: 1.
+    // Non-vacuity: the marker is set in anthropic-passthrough.ts line 237; removing it
+    // would cause this assertion to fail.
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      "1",
+      "relay-synthesized 502 must carry x-subswitch-synthesized: 1",
+    );
     const body = (await response.json()) as { error: { type: string } };
     assert.equal(body.error.type, "api_error");
   });
@@ -627,13 +635,20 @@ describe("anthropic passthrough", () => {
   // L3: x-subswitch-synthesized marker header
   // ---------------------------------------------------------------------------
   //
-  // Every response the relay generates itself — 502 (connection failure),
-  // 504 (timeout), 500 (internal proxy error), 413 (body too large), 529
-  // (concurrency gate) — carries x-subswitch-synthesized: 1 so operators can
-  // distinguish relay faults from upstream faults.  Responses proxied from the
-  // origin (including upstream errors such as 429) must NOT carry this header.
-  // Additionally, x-subswitch-synthesized is stripped from proxied responses
-  // so that an origin setting it cannot impersonate the relay's marker.
+  // Synthesized-response coverage (as of phase 3 — C10 correction):
+  //   502 (connection failure)  — asserted above in the 502 test (C6)
+  //   504 (connect timeout)     — asserted in "x-subswitch-synthesized: 1 on 504" below
+  //   500 (internal error)      — asserted in the 8d dispatch-error test below
+  //   413 (body too large)      — asserted in the 413 test and 413-race test above
+  //   404 (/__subswitch/*)      — asserted in the L3/8a 404 shape test below
+  //   health 200 (/__subswitch/health) — asserted in health.test.ts
+  //   431 (header overflow)     — asserted in server-wiring.test.ts B4
+  //
+  // 529 (concurrency gate) was removed — the admission gate was deleted (ADR-010).
+  //
+  // Proxied responses (200, 429, etc.) must NOT carry this header.
+  // x-subswitch-synthesized is stripped from proxied responses so an origin
+  // setting it cannot impersonate the relay's marker.
 
   it("L3: x-subswitch-synthesized: 1 is present on a relay-synthesised 504 timeout response", async () => {
     // Produce a 504 via TCP connect timeout to 192.0.2.1 (TEST-NET-1, RFC 5737:
@@ -944,5 +959,122 @@ describe("anthropic passthrough", () => {
       0,
       `client abort must not produce anthropic_upstream_error warn; got: ${JSON.stringify(warnLogs)}`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B5: upstreamEvents() at-most-one contract — every terminal path
+//
+// settle() in anthropic-passthrough.ts ensures that exactly one terminal
+// handler fires per request, preventing duplicate anthropic_upstream_* events.
+//
+// HONEST CONTRACT NOTE: No test in this suite fails on the pre-fix code for
+// this specific guarantee.  The settle() latch was added to fix FRAGILITY in
+// the client-disconnect + upstream-error race, but that race path is now
+// structurally unreachable (the latch itself makes it unreachable).  These
+// tests assert the CONTRACT — at most one anthropic_upstream_* event — and
+// document the terminal path coverage.  They are not proofs of a previously
+// observable failure.
+//
+// Terminal-path coverage table:
+//   response-headers-received  → 0 upstream events — asserted at line ~439
+//   connect timeout            → 1 event (anthropic_upstream_timeout) — asserted ~line 614
+//   client disconnect          → 0 upstream events — asserted ~line 954
+//   upstream error (ECONNRESET) → 1 event (anthropic_upstream_error) — asserted below
+// ---------------------------------------------------------------------------
+
+describe("B5: upstreamEvents at-most-one contract — upstream error terminal path", () => {
+  it("upstream ECONNRESET produces exactly one anthropic_upstream_error event (not zero, not two)", async () => {
+    // This test covers the one terminal path not already asserting the contract:
+    // when the upstream is unreachable and the error handler fires.
+    //
+    // Non-vacuity argument: the upstream_error handler in anthropic-passthrough.ts
+    // calls settle() before logging.  Removing the settle() guard would still produce
+    // exactly one event here because there is only one error on this path — the
+    // contract test for the DUPLICATE case requires a deliberate race that is no
+    // longer reachable.  We document this honestly rather than claiming a proof we
+    // do not have.
+    const captured: Array<{ level: string; event: string }> = [];
+
+    const anthropic = await startFakeUpstream((_req, res) => res.end());
+    await anthropic.close(); // Make it unreachable
+    const subswitch = await startSubswitch(
+      { anthropic: { baseUrl: anthropic.url } },
+      { logger: { log(level, event) { captured.push({ level: level as string, event }); } } },
+    );
+    cleanups.push(subswitch.close);
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+    await response.body?.cancel();
+
+    // Allow the event loop to drain.
+    await new Promise<void>((r) => setTimeout(r, 50));
+
+    const upstreamEvents = captured.filter((e) => e.event.startsWith("anthropic_upstream"));
+    assert.equal(
+      upstreamEvents.length,
+      1,
+      `upstream ECONNRESET must produce exactly 1 anthropic_upstream_* event; got: ${JSON.stringify(upstreamEvents)}`,
+    );
+    assert.equal(upstreamEvents[0]!.event, "anthropic_upstream_error", "event must be anthropic_upstream_error");
+    assert.equal(upstreamEvents[0]!.level, "warn", "upstream error must log at warn level");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C7: request_complete log fields from a live request
+//
+// Nothing in the suite previously asserted the full field set of the
+// request_complete log event on a real request.  This pins the contract so
+// any future field rename or removal produces an immediate test failure.
+//
+// Non-vacuity: each field is asserted; removing one from server.ts would cause
+// the corresponding assertion to fail.
+// ---------------------------------------------------------------------------
+
+describe("C7: request_complete log event fields on a live request", () => {
+  it("request_complete carries path, route, model, status, and a numeric latencyMs", async () => {
+    const captured: Array<{ event: string; fields: Record<string, unknown> }> = [];
+
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_ok" }));
+    });
+    const subswitch = await startSubswitch(
+      { anthropic: { baseUrl: anthropic.url } },
+      {
+        logger: {
+          log(_level: string, event: string, fields: Record<string, unknown> = {}) {
+            captured.push({ event, fields });
+          },
+        },
+      },
+    );
+    cleanups.push(subswitch.close, anthropic.close);
+
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+    await response.body?.cancel();
+
+    // request_complete fires on res.on("close") — allow the event loop to drain.
+    await new Promise<void>((r) => setTimeout(r, 50));
+
+    const completeLog = captured.find((e) => e.event === "request_complete");
+    assert.ok(completeLog !== undefined, "request_complete must be emitted");
+
+    const f = completeLog.fields;
+    assert.equal(f.path, "/v1/messages", "path must be the pathname without query string");
+    assert.equal(f.route, "anthropic", "route must be 'anthropic' for a forwarded request");
+    assert.equal(f.model, "claude-sonnet-4-6", "model must be the as-requested model name");
+    assert.equal(f.status, 200, "status must be the HTTP response status code");
+    assert.equal(typeof f.latencyMs, "number", "latencyMs must be a number");
+    assert.ok((f.latencyMs as number) >= 0, "latencyMs must be non-negative");
   });
 });

@@ -19,6 +19,14 @@ describe("__subswitch health namespace", () => {
     const response = await fetch(`${subswitch.url}/__subswitch/health`);
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type") ?? "", /application\/json/);
+    // C6: health 200 is relay-synthesized — must carry x-subswitch-synthesized: 1.
+    // Non-vacuity: the marker is set via synthesizedHeaders() in server.ts line ~456;
+    // removing it from synthesizedHeaders() would cause this assertion to fail.
+    assert.equal(
+      response.headers.get("x-subswitch-synthesized"),
+      "1",
+      "health 200 is relay-synthesized and must carry x-subswitch-synthesized: 1",
+    );
     const body = (await response.json()) as { name: string; version: string };
     assert.equal(body.name, "subswitch");
     assert.equal(typeof body.version, "string");

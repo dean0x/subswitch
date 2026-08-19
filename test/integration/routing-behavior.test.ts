@@ -181,12 +181,23 @@ describe("routing — unknown provider qualifier fails open to Anthropic (F6g / 
     const authFilePath = join(dir, "auth.json");
     await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
 
+    // C8: Attach a logger to capture the unknown_provider_qualifier warn event.
+    // Previously the test had ZERO log capture — the event had zero test hits.
+    const captured: Array<{ event: string; fields: Record<string, unknown> }> = [];
+
     const subswitch = await startSubswitch(
       {
         anthropic: { baseUrl: anthropic.url },
         providers: { codex: { authFile: authFilePath } },
       },
-      { resolve },
+      {
+        resolve,
+        logger: {
+          log(_level: string, event: string, fields: Record<string, unknown> = {}) {
+            captured.push({ event, fields });
+          },
+        },
+      },
     );
     cleanups.push(subswitch.close);
 
@@ -207,6 +218,16 @@ describe("routing — unknown provider qualifier fails open to Anthropic (F6g / 
       // Must reach Anthropic (fail-open routing).
       assert.equal(anthropic.requests.length, 1, "request must be forwarded to Anthropic upstream");
       await response.body?.cancel();
+
+      // Allow the event loop to drain so the request_complete log fires.
+      await new Promise<void>((r) => setTimeout(r, 50));
+
+      // C8: unknown_provider_qualifier warn must fire with the qualifier field.
+      // Non-vacuity: without the logger injection, this would always pass vacuously.
+      // Removing the warn log from server.ts (line ~571) causes this assertion to fail.
+      const warnLog = captured.find((e) => e.event === "unknown_provider_qualifier");
+      assert.ok(warnLog !== undefined, "unknown_provider_qualifier warn must be logged");
+      assert.equal(warnLog.fields.model, "kimee", "warn must carry the unknown qualifier as model field");
     } finally {
       for (const cleanup of cleanups.reverse()) await cleanup();
     }
