@@ -209,9 +209,8 @@ describe("CodexAuthManager", () => {
    * RELI-04: callTokenEndpoint must pass a timeout signal to the fetch implementation.
    *
    * Without AbortSignal.timeout(15_000), a hung OAuth server holds the single-flight
-   * refreshInflight promise open indefinitely — all 32 concurrent requests share one
-   * hung promise, filling all concurrency slots and returning 503 until undici's ~300 s
-   * default fires.
+   * refreshInflight promise open indefinitely — every concurrent request that needs a token
+   * shares the one hung promise, blocking until undici's ~300 s default fires.
    *
    * Mutation that MUST turn this RED: remove `signal: AbortSignal.timeout(15_000)` from
    * the callTokenEndpoint fetch call → capturedSignal is undefined → assertion fails.
@@ -249,8 +248,7 @@ describe("CodexAuthManager", () => {
    *
    * A persistent upstream 401 that survives a freshly-minted token cannot be resolved by
    * re-running the same OAuth cycle. Without this floor, each request in a 401 storm runs
-   * its own token-endpoint call + fsync'd credential rewrite, permanently degrading the
-   * server once all concurrency slots fill.
+   * its own token-endpoint call and fsync'd credential rewrite, flooding the token endpoint.
    *
    * Mutation that MUST turn this RED: remove the cooldown guard (always refresh).
    * Without it the second forceRefresh() within the window calls the token endpoint;
@@ -423,6 +421,193 @@ describe("CodexAuthManager", () => {
    * Falsifier: replace `this.events.authFileWriteFailed` with a hardcoded string
    * → the includes() assertion fails.
    */
+  // -------------------------------------------------------------------------
+  // Concurrent-refresh guard: identity-check correctness
+  //
+  // These tests cover the cases where the previous string-lexicographic comparison
+  // was insufficient. The guard must fire when the on-disk refresh_token differs from
+  // the one we sent — independent of timestamp format differences or same-second writes.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Format divergence: the CLI writes last_refresh with a different precision (e.g.,
+   * no milliseconds, or 6/9 fractional digits) but a genuinely rotated refresh_token.
+   * The string `>` comparison would fail if the formats differ and the timestamp is not
+   * lexicographically greater; the identity check is format-independent.
+   *
+   * Assert: guard fires (no write), file's material returned.
+   */
+  it("guard fires on format-diverged last_refresh when refresh_token differs (identity check)", async () => {
+    const cliToken = accessToken(3_600_000, "acct_1234567890");
+    // Falsifier: baseline is "2027-01-15T08:00:00.000Z" and the file writes epoch-millis
+    // "1800000005000" (5 s later). Lexicographically "1..." < "2..." so the old string >
+    // comparison returns false and the guard does NOT fire → the test fails on main, proving
+    // the fixture exercises the identity-check path on the branch.
+    const store = memoryStore(authFile(accessToken(60_000), { last_refresh: "2027-01-15T08:00:00.000Z" }));
+    const endpoint = fakeTokenEndpoint(() => ({
+      beforeRespond: () => {
+        // CLI writes last_refresh as raw epoch-millis ("1800000005000"), which sorts
+        // lexicographically before any ISO date starting with "2" — the old string >
+        // comparison misses this; the identity check on refresh_token fires instead.
+        store.content = JSON.stringify({
+          ...authFile(cliToken),
+          last_refresh: "1800000005000",
+          tokens: {
+            ...(JSON.parse(JSON.stringify(authFile(cliToken))) as { tokens: Record<string, unknown> }).tokens,
+            access_token: cliToken,
+            refresh_token: "refresh-cli-rotated",
+          },
+        });
+      },
+      response: tokenResponse(accessToken(3_600_000)),
+    }));
+
+    const result = await manager(store, endpoint).getCredentials();
+    assert.ok(result.ok, "should succeed using the file's material");
+    assert.equal(
+      result.value.authHeaders["authorization"],
+      `Bearer ${cliToken}`,
+      "credentials should come from the newer file, not our response",
+    );
+    assert.equal(store.writes.length, 0, "the CLI's rotated refresh_token must not be clobbered");
+  });
+
+  /**
+   * Same-second collision: the file has the SAME last_refresh timestamp as the baseline
+   * (two writes landed in the same second) but a different refresh_token — the CLI rotated
+   * it. The string `>` comparison returns false for equal timestamps; identity check fires.
+   *
+   * Assert: guard fires (no write), file's material returned.
+   */
+  it("guard fires in the same-second collision case via identity check", async () => {
+    const cliToken = accessToken(3_600_000, "acct_1234567890");
+    const baselineRefresh = "2026-07-20T00:00:00.000Z"; // matches authFile default
+    const store = memoryStore(authFile(accessToken(60_000)));
+    const endpoint = fakeTokenEndpoint(() => ({
+      beforeRespond: () => {
+        // Same last_refresh as the baseline — string `>` would be false, guard would miss.
+        store.content = JSON.stringify({
+          ...authFile(cliToken),
+          last_refresh: baselineRefresh,
+          tokens: {
+            ...(JSON.parse(JSON.stringify(authFile(cliToken))) as { tokens: Record<string, unknown> }).tokens,
+            access_token: cliToken,
+            refresh_token: "refresh-cli-same-second",
+          },
+        });
+      },
+      response: tokenResponse(accessToken(3_600_000)),
+    }));
+
+    const result = await manager(store, endpoint).getCredentials();
+    assert.ok(result.ok, "should succeed using the file's material");
+    assert.equal(
+      result.value.authHeaders["authorization"],
+      `Bearer ${cliToken}`,
+      "credentials should come from the file even on same-second collision",
+    );
+    assert.equal(store.writes.length, 0, "same-second collision must not clobber the file");
+  });
+
+  /**
+   * Fix 2: fileIsNewer is true but materialFrom fails (malformed access_token in the
+   * newer file). The guard fires — no write occurs. The branch serves our own valid
+   * refresh result from memory so the request still succeeds.
+   *
+   * Assert: no write occurs, result is a success using our own refresh tokens.
+   */
+  it("does not write when fileIsNewer is true but materialFrom fails", async () => {
+    const freshToken = accessToken(3_600_000);
+    const store = memoryStore(authFile(accessToken(60_000)));
+    const endpoint = fakeTokenEndpoint(() => ({
+      beforeRespond: () => {
+        // File has a different refresh_token (guard fires) but no account_id and a
+        // non-JWT access_token, so materialFrom cannot extract an accountId and returns err.
+        // account_id is deliberately absent here — materialFrom falls through to jwtAccountId,
+        // which also fails on "not-a-valid-jwt", so the result is err.
+        store.content = JSON.stringify({
+          OPENAI_API_KEY: null,
+          auth_mode: "chatgpt",
+          last_refresh: new Date(NOW_MS + 5_000).toISOString(),
+          tokens: {
+            id_token: "id.old.x",
+            access_token: "not-a-valid-jwt",
+            // no account_id — forces materialFrom to try jwtAccountId, which also fails
+            refresh_token: "refresh-cli-rotated",
+          },
+        });
+      },
+      response: tokenResponse(freshToken),
+    }));
+
+    const result = await manager(store, endpoint).getCredentials();
+    assert.ok(result.ok, "should succeed serving our own valid refresh result from memory");
+    assert.equal(
+      result.value.authHeaders["authorization"],
+      `Bearer ${freshToken}`,
+      "credentials should come from our own refresh result, not the malformed file",
+    );
+    assert.equal(store.writes.length, 0, "must not write when materialFrom fails on the newer file");
+  });
+
+  /**
+   * I-036: When fileIsNewer is true but materialFrom fails on the newer file, and the
+   * token endpoint returned a rotated refresh_token, the rotated credential is served
+   * from memory but never persisted. This outcome must be logged at ERROR (matching the
+   * write-failure branch's escalation rule) so operators can diagnose invalid_grant on
+   * the next OAuth cycle.
+   *
+   * Falsifier: remove the `if (tokens.refresh_token !== undefined)` error-log block
+   * added in the materialFrom-failed fallback → the "error"-level assertion fails.
+   */
+  it("emits events.authFileWriteFailed at error when fileIsNewer+materialFrom-failed and refresh_token was rotated (I-036)", async () => {
+    const loggedCalls: { level: string; event: string }[] = [];
+    const recordingLogger = { log: (level: string, event: string) => { loggedCalls.push({ level, event }); } };
+    const events = providerEvents("codex");
+    const freshToken = accessToken(3_600_000);
+    const store = memoryStore(authFile(accessToken(60_000)));
+
+    const endpoint = fakeTokenEndpoint(() => ({
+      beforeRespond: () => {
+        // Disk file has a different refresh_token (guard fires) but a malformed
+        // access_token and no account_id — materialFrom returns err on the disk file.
+        store.content = JSON.stringify({
+          OPENAI_API_KEY: null,
+          auth_mode: "chatgpt",
+          last_refresh: new Date(NOW_MS + 5_000).toISOString(),
+          tokens: {
+            id_token: "id.old.x",
+            access_token: "not-a-valid-jwt",
+            refresh_token: "refresh-cli-rotated",
+            // no account_id — forces materialFrom to fail
+          },
+        });
+      },
+      // Token endpoint returned a rotated refresh_token — the credential that will be
+      // silently lost unless the error is surfaced.
+      response: tokenResponse(freshToken, "refresh-our-rotated"),
+    }));
+
+    const auth = new CodexAuthManager({
+      store,
+      oauthTokenUrl: "http://oauth.test/token",
+      logger: recordingLogger,
+      events,
+      fetchImpl: endpoint.fetchImpl,
+      now: () => NOW_MS,
+    });
+
+    const result = await auth.getCredentials();
+    assert.ok(result.ok, "should succeed serving our own refresh result from memory");
+
+    const errorCalls = loggedCalls.filter((c) => c.level === "error" && c.event === events.authFileWriteFailed);
+    assert.equal(
+      errorCalls.length,
+      1,
+      `authFileWriteFailed must be logged at error when a rotated refresh_token goes unpersisted; logged: ${JSON.stringify(loggedCalls)}`,
+    );
+  });
+
   it("emits events.authFileWriteFailed when writeAtomic fails during token persistence", async () => {
     const loggedEvents: string[] = [];
     const recordingLogger = { log: (_level: string, event: string) => { loggedEvents.push(event); } };

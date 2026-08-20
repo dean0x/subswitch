@@ -13,6 +13,7 @@ import {
   runInitNonInteractive,
   runInitDryRun,
 } from "../../src/init.js";
+import { renderLegacyKeyEntry } from "../../src/config.js";
 import { makeFakeDeps } from "./init-test-helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -173,6 +174,36 @@ describe("planConfigWrite", () => {
     assert.ok(!result.ok);
     assert.equal(result.error.kind, "legacy_config");
     assert.ok(result.error.message.includes("`reasoningCache`"), "error should name the legacy key");
+  });
+
+  // The instruction text is rendered by config.ts's `renderLegacyKeyEntry`, not by a
+  // second copy of the ternary living here. Asserting equality against the shared
+  // renderer's own output is what makes a divergent copy in init.ts fail this test —
+  // an assertion on the literal phrasing would pass against either implementation.
+  it("renders a removed key through the shared renderer, so init and serve give the same instruction", () => {
+    const legacy = JSON.stringify({ limits: { maxConcurrentRequests: 32 } });
+    const result = planConfigWrite(legacy, 4141, "/project");
+    assert.ok(!result.ok, "a removed key must block init the same way it blocks serve");
+    assert.equal(result.error.kind, "legacy_config");
+    const expected = renderLegacyKeyEntry({
+      kind: "removed",
+      path: "limits.maxConcurrentRequests",
+      reason: "the admission gate was removed in 0.3.0 (ADR-010)",
+    });
+    assert.ok(result.error.message.includes(expected), "init must render removed keys through renderLegacyKeyEntry");
+  });
+
+  it("renders a moved key through the shared renderer", () => {
+    const legacy = JSON.stringify({ limits: { maxSseEventBytes: 1024 } });
+    const result = planConfigWrite(legacy, 4141, "/project");
+    assert.ok(!result.ok);
+    assert.equal(result.error.kind, "legacy_config");
+    const expected = renderLegacyKeyEntry({
+      kind: "moved",
+      path: "limits.maxSseEventBytes",
+      to: "providers.codex.maxSseEventBytes",
+    });
+    assert.ok(result.error.message.includes(expected), "init must render moved keys through renderLegacyKeyEntry");
   });
 });
 

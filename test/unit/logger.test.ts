@@ -247,4 +247,43 @@ describe("createConsoleLogger", () => {
       `unquoted errorCode= token must not appear as a top-level field; got unquoted: ${unquoted}`,
     );
   });
+
+
+  // -------------------------------------------------------------------------
+  // Control-character hardening (I-048).
+  //
+  // Stripping only [\r\n] lets ESC (0x1B), BEL (0x07), DEL (0x7F) and C1 bytes
+  // (0x80-0x9F) through to the operator's TTY. OSC 0 rewrites the window title;
+  // cursor-movement + erase sequences overwrite already-printed log lines --
+  // defeating the anti-forgery guarantee renderToken's contract states in
+  // src/logger.ts. The full range is stripped at that single chokepoint
+  // (ADR-008); RED against a [\r\n]-only stripper (PF-011).
+  // -------------------------------------------------------------------------
+
+  it("strips ESC, BEL, DEL, and C1 bytes from field values -- control characters must not reach the sink", () => {
+    // OSC 0 window-title rewrite: ESC (0x1B) ] 0 ; text BEL (0x07)
+    const ESC = "\u001b";
+    const BEL = "\u0007";
+    const DEL = "\u007f";
+    const CSI = "\u009b"; // C1 byte -- starts ANSI control sequences on 8-bit terminals
+
+    const lines: string[] = [];
+    const logger = createConsoleLogger("info", (line) => lines.push(line), false);
+    logger.log("info", "request_complete", {
+      model: `gpt-5${ESC}]0;PWNED${BEL}-sol`,
+    });
+    const line = lines[0] ?? "";
+    assert.ok(!line.includes(ESC), `ESC must be stripped from field values; got: ${JSON.stringify(line)}`);
+    assert.ok(!line.includes(BEL), `BEL must be stripped from field values; got: ${JSON.stringify(line)}`);
+
+    // DEL (0x7F) and C1 CSI (0x9B): two further bypass characters.
+    const lines2: string[] = [];
+    const logger2 = createConsoleLogger("info", (line) => lines2.push(line), false);
+    logger2.log("info", "some_event", {
+      model: `x${DEL}y${CSI}z`,
+    });
+    const line2 = lines2[0] ?? "";
+    assert.ok(!line2.includes(DEL), `DEL must be stripped from field values; got: ${JSON.stringify(line2)}`);
+    assert.ok(!line2.includes(CSI), `C1 CSI must be stripped from field values; got: ${JSON.stringify(line2)}`);
+  });
 });

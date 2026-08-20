@@ -13,8 +13,9 @@ import {
   type TlsStatus,
   type DoctorIO,
 } from "../../src/doctor.js";
-import type { Config } from "../../src/config.js";
-import { PROVIDER_IDS, type ProviderId } from "../../src/models.js";
+import { loadConfig, type Config } from "../../src/config.js";
+import { PROVIDER_IDS, type ProviderId, type RoutingTable } from "../../src/models.js";
+import { checkAgentModels } from "../../src/agent-scan.js";
 
 describe("probeSubswitch", () => {
   it("returns running when the health endpoint responds with the subswitch shape", async () => {
@@ -125,38 +126,18 @@ describe("probeTlsReachable", () => {
 // runDoctor — verdict line + exit code tests
 // ---------------------------------------------------------------------------
 
-/** Minimal valid config for testing */
-const makeTestConfig = (): Config => ({
-  port: 4141,
-  logLevel: "info",
-  anthropic: {
-    baseUrl: "https://api.anthropic.com",
-    connectTimeoutMs: 10_000,
-    streamIdleTimeoutMs: 300_000,
-    maxUpstreamSockets: 32,
-    allowInsecureBaseUrl: false,
-  },
-  providers: {
-    codex: {
-      baseUrl: "https://chatgpt.com/backend-api/codex",
-      oauthTokenUrl: "https://auth.openai.com/oauth/token",
-      authFile: "/home/user/.codex/auth.json",
-      userAgent: "codex_cli_rs/0.144.6",
-      aliases: {},
-      reasoningCache: { maxEntries: 4096, maxBytes: 64 * 1024 * 1024 },
-      requestTimeoutMs: 600_000,
-      streamIdleTimeoutMs: 300_000,
-      maxSseEventBytes: 4 * 1024 * 1024,
-      maxAggregateBytes: 64 * 1024 * 1024,
-      allowInsecureBaseUrl: false,
-    },
-  },
-  limits: {
-    maxBodyBytes: 32 * 1024 * 1024,
-    pingIntervalMs: 15_000,
-    maxConcurrentRequests: 32,
-  },
-});
+/**
+ * Returns a Config built from loadConfig with an empty file — identical to what
+ * a user gets with no config options set.  Cannot drift from loadConfig's real
+ * defaults because it IS loadConfig's real defaults.
+ *
+ * Pattern from test/unit/codex-handler.test.ts lines 104-106.
+ */
+const defaultConfig = (): Config => {
+  const result = loadConfig({ configPath: "inline-test.json", readFile: () => "{}", env: {} });
+  if (!result.ok) throw new Error(`loadConfig failed with empty config: ${result.error.message}`);
+  return result.value.config;
+};
 
 const allPassIO = (lines: string[]) => ({
   write: (line: string) => lines.push(line),
@@ -212,31 +193,31 @@ const enoentAuthIO = (lines: string[]) => ({
 describe("runDoctor", () => {
   it("returns exit code 0 when all checks pass", async () => {
     const lines: string[] = [];
-    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines));
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, allPassIO(lines));
     assert.equal(exitCode, 0);
   });
 
   it("includes a verdict line 'all checks passed' on success", async () => {
     const lines: string[] = [];
-    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines));
+    await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, allPassIO(lines));
     assert.ok(lines.some((l) => l.includes("all checks passed")), "must include all-pass verdict");
   });
 
   it("returns exit code 1 when a check fails (subswitch not running + TLS unreachable + auth permission error)", async () => {
     const lines: string[] = [];
-    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, failingProbeIO(lines));
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, failingProbeIO(lines));
     assert.equal(exitCode, 1);
   });
 
   it("includes a failure verdict line showing problem count", async () => {
     const lines: string[] = [];
-    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, failingProbeIO(lines));
+    await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, failingProbeIO(lines));
     assert.ok(lines.some((l) => /\d+ problem/.test(l)), "must include problem count in verdict");
   });
 
   it("hints 'subswitch serve' when proxy is not running", async () => {
     const lines: string[] = [];
-    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+    await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       httpGet: async (): Promise<HttpGetResult> => ({ ok: false, connectionRefused: true }),
     });
@@ -245,7 +226,7 @@ describe("runDoctor", () => {
 
   it("returns exit code 0 with no color codes when color=false", async () => {
     const lines: string[] = [];
-    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       color: false,
     });
@@ -257,7 +238,7 @@ describe("runDoctor", () => {
 
   it("includes ANSI escape codes in the verdict line when color=true", async () => {
     const lines: string[] = [];
-    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       color: true,
     });
@@ -269,7 +250,7 @@ describe("runDoctor", () => {
 
   it("prints the alias table rows (one line per alias)", async () => {
     const lines: string[] = [];
-    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, allPassIO(lines));
+    await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, allPassIO(lines));
     // The alias table renders rows like: "sol  →  gpt-5.6-sol  codex  gen:5.6  enabled  (derived)"
     const tableLine = lines.find((l) => l.includes("sol") && l.includes("→") && l.includes("gpt-5.6-sol") && l.includes("gen:5.6"));
     assert.ok(tableLine !== undefined, "alias table must render a row: sol → gpt-5.6-sol gen:5.6 ...");
@@ -278,7 +259,7 @@ describe("runDoctor", () => {
   // PF-006: unconfigured provider (ENOENT auth file) must NOT increment failures.
   it("does NOT increment failures when provider auth file is absent (ENOENT = unconfigured = informational)", async () => {
     const lines: string[] = [];
-    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, enoentAuthIO(lines));
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, enoentAuthIO(lines));
     // Only subswitch probe + TLS checks remain; enoentAuthIO leaves those at pass.
     // So exit code must be 0 (no TLS failure, no subswitch failure, no auth failure).
     assert.equal(exitCode, 0, "ENOENT auth file must not cause failure — it is informational");
@@ -303,7 +284,7 @@ describe("runDoctor", () => {
   it("increments failures when an EXPLICITLY CONFIGURED provider's auth file is unreadable", async () => {
     const lines: string[] = [];
     const exitCode = await runDoctor(
-      makeTestConfig(),
+      defaultConfig(),
       "/path/subswitch.config.json",
       true,
       unreadableAuthIO(lines),
@@ -316,7 +297,7 @@ describe("runDoctor", () => {
   it("does NOT increment failures when an UNCONFIGURED provider's auth file is unreadable", async () => {
     const lines: string[] = [];
     const exitCode = await runDoctor(
-      makeTestConfig(),
+      defaultConfig(),
       "/path/subswitch.config.json",
       true,
       unreadableAuthIO(lines),
@@ -333,7 +314,7 @@ describe("runDoctor", () => {
   it("fails on an auth file that exists but does not parse, regardless of opt-in", async () => {
     const lines: string[] = [];
     const exitCode = await runDoctor(
-      makeTestConfig(),
+      defaultConfig(),
       "/path/subswitch.config.json",
       true,
       { ...allPassIO(lines), readAuthFile: async (): Promise<string> => "not json at all" },
@@ -347,7 +328,7 @@ describe("runDoctor", () => {
   it("writes provider rows in PROVIDER_IDS order regardless of I/O completion order", async () => {
     const lines: string[] = [];
     await runDoctor(
-      makeTestConfig(),
+      defaultConfig(),
       "/path/subswitch.config.json",
       true,
       allPassIO(lines),
@@ -366,7 +347,7 @@ describe("runDoctor", () => {
 describe("runDoctor — agent model scan", () => {
   it("returns exit code 1 when an agent file has an unresolvable model", async () => {
     const lines: string[] = [];
-    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       listAgentFiles: async () => ["/project/.claude/agents/bad-agent.md"],
       readTextFile: async () => "---\nmodel: totally-unknown-model\n---\n",
@@ -377,7 +358,7 @@ describe("runDoctor — agent model scan", () => {
   it("emits a FAIL row for an unresolvable agent model", async () => {
     const lines: string[] = [];
     const agentFile = join(homedir(), ".claude", "agents", "bad-agent.md");
-    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+    await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       listAgentFiles: async (dir: string): Promise<readonly string[]> => {
         return dir.includes(join(".claude", "agents")) ? [agentFile] : [];
@@ -396,7 +377,7 @@ describe("runDoctor — agent model scan", () => {
 
   it("does not increment failures for an Anthropic tier name in agent frontmatter", async () => {
     const lines: string[] = [];
-    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       listAgentFiles: async () => ["/project/.claude/agents/claude-main.md"],
       readTextFile: async () => "---\nmodel: sonnet\n---\n",
@@ -406,7 +387,7 @@ describe("runDoctor — agent model scan", () => {
 
   it("does not fail when the agents directory is absent (listAgentFiles returns empty)", async () => {
     const lines: string[] = [];
-    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       listAgentFiles: async () => [],
       readTextFile: async () => "",
@@ -416,7 +397,7 @@ describe("runDoctor — agent model scan", () => {
 
   it("labels only the first agent finding row with 'agent model:'; subsequent rows use a blank label", async () => {
     const lines: string[] = [];
-    await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+    await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       listAgentFiles: async () => [
         "/project/.claude/agents/bad-agent-1.md",
@@ -439,7 +420,7 @@ describe("runDoctor — agent model scan", () => {
     // When the auth file is absent (ENOENT), the provider is unconfigured.
     // Agent models that resolve to that provider produce provider_unconfigured (info, no failure).
     const lines: string[] = [];
-    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...enoentAuthIO(lines),
       listAgentFiles: async () => ["/project/.claude/agents/worker.md"],
       readTextFile: async () => "---\nmodel: gpt-5.6-sol\n---\n",
@@ -447,6 +428,90 @@ describe("runDoctor — agent model scan", () => {
     // codex is unconfigured → gpt-5.6-sol gets provider_unconfigured (info).
     // No other failures from enoentAuthIO + allPass TLS/subswitch.
     assert.equal(exitCode, 0, "provider_unconfigured finding must not cause failure");
+  });
+
+  // ---------------------------------------------------------------------------
+  // unknown_provider severity — ADR-010: informational, not exit-1
+  //
+  // Non-vacuity requirement: the exit-0 test below is VACUOUS without a positive
+  // control proving doctor CAN exit 1. That control is the existing
+  // "returns exit code 1 when an agent file has an unresolvable model" test above —
+  // it uses the same IO wiring and a different model to prove exit 1 is reachable.
+  // Both tests together prove the distinction is real, not an accident of the harness.
+  // ---------------------------------------------------------------------------
+
+  it("unknown_provider finding alone does NOT cause exit code 1 (ADR-010: relay cannot honestly call this a failure)", async () => {
+    // "kimi:k2-ultra" has an unknown_qualifier resolution — the prefix "kimi" is not in
+    // PROVIDER_IDS. subswitch forwards it to Anthropic unchanged, so flagging it as a
+    // failure would be a lie (ADR-010). The finding must be severity "info" → exit 0.
+    //
+    // Mutation that MUST turn this RED: change `severity: "info"` back to `severity: "fail"`
+    // in the unknown_qualifier arm of checkAgentModels → exitCode becomes 1 → assertion fails.
+    const lines: string[] = [];
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      listAgentFiles: async () => ["/project/.claude/agents/exotic.md"],
+      readTextFile: async () => "---\nmodel: kimi:k2-ultra\n---\n",
+    });
+    assert.equal(exitCode, 0, "unknown_provider finding must not cause exit code 1 — it is informational (ADR-010)");
+  });
+
+  it("unknown_provider finding renders with 'info' tag, not 'FAIL'", async () => {
+    // Mutation that MUST turn this RED: change severity back to "fail" → doctor renders
+    // FAIL (or whatever failStr emits) instead of "info" → the includes-check fails.
+    const lines: string[] = [];
+    await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
+      ...allPassIO(lines),
+      listAgentFiles: async () => ["/project/.claude/agents/exotic.md"],
+      readTextFile: async () => "---\nmodel: kimi:k2-ultra\n---\n",
+    });
+    const output = lines.join("\n");
+    assert.ok(output.includes("kimi:k2-ultra"), "output must mention the model name");
+    assert.ok(output.includes("kimi"), "output must mention the unknown qualifier");
+    // Must NOT emit a FAIL row for unknown_provider (it is info).
+    const findingLine = lines.find((l) => l.includes("kimi:k2-ultra"));
+    assert.ok(findingLine !== undefined, "must have a line for the unknown_provider finding");
+    assert.ok(
+      !findingLine.includes("FAIL"),
+      "unknown_provider finding line must not carry 'FAIL' — it is informational",
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // ambiguous severity — must remain "fail" and produce exit 1
+  //
+  // runDoctor builds its routing table from the REAL MODEL_REGISTRY, which has no
+  // ambiguous families (each family is unique to one provider). To exercise the
+  // ambiguous → exit-1 path, we call checkAgentModels — the same function runDoctor
+  // invokes — with a custom table that has an ambiguous family. This tests the
+  // contract that doctor enforces: any finding whose severity is "fail" increments
+  // failures, and failures > 0 → exit 1.
+  //
+  // Mutation that MUST turn this RED: change the `ambiguous` arm in src/agent-scan.ts
+  // from `severity: "fail"` to `severity: "info"` → finding.severity becomes "info"
+  // → the assert.equal("fail") assertion fails.
+  // ---------------------------------------------------------------------------
+
+  it("ambiguous finding has severity 'fail', which causes doctor exit code 1", () => {
+    const ambiguousTable: RoutingTable = {
+      byId: new Map([["gpt-5.6-sol", "codex"] as const]),
+      byFamily: new Map([["sol", { kind: "ambiguous", providers: ["codex", "codex"] as readonly ["codex", "codex"] }]]),
+      byQualified: new Map(),
+      byAlias: new Map(),
+    };
+    const files = [{ path: "/agent.md", text: "---\nmodel: sol\n---\n" }];
+    const findings = checkAgentModels(files, ambiguousTable, new Set());
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]!.kind, "ambiguous");
+    assert.equal(
+      findings[0]!.severity,
+      "fail",
+      "ambiguous finding must remain severity 'fail' — doctor increments failures++ for each 'fail' finding, which produces exit 1",
+    );
+    // Verify the exit-1 contract directly: doctor exits 1 iff failures > 0,
+    // and failures increments for every finding with severity "fail".
+    const wouldFailures = findings.filter((f) => f.severity === "fail").length;
+    assert.equal(wouldFailures, 1, "ambiguous finding must contribute exactly one failure increment → exit 1");
   });
 });
 
@@ -481,7 +546,7 @@ describe("runDoctor — credentialUsable drives providersWithCredentials", () =>
     const lines: string[] = [];
     // allPassIO returns a valid auth file → credentialUsable=true → codex in providersWithCredentials.
     // gpt-5.6-sol resolves to codex; with codex in the set there must be no provider_unconfigured row.
-    const exitCode = await runDoctor(makeTestConfig(), "/path/subswitch.config.json", true, {
+    const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       listAgentFiles: async () => ["/project/.claude/agents/worker.md"],
       readTextFile: async () => "---\nmodel: gpt-5.6-sol\n---\n",

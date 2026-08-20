@@ -1,13 +1,9 @@
 /**
- * Concurrency gate integration tests (P0-2).
+ * Concurrency integration tests.
  *
- * Three scenarios:
- *   (a) 503 + overloaded_error body when active requests exceed the limit
- *   (b) Health endpoint is never subject to the concurrency gate
- *   (c) Counter-leak detection: abort mid-flight, assert slot is released
- *
- * The mutation-verification note at the end of test (c) explains which line
- * deletion would make this test fail — it IS the mutation test.
+ * The admission gate has been removed (ADR-010): a relay-invented status that the
+ * origin would not have produced is a defect. Tests verify that concurrent requests
+ * all reach the upstream without relay interference.
  */
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
@@ -22,32 +18,37 @@ after(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Shared upstream that parks a single request and lets the test release it.
+// Shared upstream that parks ALL arriving requests and lets the test release them.
+// Each request is held until releaseAll() is called.
 // ---------------------------------------------------------------------------
 
 interface ParkingUpstream {
   readonly url: string;
-  /** If a request is parked, holds its ServerResponse so the test can release it. */
-  parkedRes: ServerResponse | null;
+  /** Number of requests that have fully arrived at the upstream and are waiting. */
+  readonly arrivedCount: number;
+  /** Release every parked request with a 200 { ok: true } response. */
+  releaseAll(): void;
   close(): Promise<void>;
 }
 
 const startParkingUpstream = async (): Promise<ParkingUpstream> => {
-  const state: { parkedRes: ServerResponse | null } = { parkedRes: null };
+  const parked: ServerResponse[] = [];
   const server = http.createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = [];
     req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => {
-      // Park the request: save the response handle but don't call res.end().
-      state.parkedRes = res;
-    });
+    req.on("end", () => { parked.push(res); });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
-    get parkedRes() { return state.parkedRes; },
-    set parkedRes(v) { state.parkedRes = v; },
+    get arrivedCount() { return parked.length; },
+    releaseAll() {
+      for (const res of parked.splice(0)) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      }
+    },
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();
@@ -57,185 +58,99 @@ const startParkingUpstream = async (): Promise<ParkingUpstream> => {
 };
 
 // ---------------------------------------------------------------------------
-// (a) 503 + overloaded_error when over the limit
+// Helper: poll until condition is true or deadline passes.
+// ---------------------------------------------------------------------------
+const pollUntil = async (condition: () => boolean, timeoutMs: number, intervalMs = 5): Promise<boolean> => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return true;
+    await new Promise<void>((r) => setTimeout(r, intervalMs));
+  }
+  return condition();
+};
+
+// ---------------------------------------------------------------------------
+// Concurrent requests all reach the upstream — no relay-invented gate (P0-2a)
+//
+// N = 20: one-fifth of the ~100-concurrent-sub-agent product thesis.  All 20
+// are fired simultaneously; the test asserts all 20 arrive at the upstream
+// before any are released.  If a relay-side gate blocked any request, that
+// request would never arrive and pollUntil would time out — RED at the
+// arrivedCount assertion.  Within the 30 s hard per-test timeout (package.json).
 // ---------------------------------------------------------------------------
 
-describe("concurrency gate — 503 overloaded_error (P0-2a)", () => {
-  it("returns 503 overloaded_error when active requests exceed maxConcurrentRequests", async () => {
+describe("concurrency — all requests reach upstream without relay interference (P0-2a)", () => {
+  it("20 concurrent POSTs all reach the upstream and return 200", async () => {
+    // Non-vacuity: if the relay had a gate set to K < 20 concurrent requests, at most K
+    // requests would arrive at the upstream before the others stalled.  pollUntil would
+    // time out before arrivedCount reached 20 and the test would fail at the assert.equal
+    // below.  Positive control: all 20 are released and must each return 200.
+    const N = 20;
+
     const parked = await startParkingUpstream();
     cleanups.push(parked.close);
 
-    // maxConcurrentRequests: 1 → first request passes, second is rejected.
-    const subswitch = await startSubswitch({ anthropic: { baseUrl: parked.url }, limits: { maxConcurrentRequests: 1 } });
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: parked.url },
+    });
     cleanups.push(subswitch.close);
 
-    // Fire request 1 without awaiting — it parks in the upstream.
-    // GET /v1/anything hits forwardAnthropic directly (no body buffering, no auth).
-    const controller1 = new AbortController();
-    const req1Promise = fetch(`${subswitch.url}/v1/park-probe`, {
-      method: "GET",
-      signal: controller1.signal,
-    });
+    const body = JSON.stringify({ model: "claude-sonnet-4-6", messages: [] });
+    const headers = { "content-type": "application/json" };
 
-    // Give request 1 time to reach the proxy and increment activeRequests.
-    await new Promise<void>((r) => setTimeout(r, 30));
+    // Fire all N concurrently — no sequential sequencing.
+    const requests = Array.from({ length: N }, (_, i) =>
+      fetch(`${subswitch.url}/v1/messages?id=${i}`, { method: "POST", headers, body }),
+    );
 
-    // Request 2 — should get 503 because activeRequests (2) > maxConcurrentRequests (1).
-    const res2 = await fetch(`${subswitch.url}/v1/another`, { method: "GET" });
-    assert.equal(res2.status, 503, "second concurrent request must be rejected with 503");
+    // Wait for all N to arrive at the upstream (no relay-side gate may block any).
+    const allArrived = await pollUntil(() => parked.arrivedCount >= N, 5000);
+    assert.ok(allArrived, `all ${N} requests must reach upstream within 5 s`);
+    assert.equal(parked.arrivedCount, N, `all ${N} requests must have arrived — no relay gate may block any`);
 
-    const body2 = (await res2.json()) as { type: string; error: { type: string; message: string } };
-    assert.equal(body2.type, "error", "response type must be 'error'");
-    assert.equal(body2.error.type, "overloaded_error", "error type must be 'overloaded_error'");
-    assert.ok(body2.error.message.length > 0, "error message must be non-empty");
-
-    // Clean up parked request.
-    controller1.abort();
-    try { await req1Promise; } catch { /* AbortError expected */ }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// (b) Health endpoint is never gated
-//
-// The gate sits AFTER the /__subswitch/* early-return path, so health is
-// handled before activeRequests is ever incremented.
-//
-// We verify this under real gate pressure: fill the single slot with a parked
-// request (so the gate would reject a normal request with 503), then assert
-// that health still returns 200.
-// ---------------------------------------------------------------------------
-
-describe("concurrency gate — health never gated (P0-2b)", () => {
-  it("/__subswitch/health returns 200 even when the concurrency slot is fully occupied", async () => {
-    const parked = await startParkingUpstream();
-    cleanups.push(parked.close);
-
-    // maxConcurrentRequests: 1 → the first non-health request fills the slot.
-    const subswitch = await startSubswitch({ anthropic: { baseUrl: parked.url }, limits: { maxConcurrentRequests: 1 } });
-    cleanups.push(subswitch.close);
-
-    // Fill the slot: park a request in the upstream.
-    const controller = new AbortController();
-    const parkPromise = fetch(`${subswitch.url}/v1/park-probe`, {
-      method: "GET",
-      signal: controller.signal,
-    });
-
-    // Give the parked request time to reach the proxy and increment activeRequests.
-    await new Promise<void>((r) => setTimeout(r, 30));
-
-    // Verify the slot IS full: a normal request should be rejected.
-    const normalRes = await fetch(`${subswitch.url}/v1/another-probe`, { method: "GET" });
-    assert.equal(normalRes.status, 503, "non-health request must be rejected while slot is occupied");
-    await normalRes.body?.cancel();
-
-    // Health must NEVER be gated, even when all slots are full.
-    const healthRes = await fetch(`${subswitch.url}/__subswitch/health`);
-    assert.equal(healthRes.status, 200, "health endpoint must return 200 even with all slots occupied");
-    await healthRes.body?.cancel();
-
-    // Clean up the parked request.
-    controller.abort();
-    try { await parkPromise; } catch { /* AbortError expected */ }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// (c) Counter-leak detection: abort → slot released → next request accepted
-//
-// Two problems with the old fixed-sleep approach:
-//  1. The 30 ms precondition was not reliable: if request 1 had not reached
-//     the proxy yet, request 2 (the 503 probe) would be admitted, park forever,
-//     and hang the test with no default timeout.
-//  2. The 80 ms Promise.race decided leak/no-leak via a timeout: a leaked-slot
-//     503 arriving at 90 ms would register as timedOut: true and score as PASS.
-//
-// Fix: poll parkedRes instead of fixed sleeps.  A parked request exposes the
-// upstream's ServerResponse setter — poll until non-null to know the slot is
-// held, then decide on an OBSERVED outcome (parkedRes update = slot released;
-// immediate 503 = slot leaked) rather than on a race timing out.
-//
-// MUTATION VERIFICATION: deleting `res.on("close", () => { activeRequests-- })`
-// at src/server.ts (after the gate check) means the slot is never decremented.
-// Request 3 immediately receives 503, this test goes RED.  With the decrement,
-// request 3 parks in the upstream (parkedRes becomes non-null), test stays GREEN.
-// ---------------------------------------------------------------------------
-
-describe("concurrency gate — counter not leaked after abort (P0-2c)", () => {
-  it("releases the concurrency slot when the client aborts mid-flight", async () => {
-    const parked = await startParkingUpstream();
-    cleanups.push(parked.close);
-
-    const subswitch = await startSubswitch({ anthropic: { baseUrl: parked.url }, limits: { maxConcurrentRequests: 1 } });
-    cleanups.push(subswitch.close);
-
-    // Step 1: fire request 1 and poll until it has parked in the upstream.
-    // Polling parkedRes is the reliable signal that the slot is held —
-    // no fixed sleep that might fire before the proxy has received the request.
-    const controller1 = new AbortController();
-    const req1Promise = fetch(`${subswitch.url}/v1/park-probe`, {
-      method: "GET",
-      signal: controller1.signal,
-    });
-    while (parked.parkedRes === null) {
-      await new Promise<void>((r) => setTimeout(r, 5));
+    // Positive control: release all and verify every request returns 200.
+    parked.releaseAll();
+    const results = await Promise.all(requests);
+    for (const [i, r] of results.entries()) {
+      assert.equal(r.status, 200, `request ${i} must return 200`);
+      await r.text();
     }
+  });
 
-    // Step 2: verify that request 2 is blocked (slot full).
-    const res2 = await fetch(`${subswitch.url}/v1/probe-2`, { method: "GET" });
-    assert.equal(res2.status, 503, "second request must be blocked while slot is held");
-    await res2.body?.cancel();
+  it("health endpoint answers while the only upstream socket is held by an in-flight POST (P0-health)", async () => {
+    // Non-vacuity: maxUpstreamSockets: 1 so the parked POST consumes the only upstream
+    // connection.  If health required an upstream socket it would queue behind the POST,
+    // hanging until the 30 s test deadline — RED.  The in-flight POST confirms the socket
+    // is genuinely held (not already released) when health is checked.
+    // Positive control: after health check, the parked POST is released and must
+    // also return 200 — confirming it was genuinely in-flight, not already dropped.
+    const parked = await startParkingUpstream();
+    cleanups.push(parked.close);
 
-    // Step 3: reset parkedRes so request 3's arrival is observable, then abort
-    // request 1.  The proxy's res.on("close") handler fires and decrements
-    // activeRequests back to 0.
-    parked.parkedRes = null;
-    controller1.abort();
-    try { await req1Promise; } catch { /* AbortError expected */ }
-
-    // Step 4: fire request 3 and decide on an OBSERVED outcome — no fixed race
-    // timeout.  In correct code the slot is released within ms of the abort; the
-    // 2 s deadline is a safety net only.
-    //
-    //   parkedRes non-null  → request 3 reached the upstream → slot released ✓
-    //   req3Promise resolves as 503 → counter was NOT decremented (leak) ✗
-    const controller3 = new AbortController();
-    const req3Promise = fetch(`${subswitch.url}/v1/probe-3`, {
-      method: "GET",
-      signal: controller3.signal,
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: parked.url, maxUpstreamSockets: 1 },
     });
+    cleanups.push(subswitch.close);
 
-    type Outcome =
-      | { kind: "parked" }
-      | { kind: "responded"; status: number }
-      | { kind: "timeout" };
+    // Fire a POST — it parks at the upstream.
+    const postPromise = fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    });
+    const postArrived = await pollUntil(() => parked.arrivedCount >= 1, 2000);
+    assert.ok(postArrived, "POST must reach upstream before health check");
 
-    const outcome: Outcome = await Promise.race<Outcome>([
-      req3Promise.then((r): Outcome => ({ kind: "responded", status: r.status })),
-      (async (): Promise<Outcome> => {
-        const deadline = Date.now() + 2000;
-        while (Date.now() < deadline) {
-          if (parked.parkedRes !== null) return { kind: "parked" };
-          await new Promise<void>((r) => setTimeout(r, 5));
-        }
-        return { kind: "timeout" };
-      })(),
-    ]);
+    // Health must respond immediately while POST is still in-flight.
+    const health = await fetch(`${subswitch.url}/__subswitch/health`);
+    assert.equal(health.status, 200, "health must return 200 with in-flight POST");
+    assert.equal(health.headers.get("x-subswitch-synthesized"), "1");
 
-    switch (outcome.kind) {
-      case "parked":
-        // Slot was released: request 3 reached the upstream and parked ✓
-        break;
-      case "responded":
-        assert.notEqual(outcome.status, 503, "request 3 must not be 503-rejected after slot was released by abort");
-        break;
-      case "timeout":
-        assert.fail("concurrency slot was not released within 2 s of abort");
-        break;
-    }
-
-    controller3.abort();
-    try { await req3Promise; } catch { /* AbortError expected */ }
+    // Positive control: release the parked POST — it must complete successfully,
+    // confirming it was genuinely in-flight (not already dropped by the relay).
+    parked.releaseAll();
+    const postResult = await postPromise;
+    assert.equal(postResult.status, 200, "in-flight POST must complete 200 after release");
+    await postResult.text();
   });
 });

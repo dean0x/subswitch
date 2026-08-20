@@ -1,7 +1,9 @@
 /**
  * Integration tests for routing-layer behavior:
- *   F7  — ambiguous family name → 400 with both provider names in the body
- *   F6g — unknown provider qualifier → 400 with provider list
+ *   F7  — ambiguous family name → fail-open (forwarded to Anthropic), warn log carries provider list
+ *   F6g — unknown provider qualifier → fail-open (forwarded to Anthropic, not 400)
+ *   L1  — colon-bearing unknown model name routes to Anthropic (not 400); real codex: prefix still works
+ *   L4  — oversized body returns 413 with type "request_too_large" (matches Anthropic taxonomy)
  *   P2  — routing table built once: ≥2 requests route consistently without per-request rebuilds
  *         Verified via Proxy ownKeys trap on the aliases map (production resolver, no synthetic seam).
  *
@@ -26,11 +28,19 @@ import { buildDeps, createProxyServer } from "../../src/server.js";
 import type { ModelResolution } from "../../src/models.js";
 
 // ---------------------------------------------------------------------------
-// F7: ambiguous family → 400 with both provider names
+// F7: ambiguous family → fail-open (forwarded to Anthropic, warn log carries provider list)
+//
+// Rationale (ADR-010): A relay-invented 400 naming our own provider registry is a
+// relay-invented status the origin never emits — a defect.  PROVIDER_IDS only contains
+// "codex" today, so this branch is currently unreachable in practice.  It becomes live
+// the moment a second provider ships; the fail-open policy ensures correctness by default.
+//
+// Non-vacuity: if the old 400 branch were still active, assert.equal(response.status, 200)
+// would fail and assert.equal(anthropic.requests.length, 1) would fail (0 requests).
 // ---------------------------------------------------------------------------
 
-describe("routing — ambiguous family (F7)", () => {
-  it("returns 400 when two providers claim the same family name", async () => {
+describe("routing — ambiguous family forwards to Anthropic (F7)", () => {
+  it("forwards to Anthropic when two providers claim the same family name", async () => {
     const cleanups: Array<() => Promise<void>> = [];
 
     // A synthetic resolver that always reports "fast" as ambiguous between two providers.
@@ -49,12 +59,16 @@ describe("routing — ambiguous family (F7)", () => {
     const authFilePath = join(dir, "auth.json");
     await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
 
+    const captured: Array<{ event: string; fields: Record<string, unknown> }> = [];
     const subswitch = await startSubswitch(
       {
         anthropic: { baseUrl: anthropic.url },
         providers: { codex: { authFile: authFilePath } },
       },
-      { resolve },
+      {
+        resolve,
+        logger: { log(_level: string, event: string, fields: Record<string, unknown> = {}) { captured.push({ event, fields }); } },
+      },
     );
     cleanups.push(subswitch.close);
 
@@ -69,75 +83,49 @@ describe("routing — ambiguous family (F7)", () => {
         body: JSON.stringify({ model: "fast", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
       });
 
-      assert.equal(response.status, 400, "ambiguous model name must return 400");
+      // Must NOT return 400 — the relay has no authority to reject ambiguous names (ADR-010).
+      assert.equal(response.status, 200, "ambiguous model name must forward to Anthropic, not 400");
 
-      const body = (await response.json()) as { error: { type: string; message: string } };
-      assert.equal(body.error.type, "invalid_request_error", "error type must be invalid_request_error");
-      assert.ok(body.error.message.includes("fast"), "error message must name the ambiguous model");
-      assert.ok(body.error.message.includes("codex"), "error message must name the first provider");
-      assert.ok(body.error.message.includes("kimi"), "error message must name the second provider");
-      assert.ok(body.error.message.includes("multiple providers"), "error message must mention multiple providers");
+      // Must reach Anthropic (fail-open).
+      assert.equal(anthropic.requests.length, 1, "request must be forwarded to Anthropic upstream");
+
+      await response.body?.cancel();
+
+      // A warn log must be emitted with both provider names in the model field.
+      await new Promise<void>((r) => setTimeout(r, 50));
+      const warnLog = captured.find((e) => e.event === "ambiguous_model_name");
+      assert.ok(warnLog !== undefined, "ambiguous_model_name warn must be logged");
+      assert.ok((warnLog.fields.model as string | undefined)?.includes("fast"), "warn log model field must include the ambiguous name");
+      assert.ok((warnLog.fields.model as string | undefined)?.includes("codex"), "warn log model field must include first provider");
+      assert.ok((warnLog.fields.model as string | undefined)?.includes("kimi"), "warn log model field must include second provider");
+
+      // C1 (I-022): request_complete.route must identify fail-open ambiguous forwards as distinct
+      // from intended Anthropic routes so operators can filter them separately (applies ADR-010, avoids PF-023).
+      const completionLog = captured.find((e) => e.event === "request_complete");
+      assert.ok(completionLog !== undefined, "request_complete must be logged after ambiguous forward");
+      assert.equal(completionLog.fields.route, "anthropic:ambiguous", "request_complete route must be anthropic:ambiguous, not plain anthropic");
     } finally {
       for (const cleanup of cleanups.reverse()) await cleanup();
     }
   });
 
-  it("does not forward an ambiguous request to either upstream", async () => {
-    const cleanups: Array<() => Promise<void>> = [];
-
-    const resolve = (name: string): ModelResolution =>
-      name === "fast"
-        ? { kind: "ambiguous", name: "fast", providers: ["codex", "kimi"] as never[] }
-        : { kind: "unresolved" };
-
-    const anthropic = await startFakeUpstream((_req, res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
-    });
-    cleanups.push(anthropic.close);
-
-    const dir = await mkdtemp(join(tmpdir(), "subswitch-ambig-fwd-test-"));
-    const authFilePath = join(dir, "auth.json");
-    await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
-
-    const subswitch = await startSubswitch(
-      {
-        anthropic: { baseUrl: anthropic.url },
-        providers: { codex: { authFile: authFilePath } },
-      },
-      { resolve },
-    );
-    cleanups.push(subswitch.close);
-
-    try {
-      const response = await fetch(`${subswitch.url}/v1/messages`, {
-        method: "POST",
-        headers: {
-          authorization: "Bearer sk-ant",
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ model: "fast", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
-      });
-
-      // The 400 must be emitted by subswitch itself — not proxied from any upstream.
-      assert.equal(response.status, 400);
-      assert.equal(anthropic.requests.length, 0, "anthropic upstream must not receive the request");
-    } finally {
-      for (const cleanup of cleanups.reverse()) await cleanup();
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
-// F6g: unknown provider qualifier → 400
+// F6g / L1: unknown provider qualifier → fail-open (forwarded to Anthropic)
+//
+// When a colon-separated name has an unknown prefix (not a registered provider),
+// the relay must NOT return a 400 citing its own provider registry. The origin
+// may support the model (e.g. future namespaced ids like "claude-sonnet-9:preview");
+// the relay's job is to forward, not to police names it doesn't recognise.
 // ---------------------------------------------------------------------------
 
-describe("routing — unknown provider qualifier (F6g)", () => {
-  it("returns 400 when the qualifier prefix is not a known provider", async () => {
+describe("routing — unknown provider qualifier fails open to Anthropic (F6g / L1)", () => {
+  it("forwards to Anthropic (not 400) when the qualifier prefix is not a known provider", async () => {
     const cleanups: Array<() => Promise<void>> = [];
 
-    // Synthetic resolver that returns unknown_qualifier for "kimee:k2"
+    // Synthetic resolver that returns unknown_qualifier for "kimee:k2".
+    // The router maps this to "unknown_provider", and the server must fail open.
     const resolve = (name: string): ModelResolution =>
       name === "kimee:k2"
         ? { kind: "unknown_qualifier", qualifier: "kimee" }
@@ -153,12 +141,23 @@ describe("routing — unknown provider qualifier (F6g)", () => {
     const authFilePath = join(dir, "auth.json");
     await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
 
+    // C8: Attach a logger to capture the unknown_provider_qualifier warn event.
+    // Previously the test had ZERO log capture — the event had zero test hits.
+    const captured: Array<{ event: string; fields: Record<string, unknown> }> = [];
+
     const subswitch = await startSubswitch(
       {
         anthropic: { baseUrl: anthropic.url },
         providers: { codex: { authFile: authFilePath } },
       },
-      { resolve },
+      {
+        resolve,
+        logger: {
+          log(_level: string, event: string, fields: Record<string, unknown> = {}) {
+            captured.push({ event, fields });
+          },
+        },
+      },
     );
     cleanups.push(subswitch.close);
 
@@ -173,14 +172,137 @@ describe("routing — unknown provider qualifier (F6g)", () => {
         body: JSON.stringify({ model: "kimee:k2", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
       });
 
-      assert.equal(response.status, 400, "unknown provider qualifier must return 400");
+      // Must return 200 — the relay has no authority to reject names it doesn't recognise.
+      // Non-vacuity: assert.equal(200) fails on any other status, including 400 and 500,
+      // so a broken relay that returns 400 or 504 turns this red.
+      assert.equal(response.status, 200, "unknown provider qualifier must be forwarded with 200 (fail-open)");
 
-      const body = (await response.json()) as { error: { type: string; message: string } };
-      assert.equal(body.error.type, "invalid_request_error");
-      assert.ok(body.error.message.includes("kimee"), "error message must name the unknown qualifier");
-      assert.ok(body.error.message.includes("codex"), "error message must list the known providers");
-      // Does not reach anthropic.
-      assert.equal(anthropic.requests.length, 0, "unknown provider must not be forwarded to anthropic");
+      // Must reach Anthropic (fail-open routing).
+      assert.equal(anthropic.requests.length, 1, "request must be forwarded to Anthropic upstream");
+      await response.body?.cancel();
+
+      // Allow the event loop to drain so the request_complete log fires.
+      await new Promise<void>((r) => setTimeout(r, 50));
+
+      // C8: unknown_provider_qualifier warn must fire with the qualifier field.
+      // Non-vacuity: without the logger injection, this would always pass vacuously.
+      // Removing the unknown_provider_qualifier warn from server.ts's unknown-qualifier
+      // arm causes this assertion to fail.
+      const warnLog = captured.find((e) => e.event === "unknown_provider_qualifier");
+      assert.ok(warnLog !== undefined, "unknown_provider_qualifier warn must be logged");
+      // I-051: warn must carry the full requested model name ("kimee:k2"), not just the qualifier ("kimee").
+      assert.equal(warnLog.fields.model, "kimee:k2", "warn must carry the full requested model name, not just the qualifier");
+
+      // C1 (I-022): request_complete.route must identify fail-open unknown-qualifier forwards as distinct
+      // from intended Anthropic routes so operators can filter them separately (applies ADR-010, avoids PF-023).
+      const completionLog = captured.find((e) => e.event === "request_complete");
+      assert.ok(completionLog !== undefined, "request_complete must be logged after unknown-qualifier forward");
+      assert.equal(completionLog.fields.route, "anthropic:fallback", "request_complete route must be anthropic:fallback, not plain anthropic");
+    } finally {
+      for (const cleanup of cleanups.reverse()) await cleanup();
+    }
+  });
+
+  it("a real codex: prefix still resolves as a provider qualifier (not forwarded to Anthropic)", async () => {
+    const cleanups: Array<() => Promise<void>> = [];
+
+    // Real registry resolution: "codex:gpt-5.6-sol" → resolved as Codex.
+    // Uses default resolver (no synthetic seam) so the real registry is exercised.
+    //
+    // Minimal Responses-API stream: response.created → response.completed.
+    // The codex leg translates this sequence into Anthropic SSE and aggregates
+    // it for the non-streaming request the test sends (stream not set).
+    const sseBody =
+      "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_routing1\",\"model\":\"gpt-5.6-sol\",\"status\":\"in_progress\"}}\n\n" +
+      "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_routing1\",\"model\":\"gpt-5.6-sol\",\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n";
+
+    const codex = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(sseBody);
+    });
+    cleanups.push(codex.close);
+
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
+    });
+    cleanups.push(anthropic.close);
+
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-codex-prefix-test-"));
+    const authFilePath = join(dir, "auth.json");
+    await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
+
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: anthropic.url },
+      providers: { codex: { baseUrl: codex.url, authFile: authFilePath } },
+    });
+    cleanups.push(subswitch.close);
+
+    try {
+      const response = await fetch(`${subswitch.url}/v1/messages`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer sk-ant",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ model: "codex:gpt-5.6-sol", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      // Must route to Codex, not to the anthropic upstream.
+      assert.equal(codex.requests.length, 1, "codex: prefix must route to the Codex upstream");
+      assert.equal(anthropic.requests.length, 0, "codex: prefix must NOT route to Anthropic");
+      assert.equal(response.status, 200, "codex: prefix routing must succeed with status 200");
+      await response.body?.cancel();
+    } finally {
+      for (const cleanup of cleanups.reverse()) await cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L4: oversized body → 413 with type "request_too_large"
+// ---------------------------------------------------------------------------
+
+describe("routing — oversized body returns request_too_large (L4)", () => {
+  it("returns 413 with error type 'request_too_large' for a body exceeding maxBodyBytes", async () => {
+    const cleanups: Array<() => Promise<void>> = [];
+
+    const anthropic = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_from_anthropic" }));
+    });
+    cleanups.push(anthropic.close);
+
+    // maxBodyBytes: 64 bytes — tiny, so we can trigger the limit easily.
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: anthropic.url },
+      limits: { maxBodyBytes: 64 },
+    });
+    cleanups.push(subswitch.close);
+
+    try {
+      const oversizedBody = Buffer.alloc(128, "x"); // 128 > 64 → triggers 413
+      const response = await fetch(`${subswitch.url}/v1/messages`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer sk-ant",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: oversizedBody,
+      });
+
+      assert.equal(response.status, 413, "oversized body must return 413");
+      const body = (await response.json()) as { type: string; error: { type: string; message: string } };
+      assert.equal(body.type, "error", "response type must be 'error'");
+      assert.equal(
+        body.error.type,
+        "request_too_large",
+        "413 error type must be 'request_too_large', not 'invalid_request_error'",
+      );
+      // Must NOT reach the upstream — the relay caps before forwarding.
+      assert.equal(anthropic.requests.length, 0, "oversized body must not reach the upstream");
     } finally {
       for (const cleanup of cleanups.reverse()) await cleanup();
     }
@@ -315,6 +437,72 @@ describe("routing — table built once via ownKeys trap (P2)", () => {
       // Both requests must have reached the codex upstream (correct routing).
       assert.equal(codex.requests.length, 2, "both requests must route to codex");
       assert.equal(anthropic.requests.length, 0, "neither request should reach anthropic");
+    } finally {
+      for (const cleanup of cleanups.reverse()) await cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L1 (real-registry): "claude-sonnet-9:preview" routes to Anthropic, not 400.
+//
+// The CHANGELOG motivation for the F6g / L1 fix is that namespaced model ids
+// like "claude-sonnet-9:preview" must not be rejected with a relay-invented 400
+// citing the provider registry.  The existing F6g test uses a synthetic resolver
+// to drive the unknown_qualifier path; this test exercises the REAL registry so
+// the literal motivating name has end-to-end coverage.
+//
+// Non-vacuity: if the relay returned 400 for unknown qualifiers, this test would
+// fail at assert.equal(response.status, 200).
+// ---------------------------------------------------------------------------
+
+describe("routing — 'claude-sonnet-9:preview' routes to Anthropic via the real registry (L1-real)", () => {
+  it("forwards claude-sonnet-9:preview to Anthropic (200, byte-identical body) — real registry, no synthetic seam", async () => {
+    const cleanups: Array<() => Promise<void>> = [];
+
+    // Fake Anthropic that returns a recognisable response body.
+    const anthropicUpstream = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: "msg_real_registry_l1" }));
+    });
+    cleanups.push(anthropicUpstream.close);
+
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-l1-real-"));
+    const authFilePath = join(dir, "auth.json");
+    await writeFile(authFilePath, makeAuthFileContent(makeAccessToken(Date.now() + 3_600_000)), "utf8");
+
+    // startSubswitch with NO `resolve` override — the real registry resolver is used.
+    const subswitch = await startSubswitch({
+      anthropic: { baseUrl: anthropicUpstream.url },
+      providers: { codex: { authFile: authFilePath } },
+    });
+    cleanups.push(subswitch.close);
+
+    try {
+      const response = await fetch(`${subswitch.url}/v1/messages`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer sk-ant",
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-9:preview",
+          max_tokens: 16,
+          messages: [{ role: "user", content: "hi" }],
+        }),
+      });
+
+      // Must forward to Anthropic with 200 — relay must not police names it does not recognise.
+      // Non-vacuity: assert.equal(200) fails on any other status, including 400 and 500.
+      assert.equal(response.status, 200, "'claude-sonnet-9:preview' must be forwarded to Anthropic with 200 (relay must fail open)");
+
+      // Must reach Anthropic (the real registry knows no provider for 'claude-sonnet-9:preview').
+      assert.equal(anthropicUpstream.requests.length, 1, "request must be forwarded to Anthropic");
+
+      // Response body must be forwarded byte-identical (no relay mangling).
+      const parsed = (await response.json()) as { id: string };
+      assert.equal(parsed.id, "msg_real_registry_l1", "response body must be forwarded byte-identical from upstream");
     } finally {
       for (const cleanup of cleanups.reverse()) await cleanup();
     }

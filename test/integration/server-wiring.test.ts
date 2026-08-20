@@ -9,8 +9,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import net from "node:net";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { loadConfig, type Config } from "../../src/config.js";
-import { buildDeps } from "../../src/server.js";
+import { buildDeps, createProxyServer } from "../../src/server.js";
+import { SERVER_TUNING } from "../../src/inbound-policy.js";
+import type { Logger, LogLevel } from "../../src/logger.js";
+import { startFakeUpstream } from "./fake-upstreams.js";
 
 /** Run `fn` with stderr captured, returning every line it wrote. */
 const captureStderr = (fn: () => void): string[] => {
@@ -29,9 +35,30 @@ const captureStderr = (fn: () => void): string[] => {
 };
 
 /**
- * Build a minimal Config for testing buildDeps directly, bypassing Zod validation.
+ * Returns a Config built from loadConfig with an empty file — identical to what a
+ * user gets with no config options set.  Cannot drift from loadConfig's real
+ * defaults because it IS loadConfig's real defaults.
+ *
+ * Pattern from test/unit/codex-handler.test.ts lines 104-106.
+ */
+const defaultConfig = (): Config => {
+  const result = loadConfig({ configPath: "inline-test.json", readFile: () => "{}", env: {} });
+  if (!result.ok) throw new Error(`loadConfig failed with empty config: ${result.error.message}`);
+  return result.value.config;
+};
+
+/**
+ * Build a Config for testing buildDeps directly, bypassing Zod validation.
  * This is the only way to exercise the runtime defence-in-depth with URLs that
  * the schema's https-only refinements would reject at parse time.
+ *
+ * Derives from defaultConfig() so non-URL fields can never drift from real defaults.
+ * Overrides are applied AFTER parsing — the https bypass still works because
+ * we spread over the already-parsed Config object, not re-running the schema.
+ *
+ * Non-vacuity: the "makeMinimalConfig — non-vacuity guard" describe block below pins
+ * non-overridden fields to their literal default values (not to defaultConfig()), so
+ * the guard catches hardcoded drift even when both sides call the same function.
  */
 const makeMinimalConfig = (overrides: {
   codexBaseUrl?: string;
@@ -47,34 +74,59 @@ const makeMinimalConfig = (overrides: {
     anthropicBaseUrl = "https://api.anthropic.com",
     anthropicAllowInsecureBaseUrl = false,
   } = overrides;
+  const base = defaultConfig();
   return {
-    port: 4141,
-    logLevel: "warn",
+    ...base,
+    logLevel: "warn",  // quieter test output (deliberate override)
     anthropic: {
+      ...base.anthropic,
       baseUrl: anthropicBaseUrl,
-      connectTimeoutMs: 10_000,
-      streamIdleTimeoutMs: 300_000,
-      maxUpstreamSockets: 32,
       allowInsecureBaseUrl: anthropicAllowInsecureBaseUrl,
     },
     providers: {
       codex: {
+        ...base.providers.codex,
         baseUrl: codexBaseUrl,
         oauthTokenUrl: codexOauthTokenUrl,
-        authFile: "/tmp/nonexistent-auth.json",
-        userAgent: "test/1.0",
-        aliases: {},
-        reasoningCache: { maxEntries: 10, maxBytes: 1024 },
-        requestTimeoutMs: 60_000,
-        streamIdleTimeoutMs: 60_000,
-        maxSseEventBytes: 1024,
-        maxAggregateBytes: 64 * 1024 * 1024,
+        authFile: "/tmp/nonexistent-auth.json",  // deliberate: non-default path for tests
         allowInsecureBaseUrl: codexAllowInsecureBaseUrl,
       },
     },
-    limits: { maxBodyBytes: 1024, pingIntervalMs: 15_000, maxConcurrentRequests: 32 },
   };
 };
+
+describe("makeMinimalConfig — non-vacuity guard", () => {
+  it("non-overridden fields of makeMinimalConfig() equal the real loadConfig defaults — literal pin", () => {
+    // Compares against LITERAL values (not against defaultConfig()) so the guard is
+    // genuinely discriminating: if makeMinimalConfig() ever stops spreading defaultConfig()
+    // and hardcodes wrong values, the literals catch it even when both sides call the same
+    // underlying function (avoids PF-011, PF-012).
+    //
+    // MUTATION PROOF: temporarily changing a default in src/config.ts (e.g. DEFAULT_PORT
+    // from 4141 to 4142, or connectTimeoutMs from 10_000 to 9_999) causes this test to go
+    // RED at the corresponding assertion — the literal no longer matches.  A spread-vs-base
+    // comparison would remain green because both sides derive from the same function.
+    //
+    // Canonical defaults (kept in sync with src/config.ts):
+    //   port:                              4141   (DEFAULT_PORT)
+    //   anthropic.connectTimeoutMs:        10_000
+    //   anthropic.maxUpstreamSockets:      256
+    //   limits.maxBodyBytes:               33_554_432  (32 MiB)
+    //   limits.pingIntervalMs:             15_000
+    //   providers.codex.aliases:           {}
+    //   providers.codex.requestTimeoutMs:  600_000
+    //   providers.codex.streamIdleTimeoutMs: 300_000
+    const fixture = makeMinimalConfig();
+    assert.equal(fixture.port, 4141, "port default must be 4141 (DEFAULT_PORT)");
+    assert.equal(fixture.anthropic.connectTimeoutMs, 10_000, "anthropic.connectTimeoutMs default must be 10 000 ms");
+    assert.equal(fixture.anthropic.maxUpstreamSockets, 256, "anthropic.maxUpstreamSockets default must be 256");
+    assert.equal(fixture.limits.maxBodyBytes, 32 * 1024 * 1024, "limits.maxBodyBytes default must be 32 MiB");
+    assert.equal(fixture.limits.pingIntervalMs, 15_000, "limits.pingIntervalMs default must be 15 000 ms");
+    assert.deepEqual(fixture.providers.codex.aliases, {}, "providers.codex.aliases default must be empty");
+    assert.equal(fixture.providers.codex.requestTimeoutMs, 600_000, "providers.codex.requestTimeoutMs default must be 600 000 ms");
+    assert.equal(fixture.providers.codex.streamIdleTimeoutMs, 300_000, "providers.codex.streamIdleTimeoutMs default must be 300 000 ms");
+  });
+});
 
 /** Capture stderr lines AND the Result from buildDeps in one shot. */
 const buildAndCapture = (config: Config): { result: ReturnType<typeof buildDeps>; lines: string[] } => {
@@ -383,10 +435,705 @@ describe("buildDeps — SEC-04 host-rejection gate (anthropic.baseUrl)", () => {
 // ---------------------------------------------------------------------------
 
 describe("loadConfig — example config schema sync (PF-010)", () => {
-  it("subswitch.config.example.json parses cleanly with the new allowInsecureBaseUrl fields", () => {
+  it("subswitch.config.example.json parses cleanly against the current schema", () => {
     const result = loadConfig({ configPath: join(process.cwd(), "subswitch.config.example.json") });
     assert.ok(result.ok, `example config must parse: ${!result.ok ? result.error.message : ""}`);
-    assert.strictEqual(result.value.config.anthropic.allowInsecureBaseUrl, false, "anthropic.allowInsecureBaseUrl must default to false in example");
-    assert.strictEqual(result.value.config.providers.codex.allowInsecureBaseUrl, false, "providers.codex.allowInsecureBaseUrl must default to false in example");
+    // Values spot-check: allowInsecureBaseUrl must be false in the example so
+    // users don't accidentally opt in to credential forwarding.
+    assert.strictEqual(result.value.config.anthropic.allowInsecureBaseUrl, false, "anthropic.allowInsecureBaseUrl must be false in example");
+    assert.strictEqual(result.value.config.providers.codex.allowInsecureBaseUrl, false, "providers.codex.allowInsecureBaseUrl must be false in example");
+    // maxUpstreamSockets in example must match the real default — catches the drift
+    // that made makeMinimalConfig() wrong (maxUpstreamSockets: 32 vs real default 256).
+    assert.strictEqual(
+      result.value.config.anthropic.maxUpstreamSockets,
+      defaultConfig().anthropic.maxUpstreamSockets,
+      "anthropic.maxUpstreamSockets in example must match real default",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B1: SERVER_TUNING is applied to the constructed server, AND the values are
+//     the intended ones
+//
+// Two distinct claims, which need two distinct assertions:
+//
+//   (a) WIRING — every SERVER_TUNING field reaches the http.Server.  Comparing
+//       server.X to SERVER_TUNING.X proves this and nothing else: it compares the
+//       value to its own source of truth, so editing SERVER_TUNING moves both
+//       sides together.  Verified: changing requestTimeout to 2 000 and
+//       headersTimeout to 1 000 left the whole suite green.
+//
+//   (b) VALUES — the numbers themselves are what the design calls for.  This is
+//       the claim a restated literal is REQUIRED for.  The usual rule against
+//       duplicating a source of truth is inverted for a constant whose whole
+//       purpose is to be a specific number: with no independent copy, nothing can
+//       report that it changed.  A deliberate retune must edit both sides, which
+//       is the point — it forces the changer past a comment explaining why the
+//       value is what it is.
+//
+// These bounds are load-bearing under ADR-010: requestTimeout and headersTimeout
+// govern inbound receipt and now produce a synthesized 408 on expiry, so shrinking
+// them silently turns healthy slow clients into relay-invented errors.
+//
+// maxHeaderSize is constructor-only (not a public property) — it is verified
+// behaviourally by the B4 header-overflow test.
+// ---------------------------------------------------------------------------
+
+describe("SERVER_TUNING — applied to constructed http.Server (B1)", () => {
+  it("createProxyServer wires all SERVER_TUNING values onto the http.Server", async () => {
+    // Build deps with a safe default config.  We do not make any requests so the
+    // anthropic.baseUrl value is irrelevant; pick the real default.
+    const configResult = loadConfig({
+      configPath: "inline-b1.json",
+      readFile: () => JSON.stringify({ logLevel: "error" }),
+    });
+    assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
+    const depsResult = buildDeps(configResult.value.config);
+    assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
+
+    const server = createProxyServer(depsResult.value);
+
+    // (a) WIRING: each field reaches the server. Catches a deleted assignment.
+    assert.equal(server.requestTimeout, SERVER_TUNING.requestTimeout, "requestTimeout must be wired from SERVER_TUNING");
+    assert.equal(server.headersTimeout, SERVER_TUNING.headersTimeout, "headersTimeout must be wired from SERVER_TUNING");
+    assert.equal(server.keepAliveTimeout, SERVER_TUNING.keepAliveTimeout, "keepAliveTimeout must be wired from SERVER_TUNING");
+    assert.equal(server.maxRequestsPerSocket, SERVER_TUNING.maxRequestsPerSocket, "maxRequestsPerSocket must be wired from SERVER_TUNING");
+
+    // (b) VALUES: independently restated, so a retune cannot pass unnoticed.
+    // Changing one of these is a deliberate act — update the literal here and say why.
+    assert.equal(
+      server.requestTimeout,
+      600_000,
+      "requestTimeout must be 600 s — Anthropic's own ceiling for a long completion. " +
+        "It bounds RECEIPT of the request only (never the response), so it cannot cut a slow stream; " +
+        "shrinking it turns a slow uploader into a synthesized 408 (ADR-010).",
+    );
+    assert.equal(
+      server.headersTimeout,
+      120_000,
+      "headersTimeout must be 120 s — a local client that has not finished its headers in 2 minutes is dead. " +
+        "Node's 60 s default is too tight and now yields a synthesized 408 (ADR-010).",
+    );
+    assert.equal(
+      server.keepAliveTimeout,
+      300_000,
+      "keepAliveTimeout must be 300 s. Node's 5 s default is the PF-018 regression: an idle-socket close " +
+        "racing an outgoing POST gives an ECONNRESET undici will not retry for a non-idempotent request.",
+    );
+    assert.equal(server.maxRequestsPerSocket, 0, "maxRequestsPerSocket must be 0 (unlimited) — any cap cycles connections on long-lived agents");
+    assert.equal(SERVER_TUNING.maxHeaderSize, 64 * 1024, "maxHeaderSize must be 64 KiB (behaviour pinned by B4)");
+
+    // No listen call needed — we are only checking properties.
+    server.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B2: Keep-Alive: timeout=300 on a response
+//
+// Node advertises keepAliveTimeout to the client via the Keep-Alive response
+// header.  Assert the header is present and carries the right value.
+//
+// Non-vacuity: keepAliveTimeout is set to SERVER_TUNING.keepAliveTimeout (300 s).
+// If it were left at Node's default (5 s) the header would say timeout=5.
+// ---------------------------------------------------------------------------
+
+describe("SERVER_TUNING — Keep-Alive header on response (B2)", () => {
+  it("response carries Keep-Alive: timeout=300 derived from SERVER_TUNING.keepAliveTimeout", async () => {
+    const upstream = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+
+    const configResult = loadConfig({
+      configPath: "inline-b2.json",
+      readFile: () => JSON.stringify({ logLevel: "error", anthropic: { baseUrl: upstream.url } }),
+    });
+    assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
+    const depsResult = buildDeps(configResult.value.config);
+    assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
+
+    const server = createProxyServer(depsResult.value);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/models`);
+      await response.body?.cancel();
+
+      const keepAlive = response.headers.get("keep-alive");
+      // Node emits "timeout=N" in Keep-Alive when keepAliveTimeout > 0.
+      // Value is in seconds: 300_000 ms / 1000 = 300.
+      const expectedSeconds = Math.floor(SERVER_TUNING.keepAliveTimeout / 1000);
+      assert.ok(
+        keepAlive !== null && keepAlive.includes(`timeout=${expectedSeconds}`),
+        `Keep-Alive header must contain timeout=${expectedSeconds}; got: ${JSON.stringify(keepAlive)}`,
+      );
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+      await upstream.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B3: Socket idle for 6.5 s is still reusable
+//
+// At Node's default keepAliveTimeout (5 000 ms) the server closes the idle
+// socket after 5 s.  An http.Agent that tries to reuse it at 6.5 s receives
+// ECONNRESET and must open a new connection (connectionCount = 2).
+//
+// With SERVER_TUNING.keepAliveTimeout (300 000 ms) the socket stays alive,
+// reuse succeeds, and connectionCount = 1.
+//
+// This directly pins PF-018: a 5 s default forces reconnects and exposes
+// non-idempotent POSTs to ECONNRESET-then-retry, the exact defect PF-018
+// documents.  Budget: 6.5 s sleep + ~0.5 s setup = ~7 s — well inside the
+// 30 s per-test limit.
+// ---------------------------------------------------------------------------
+
+describe("SERVER_TUNING — idle socket reuse after 6.5 s (B3)", () => {
+  it("socket idle for 6.5 s is still reusable because keepAliveTimeout=300_000 exceeds Node default (5 000)", async () => {
+    const upstream = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+
+    const configResult = loadConfig({
+      configPath: "inline-b3.json",
+      readFile: () => JSON.stringify({ logLevel: "error", anthropic: { baseUrl: upstream.url } }),
+    });
+    assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
+    const depsResult = buildDeps(configResult.value.config);
+    assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
+
+    let proxyConnections = 0;
+    const server = createProxyServer(depsResult.value);
+    server.on("connection", () => { proxyConnections++; });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+
+    const doGet = () =>
+      new Promise<number>((resolve, reject) => {
+        http
+          .get(`http://127.0.0.1:${port}/v1/models`, { agent }, (res) => {
+            res.resume(); // drain so the socket can return to the pool
+            res.on("end", () => resolve(res.statusCode ?? 0));
+          })
+          .on("error", reject);
+      });
+
+    try {
+      // First request — establishes the connection.
+      await doGet();
+
+      // Wait 6.5 s — past Node's 5 s default keepAliveTimeout.
+      await new Promise<void>((r) => setTimeout(r, 6500));
+
+      // Second request — must reuse the socket (server keepAlive=300 s keeps it alive).
+      await doGet();
+    } finally {
+      agent.destroy();
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+      await upstream.close();
+    }
+
+    assert.equal(
+      proxyConnections,
+      1,
+      `keepAliveTimeout=300_000 must keep the socket alive for 6.5 s; ` +
+        `got ${proxyConnections} connection(s) — 2 means the server closed at the Node default 5 s`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B4: Header overflow (>64 KiB) produces Anthropic-shaped 431 with synthesized
+//     marker — not Node's canned bodyless 431 (PF-021)
+//
+// Node's http.Server handles HPE_HEADER_OVERFLOW in the HTTP parser before any
+// request handler runs.  Its canned response is a BODYLESS 431 with Connection:
+// close — no JSON body, no x-subswitch-synthesized, never logged.
+//
+// applyInboundPolicy replaces that with an Anthropic-shaped error body
+// and the synthesized marker.  A raw TCP socket is needed because the Node http
+// client enforces its own (16 KiB) header limit before sending.
+//
+// Non-vacuity: without applyInboundPolicy (or with the wrong maxHeaderSize),
+// the response body would be empty, body-parse would fail, and the type assertion
+// would not pass.  The presence of the JSON Anthropic body is the discriminant.
+// ---------------------------------------------------------------------------
+
+describe("applyInboundPolicy — Anthropic-shaped 431 on header overflow (B4)", () => {
+  it("request with headers exceeding maxHeaderSize receives Anthropic-shaped 431 with synthesized marker", async () => {
+    const configResult = loadConfig({
+      configPath: "inline-b4.json",
+      readFile: () => JSON.stringify({ logLevel: "error" }),
+    });
+    assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
+    const depsResult = buildDeps(configResult.value.config);
+    assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
+
+    const server = createProxyServer(depsResult.value);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      // Build a raw request with a single header value that pushes total headers
+      // over 64 KiB.  A raw TCP socket is needed — http.request() applies its own
+      // (16 KiB) limit and would reject the request before connecting.
+      const bigHeaderValue = "A".repeat(65 * 1024);
+      const rawRequest =
+        `GET /v1/messages HTTP/1.1\r\n` +
+        `Host: 127.0.0.1:${port}\r\n` +
+        `X-Overflow: ${bigHeaderValue}\r\n` +
+        `\r\n`;
+
+      const responseBytes = await new Promise<string>((resolve, reject) => {
+        const socket = net.connect(port, "127.0.0.1", () => {
+          socket.write(rawRequest);
+        });
+        let received = "";
+        socket.on("data", (data: Buffer) => { received += data.toString(); });
+        socket.on("end", () => resolve(received));
+        socket.on("close", () => resolve(received));
+        socket.on("error", reject);
+        socket.setTimeout(5000, () => { socket.destroy(); reject(new Error("raw socket timeout waiting for 431")); });
+      });
+
+      assert.match(responseBytes, /^HTTP\/1\.1 431/, "response must be a 431");
+      assert.ok(
+        responseBytes.toLowerCase().includes("x-subswitch-synthesized: 1"),
+        `431 must carry x-subswitch-synthesized: 1; got:\n${responseBytes.slice(0, 500)}`,
+      );
+
+      const bodyStart = responseBytes.indexOf("\r\n\r\n");
+      assert.ok(bodyStart >= 0, "response must have a body (\\r\\n\\r\\n separator missing)");
+      const body = JSON.parse(responseBytes.slice(bodyStart + 4)) as {
+        type: string;
+        error: { type: string; message: string };
+      };
+      assert.equal(body.type, "error", "431 body outer type must be 'error'");
+      assert.equal(body.error.type, "request_too_large", "431 error.type must be 'request_too_large'");
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B4b: An inbound timeout must keep Node's 408 — not become a 400 (ADR-010)
+//
+// PF-021 records the requestTimeout/headersTimeout 408 as written by the HTTP
+// parser before any handler and therefore un-interceptable.  That is true of
+// Node's DEFAULT reply only: measured on Node 22.22, attaching a `clientError`
+// listener SUPPRESSES the canned 408 and delivers the expiry to the listener as
+// err.code === "ERR_HTTP_REQUEST_TIMEOUT" for BOTH knobs.
+//
+// So applyInboundPolicy owns this status.  Folding the timeout into the
+// generic 400 arm would emit a status neither Node nor the origin sends for a slow
+// client, and would report a merely-slow request as a malformed one — a relay-
+// invented status on a live connection, which is the defect class ADR-010 forbids.
+//
+// Non-vacuity: this test is RED on code that maps every non-HPE_HEADER_OVERFLOW
+// clientError to 400 — it receives "HTTP/1.1 400 Bad Request" and the status
+// assertion fails.  The B4 test above is the paired control proving the 400/431
+// arm still works, so a mutation that returns 408 unconditionally is also caught.
+//
+// headersTimeout and connectionsCheckingInterval are overridden AFTER
+// createProxyServer so the expiry is reachable in test time; the production
+// values themselves are pinned separately by B1.
+// ---------------------------------------------------------------------------
+
+describe("applyInboundPolicy — inbound timeout keeps 408, never 400 (B4b)", () => {
+  it("a client that stalls mid-headers receives an Anthropic-shaped 408, not a 400", async () => {
+    const configResult = loadConfig({
+      configPath: "inline-b4b.json",
+      readFile: () => JSON.stringify({ logLevel: "error" }),
+    });
+    assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
+    const depsResult = buildDeps(configResult.value.config);
+    assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
+
+    const server = createProxyServer(depsResult.value);
+    // Node only samples the timeout on connectionsCheckingInterval ticks, so both
+    // knobs must shrink together or the expiry never fires inside the test budget.
+    server.headersTimeout = 300;
+    server.requestTimeout = 0;
+    (server as unknown as { connectionsCheckingInterval: number }).connectionsCheckingInterval = 50;
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const responseBytes = await new Promise<string>((resolve, reject) => {
+        const socket = net.connect(port, "127.0.0.1", () => {
+          // Partial headers: no terminating blank line, so headersTimeout expires.
+          socket.write(`GET /v1/messages HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n`);
+        });
+        let received = "";
+        socket.on("data", (data: Buffer) => { received += data.toString(); });
+        socket.on("end", () => resolve(received));
+        socket.on("close", () => resolve(received));
+        socket.on("error", reject);
+        socket.setTimeout(5000, () => { socket.destroy(); reject(new Error("raw socket timeout waiting for 408")); });
+      });
+
+      assert.match(
+        responseBytes,
+        /^HTTP\/1\.1 408 Request Timeout/,
+        `an inbound header timeout must keep Node's own 408 — a 400 would report a slow ` +
+          `client as a malformed one and invent a status the origin never sends (ADR-010). Got:\n` +
+          `${responseBytes.slice(0, 200)}`,
+      );
+      assert.ok(
+        responseBytes.toLowerCase().includes("x-subswitch-synthesized: 1"),
+        `408 must carry x-subswitch-synthesized: 1; got:\n${responseBytes.slice(0, 500)}`,
+      );
+
+      const bodyStart = responseBytes.indexOf("\r\n\r\n");
+      assert.ok(bodyStart >= 0, "response must have a body (\\r\\n\\r\\n separator missing)");
+      const body = JSON.parse(responseBytes.slice(bodyStart + 4)) as {
+        type: string;
+        error: { type: string; message: string };
+      };
+      assert.equal(body.type, "error", "408 body outer type must be 'error'");
+      assert.match(
+        body.error.message,
+        /timed out/,
+        `408 message must describe a timeout, not a malformed request; got: ${JSON.stringify(body.error.message)}`,
+      );
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B4c: a genuinely malformed request still gets the Anthropic-shaped 400
+//
+// MUTATION PROOF for the 400 arm of applyInboundPolicy: without this test its
+// status, error type, message and the `client_error` warn can all be mutated to
+// garbage with the suite fully green.  It is also the fallback arm — any clientError code the
+// response table does not name lands here — so it is what a future Node adding a
+// new code will produce, and it is the control that stops the B4b 408 fix from
+// being over-applied to every code.
+//
+// Non-vacuity: RED if the fallback status/type/message change, and RED if the 408
+// entry is widened to catch every code (the response would become a 408).
+// ---------------------------------------------------------------------------
+
+describe("applyInboundPolicy — Anthropic-shaped 400 on a malformed request (B4c)", () => {
+  it("an invalid request line receives an Anthropic-shaped 400 with the synthesized marker", async () => {
+    const configResult = loadConfig({
+      configPath: "inline-b4c.json",
+      readFile: () => JSON.stringify({ logLevel: "error" }),
+    });
+    assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
+    const depsResult = buildDeps(configResult.value.config);
+    assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
+
+    const server = createProxyServer(depsResult.value);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const responseBytes = await new Promise<string>((resolve, reject) => {
+        const socket = net.connect(port, "127.0.0.1", () => {
+          // Not a valid HTTP method — the parser rejects it with HPE_INVALID_METHOD.
+          socket.write("BAD METHOD / HTTP/1.1\r\nHost: x\r\n\r\n");
+        });
+        let received = "";
+        socket.on("data", (data: Buffer) => { received += data.toString(); });
+        socket.on("end", () => resolve(received));
+        socket.on("close", () => resolve(received));
+        socket.on("error", reject);
+        socket.setTimeout(5000, () => { socket.destroy(); reject(new Error("raw socket timeout waiting for 400")); });
+      });
+
+      assert.match(
+        responseBytes,
+        /^HTTP\/1\.1 400 Bad Request/,
+        `a malformed request line must yield 400; got:\n${responseBytes.slice(0, 200)}`,
+      );
+      assert.ok(
+        responseBytes.toLowerCase().includes("x-subswitch-synthesized: 1"),
+        `400 must carry x-subswitch-synthesized: 1; got:\n${responseBytes.slice(0, 500)}`,
+      );
+
+      const bodyStart = responseBytes.indexOf("\r\n\r\n");
+      assert.ok(bodyStart >= 0, "response must have a body (CRLF CRLF separator missing)");
+      const body = JSON.parse(responseBytes.slice(bodyStart + 4)) as {
+        type: string;
+        error: { type: string; message: string };
+      };
+      assert.equal(body.type, "error", "400 body outer type must be 'error'");
+      assert.equal(body.error.type, "invalid_request_error", "400 error.type must be 'invalid_request_error'");
+      assert.equal(body.error.message, "malformed request", "400 message must be the fixed malformed-request text");
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B4r / B4br: the shaped clientError reply must survive on a REUSED connection
+//
+// Taking ownership of Node's clientError response is per-CONNECTION, so every
+// guard on the shaped reply has to be per-REQUEST (PF-021).  `socket.bytesWritten`
+// is cumulative over the SOCKET's lifetime, not the request's: after the first
+// response on a keep-alive connection it is permanently non-zero, so a
+// `bytesWritten === 0` guard is permanently false and every later shaped reply is
+// silently discarded by socket.destroy() — no status line, no Anthropic body, no
+// synthesized marker, not even the `client_error` warn.  Since merely registering
+// the listener has already suppressed Node's canned reply, that converts a reply
+// into NO reply, which is strictly worse than the bare status line it replaced.
+//
+// This is the steady state, not an edge case: SERVER_TUNING sets keepAliveTimeout to
+// 300 s and maxRequestsPerSocket to 0, so a Claude Code agent's second and every
+// subsequent request rides a reused socket.
+//
+// B4 and B4b above cannot see any of this — both open a fresh socket, the one
+// state in which `bytesWritten === 0` holds.  These two controls repeat them on a
+// socket that has ALREADY completed one successful request/response.
+//
+// Non-vacuity (PF-011): proven RED by running against the per-socket predicate.
+// Both controls failed with "connection closed before a second, shaped response on
+// the reused connection; received 0 byte(s)", and the `client_error` assertions
+// had no record to match.
+// ---------------------------------------------------------------------------
+
+/** A raw TCP client that accumulates received bytes and lets a test await a byte-level condition. */
+interface RawClient {
+  readonly socket: net.Socket;
+  /** Resolve with everything received once `predicate` holds; reject on close-without-match or timeout. */
+  readonly waitFor: (predicate: (received: string) => boolean, what: string, timeoutMs?: number) => Promise<string>;
+  readonly close: () => void;
+}
+
+const openRawClient = async (port: number): Promise<RawClient> => {
+  const socket = net.connect(port, "127.0.0.1");
+  let received = "";
+  let closed = false;
+  const checks = new Set<() => void>();
+  const runChecks = (): void => { for (const check of [...checks]) check(); };
+  socket.on("data", (chunk: Buffer) => { received += chunk.toString("utf8"); runChecks(); });
+  socket.on("close", () => { closed = true; runChecks(); });
+  socket.on("error", () => { closed = true; runChecks(); });
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+  return {
+    socket,
+    // Event-driven with a single bounded timer — no polling loop, and every wait
+    // has all three exits covered (match, peer close, timeout).
+    waitFor: (predicate, what, timeoutMs = 5_000) =>
+      new Promise<string>((resolve, reject) => {
+        const check = (): void => {
+          if (predicate(received)) { cleanup(); resolve(received); return; }
+          if (closed) {
+            cleanup();
+            reject(new Error(
+              `connection closed before ${what}; received ${received.length} byte(s): ${JSON.stringify(received.slice(0, 400))}`,
+            ));
+          }
+        };
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error(
+            `timed out after ${timeoutMs} ms waiting for ${what}; received ${received.length} byte(s): ${JSON.stringify(received.slice(0, 400))}`,
+          ));
+        }, timeoutMs);
+        const cleanup = (): void => { clearTimeout(timer); checks.delete(check); };
+        checks.add(check);
+        check();
+      }),
+    close: () => { socket.destroy(); },
+  };
+};
+
+/**
+ * True once `text` holds exactly one complete HTTP response.
+ *
+ * Both framings are handled deliberately: the health response is chunked (no
+ * content-length, terminated by the zero-length chunk), while the shaped
+ * clientError replies carry content-length.  Recognising only one of them would
+ * make the reused-connection controls fail on the FIXTURE rather than on the
+ * behaviour under test — a red for the wrong reason proves nothing (PF-011).
+ */
+const isOneCompleteResponse = (text: string): boolean => {
+  const separator = text.indexOf("\r\n\r\n");
+  if (separator < 0) return false;
+  const head = text.slice(0, separator);
+  const body = text.slice(separator + 4);
+  const contentLength = /\r\ncontent-length:\s*(\d+)/i.exec(head);
+  if (contentLength !== null) return Buffer.byteLength(body, "utf8") >= Number(contentLength[1]);
+  if (/\r\ntransfer-encoding:\s*chunked/i.test(head)) return body.endsWith("0\r\n\r\n");
+  return false;
+};
+
+interface ReusedConnectionFixture {
+  /** Every record the injected logger saw, so `client_error` can be asserted on the reused connection. */
+  readonly records: ReadonlyArray<{ level: LogLevel; event: string; status: number | undefined }>;
+  readonly client: RawClient;
+  /** Length of the first (successful) response — everything after it is the second reply. */
+  readonly firstResponseLength: number;
+  readonly close: () => Promise<void>;
+}
+
+/**
+ * Start a proxy server with a capturing logger, then complete ONE successful
+ * request/response on a raw keep-alive socket so the connection under test is
+ * genuinely reused (`socket.bytesWritten` is now non-zero) before the caller
+ * writes the request that triggers the clientError.
+ *
+ * `/__subswitch/health` is used for the first request because it is answered
+ * locally — no upstream fixture is needed — and its chunked body ends with the
+ * zero-length chunk, so completion is detectable byte-exactly.
+ */
+const startWithCompletedRequest = async (
+  configName: string,
+  tune?: (server: http.Server) => void,
+): Promise<ReusedConnectionFixture> => {
+  const configResult = loadConfig({ configPath: configName, readFile: () => JSON.stringify({ logLevel: "error" }) });
+  assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
+
+  const records: Array<{ level: LogLevel; event: string; status: number | undefined }> = [];
+  const capturingLogger: Logger = {
+    log(level, event, fields) { records.push({ level, event, status: fields?.status }); },
+  };
+
+  const depsResult = buildDeps(configResult.value.config, capturingLogger);
+  assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
+
+  const server = createProxyServer(depsResult.value);
+  // Applied before listen(): Node starts connection tracking inside listen(), so a
+  // connectionsCheckingInterval set afterwards would never take effect.
+  tune?.(server);
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address() as AddressInfo;
+
+  const client = await openRawClient(port);
+  client.socket.write(`GET /__subswitch/health HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n\r\n`);
+  const first = await client.waitFor(isOneCompleteResponse, "the first (successful) response");
+  assert.match(
+    first,
+    /^HTTP\/1\.1 200 OK/,
+    `the first request must SUCCEED, otherwise the connection is not genuinely reused and the control is vacuous; got:\n${first.slice(0, 200)}`,
+  );
+
+  return {
+    records,
+    client,
+    firstResponseLength: first.length,
+    close: async () => {
+      client.close();
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    },
+  };
+};
+
+describe("inbound policy — Anthropic-shaped 431 on a REUSED keep-alive connection (B4r)", () => {
+  it("a header overflow on the SECOND request of a connection still gets the shaped 431 and a client_error warn", async () => {
+    const fixture = await startWithCompletedRequest("inline-b4r.json");
+
+    try {
+      const bigHeaderValue = "A".repeat(65 * 1024);
+      fixture.client.socket.write(
+        `GET /v1/messages HTTP/1.1\r\n` +
+        `Host: 127.0.0.1\r\n` +
+        `X-Overflow: ${bigHeaderValue}\r\n` +
+        `\r\n`,
+      );
+
+      const all = await fixture.client.waitFor(
+        (text) => text.length > fixture.firstResponseLength && text.slice(fixture.firstResponseLength).includes("\r\n\r\n"),
+        "a second, shaped response on the reused connection",
+      );
+      const second = all.slice(fixture.firstResponseLength);
+
+      assert.match(
+        second,
+        /^HTTP\/1\.1 431/,
+        `a header overflow must produce the same shaped 431 on request 2 as on request 1 — a guard read ` +
+          `per-socket instead of per-request silently discards it (PF-021). Got:\n${second.slice(0, 200)}`,
+      );
+      assert.ok(
+        second.toLowerCase().includes("x-subswitch-synthesized: 1"),
+        `431 on a reused connection must carry x-subswitch-synthesized: 1; got:\n${second.slice(0, 500)}`,
+      );
+
+      const bodyStart = second.indexOf("\r\n\r\n");
+      const body = JSON.parse(second.slice(bodyStart + 4)) as { type: string; error: { type: string; message: string } };
+      assert.equal(body.type, "error", "431 body outer type must be 'error'");
+      assert.equal(body.error.type, "request_too_large", "431 error.type must be 'request_too_large'");
+
+      assert.ok(
+        fixture.records.some((r) => r.event === "client_error" && r.level === "warn" && r.status === 431),
+        `the client_error warn must fire on a reused connection too — a silently destroyed socket leaves the ` +
+          `operator with no record at all. Got: ${JSON.stringify(fixture.records)}`,
+      );
+    } finally {
+      await fixture.close();
+    }
+  });
+});
+
+describe("inbound policy — Anthropic-shaped 408 on a REUSED keep-alive connection (B4br)", () => {
+  it("a mid-header stall on the SECOND request of a connection still gets the shaped 408 and a client_error warn", async () => {
+    const fixture = await startWithCompletedRequest("inline-b4br.json", (server) => {
+      // Node samples the timeout on connectionsCheckingInterval ticks, so both knobs
+      // must shrink together or the expiry never fires inside the test budget.
+      server.headersTimeout = 300;
+      server.requestTimeout = 0;
+      (server as unknown as { connectionsCheckingInterval: number }).connectionsCheckingInterval = 50;
+    });
+
+    try {
+      // Partial headers on the reused socket: no terminating blank line, so headersTimeout expires.
+      fixture.client.socket.write(`GET /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\n`);
+
+      const all = await fixture.client.waitFor(
+        (text) => text.length > fixture.firstResponseLength && text.slice(fixture.firstResponseLength).includes("\r\n\r\n"),
+        "a second, shaped response on the reused connection",
+      );
+      const second = all.slice(fixture.firstResponseLength);
+
+      assert.match(
+        second,
+        /^HTTP\/1\.1 408 Request Timeout/,
+        `an inbound header timeout on request 2 must keep Node's own 408 — the per-socket guard swallowed it ` +
+          `entirely, which is worse than the bare 408 the intercept replaced (PF-021, ADR-010). Got:\n${second.slice(0, 200)}`,
+      );
+      assert.ok(
+        second.toLowerCase().includes("x-subswitch-synthesized: 1"),
+        `408 on a reused connection must carry x-subswitch-synthesized: 1; got:\n${second.slice(0, 500)}`,
+      );
+
+      const bodyStart = second.indexOf("\r\n\r\n");
+      const body = JSON.parse(second.slice(bodyStart + 4)) as { type: string; error: { type: string; message: string } };
+      assert.equal(body.type, "error", "408 body outer type must be 'error'");
+      assert.match(
+        body.error.message,
+        /timed out/,
+        `408 message must describe a timeout, not a malformed request; got: ${JSON.stringify(body.error.message)}`,
+      );
+
+      assert.ok(
+        fixture.records.some((r) => r.event === "client_error" && r.level === "warn" && r.status === 408),
+        `the client_error warn must fire on a reused connection too. Got: ${JSON.stringify(fixture.records)}`,
+      );
+    } finally {
+      await fixture.close();
+    }
   });
 });

@@ -21,19 +21,74 @@ export const DEFAULT_CODEX_AUTH_FILE = "~/.codex/auth.json";
 // ---------------------------------------------------------------------------
 
 /**
+ * IPv4 dotted-quad regex — exactly four decimal groups, each 1-3 digits, anchored
+ * at both ends so there is no trailing label.
+ *
+ * The `^…$` anchors are load-bearing: `127.0.0.1.evil.test` has more than four
+ * groups; the `$` anchor stops it from matching the first four and ignoring the
+ * rest.  `127.1` has only two groups and likewise fails.
+ *
+ * Named CONFIG_IPV4_DOTTED to distinguish it from inbound-policy.ts's own copy.
+ * Both predicates apply the same strict dotted-quad rule; they are kept separate
+ * so neither can be relaxed in one place and silently inherited by the other.
+ * (ADR-009, PF-011)
+ */
+const CONFIG_IPV4_DOTTED = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+/**
  * True when a URL's hostname is a loopback address.
  *
  * Loopback addresses are exempt from the HTTPS requirement because the e2e dev
  * workflow intentionally points `baseUrl` at `http://127.0.0.1:4142`
  * (see `e2e/capture/codex-recorder.ts` and `e2e/README.md`).
  *
+ * Accepted forms (exhaustive):
+ *   - `localhost` (case-insensitive; `new URL()` normalises to lowercase)
+ *   - `::1` or `[::1]` — IPv6 loopback literal.  WHATWG URL `.hostname` preserves
+ *     brackets on IPv6 literals (e.g. `new URL("http://[::1]:3000").hostname`
+ *     returns `"[::1]"`, not `"::1"`), so both spellings must be accepted.
+ *   - `127.x.y.z` — all four decimal octets present, each 0-255, no trailing
+ *     labels.  The entire 127.0.0.0/8 block is loopback; exact dotted-quad
+ *     form is required (ADR-009 fail-closed contract).
+ *
+ * Refused (examples):
+ *   - `127.0.0.1.evil.test` — attacker-registrable domain prefixed with the
+ *     loopback literal.  A prefix test on `127.` admits it, letting a config that
+ *     points at that domain start cleanly and send OAuth credentials in
+ *     cleartext.  (I-047)
+ *   - `127.1` — compressed two-group form; not a valid dotted-quad.
+ *   - `2130706433` — decimal representation of 127.0.0.1; not a dotted-quad.
+ *   - `foo.localhost`, `localhost.evil.test` — attacker-registrable sub-labels.
+ *   - `::ffff:127.x.y.z` (`[::ffff:7f00:1]` after WHATWG normalisation) — IPv4-
+ *     mapped loopback.  The hex form produced by `new URL().hostname` is complex
+ *     to validate rigorously, and no dev tooling writes this form in config files.
+ *     Not accepted; use `http://127.0.0.1` instead.
+ *
+ * Deliberate divergence from `inbound-policy.ts`'s `isLoopbackHostname`:
+ * that predicate operates on attacker-controlled Host/Origin headers from the
+ * wire and its caller (`hostnameFromAuthority`) strips IPv6 brackets before the
+ * comparison.  `isLoopbackHost` receives hostnames from `new URL().hostname`,
+ * which preserves brackets, so the two helpers cannot be unified without silently
+ * breaking one of the two trust boundaries.  Both are strict and documented here
+ * and in inbound-policy.ts; neither inherits relaxations from the other.
+ * (ADR-009, PF-011)
+ *
  * Exported so `buildDeps` can apply the same logic without duplication.
  */
-export const isLoopbackHost = (hostname: string): boolean =>
-  hostname === "localhost" ||
-  hostname === "::1" ||
-  hostname === "127.0.0.1" ||
-  hostname.startsWith("127.");
+export const isLoopbackHost = (hostname: string): boolean => {
+  // WHATWG URL .hostname preserves brackets on IPv6 literals ("[::1]" not "::1").
+  // Strip them before comparison so both direct calls and URL-sourced calls work.
+  const bare =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+
+  if (bare === "localhost" || bare === "::1") return true;
+  const octets = CONFIG_IPV4_DOTTED.exec(bare);
+  if (octets === null) return false;
+  if (octets[1] !== "127") return false;
+  return octets.slice(1).every((octet) => Number(octet) <= 255);
+};
 
 /**
  * Zod refinement: a URL must use https, or http to a loopback address.
@@ -46,7 +101,7 @@ const requireHttpsOrLoopback = (url: string): boolean => {
 };
 
 const HTTPS_REQUIRED_MESSAGE =
-  "must use https:// (or http:// to 127.*/localhost/::1 for local dev); " +
+  "must use https:// (or http:// to 127.x.y.z/localhost/[::1] for local dev); " +
   "an http:// URL to a non-loopback host sends credentials in cleartext";
 
 // ---------------------------------------------------------------------------
@@ -59,12 +114,35 @@ const AnthropicSchema = z
       .url()
       .refine(requireHttpsOrLoopback, { message: `anthropic.baseUrl ${HTTPS_REQUIRED_MESSAGE}` })
       .default("https://api.anthropic.com"),
-    /** Connection timeout for all upstream requests to the Anthropic leg. */
+    /**
+     * DNS resolution and TCP connection-establishment budget for the Anthropic
+     * leg (milliseconds).  The timer is armed directly on the socket inside the
+     * `'socket'` event handler, before DNS resolves (not via
+     * `ClientRequest.setTimeout`, which defers internally and cannot bound this
+     * phase — PF-019).  The budget therefore covers the full connect window:
+     * DNS lookup plus TCP SYN/ACK.
+     *
+     * On `'connect'` the timer is disarmed outright: neither the headers phase
+     * nor the stream phase is bounded, because the relay must never terminate a
+     * request the origin was about to answer (ADR-010). A connect that has not
+     * completed is a connection the origin has not yet seen, which is what makes
+     * this bound legitimate.
+     *
+     * On HTTPS connections, `'connect'` fires after TCP establishment but before
+     * the TLS handshake, so TLS negotiation is NOT covered by this budget.
+     *
+     * Has no effect on reused pooled sockets (no connect phase).
+     */
     connectTimeoutMs: z.number().int().positive().default(10_000),
-    /** Stream idle timeout for the Anthropic passthrough. */
-    streamIdleTimeoutMs: z.number().int().positive().default(300_000),
-    /** Maximum sockets in the keep-alive pool for the Anthropic passthrough. */
-    maxUpstreamSockets: z.number().int().positive().default(32),
+    /**
+     * Maximum sockets in the keep-alive pool for the Anthropic passthrough.
+     *
+     * 256 gives comfortable headroom over the realistic peak of ~100 concurrent
+     * sub-agents. Past this ceiling `http.Agent` queues internally, which costs
+     * latency rather than producing a synthesized status — the native-looking
+     * failure mode ADR-010 prefers.
+     */
+    maxUpstreamSockets: z.number().int().positive().default(256),
     /**
      * Opt-in to a non-default `anthropic.baseUrl` host.
      *
@@ -126,7 +204,7 @@ const CodexProviderSchema = z
     // Both sides are checked against isReservedAnthropicName (PF-007).
     aliases: AliasesSchema,
     reasoningCache: z
-      .object({
+      .strictObject({
         maxEntries: z.number().int().positive().default(4096),
         maxBytes: z.number().int().positive().default(64 * 1024 * 1024),
       })
@@ -208,12 +286,10 @@ const ProvidersSchema = z.object(PROVIDER_SCHEMAS).prefault({});
 
 const LimitsSchema = z
   .strictObject({
-    /** Maximum request body bytes buffered before the Codex routing decision. */
+    /** Maximum request body bytes buffered before the routing decision. */
     maxBodyBytes: z.number().int().positive().default(32 * 1024 * 1024),
     /** Interval between SSE ping frames sent to clients during long Codex streams. */
     pingIntervalMs: z.number().int().positive().default(15_000),
-    /** Maximum concurrent in-flight requests; 503 is returned when the limit is exceeded. */
-    maxConcurrentRequests: z.number().int().positive().default(32),
   })
   .prefault({});
 
@@ -227,9 +303,6 @@ const FileConfigSchema = z.strictObject({
 
 /** Raw on-disk config shape — what FileConfigSchema.safeParse() produces. */
 export type FileConfig = z.infer<typeof FileConfigSchema>;
-
-/** Raw on-disk shape of a single `providers.<id>` block, for any ProviderId. */
-export type ProviderFileConfig = FileConfig["providers"][ProviderId];
 
 // ---------------------------------------------------------------------------
 // Resolved Config interface (runtime shape)
@@ -296,7 +369,6 @@ export interface Config {
   readonly anthropic: {
     readonly baseUrl: string;
     readonly connectTimeoutMs: number;
-    readonly streamIdleTimeoutMs: number;
     readonly maxUpstreamSockets: number;
     /**
      * Opt-in to a non-default host on `anthropic.baseUrl`.
@@ -308,7 +380,6 @@ export interface Config {
   readonly limits: {
     readonly maxBodyBytes: number;
     readonly pingIntervalMs: number;
-    readonly maxConcurrentRequests: number;
   };
 }
 
@@ -464,23 +535,71 @@ export const expandHome = (path: string): string =>
 // ---------------------------------------------------------------------------
 
 /**
+ * A key that MOVED to a new dotted path — tell the operator where it went.
+ * Rendered as: move `<path>` to `<to>`
+ */
+type LegacyKeyMove = { readonly kind: "moved"; readonly path: string; readonly to: string };
+
+/**
+ * A key that was REMOVED entirely — tell the operator why and which version.
+ * Rendered as: delete `<path>` — <reason>
+ */
+type LegacyKeyRemoval = { readonly kind: "removed"; readonly path: string; readonly reason: string };
+
+/** Discriminated union for an entry in the legacy-key detection table. */
+export type LegacyKeyEntry = LegacyKeyMove | LegacyKeyRemoval;
+
+/**
+ * Render one legacy-key entry as a single operator instruction.
+ *
+ * Both gates that reject a legacy config — `loadConfig` and init's pre-write check
+ * in init.ts — render through here, so the instruction a user gets from `subswitch
+ * init` is byte-identical to the one `subswitch serve` gave them. The exhaustive
+ * `never` arm makes a new `kind` a compile error instead of a silent fallthrough to
+ * a "delete" instruction.
+ */
+export const renderLegacyKeyEntry = (entry: LegacyKeyEntry): string => {
+  switch (entry.kind) {
+    case "moved":
+      return `move \`${entry.path}\` to \`${entry.to}\``;
+    case "removed":
+      return `delete \`${entry.path}\` — ${entry.reason}`;
+    default: {
+      // Exhaustive check — compiler enforces that all LegacyKeyEntry arms are handled.
+      const _exhaustive: never = entry;
+      void _exhaustive;
+      return "";
+    }
+  }
+};
+
+/**
  * Keys that moved when the config was restructured to `providers.<id>.*`,
- * mapped to their new location. Zod's default object behaviour STRIPS unknown
- * keys, so without this check a pre-restructure config parses successfully and
- * every setting in it is silently discarded — custom aliases vanish, custom
- * baseUrl/authFile/userAgent revert to defaults, and nothing is reported.
+ * plus keys that were removed outright. Zod's default object behaviour STRIPS
+ * unknown keys, so without this check a pre-restructure config parses
+ * successfully and every setting in it is silently discarded — custom aliases
+ * vanish, custom baseUrl/authFile/userAgent revert to defaults, and nothing is
+ * reported.
  *
  * Silent reversion is the worst failure mode available here, so a legacy key is
- * a hard error naming its replacement rather than a warning.
+ * a hard error naming its replacement (or removal reason) rather than a warning.
  */
-const LEGACY_KEY_MOVES: readonly (readonly [path: string, replacement: string])[] = [
-  ["codex", "providers.codex"],
-  ["reasoningCache", "providers.codex.reasoningCache"],
-  ["limits.connectTimeoutMs", "anthropic.connectTimeoutMs"],
-  ["limits.maxUpstreamSockets", "anthropic.maxUpstreamSockets"],
-  ["limits.streamIdleTimeoutMs", "anthropic.streamIdleTimeoutMs and/or providers.codex.streamIdleTimeoutMs"],
-  ["limits.requestTimeoutMs", "providers.codex.requestTimeoutMs"],
-  ["limits.maxSseEventBytes", "providers.codex.maxSseEventBytes"],
+const LEGACY_KEY_ENTRIES: readonly LegacyKeyEntry[] = [
+  { kind: "moved", path: "codex", to: "providers.codex" },
+  { kind: "moved", path: "reasoningCache", to: "providers.codex.reasoningCache" },
+  { kind: "moved", path: "limits.connectTimeoutMs", to: "anthropic.connectTimeoutMs" },
+  { kind: "moved", path: "limits.maxUpstreamSockets", to: "anthropic.maxUpstreamSockets" },
+  { kind: "moved", path: "limits.streamIdleTimeoutMs", to: "providers.codex.streamIdleTimeoutMs" },
+  { kind: "moved", path: "limits.requestTimeoutMs", to: "providers.codex.requestTimeoutMs" },
+  { kind: "moved", path: "limits.maxSseEventBytes", to: "providers.codex.maxSseEventBytes" },
+  // Removed in 0.3.0 — hard-error so an operator upgrading from 0.2.0 knows to delete them.
+  // A row earns its place here only if a RELEASED config could carry the key; anything
+  // else is caught by strict parsing with Zod's unrecognized-key message.
+  { kind: "removed", path: "anthropic.streamIdleTimeoutMs", reason: "the relay does not bound the stream-idle phase on a connected client, removed in 0.3.0 (ADR-010)" },
+  { kind: "removed", path: "limits.maxConcurrentRequests", reason: "the admission gate was removed in 0.3.0 (ADR-010)" },
+  // Kept last: the message this table renders is quoted verbatim in the 0.2.0 changelog,
+  // and codex.models is its closing clause.
+  { kind: "removed", path: "codex.models", reason: "the routable set now comes from the built-in model registry (use providers.codex.aliases for custom names), removed in 0.2.0 (ADR-006)" },
 ];
 
 /** Read a dotted path using own-property checks only (prototype-pollution safe). */
@@ -494,25 +613,18 @@ const hasOwnPath = (root: Record<string, unknown>, path: string): boolean => {
 };
 
 /**
- * Detect keys from the pre-`providers.*` config layout.
+ * Detect keys from the pre-`providers.*` config layout, plus keys that were
+ * removed entirely.
  *
  * Pure: no I/O. Returns the legacy paths present, in declaration order, each
- * paired with its replacement. Empty array means the config has no legacy keys.
+ * tagged with its kind (moved or removed). Empty array means the config is
+ * clean.
  */
-export const detectLegacyConfigKeys = (
-  raw: unknown,
-): readonly { readonly path: string; readonly replacement: string }[] => {
+export const detectLegacyConfigKeys = (raw: unknown): readonly LegacyKeyEntry[] => {
   if (!isPlainObject(raw)) return [];
-  const found: { readonly path: string; readonly replacement: string }[] = [];
-  for (const [path, replacement] of LEGACY_KEY_MOVES) {
-    if (hasOwnPath(raw, path)) found.push({ path, replacement });
-  }
-  // `codex.models` was deleted outright — the routable set now comes from the registry.
-  if (hasOwnPath(raw, "codex.models")) {
-    found.push({
-      path: "codex.models",
-      replacement: "(removed — routing now follows the built-in model registry; use providers.codex.aliases for custom names)",
-    });
+  const found: LegacyKeyEntry[] = [];
+  for (const entry of LEGACY_KEY_ENTRIES) {
+    if (hasOwnPath(raw, entry.path)) found.push(entry);
   }
   return found;
 };
@@ -588,14 +700,16 @@ export const resolveConfig = (file: FileConfig): Config => ({
   anthropic: {
     baseUrl: file.anthropic.baseUrl,
     connectTimeoutMs: file.anthropic.connectTimeoutMs,
-    streamIdleTimeoutMs: file.anthropic.streamIdleTimeoutMs,
     maxUpstreamSockets: file.anthropic.maxUpstreamSockets,
     allowInsecureBaseUrl: file.anthropic.allowInsecureBaseUrl,
   },
   providers: {
     codex: PROVIDER_RESOLVERS.codex(file.providers.codex),
   },
-  limits: file.limits,
+  limits: {
+    maxBodyBytes: file.limits.maxBodyBytes,
+    pingIntervalMs: file.limits.pingIntervalMs,
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -709,8 +823,8 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     return err({
       kind: "translate",
       message:
-        `outdated config layout in ${resolvedPath} — ` +
-        legacy.map((l) => `move \`${l.path}\` to \`${l.replacement}\``).join("; ") +
+        `unsupported config keys in ${resolvedPath} — ` +
+        legacy.map(renderLegacyKeyEntry).join("; ") +
         `. Edit the file to match subswitch.config.example.json, or delete it to run on defaults.`,
     });
   }

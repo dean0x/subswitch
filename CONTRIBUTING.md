@@ -36,6 +36,35 @@ Zero-warnings policy: the TypeScript config is strict (`noUnusedLocals`,
 `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, and more). Do not
 introduce new warnings.
 
+### Test harness notes
+
+`npm test` runs:
+
+```bash
+node --import tsx --test --test-timeout=30000 "test/unit/*.test.ts" "test/integration/*.test.ts"
+```
+
+- **Globs are flat and non-recursive.** A file placed in a subdirectory of
+  `test/unit/` or `test/integration/` silently never runs. Keep test files
+  directly inside those two directories.
+- **30 s hard timeout per test.** Some integration tests assert on real elapsed
+  time (keepalive socket eviction, drain bounds). Fake timers are not used.
+- **Run the suite alone.** Several tests assert on wall-clock behavior.
+  Running `npm test` concurrently with other resource-intensive processes causes
+  spurious failures. There is no `--parallel` flag; run the suite by itself.
+- **No `lint` script.** `npm run check` = `typecheck && test` — no separate lint
+  step. The zero-warnings policy is enforced through `typecheck` only.
+- **`test/tools/*.bench.ts` are benchmarks, not tests.** They are excluded from
+  `npm test` by directory (`test/tools/` is outside the test globs) and by suffix
+  (`.bench.ts`, not `.test.ts`). Each has an npm script: `npm run bench:sse` and
+  `npm run bench:memory`. The memory bench runs the relay in a child process, parks
+  concurrent uploads at a fake origin, samples peak in-flight memory, and exits
+  non-zero if peak per-request RSS exceeds its ceiling. It defaults to
+  `limits.maxBodyBytes` bodies and takes the `CONCURRENCY`, `BODY_MIB` and
+  `CEILING_MIB_PER_REQ` env knobs, e.g.
+  `CONCURRENCY=16 BODY_MIB=8 npm run bench:memory`.
+  At its defaults it allocates several GiB; it is not part of CI.
+
 ## End-to-end verification
 
 Changes that touch the wire protocol (request/response translation, auth,

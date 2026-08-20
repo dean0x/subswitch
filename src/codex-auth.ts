@@ -221,8 +221,8 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
     // serve the cached credential rather than hammering the token endpoint again.
     // A persistent upstream 401 that survives a freshly-minted token cannot be resolved
     // by re-running the same OAuth cycle; each cycle costs one token-endpoint call and
-    // one fsync'd rewrite of auth.json. Without this floor, 32 concurrent requests all
-    // getting 401 would fill all concurrency slots with simultaneous refresh + fsync cycles.
+    // one fsync'd rewrite of auth.json. Without this floor, every concurrent request getting
+    // 401 would launch its own token-endpoint call and fsync'd credential rewrite simultaneously.
     //
     // The cooldown only applies when we have a cached token — if the previous refresh
     // produced no usable credential, we always try again.
@@ -282,7 +282,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
       const tokenResult = await this.callTokenEndpoint(refreshToken);
       if (tokenResult.ok) {
         this.logger.log("info", this.events.tokenRefreshed);
-        return this.persistTokens(tokenResult.value, baselineLastRefresh);
+        return this.persistTokens(tokenResult.value, refreshToken, baselineLastRefresh);
       }
       if (tokenResult.error.invalidGrant && attempt === 0) {
         const reread = await this.store.read();
@@ -316,8 +316,8 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
     try {
       // RELI-04: bound the token-endpoint call to 15 s. Without a timeout, a hung OAuth
       // server holds the single-flight promise open indefinitely — all concurrent requests
-      // share the one refreshInflight promise, so all 32 concurrency slots fill and
-      // everything else 503s until undici's ~300 s default finally fires.
+      // share the one refreshInflight promise, blocking every pending request that needs
+      // a token until the hung promise resolves or the 15 s AbortSignal.timeout fires.
       response = await this.fetchImpl(this.oauthTokenUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -358,6 +358,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
 
   private async persistTokens(
     tokens: TokenResponse,
+    refreshToken: string,
     baselineLastRefresh: string | undefined,
   ): Promise<Result<CodexTokenMaterial, ProxyError>> {
     const reread = await this.store.read();
@@ -365,9 +366,20 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
 
     if (rereadFile.ok) {
       const fileNow = rereadFile.value;
+      // Primary signal: a different refresh_token means another writer rotated it —
+      // this is format-independent and already the established idiom in doRefresh() at
+      // the invalid_grant retry (line ~291). Secondary signal: numeric timestamp
+      // comparison (Date.parse) ensures correct ordering when the Codex CLI writes
+      // last_refresh in a format that differs from ours — e.g. "…08:00:05Z" vs
+      // "…08:00:05.500Z" compares as '.' < 'Z' lexicographically (wrong) but as
+      // equal-or-newer numerically (right). Note: Date.parse of an unrecognised format
+      // returns NaN; NaN > NaN is false, so the secondary signal is inert for such
+      // values — the primary identity check remains the reliable guard.
       const fileIsNewer =
-        fileNow.last_refresh !== undefined &&
-        (baselineLastRefresh === undefined || fileNow.last_refresh > baselineLastRefresh);
+        fileNow.tokens.refresh_token !== refreshToken ||
+        (fileNow.last_refresh !== undefined &&
+          (baselineLastRefresh === undefined ||
+            Date.parse(fileNow.last_refresh) > Date.parse(baselineLastRefresh)));
       if (fileIsNewer) {
         // Another process refreshed while we were refreshing; its rotated
         // refresh token must not be clobbered. Newer file wins.
@@ -377,6 +389,26 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
           this.cached = fromFile.value;
           return ok(fromFile.value.material);
         }
+        // materialFrom failed (e.g. malformed access_token in the newer file).
+        // Do NOT fall through into the merge — that would clobber the other
+        // writer's refresh_token with our now-consumed one. Serve our own valid
+        // refresh result from memory instead so the request still succeeds.
+        // A rotated refresh_token now exists only in memory: it is lost at process
+        // exit, and the next OAuth cycle will hit invalid_grant on the stale on-disk
+        // token. Log that at error, not warn — warn is filtered out of most dashboards,
+        // which would make a credential the operator has to re-authenticate silent.
+        // Same escalation, for the same reason, as the writeAtomic-failure branch below.
+        if (tokens.refresh_token !== undefined) {
+          this.logger.log("error", this.events.authFileWriteFailed);
+        }
+        const accountId = jwtAccountId(tokens.access_token);
+        if (accountId === undefined) return fromFile;
+        const fresh: CachedTokenMaterial = {
+          material: { accessToken: tokens.access_token, accountId },
+          expiresAtMs: jwtExpiryMs(tokens.access_token) ?? Number.POSITIVE_INFINITY,
+        };
+        this.cached = fresh;
+        return ok(fresh.material);
       }
       const merged: AuthFile = {
         ...fileNow,

@@ -263,9 +263,6 @@ Minimal example — only override what you need:
         "fast": "gpt-5.6-sol"
       }
     }
-  },
-  "limits": {
-    "maxConcurrentRequests": 16
   }
 }
 ```
@@ -277,9 +274,8 @@ All keys and their defaults:
 | `port` | `4141` | Port the proxy listens on |
 | `logLevel` | `"info"` | Log verbosity: `debug`, `info`, `warn`, or `error` |
 | `anthropic.baseUrl` | `"https://api.anthropic.com"` | Anthropic passthrough base URL |
-| `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — TCP connection timeout (see note below) |
-| `anthropic.streamIdleTimeoutMs` | `300000` (5 min) | Anthropic stream idle timeout |
-| `anthropic.maxUpstreamSockets` | `32` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
+| `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — DNS resolution and TCP connection establishment timeout (see note below) |
+| `anthropic.maxUpstreamSockets` | `256` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
 | `anthropic.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `anthropic.baseUrl` points at a host other than `api.anthropic.com`. Set to `true` only when routing through a trusted proxy in front of Anthropic's API. Loopback addresses are always exempt. |
 | `providers.codex.baseUrl` | `"https://chatgpt.com/backend-api/codex"` | Codex backend base URL — override to route subswitch through the wire recorder |
 | `providers.codex.oauthTokenUrl` | `"https://auth.openai.com/oauth/token"` | Token refresh endpoint for the Codex OAuth flow |
@@ -295,13 +291,58 @@ All keys and their defaults:
 | `providers.codex.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` points at a host other than `chatgpt.com` or `auth.openai.com`. This prevents credential forwarding to an untrusted host. Set to `true` only when routing through a trusted proxy. Loopback addresses are always exempt. |
 | `limits.maxBodyBytes` | `33554432` (32 MiB) | Maximum request body bytes buffered before the routing decision |
 | `limits.pingIntervalMs` | `15000` (15 s) | Interval between SSE ping frames sent to clients during long Codex streams |
-| `limits.maxConcurrentRequests` | `32` | In-flight request ceiling; requests above this limit receive a 503 |
 
 > **Why `connectTimeoutMs` and `maxUpstreamSockets` are Anthropic-leg-only**: the
 > Anthropic passthrough uses a node:http agent with an explicit keep-alive pool, so
 > both knobs have meaningful effect there. The Codex leg uses Node's global `fetch`
-> (undici's global dispatcher), which `maxUpstreamSockets` does not control — shipping
-> them as per-provider keys would be config that bounds nothing on the Codex side.
+> (undici's global dispatcher), which these knobs do not control — shipping them as
+> per-provider keys would be config that bounds nothing on the Codex side.
+
+> **Operator caveats for `connectTimeoutMs`**: (1) **No effect on pooled sockets.**
+> With `maxUpstreamSockets: 256` and keep-alive on, steady-state traffic reuses
+> existing connections — there is no connect phase — so the budget does nothing after
+> warm-up. (2) **TLS negotiation is not covered.** On `https://api.anthropic.com`,
+> the budget ends when the TCP connection is established (`'connect'` event); the TLS
+> handshake occurs after and is not bounded by this knob.
+
+> **BREAKING (0.3.0):** Two config keys were removed: `anthropic.streamIdleTimeoutMs`
+> and `limits.maxConcurrentRequests`. If your config contains either of these,
+> `subswitch` will refuse to start and print a message naming each offending key. Delete
+> them from your config to continue. See the
+> [0.3.0 changelog](CHANGELOG.md#030---2026-08-19) for details.
+
+> **Behavior when an upstream connects but never responds**: the Anthropic leg has no
+> relay-side timer on the response phase. If an upstream accepts the TCP connection and
+> request body but then goes silent, the client will receive no response until its own
+> timeout fires (measured: `STATUS=000 TOTAL=20s curl_rc=28` with a 20 s curl timeout).
+> This is deliberate per ADR-010: a relay that invents a 504 for a wedged origin produces a
+> status the origin never emitted. A direct connection to api.anthropic.com would hang
+> the same way. `server.requestTimeout` (600 s, above) bounds only request _receipt_,
+> not the response, so nothing relay-side fires in this case.
+
+### Server connection tuning
+
+subswitch configures its inbound `http.Server` with the following fixed values:
+
+| Property | Value | Rationale |
+|----------|-------|-----------|
+| `requestTimeout` | `600 000` ms (10 min) | Bounds **receipt of the request only** — it stops once the request body has arrived, so it can never cut short a slow completion or a long stream. On expiry subswitch returns an Anthropic-shaped `408`. |
+| `headersTimeout` | `120 000` ms (2 min) | Bounds receipt of the **request headers** only. Same `408` on expiry. |
+| `keepAliveTimeout` | `300 000` ms (5 min) | **Deliberately long.** Claude Code's connection pool keeps sockets open for reuse. At Node's default 5 s, an idle socket gets a FIN/RST from subswitch; if that close races an outgoing POST, undici will **not** retry the resulting ECONNRESET for a non-idempotent request (PF-018). 300 s means sockets outlive any realistic inter-request gap. |
+| `maxRequestsPerSocket` | `0` (unlimited) | Prevents connection cycling on long-lived agents |
+| `maxHeaderSize` | `65 536` bytes (64 KiB) | Anthropic's own limit; subswitch returns a `431 Request Header Fields Too Large` (Anthropic-shaped) when exceeded |
+
+When a client sends a request body larger than `limits.maxBodyBytes`, subswitch returns
+413 and then **drains the remaining upload bytes** before closing the connection. This
+lets the client read the 413 response; without the drain, the TCP write-buffer fills and
+the client's `recv()` never sees the 413 body.
+
+### Token counting on the Codex leg
+
+`/v1/messages/count_tokens` requests that route to the Codex leg return an **estimate**
+rather than forwarding to Anthropic. This is deliberate: forwarding to Anthropic would
+count tokens against a different model's vocabulary and return a misleading count.
+The estimate is the least-wrong option available.
 
 ### `subswitch models --json`
 
@@ -394,6 +435,65 @@ is not a TTY (useful in terminals that misreport TTY state); `CI` — also suppr
 color and disables interactive `init` prompts (treated as a non-interactive
 environment).
 
+### `route` field values
+
+The `route` field on `request_complete` and `client_disconnected` events identifies
+how the request was dispatched. Valid values:
+
+| Value | When |
+|-------|------|
+| `anthropic` | Request forwarded to Anthropic verbatim (normal passthrough — unresolved or plain Anthropic model names) |
+| `anthropic:ambiguous` | Fail-open forward: two providers claim the same family name; relay forwards to Anthropic and emits `ambiguous_model_name` warn |
+| `anthropic:fallback` | Fail-open forward: colon-qualified name whose prefix is not a registered provider; relay forwards to Anthropic and emits `unknown_provider_qualifier` warn |
+| `codex:{endpoint}:{model}` | Request routed to the Codex provider leg (e.g. `codex:messages:gpt-5.6-sol`, `codex:count_tokens:gpt-5.6-sol`) |
+| `host_rejected` | Request refused by the loopback `Host`/`Origin` gate before routing; relay returned a synthesized 403 |
+| `internal_error` | Unhandled exception during request handling; relay returned a synthesized 500 |
+
+The `anthropic:ambiguous` and `anthropic:fallback` values both carry the `anthropic` prefix so
+leg-level filtering (`route starts with anthropic`) continues to work. The suffix makes
+fail-open forwards distinguishable from intended Anthropic routes in log queries and alerting.
+
+### Log events
+
+| Event | Level | Fields | Notes |
+|-------|-------|--------|-------|
+| `request_complete` | `info` | path, route, model, status, latencyMs | Emitted once per request that received a response. `model` is omitted when not present in the request body. |
+| `client_disconnected` | `info` | path, route, model, latencyMs | Emitted instead of `request_complete` when the client closed the connection before any response headers were sent (e.g. cancelled upload). No `status` field — `res.statusCode` would be Node's 200 initialiser, not a real status. |
+| `ambiguous_model_name` | `warn` | model | Two providers claim the same family name. `model` carries the ambiguous name annotated with the provider list: `"name (p1, p2)"`. Request is forwarded to Anthropic (route `anthropic:ambiguous`). |
+| `unknown_provider_qualifier` | `warn` | model | Colon-qualified model name whose prefix is not a registered provider. `model` is the full as-requested name (e.g. `"kimee:k2"`). Request is forwarded to Anthropic (route `anthropic:fallback`). |
+| `host_rejected` | `warn` | path, errorCode, status | The [loopback `Host`/`Origin` gate](#loopback-hostorigin-gate) refused the request. `errorCode` is the reason (`missing_host`, `foreign_host`, `foreign_origin`) followed by the offending value, lower-cased, restricted to the authority charset and capped at 64 characters. The value appears here and nowhere else — it is never reflected into the response body. |
+
+## `x-subswitch-synthesized`
+
+Every HTTP response that subswitch generates itself — rather than proxying
+verbatim from an upstream — carries the response header:
+
+```
+x-subswitch-synthesized: 1
+```
+
+This header is present on:
+
+- **Anthropic-leg relay errors**: 502 (upstream connection failure), 504
+  (upstream connect timeout), 413 (request body too large), 431 (request headers
+  too large), 408 (inbound request not fully received within `requestTimeout` /
+  `headersTimeout`), 400 (malformed request), 500 (internal proxy error).
+- **Codex-leg responses**: every byte returned on the codex leg is synthesized
+  by the relay (it translates OpenAI Responses format → Anthropic Messages
+  format), so the header is present on both streaming and non-streaming codex
+  responses, and on all codex-leg error responses.
+- **Relay management endpoints**: `/__subswitch/health` (200 OK), and any
+  unrecognized `/__subswitch/*` path (404 — fixed body, path not reflected).
+
+The header is **absent** on responses proxied verbatim from the Anthropic
+origin — including upstream errors (429 rate-limit, 529 overloaded, 500
+upstream internal error, etc.).  The header is also **stripped** from any
+upstream response that carries it, so the marker is authoritative: its presence
+means the relay synthesised the response; its absence means the upstream did.
+
+Operators can use this header in load-balancer health rules, log filters, or
+alerting to distinguish relay faults from upstream outages.
+
 ## Testing
 
 ```sh
@@ -436,6 +536,25 @@ commit conventions. By participating you agree to the
 subswitch is a loopback-only proxy that handles subscription credentials. Report
 vulnerabilities privately — see [SECURITY.md](SECURITY.md). Do not open a public
 issue for security reports.
+
+### Loopback `Host`/`Origin` gate
+
+subswitch listens on `127.0.0.1` and requires no authentication, so reachability is
+its only access control — and DNS rebinding defeats reachability. A web page served
+from `http://evil.test:4141` whose name resolves to `127.0.0.1` is *same-origin*
+with the proxy as far as the browser is concerned: it can send requests **and read
+the responses**, including Codex completions billed to your ChatGPT subscription.
+The one thing that page cannot change is the `Host` header, which names the domain
+the page was loaded from rather than the address it resolved to. So every request
+is checked before it is routed: the `Host` must name a loopback address
+(`localhost`, `::1`, or any `127.0.0.0/8` address in dotted-quad form), and an
+`Origin` header, when present, must be a loopback origin. Anything else is answered
+`403` with an Anthropic-shaped `permission_error` body, is never forwarded to an
+upstream, and never reaches provider credentials — `/__subswitch/*` included.
+Clients that talk to the proxy directly (Claude Code, `curl`) send a loopback
+`Host` and no `Origin` at all, so they are unaffected, and a page served from
+another loopback port keeps working — the gate stops the cross-site case, not
+local development.
 
 ## License
 

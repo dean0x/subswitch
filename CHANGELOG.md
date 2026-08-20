@@ -4,6 +4,153 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-08-19
+
+### Fixed
+
+- **Codex auth concurrent-refresh guard** — replaced the lexicographic string `>` comparison
+  on `last_refresh` timestamps in `persistTokens` with a refresh-token identity check
+  (`fileNow.tokens.refresh_token !== refreshToken`). The old comparison depended on the
+  Codex CLI emitting byte-identical ISO-8601 formatting indefinitely; a format divergence
+  or same-second collision could cause the guard to miss, letting subswitch clobber the
+  CLI's rotated refresh token. The identity check is format-independent and is the
+  established idiom already used in the `invalid_grant` retry path. A `Date.parse` numeric
+  comparison is kept as a secondary signal for correct ordering when timestamp formats
+  differ (e.g. `"…08:00:05.500Z"` vs `"…08:00:05Z"` sorts wrong lexicographically but
+  right numerically). (Fixes #26)
+- **Codex auth guard bypass on materialFrom failure** — when `fileIsNewer` is true but
+  `materialFrom` fails on the newer file, the branch now serves the just-refreshed tokens
+  from memory rather than returning an error. The newer file's refresh_token is still never
+  clobbered (no write occurs); the request succeeds using the valid tokens we hold.
+  Previously, control fell through into the merge and wrote our refresh result anyway,
+  defeating the guard even when it had correctly fired.
+
+- **Anthropic passthrough — `connectTimeoutMs` now genuinely bounds DNS resolution and
+  TCP establishment** (fixes #27).
+  Previously `upstream.setTimeout(connectTimeoutMs)` was called on the `ClientRequest`
+  object, but Node's implementation defers that call via an internal `'connect'`
+  listener — so it fired only after TCP connect, meaning `connectTimeoutMs` was never in
+  force for any measurable interval.  Measured against a blackholed IP (`192.0.2.1`,
+  TEST-NET-1) with `connectTimeoutMs=700`, the request previously failed after
+  **75 019 ms** (the macOS kernel TCP timeout).  The fix arms the timer **directly on the
+  socket** inside the `'socket'` event handler, before DNS resolves, so the budget covers
+  the full connect window: DNS lookup plus TCP SYN/ACK.  The same measured scenario now
+  fails at ~700 ms.  **Upgrade note:** operators with a slow DNS resolver may now see
+  `connectTimeoutMs` 504s that 0.2.0 would have passed through — the budget is now
+  enforced for the first time.
+
+- **Anthropic passthrough — `x-subswitch-synthesized: 1` header marks every relay-generated response; stripped from proxied responses** (stacks on #30).
+  Previously a relay fault (502 connection failure, 504 timeout, 500 internal proxy error, 413 body too large,
+  431 header fields too large) was indistinguishable from an upstream outage on the client side.  Every response the
+  relay synthesises itself now carries `x-subswitch-synthesized: 1`; this covers the Anthropic-leg error
+  paths, all codex-leg responses (both streaming SSE and aggregated JSON — the codex leg translates
+  Codex→Anthropic format so every byte it returns is relay-synthesised), and every relay-generated error in
+  `server.ts`.  On the proxied path the header is actively stripped from upstream responses via the hop-by-hop
+  filter so an origin that sets it cannot impersonate the relay.  Bodies and status codes are unchanged — the
+  header is purely additive.  See the new `## x-subswitch-synthesized` section in the README for the
+  operator-facing wire contract.
+
+- **Anthropic passthrough — a pre-header upstream timeout no longer produces a spurious
+  `anthropic_upstream_error` warn** (fixes #27).  In 0.2.0, when the Anthropic upstream
+  timed out before sending response headers, the relay emitted two simultaneous warn
+  events — `anthropic_upstream_timeout` and `anthropic_upstream_error` — because
+  destroying the timed-out request caused a second error event that the error handler
+  logged unconditionally.  In 0.3.0, at most one warn event fires per upstream request:
+  whichever terminal outcome responds first claims the log slot; any subsequent error
+  event is silently discarded.
+
+- **404 responses now use the same Anthropic-shaped error body as all other synthesized
+  errors.**  Previously an unknown path returned a bare 404 with no body.  The body now
+  carries `{ type: "error", error: { type: "not_found_error", message: "…" } }` and the
+  `x-subswitch-synthesized: 1` marker, matching every other relay-generated response.
+
+- **Unhandled-exception route labeled `internal_error` in the `request_complete` log.**
+  When an unexpected exception occurs during request handling, the `route` field in the
+  `request_complete` event is now `"internal_error"` rather than whatever routing label
+  was in effect when the exception fired.  This makes relay-side panics distinguishable
+  from normal traffic in post-hoc log analysis.
+
+### Changed
+
+- **`anthropic.maxUpstreamSockets` default raised from 32 to 256.**  With no relay-side
+  concurrency cap, the old pool of 32 sockets created silent `http.Agent` queuing at
+  realistic peak load (~100 concurrent Claude Code sub-agents).  256 gives comfortable
+  headroom over realistic peak concurrency.
+
+- **Colon-bearing model names with unknown prefixes now forward to Anthropic** instead of
+  returning a relay-invented 400.  When a model name like `claude-sonnet-9:preview`
+  contains a colon whose prefix is not a registered provider, the relay logs a diagnostic
+  warning and forwards to Anthropic unchanged.  Real `codex:` qualified names continue to
+  route to the Codex provider as before.
+
+- **Ambiguous model family names now forward to Anthropic** instead of returning a
+  relay-invented error.  When two providers claim the same family name, the relay logs an
+  `ambiguous_model_name` warn carrying the provider list and forwards the request to
+  Anthropic unchanged (ADR-010: the relay has no authority to adjudicate a registry
+  conflict it did not cause).
+
+- **`doctor` `unknown_provider` finding downgraded from `fail` to `info`.** An agent
+  frontmatter naming a colon-qualified model with an unknown prefix (e.g. `myco:mymodel`)
+  previously produced a severity `fail` finding and caused `subswitch doctor` to exit 1.
+  Because the relay now forwards those requests to Anthropic unchanged, the finding is
+  informational — the agent works, just not via Codex.  `ambiguous` (two providers claim
+  the same family name) remains `fail`: that conflict is relay-derived and will 404 at the
+  origin regardless of which upstream handles it.
+
+- **413 now uses error type `request_too_large`** instead of `invalid_request_error`,
+  matching the Anthropic API's own error taxonomy for oversized bodies.  A 413 response
+  now also drains the remaining upload bytes before closing the connection, with a 2-second
+  hard cutoff; in 0.2.0 the connection closed immediately, which could prevent the client
+  from reading the 413 body if its TCP write buffer was still filling.
+
+- **`SERVER_TUNING` constants set explicitly on the HTTP server**: `requestTimeout`
+  (600 s — Anthropic's own server-side ceiling for long-running requests), `headersTimeout`
+  (120 s — maximum time to receive all request headers), `keepAliveTimeout` (300 s —
+  matches Anthropic's idle-socket keepalive window so the relay's pool never evicts a
+  socket the origin still considers live), `maxRequestsPerSocket` (unlimited, matching
+  the Anthropic origin's behaviour), and `maxHeaderSize: 64 * 1024` (raises the inbound
+  header ceiling from Node's 16 KiB default to 64 KiB — also determines when the relay
+  fires a 431 Header Fields Too Large).  Previously these values were whatever Node's
+  built-in defaults happened to be.  Inbound timeouts (`requestTimeout`,
+  `headersTimeout`) that expire now return an Anthropic-shaped `408` with
+  `x-subswitch-synthesized: 1`; in 0.2.0 Node emitted its own unshapeable bare `408`
+  that no relay code produced or logged.
+
+### Added
+
+- `request_too_large` and `not_found_error` added to the internal `AnthropicErrorType` union.
+- **`client_disconnected` log event** — emitted (at `info` level) when the client closes the
+  connection before any response headers are sent (e.g. a cancelled upload). Fields: `path`,
+  `route`, `model` (optional), `latencyMs`. `request_complete` is **not** emitted for the same
+  request — the two events are mutually exclusive. This distinguishes an abandoned request from a
+  served one: without this event, a vanished client would either produce no log entry or a
+  misleading `request_complete status=200` (Node's default initialiser, not a real status).
+- **Two new `route` values for fail-open forwards** — `anthropic:ambiguous` (two providers claim
+  the same family name) and `anthropic:fallback` (colon-qualified name with an unknown prefix).
+  Both carry the `anthropic` prefix so leg-level filtering continues to work; the suffix makes
+  fail-open forwards distinguishable from intended Anthropic routes in `request_complete` and
+  `client_disconnected` log queries.
+
+### Changed
+
+- **`route` field: three values retired on this branch.** Operators filtering logs on `route`
+  should update their queries:
+  - `"rate_limited"` — removed with the admission gate; requests are no longer rejected at the
+    relay level for rate-limit reasons.
+  - `"ambiguous"` — replaced by `"anthropic:ambiguous"` (fail-open forward; see above).
+  - `"unknown_provider"` — replaced by `"anthropic:fallback"` (fail-open forward; see above).
+
+### Removed (BREAKING)
+
+- **Two config keys are now fully removed** and produce a hard error on load if present.
+  Delete these keys from your `subswitch.config.json` before upgrading:
+  - `anthropic.streamIdleTimeoutMs` — the relay does not bound the stream-idle phase on a
+    connected client (ADR-010).
+  - `limits.maxConcurrentRequests` — the admission gate was removed (ADR-010).
+
+  If your config contains either of these, `subswitch` exits immediately with a message
+  naming every offending key.
+
 ## [0.2.0] - 2026-08-09
 
 ### Upgrading from 0.1.0
@@ -15,6 +162,9 @@ exits immediately with:
 ```
 outdated config layout in subswitch.config.json — move `codex` to `providers.codex`; move `reasoningCache` to `providers.codex.reasoningCache`; move `limits.connectTimeoutMs` to `anthropic.connectTimeoutMs`; move `limits.maxUpstreamSockets` to `anthropic.maxUpstreamSockets`; move `limits.streamIdleTimeoutMs` to `anthropic.streamIdleTimeoutMs and/or providers.codex.streamIdleTimeoutMs`; move `limits.requestTimeoutMs` to `providers.codex.requestTimeoutMs`; move `limits.maxSseEventBytes` to `providers.codex.maxSseEventBytes`; move `codex.models` to `(removed — routing now follows the built-in model registry; use providers.codex.aliases for custom names)`. Edit the file to match subswitch.config.example.json, or delete it to run on defaults.
 ```
+
+> [As of 0.3.0, `anthropic.streamIdleTimeoutMs` was removed — migrate directly to
+> `providers.codex.streamIdleTimeoutMs`.]
 
 **Two ways forward:**
 
@@ -96,6 +246,9 @@ What moved and what was removed:
 | `limits.requestTimeoutMs` | `providers.codex.requestTimeoutMs` |
 | `limits.maxSseEventBytes` | `providers.codex.maxSseEventBytes` |
 | `codex.models` | **Removed** — routing now follows the built-in model registry; use `providers.codex.aliases` for custom names |
+
+> [As of 0.3.0, `anthropic.streamIdleTimeoutMs` was removed — migrate directly to
+> `providers.codex.streamIdleTimeoutMs`.]
 
 Two `subswitch init` flags were also removed:
 

@@ -1,9 +1,9 @@
 import http from "node:http";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, Server } from "node:http";
-import { toAnthropicErrorBody } from "./errors.js";
+import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
+import { applyInboundPolicy, hostGateVerdict, SERVER_TUNING } from "./inbound-policy.js";
 import { type Result, ok, err } from "./result.js";
-import type { ProxyError } from "./errors.js";
 import { aliasesByProvider, enumerateDestinations, isLoopbackHost, providerConfigFor, type Config } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
 import { providerEvents } from "./provider-events.js";
@@ -14,6 +14,7 @@ import type { ProviderAuth } from "./provider-auth.js";
 import { ReasoningCache } from "./reasoning-cache.js";
 import { createCodexHandler } from "./codex-handler.js";
 import { ModelPeekSchema } from "./anthropic-wire-types.js";
+import { drainRejectedUpload } from "./provider-transport.js";
 import {
   buildRoutingTable,
   resolveModel as resolveModelFromTable,
@@ -215,7 +216,6 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
     forwardAnthropic: createAnthropicForwarder({
       baseUrl: config.anthropic.baseUrl,
       connectTimeoutMs: config.anthropic.connectTimeoutMs,
-      streamIdleTimeoutMs: config.anthropic.streamIdleTimeoutMs,
       maxUpstreamSockets: config.anthropic.maxUpstreamSockets,
       logger,
     }),
@@ -275,25 +275,72 @@ const buildHealthBody = (config: Config): string =>
     }),
   });
 
-const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buffer, ProxyError>> =>
+/**
+ * Local error type for bufferBody. These errors are handled entirely within server.ts:
+ *   - body_too_large: synthetic 413 is sent, then drainRejectedUpload() lets TCP close cleanly.
+ *   - client_disconnected: client is gone — no HTTP response is possible.
+ *
+ * Both variants are deliberately excluded from ProxyError so proxyErrorToAnthropic
+ * can never accidentally be called with them. The compiler enforces this: any future
+ * code path that tries to pass a BufferBodyError into proxyErrorToAnthropic will fail
+ * to type-check.
+ */
+type BufferBodyError =
+  | { readonly kind: "body_too_large"; readonly message: string }
+  | { readonly kind: "client_disconnected"; readonly message: string };
+
+const bufferBody = (req: IncomingMessage, maxBytes: number): Promise<Result<Buffer, BufferBodyError>> =>
   new Promise((resolve) => {
+    const tooLarge = (): Result<Buffer, BufferBodyError> =>
+      err({ kind: "body_too_large", message: `request body exceeds ${maxBytes} bytes` });
+
+    // A declared Content-Length over the cap settles the outcome before a byte
+    // arrives, so the body is never read: buffering up to maxBytes first would only
+    // pay memory for a 413 that is already decided.  The client sees exactly the same
+    // response either way — the origin also rejects on the declared length, so the
+    // relay's shape is unchanged (applies ADR-010).
+    //
+    // Number.isInteger rejects both a missing header (NaN) and a malformed one; a
+    // chunked or undeclared body has no length to check and is capped by the
+    // streaming counter below.
+    const declared = Number(req.headers["content-length"]);
+    if (Number.isInteger(declared) && declared > maxBytes) {
+      resolve(tooLarge());
+      return;
+    }
+
     const chunks: Buffer[] = [];
     let total = 0;
     let settled = false;
-    const settle = (result: Result<Buffer, ProxyError>): void => {
+    const settle = (result: Result<Buffer, BufferBodyError>): void => {
       if (settled) return;
       settled = true;
       resolve(result);
     };
-    req.on("data", (chunk: Buffer) => {
+    const onData = (chunk: Buffer): void => {
       total += chunk.length;
       if (total > maxBytes) {
-        settle(err({ kind: "body_too_large", message: `request body exceeds ${maxBytes} bytes` }));
+        // Detach before settling.  The caller answers 413 and hands the socket to
+        // drainRejectedUpload, which installs its own counting listener; leaving this
+        // one attached re-enters the rejected branch for every chunk still to arrive.
+        req.off("data", onData);
+        // Release the accumulated prefix now rather than holding up to maxBytes alive
+        // until the request object is collected — the drain keeps reading this socket.
+        chunks.length = 0;
+        settle(tooLarge());
         return;
       }
       chunks.push(chunk);
+    };
+    req.on("data", onData);
+    req.on("end", () => {
+      // Already rejected (body_too_large): drainRejectedUpload is draining the rest of
+      // the upload, so 'end' still fires here with nothing left to assemble.
+      if (settled) return;
+      const result = Buffer.concat(chunks);
+      chunks.length = 0; // release chunk array while concatenated buffer is still in scope
+      settle(ok(result));
     });
-    req.on("end", () => settle(ok(Buffer.concat(chunks))));
     req.on("error", () => settle(err({ kind: "client_disconnected", message: "client aborted while sending body" })));
   });
 
@@ -308,11 +355,21 @@ const peekModel = (parsed: unknown): string | undefined => {
   return result.success ? result.data.model : undefined;
 };
 
+/**
+ * Base headers for every response the relay generates itself (as opposed to
+ * responses proxied verbatim from an upstream).  The synthesized marker is
+ * included here so callers cannot forget it and future synthesized response
+ * sites are correct by default.
+ */
+const synthesizedHeaders = (): Record<string, string> => ({
+  "content-type": "application/json",
+  [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER,
+});
+
 export const createProxyServer = (deps: ServerDeps): Server => {
   const { config, logger } = deps;
-  let activeRequests = 0;
 
-  return http.createServer((req, res) => {
+  const server = http.createServer({ maxHeaderSize: SERVER_TUNING.maxHeaderSize }, (req, res) => {
     const startedAt = Date.now();
     const path = req.url ?? "/";
     const pathname = path.split("?")[0] ?? path;
@@ -320,6 +377,19 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     let route = "anthropic";
 
     res.on("close", () => {
+      // One record per request, and only one of the two shapes.  When no response
+      // ever reached the client there is no status to report: `res.statusCode` is
+      // Node's 200 initialiser, so `request_complete status=200` would render a
+      // client that vanished mid-upload identically to a served request.
+      if (!res.headersSent) {
+        logger.log("info", "client_disconnected", {
+          path: pathname,
+          route,
+          ...(model !== undefined ? { model } : {}),
+          latencyMs: Date.now() - startedAt,
+        });
+        return;
+      }
       logger.log("info", "request_complete", {
         path: pathname,
         route,
@@ -330,26 +400,51 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     });
 
     const dispatch = async (): Promise<void> => {
-      // /__subswitch/* namespace: handled locally, never forwarded upstream.
-      if (pathname.startsWith("/__subswitch/")) {
-        if (req.method === "GET" && pathname === "/__subswitch/health") {
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(buildHealthBody(config));
-          return;
-        }
-        res.writeHead(404, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "not found" }));
+      // Loopback Host/Origin gate — first, for every path and every method.
+      //
+      // The relay binds 127.0.0.1 and requires no authentication, so reachability is
+      // its only access control, and DNS rebinding defeats reachability: a page on
+      // http://evil.test:4141 that resolves to 127.0.0.1 is same-origin with the relay
+      // in the browser's eyes and can read the response — including Codex output paid
+      // for with the operator's OAuth material.  The Host header is the one thing that
+      // page cannot change, so it is what the gate reads (hostGateVerdict, inbound-policy.ts).
+      //
+      // Placed above the /__subswitch/* branch deliberately: those endpoints are
+      // relay-owned, disclose its topology, and are exactly as reachable from a
+      // rebound page as /v1/messages is.  Placed above bufferBody so a rejected upload
+      // is never accumulated.
+      const gate = hostGateVerdict(req.headers);
+      if (gate.kind === "reject") {
+        route = "host_rejected";
+        // The rejected value is sanitised and capped by hostGateVerdict; the body
+        // carries a fixed message and never echoes it back to the caller.
+        logger.log("warn", "host_rejected", { path: pathname, errorCode: `${gate.reason} ${gate.observed}`, status: 403 });
+        // 403/permission_error: a status and type the origin itself emits (applies
+        // ADR-010 — a Host naming a domain this relay does not serve is a request the
+        // origin would never have received), rendered through the error chokepoint
+        // (applies ADR-008).
+        res.writeHead(403, synthesizedHeaders());
+        res.end(toAnthropicErrorBody("permission_error", gate.message));
+        // The upload may still be in flight.  Same reasoning as the 413 below:
+        // destroying the socket here makes the kernel send RST and the client may
+        // discard the 403 it was just sent.
+        drainRejectedUpload(req);
         return;
       }
 
-      // Concurrency gate — reject with 503 when active requests exceed the configured limit.
-      // Checked here (after /__subswitch/* is handled above) so health checks are never gated.
-      activeRequests++;
-      res.on("close", () => { activeRequests--; });
-      if (activeRequests > config.limits.maxConcurrentRequests) {
-        route = "rate_limited";
-        res.writeHead(503, { "content-type": "application/json" });
-        res.end(toAnthropicErrorBody("overloaded_error", "too many concurrent requests — try again shortly"));
+      // /__subswitch/* namespace: handled locally, never forwarded upstream.
+      if (pathname.startsWith("/__subswitch/")) {
+        if (req.method === "GET" && pathname === "/__subswitch/health") {
+          res.writeHead(200, synthesizedHeaders());
+          res.end(buildHealthBody(config));
+          return;
+        }
+        res.writeHead(404, synthesizedHeaders());
+        // toAnthropicErrorBody shapes the 404 identically to every other synthesized error,
+        // preventing path reflection and credential leakage (ADR-008, chokepoint pattern).
+        // Do NOT echo the requested path: path reflection is a log-injection / reflection
+        // surface — use a fixed message only.
+        res.end(toAnthropicErrorBody("not_found_error", "not found"));
         return;
       }
 
@@ -362,12 +457,35 @@ export const createProxyServer = (deps: ServerDeps): Server => {
 
       const body = await bufferBody(req, config.limits.maxBodyBytes);
       if (!body.ok) {
-        if (body.error.kind === "body_too_large") {
-          res.writeHead(413, { "content-type": "application/json", connection: "close" });
-          res.end(toAnthropicErrorBody("invalid_request_error", body.error.message));
-          req.destroy();
+        switch (body.error.kind) {
+          case "body_too_large":
+            // `request_too_large` is the error type Anthropic's own API returns for a
+            // 413, so a client keyed on the origin's taxonomy recognises it (applies
+            // ADR-010).  The response carries no `connection: close`: that header is
+            // hop-by-hop, and the client's keep-alive agent owns the connection's
+            // lifecycle.  drainRejectedUpload then reads the rest of the upload under
+            // its own bounds so the socket closes with FIN — see its contract for why
+            // destroying it here would cost the client the 413 it was just sent.
+            res.writeHead(413, synthesizedHeaders());
+            res.end(toAnthropicErrorBody("request_too_large", body.error.message));
+            drainRejectedUpload(req);
+            return;
+
+          case "client_disconnected":
+            // The client is gone before the upload finished, so no response can reach
+            // it and nothing is written to `res`.  `res` has already emitted "close" by
+            // the time this runs (measured on Node 22.22: `res` "close" precedes `req`
+            // "error"), and the close handler above has recorded the disconnect.
+            return;
+
+          default: {
+            // Exhaustive check — a new BufferBodyError variant is a compile error here
+            // rather than a request that returns nothing and is logged as a success.
+            const _exhaustive: never = body.error;
+            void _exhaustive;
+            return;
+          }
         }
-        return;
       }
 
       // Parse the body JSON once. The parsed value is passed to the provider handler
@@ -413,30 +531,42 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         }
 
         case "ambiguous": {
-          // Two providers claim the same family name. Reject with 400 naming both.
-          route = "ambiguous";
-          logger.log("warn", "ambiguous_model_name", { model: decision.name });
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end(
-            toAnthropicErrorBody(
-              "invalid_request_error",
-              `model '${decision.name}' is claimed by multiple providers: ${decision.providers.join(", ")} — qualify with provider:name (e.g. codex:${decision.name})`,
-            ),
-          );
+          // Fail open: forward to Anthropic and log a diagnostic warning.
+          //
+          // Rationale: the same as `unknown_provider`.  A relay-invented 400 that names OUR
+          // provider registry in the error message is an ADR-010 violation — it produces a
+          // status the origin never emits in this situation.  The origin may support the name
+          // unambiguously; at minimum, forwarding lets it answer with its own error, which is
+          // always preferable to the relay inventing one.
+          //
+          // PROVIDER_IDS only has "codex" today, so this branch is currently unreachable in
+          // practice.  It becomes live the moment a second provider ships — the forward-safe
+          // policy ensures correctness by default.
+          //
+          // The warn log preserves diagnostic value: `model` carries the ambiguous name
+          // annotated with the provider list ("name (p1, p2)") so operators can identify and
+          // disambiguate the alias.
+          logger.log("warn", "ambiguous_model_name", { model: `${decision.name} (${decision.providers.join(", ")})` });
+          // Distinct route label so request_complete is distinguishable from an intended
+          // Anthropic route in post-hoc log analysis (applies ADR-010, avoids PF-023).
+          route = "anthropic:ambiguous";
+          deps.forwardAnthropic(req, res, body.value);
           return;
         }
 
         case "unknown_provider": {
-          // "kimee:k2" — provider prefix not in PROVIDER_IDS. Reject with 400.
-          route = "unknown_provider";
-          logger.log("warn", "unknown_provider_qualifier", { model: decision.qualifier });
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end(
-            toAnthropicErrorBody(
-              "invalid_request_error",
-              `unknown provider '${decision.qualifier}' — known providers: ${PROVIDER_IDS.join(", ")}`,
-            ),
-          );
+          // "claude-sonnet-9:preview" or "kimee:k2" — colon prefix is not a known provider id.
+          // Fail open: forward to Anthropic and log a diagnostic warning. The origin may
+          // support the name (future namespaced/variant ids); a relay-invented 400 that names
+          // OUR provider registry in the error message is confusing and incorrect.
+          // Log the full as-requested model name (e.g. "kimee:k2") so operators see what the
+          // client sent, not just the extracted qualifier — the qualifier alone loses the model
+          // part of the name and is less actionable (I-051).
+          logger.log("warn", "unknown_provider_qualifier", { model: model ?? decision.qualifier });
+          // Distinct route label so request_complete is distinguishable from an intended
+          // Anthropic route in post-hoc log analysis (applies ADR-010, avoids PF-023).
+          route = "anthropic:fallback";
+          deps.forwardAnthropic(req, res, body.value);
           return;
         }
 
@@ -450,13 +580,23 @@ export const createProxyServer = (deps: ServerDeps): Server => {
     };
 
     dispatch().catch((cause: unknown) => {
+      route = "internal_error";
       logger.log("error", "request_failed", { path: pathname, errorCode: cause instanceof Error ? cause.name : "unknown" });
       if (!res.headersSent) {
-        res.writeHead(500, { "content-type": "application/json" });
-        res.end(toAnthropicErrorBody("api_error", "internal proxy error"));
+        res.writeHead(500, synthesizedHeaders());
+        res.end(toAnthropicErrorBody("api_error", "subswitch internal error — this is a proxy fault, not an upstream failure"));
       } else if (!res.writableEnded) {
         res.destroy();
       }
     });
   });
+
+  // Inbound transport policy: the post-construction tuning knobs and the
+  // clientError handler that owns the responses those knobs produce.  One call —
+  // the two halves are not separately applicable by design (PF-021).
+  // `maxHeaderSize` is the exception: it is constructor-only and is passed into
+  // http.createServer above.
+  applyInboundPolicy(server, logger);
+
+  return server;
 };

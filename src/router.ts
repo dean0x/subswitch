@@ -35,13 +35,16 @@ export const decideRoute = (
       return { kind: "anthropic" };
 
     case "ambiguous":
-      // Two providers claim the same family name. Never arbitrate or fall through — 400
-      // so the user sees exactly which providers they must qualify with.
+      // Router doesn't arbitrate between same-named providers; fails open to Anthropic
+      // with route "anthropic:ambiguous", and doctor reports the conflict as a config defect.
       return { kind: "ambiguous", name: resolution.name, providers: resolution.providers };
 
     case "unknown_qualifier":
       // "kimee:k2" — provider prefix not in PROVIDER_IDS. Distinguishable from unresolved
-      // so Phase F can emit an "unknown_provider" finding rather than "unresolvable".
+      // so doctor can emit a precise "unknown_provider" finding rather than "unresolvable".
+      // The relay forwards the name to Anthropic unchanged, so the request still works at
+      // runtime. The finding's severity — "info" here, "fail" for "ambiguous" — and why the
+      // two differ are documented once, on AgentFinding in agent-scan.ts.
       return { kind: "unknown_provider", qualifier: resolution.qualifier };
 
     case "resolved": {
