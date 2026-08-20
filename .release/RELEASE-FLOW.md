@@ -1,7 +1,7 @@
 # Release Flow — subswitch
 
 Learned config — first written after the v0.1.0 release on 2026-07-24;
-last verified against `release.yml` on 2026-08-09 (v0.2.0).
+last verified against `release.yml` on 2026-08-20 (v0.3.0).
 Released to date: `git tag -l 'v*'` (authoritative: `npm view subswitch versions`).
 Release model: tag-push → CI publish with provenance.
 
@@ -29,8 +29,15 @@ Run these in order before pushing the release tag:
 2. **Tag must not already exist**: confirm `git tag -l vX.Y.Z` returns nothing. Pushing a tag
    that already exists is a no-op and the CI workflow will not re-run.
 
-3. **Version alignment**: all three version fields must agree. The CI workflow enforces this with
-   hard guards that exit 1 on mismatch — verify locally before pushing:
+3. **Version alignment**: the release literal lives in five places: `src/version.ts`
+   (`SUBSWITCH_VERSION`), `package.json` `.version`, `package-lock.json` `.version`,
+   `package-lock.json` `.packages[""].version`, and the newest `## [X.Y.Z]` heading in
+   `CHANGELOG.md`. `test/unit/version.test.ts` pins all five to `package.json` — `npm run check`
+   (step 5) catches any miss before merge. The CI workflow's tag guard and lockfile guard cover
+   only the tag-vs-`package.json` and lockfile subset; the test suite is the authoritative gate
+   for `src/version.ts` and `CHANGELOG.md`.
+
+   Quick sanity check for the three `package.json` / lockfile fields — verify locally before pushing:
    ```
    node -p "[require('./package.json').version, require('./package-lock.json').version, require('./package-lock.json').packages[''].version].join(' ')"
    ```
@@ -39,7 +46,7 @@ Run these in order before pushing the release tag:
 
 4. **Lockfile guard**: `package-lock.json` must be in sync with `package.json`. The CI workflow
    checks both `version` and `packages[""].version` in the lockfile — both must match. The
-   one-liner above covers all three fields at once.
+   one-liner above covers those three lockfile/package.json fields.
 
 5. **Local gate** (run in order):
    ```
@@ -123,10 +130,13 @@ After the tag is pushed, in order:
    ```
    Also check provenance/attestations in the npm package page.
 
-3. **Cold-install verify**:
+3. **Cold-install verify**: install into a clean temp directory and invoke via the local binary path:
    ```
-   npx -y subswitch@X.Y.Z --version
+   TMPDIR=$(mktemp -d) && npm --prefix "$TMPDIR" install subswitch@X.Y.Z && "$TMPDIR/node_modules/.bin/subswitch" --version
    ```
+   This must print `X.Y.Z`. The `npx -y subswitch@X.Y.Z --version` convenience form can fail on
+   PATH lookup depending on the shell — both commands print the version when they succeed, but the
+   explicit install-and-path form above is reliable.
 
 4. **Create the GitHub Release** (this does NOT re-trigger the workflow because the tag already exists):
    ```
@@ -144,5 +154,5 @@ After the tag is pushed, in order:
 ## Known Future Improvements
 
 - Migrate `release.yml` from the `NPM_TOKEN` classic token to npm OIDC trusted publishing.
-  Status: not started as of v0.2.0. On completion: delete the `NPM_TOKEN` GitHub secret and
+  Status: not started as of v0.3.0. On completion: delete the `NPM_TOKEN` GitHub secret and
   drop the `NODE_AUTH_TOKEN` env block from the Publish step.
