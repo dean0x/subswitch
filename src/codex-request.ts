@@ -3,6 +3,7 @@ import type { ProxyError } from "./errors.js";
 import type { ReasoningCache } from "./reasoning-cache.js";
 import type { AnthropicRequest, AnthropicMessage } from "./anthropic-wire-types.js";
 import { buildInstructions, textOfBlocks } from "./anthropic-parse.js";
+import { reasoningEffortsForModel } from "./models.js";
 
 /**
  * Warnings are closed codes (never request content) so they can be logged
@@ -219,12 +220,16 @@ const stripCacheControl = (value: Record<string, unknown>): Record<string, unkno
 const CODEX_EFFORT_VALUES = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
 const translateEffort = (
+  model: string,
   outputConfig: AnthropicRequest["output_config"],
   warnings: TranslateWarning[],
 ): string | undefined => {
   const effort = outputConfig?.effort;
   if (effort === undefined) return undefined;
-  if (!CODEX_EFFORT_VALUES.has(effort)) {
+  const supported = reasoningEffortsForModel(model);
+  // Per-model metadata is authoritative; models without it retain the
+  // established backend-wide behavior.
+  if (supported !== undefined ? !supported.includes(effort) : !CODEX_EFFORT_VALUES.has(effort)) {
     // Effort is a hint: an unrecognized value degrades to the backend default
     // instead of failing the whole request with an upstream 400.
     warnings.push("unsupported_effort_dropped");
@@ -255,7 +260,7 @@ export const translateRequest = (
   const instructions = buildInstructions(request.system);
   const tools = translateTools(request.tools, builder.warnings);
   const toolChoice = translateToolChoice(request.tool_choice, builder.warnings);
-  const effort = translateEffort(request.output_config, builder.warnings);
+  const effort = translateEffort(request.model, request.output_config, builder.warnings);
 
   const body: Record<string, unknown> = {
     model: request.model,

@@ -470,6 +470,14 @@ describe("CLI models --json", () => {
     assert.deepEqual(solModel.gen, [5, 6], "gen for gpt-5.6-sol must be [5, 6]");
   });
 
+  it("lists gpt-6-astra with its Astra family alias", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as { models: Array<{ id: string; aliases?: Array<{ name: string }> }> };
+    const astra = parsed.models.find((model) => model.id === "gpt-6-astra");
+    assert.ok(astra !== undefined);
+    assert.ok(astra.aliases?.some((alias) => alias.name === "astra"));
+  });
+
   // ANSI bleed prevention: JSON branch returns before resolveColorEnabled.
   // With FORCE_COLOR=1, human-readable `models` stdout has ANSI; `models --json` stdout must NOT.
   it("FORCE_COLOR=1 does NOT bleed ANSI codes into JSON output (structural: JSON branch exits early)", async () => {

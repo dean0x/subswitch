@@ -43,6 +43,8 @@ export interface ModelEntry {
    */
   readonly family?: string;
   readonly gen: readonly number[];
+  /** Optional model-specific set of accepted Responses reasoning efforts. */
+  readonly reasoningEfforts?: readonly string[];
   /** Preview models are excluded from alias derivation but still routable by exact id. */
   readonly preview?: boolean;
   /** Retired models are excluded from alias derivation and from the default routable set. */
@@ -131,11 +133,22 @@ export type ModelResolution =
  * return a truthful 404.
  */
 export const MODEL_REGISTRY: readonly ModelEntry[] = [
+  {
+    id: "gpt-6-astra",
+    provider: "codex",
+    family: "astra",
+    gen: [6],
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  },
   { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
   { id: "gpt-5.6-terra", provider: "codex", family: "terra", gen: [5, 6] },
   { id: "gpt-5.6-luna", provider: "codex", family: "luna", gen: [5, 6] },
   { id: "gpt-5.5", provider: "codex", gen: [5, 5] },
 ];
+
+/** Model-specific effort metadata, when the canonical registry entry declares it. */
+export const reasoningEffortsForModel = (id: string): readonly string[] | undefined =>
+  MODEL_REGISTRY.find((entry) => entry.id === id)?.reasoningEfforts;
 
 // ---------------------------------------------------------------------------
 // Anthropic-leg model names

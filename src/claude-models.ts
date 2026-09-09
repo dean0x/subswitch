@@ -17,7 +17,7 @@ export const CLAUDE_MODELS: readonly ClaudeModel[] = [
 ];
 
 export const isOpenaiModelName = (name: string): boolean =>
-  /^(gpt-|o[134](?:-|$)|codex:|sol(?:$|\[)|terra(?:$|\[)|luna(?:$|\[))/i.test(name);
+  /^(gpt-|o[134](?:-|$)|codex:|sol(?:$|\[)|terra(?:$|\[)|luna(?:$|\[)|astra(?:$|\[))/i.test(name);
 
 export const validClaudeAlias = (name: string, target: string): boolean =>
   !isOpenaiModelName(name) && !isOpenaiModelName(target) && target.startsWith("claude-");

@@ -184,6 +184,30 @@ describe("translateRequest", () => {
     assert.deepEqual(result.value.warnings, ["unsupported_effort_dropped"]);
   });
 
+  it("enforces Astra's documented effort set while preserving other models", () => {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+      const result = translateRequest(AnthropicRequestSchema.parse({
+        model: "gpt-6-astra", messages: [{ role: "user", content: "hi" }], output_config: { effort },
+      }), new ReasoningCache(4, LARGE_BYTES));
+      assert.ok(result.ok);
+      assert.deepEqual(result.value.body["reasoning"], { effort });
+      assert.deepEqual(result.value.warnings, []);
+    }
+    for (const effort of ["none", "minimal", "unknown"]) {
+      const result = translateRequest(AnthropicRequestSchema.parse({
+        model: "gpt-6-astra", messages: [{ role: "user", content: "hi" }], output_config: { effort },
+      }), new ReasoningCache(4, LARGE_BYTES));
+      assert.ok(result.ok);
+      assert.equal("reasoning" in result.value.body, false);
+      assert.deepEqual(result.value.warnings, ["unsupported_effort_dropped"]);
+    }
+    const legacy = translateRequest(AnthropicRequestSchema.parse({
+      model: "gpt-5.6-luna", messages: [{ role: "user", content: "hi" }], output_config: { effort: "minimal" },
+    }), new ReasoningCache(4, LARGE_BYTES));
+    assert.ok(legacy.ok);
+    assert.deepEqual(legacy.value.body["reasoning"], { effort: "minimal" });
+  });
+
   it("omits reasoning when the request carries no output_config", () => {
     const request = AnthropicRequestSchema.parse({ model: "gpt-5.6-luna", messages: [{ role: "user", content: "hi" }] });
     const result = translateRequest(request, new ReasoningCache(4, LARGE_BYTES));

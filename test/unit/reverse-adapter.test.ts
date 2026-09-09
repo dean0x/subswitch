@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { reverseRequest, reverseResponse, reverseEvents, ReverseContractError } from "../../src/claude-adapter.js";
 import { ReverseState, replayIdentity } from "../../src/claude-state.js";
+import { validClaudeAlias } from "../../src/claude-models.js";
 
 const code = { type: "custom", name: "exec", description: "Execute JavaScript with the native tools object.", format: { type: "text" } };
 const tool = { type: "function", name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } };
@@ -12,6 +13,9 @@ const request = () => ({ model: "claude-sonnet-5", instructions: "Keep all instr
 const rejects = (fn: () => unknown, code: string) => assert.throws(fn, error => error instanceof ReverseContractError && error.code === code);
 
 describe("experimental reverse native contract", () => {
+  it("reserves Astra family names for OpenAI routing, including variants", () => {
+    for (const name of ["astra", "ASTRA", "astra[1m]"]) assert.equal(validClaudeAlias(name, "claude-sonnet-5"), false);
+  });
   it("restores freeform namespace/type/input and replays its result without rewriting text", () => {
     const original = request(); const snapshot = structuredClone(original);
     const translated = reverseRequest(original);

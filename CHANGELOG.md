@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Astra routing: `gpt-6-astra` and its `astra` family alias, with Astra-specific
+  reasoning effort validation.
+
 - Opt-in native Codex → Claude routing for Sonnet, Opus and Fable, while OpenAI
   models continue to OpenAI and Codex retains native agents, tools and permissions.
 - Subscription authentication, credential refresh, readable collaboration messages,
@@ -31,6 +34,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Native Codex setup requires explicit trust for a custom upstream host before it writes files.
 
 ### Fixed
+
+- The development HTTP recorder now captures eligible streamed `/responses`
+  replies even when the upstream omits `Content-Type`, without inspecting other
+  missing-header responses.
 
 - Native Codex conversations can continue after cancelling a Claude response; pending
   replay handles and ordered cancellation notices no longer cause 409/400 failures.
@@ -504,14 +511,6 @@ before adding a second production provider:
   out-of-tree probe, but no in-suite test can distinguish them until a second id ships.
   The tests that touch these axes say so at the assertion site; do not read their green
   as coverage.
-- **`e2e/capture/codex-recorder.ts` cannot capture SSE from the live backend**: its
-  detection gates on `contentType.includes("text/event-stream")`, but the production
-  `/responses` stream sends no `Content-Type` header at all, so the recorder silently
-  degrades to pass-through mode and captures no events and no `usage`. It works correctly
-  only against local fixture upstreams, which do set the header. A one-line
-  `|| contentType === ""` relaxation fixes it. Anyone repeating the live-capture protocol
-  with the checked-in recorder will get empty event captures and may wrongly conclude the
-  stream is broken. ([#21](https://github.com/dean0x/subswitch/issues/21))
 - **`e2e/README.md` parity-gaps table is derived from the wrong transport**: the
   six-row table was measured against HTTP analytics REST calls from `codex exec`, which
   routes AI inference over a WebSocket app-server transport — not the HTTP `/responses`

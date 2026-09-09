@@ -66,6 +66,23 @@ const buildTable = (
 // ---------------------------------------------------------------------------
 
 describe("F2 — family alias resolution", () => {
+  it("resolves Astra by canonical id, bare/qualified family, and qualified id", () => {
+    const { table } = buildRoutingTable(MODEL_REGISTRY, NO_ALIASES);
+    for (const name of ["gpt-6-astra", "astra", "codex:gpt-6-astra", "codex:astra"]) {
+      const resolution = resolveModel(table, name);
+      assert.equal(resolution.kind, "resolved", name);
+      assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-6-astra");
+    }
+  });
+
+  it("allows a custom Astra alias without overriding the canonical id", () => {
+    const { table } = buildTable(MODEL_REGISTRY, { worker: "gpt-6-astra", "gpt-6-astra": "gpt-5.5" });
+    const alias = resolveModel(table, "worker");
+    const canonical = resolveModel(table, "gpt-6-astra");
+    assert.equal((alias as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-6-astra");
+    assert.equal((canonical as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-6-astra");
+  });
+
   it("F2: 'sol' resolves to the newest non-preview, non-retired member via bare family name", () => {
     const reg = [
       entry("gpt-5.5-sol", { family: "sol", gen: [5, 5] }),
