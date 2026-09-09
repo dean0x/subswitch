@@ -32,6 +32,7 @@
 import * as http from "node:http";
 import * as https from "node:https";
 import * as crypto from "node:crypto";
+import { pathToFileURL } from "node:url";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -239,19 +240,9 @@ function buildForwardHeaders(
 
 let requestSeq = 0;
 
-function println(line: string): void {
-  process.stdout.write(line + "\n");
-}
+export type RecorderOutput = (line: string) => void;
 
-function separator(label: string): void {
-  println(`\n${"─".repeat(64)}`);
-  println(`  ${label}`);
-  println("─".repeat(64));
-}
-
-function indent(text: string, prefix = "  "): void {
-  for (const line of text.split("\n")) println(`${prefix}${line}`);
-}
+const stdoutOutput: RecorderOutput = (line) => process.stdout.write(line + "\n");
 
 // ---------------------------------------------------------------------------
 // SSE event parser
@@ -308,10 +299,32 @@ function extractUsage(data: unknown): Record<string, unknown> | undefined {
 // Request handler
 // ---------------------------------------------------------------------------
 
+const isExpectedMissingHeaderStream = (method: string, path: string, body: Buffer, status: number | undefined): boolean => {
+  if (method !== "POST" || status === undefined || status < 200 || status >= 300) return false;
+  if (!new URL(path, "http://recorder.invalid").pathname.endsWith("/responses")) return false;
+  try {
+    const parsed = JSON.parse(body.toString("utf8")) as unknown;
+    return typeof parsed === "object" && parsed !== null && (parsed as Record<string, unknown>)["stream"] === true;
+  } catch {
+    return false;
+  }
+};
+
 async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
+  upstreamBase: string,
+  output: RecorderOutput,
 ): Promise<void> {
+  const println = output;
+  const separator = (label: string): void => {
+    println(`\n${"─".repeat(64)}`);
+    println(`  ${label}`);
+    println("─".repeat(64));
+  };
+  const indent = (value: string, prefix = "  "): void => {
+    for (const line of value.split("\n")) println(`${prefix}${line}`);
+  };
   const seq = ++requestSeq;
   const method = req.method ?? "GET";
   const path = req.url ?? "/";
@@ -336,7 +349,7 @@ async function handleRequest(
   // Resolve upstream URL: append the incoming path onto the configured base path.
   // e.g. UPSTREAM_BASE=https://chatgpt.com/backend-api/codex + path=/responses
   //   → hostname=chatgpt.com, upstreamPath=/backend-api/codex/responses
-  const upstreamTarget = new URL(UPSTREAM_BASE.replace(/\/$/, ""));
+  const upstreamTarget = new URL(upstreamBase.replace(/\/$/, ""));
   const upstreamPath = upstreamTarget.pathname.replace(/\/$/, "") + path;
 
   const isHttps = upstreamTarget.protocol === "https:";
@@ -369,13 +382,35 @@ async function handleRequest(
       delete fwdHeaders["content-length"];
       res.writeHead(upstreamRes.statusCode ?? 502, fwdHeaders);
 
-      const contentType = (upstreamRes.headers["content-type"] ?? "") as string;
-      const isSse = contentType.includes("text/event-stream");
+      const rawContentType = upstreamRes.headers["content-type"];
+      const contentType = (Array.isArray(rawContentType) ? rawContentType[0] : rawContentType ?? "").trim();
+      // The live Responses endpoint omits Content-Type. Do not broadly treat
+      // missing headers as SSE: only inspect the precise streamed Responses
+      // shape, preserving ordinary proxy behavior everywhere else.
+      const isSse = contentType.toLowerCase().includes("text/event-stream") ||
+        (contentType === "" && isExpectedMissingHeaderStream(method, path, rawBody, upstreamRes.statusCode));
 
       if (isSse) {
         println("SSE EVENTS:");
         let sseEventCount = 0;
         let lineBuf = "";
+        let terminalUsagePrinted = false;
+
+        const recordEvent = (event: SseEventRecord): void => {
+          const usage = event.type === "response.completed" ? extractUsage(event.data) : undefined;
+          if (sseEventCount < MAX_SSE_EVENTS) {
+            println(`  [${sseEventCount + 1}] type=${event.type}${usage !== undefined ? `  usage=${JSON.stringify(usage)}` : ""}`);
+          } else if (sseEventCount === MAX_SSE_EVENTS) {
+            println(`  ... (cap: first ${MAX_SSE_EVENTS} events printed; counting only)`);
+          }
+          // Usage is terminal accounting rather than event detail. Keep it even
+          // after the event-detail cap and when completion arrives at EOF.
+          if (usage !== undefined && !terminalUsagePrinted) {
+            println(`  TERMINAL USAGE: ${JSON.stringify(usage)}`);
+            terminalUsagePrinted = true;
+          }
+          sseEventCount++;
+        };
 
         upstreamRes.on("data", (chunk: Buffer) => {
           // Forward to client immediately (no buffering of response body)
@@ -394,19 +429,7 @@ async function handleRequest(
             const event = parseSseBlock(block);
             if (event === undefined) continue;
 
-            if (sseEventCount < MAX_SSE_EVENTS) {
-              let suffix = "";
-              if (event.type === "response.completed") {
-                const usage = extractUsage(event.data);
-                if (usage !== undefined) {
-                  suffix = `  usage=${JSON.stringify(usage)}`;
-                }
-              }
-              println(`  [${sseEventCount + 1}] type=${event.type}${suffix}`);
-            } else if (sseEventCount === MAX_SSE_EVENTS) {
-              println(`  ... (cap: first ${MAX_SSE_EVENTS} events printed; counting only)`);
-            }
-            sseEventCount++;
+            recordEvent(event);
           }
         });
 
@@ -415,10 +438,7 @@ async function handleRequest(
           if (lineBuf.trim() !== "") {
             const event = parseSseBlock(lineBuf);
             if (event !== undefined) {
-              if (sseEventCount < MAX_SSE_EVENTS) {
-                println(`  [${sseEventCount + 1}] type=${event.type}`);
-              }
-              sseEventCount++;
+              recordEvent(event);
             }
           }
           println(`\n  SSE TOTAL: ${sseEventCount} events`);
@@ -457,10 +477,17 @@ async function handleRequest(
 // Server
 // ---------------------------------------------------------------------------
 
-const server = http.createServer((req, res) => {
-  handleRequest(req, res).catch((err: unknown) => {
+/**
+ * Create a dev-only recorder without binding a port. Tests and local probes can
+ * listen on an ephemeral loopback port; importing this module has no side effect.
+ */
+export const createCodexRecorderServer = (
+  upstreamUrl: string,
+  output: RecorderOutput = stdoutOutput,
+): http.Server => http.createServer((req, res) => {
+  handleRequest(req, res, upstreamUrl, output).catch((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
-    println(`HANDLER ERROR: ${msg}`);
+    output(`HANDLER ERROR: ${msg}`);
     if (!res.headersSent) {
       res.writeHead(500);
       res.end("recorder error");
@@ -468,22 +495,25 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(LISTEN_PORT, LISTEN_HOST, () => {
-  println("╔══════════════════════════════════════════════════════════════╗");
-  println("║         subswitch Codex wire-capture recorder (dev only)        ║");
-  println("╚══════════════════════════════════════════════════════════════╝");
-  println(`  Listening : http://${LISTEN_HOST}:${LISTEN_PORT}`);
-  println(`  Upstream  : ${UPSTREAM_BASE}`);
-  println("");
-  println("  To route subswitch through this recorder, set codex.baseUrl in");
-  println(`  subswitch.config.json to "http://${LISTEN_HOST}:${LISTEN_PORT}"`);
-  println("");
-  println("  Override upstream: CODEX_RECORDER_UPSTREAM=https://... npx tsx ...");
-  println("");
-});
-
-process.on("SIGINT", () => {
-  println("\nShutting down recorder.");
-  server.close();
-  process.exit(0);
-});
+const isDirectExecution = process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (isDirectExecution) {
+  const server = createCodexRecorderServer(UPSTREAM_BASE);
+  server.listen(LISTEN_PORT, LISTEN_HOST, () => {
+    stdoutOutput("╔══════════════════════════════════════════════════════════════╗");
+    stdoutOutput("║         subswitch Codex wire-capture recorder (dev only)        ║");
+    stdoutOutput("╚══════════════════════════════════════════════════════════════╝");
+    stdoutOutput(`  Listening : http://${LISTEN_HOST}:${LISTEN_PORT}`);
+    stdoutOutput(`  Upstream  : ${UPSTREAM_BASE}`);
+    stdoutOutput("");
+    stdoutOutput("  To route subswitch through this recorder, set codex.baseUrl in");
+    stdoutOutput(`  subswitch.config.json to "http://${LISTEN_HOST}:${LISTEN_PORT}"`);
+    stdoutOutput("");
+    stdoutOutput("  Override upstream: CODEX_RECORDER_UPSTREAM=https://... npx tsx ...");
+    stdoutOutput("");
+  });
+  process.on("SIGINT", () => {
+    stdoutOutput("\nShutting down recorder.");
+    server.close();
+    process.exit(0);
+  });
+}

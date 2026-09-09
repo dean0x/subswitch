@@ -167,6 +167,12 @@ horizontal rule.
   events; beyond that a running counter appears.
 - `SSE TOTAL` — total event count for the response.
 
+The recorder inspects explicit `text/event-stream` responses. When an upstream
+omits `Content-Type`, it additionally inspects only a successful 2xx response to
+a JSON `POST` whose path ends in `/responses` and has `stream: true`. Other
+missing-header responses remain pass-through. The recorder is HTTP-only and does
+not capture WebSocket traffic.
+
 ### Bounds and safety
 
 | Limit | Value |
