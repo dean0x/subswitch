@@ -1,11 +1,11 @@
 ---
 feature: cli-ux
 name: CLI / init command / terminal UX
-description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, log event names, config load and provider config resolution, the models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, providerEvents, provider-events, log injection, FIELD_KEYS, renderToken, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, buildDeps, ProviderConfigs, PROVIDER_SCHEMAS, PROVIDER_RESOLVERS, detectUnknownProviderKeys, detectLegacyConfigKeys, LEGACY_KEY_ENTRIES, renderLegacyKeyEntry, credentialUsable, providersWithCredentials, enumerateDestinations, RoutingDestination, isLoopbackHost, isLoopbackHostname, strictObject, oauthTokenUrl, PROVIDER_AUTH_INSPECTORS, plain-object, SERVER_TUNING, applyInboundPolicy, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, drainRejectedUpload, hostGateVerdict, responseForClientError, client_disconnected, respondJson, anthropic:ambiguous, anthropic:fallback, maxBufferedBodyBytes, readBodyForRouting, IngestError, bodyMode, anthropic:streamed, sniffLeadingModel, ADR-010."
+description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, log event names, config load and provider config resolution, the models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, providerEvents, provider-events, log injection, FIELD_KEYS, renderToken, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, buildDeps, ProviderConfigs, PROVIDER_SCHEMAS, PROVIDER_RESOLVERS, detectUnknownProviderKeys, detectLegacyConfigKeys, LEGACY_KEY_ENTRIES, renderLegacyKeyEntry, credentialUsable, providersWithCredentials, enumerateDestinations, RoutingDestination, isLoopbackHost, isLoopbackHostname, strictObject, oauthTokenUrl, PROVIDER_AUTH_INSPECTORS, plain-object, SERVER_TUNING, applyInboundPolicy, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, drainRejectedUpload, hostGateVerdict, responseForClientError, client_disconnected, respondJson, anthropic:ambiguous, anthropic:fallback, maxBufferedBodyBytes, readBodyForRouting, IngestError, bodyMode, anthropic:streamed, sniffLeadingModel, ADR-010, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, registry_entry_unknown_effort, buildOpenaiModelNamePredicate."
 category: architecture
 directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts, src/provider-transport.ts]
 created: 2026-07-23
-updated: 2026-08-20
+updated: 2026-09-14
 ---
 
 # CLI / init command / terminal UX
@@ -94,7 +94,9 @@ Both walk with `Object.hasOwn` only, through the shared `isPlainObject` predicat
 
 Deliberately imports nothing from the rest of the repo — `config.ts` imports it, and the edge must stay one-way.
 
-Key exports: `PROVIDER_IDS`, `ProviderId`, `AliasesByProvider`, `MODEL_REGISTRY`, `routableModelCount`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `formatModelsReport`, `buildModelRows`, `buildAliasRows`.
+Key exports: `PROVIDER_IDS`, `ProviderId`, `AliasesByProvider`, `MODEL_REGISTRY`, `routableModelCount`, `DEFAULT_REASONING_EFFORTS`, `reasoningEffortsForModel`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `formatModelsReport`, `buildModelRows`, `buildAliasRows`.
+
+`buildModelRows` emits `ModelRow.reasoningEfforts` (surfaced by `subswitch models --json`) only when a registry entry narrows the default effort vocabulary. `buildRoutingTable` also reports an `unknownReasoningEfforts` diagnostic that `buildDeps` logs as `registry_entry_unknown_effort`, alongside its other startup diagnostics (`alias_rejected`, `alias_dangling_target`, `ambiguous_family`, `registry_entry_uses_reserved_name`).
 
 ### src/cli.ts — Dispatcher
 
@@ -305,7 +307,7 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 - `src/doctor.ts` — `runDoctor`; `PROVIDER_AUTH_INSPECTORS` (exported totality anchor); `makeLiveListAgentFiles` (absolute-path resolution critical)
 - `src/init.ts` — Pure planning + `InitFsDeps` / `InitPrompts` seams; wizard prompts only port + settings-target
 - `src/agent-scan.ts` — `parseFrontmatterModel`; `checkAgentModels`; `unknown_provider` severity `"info"` (ADR-010)
-- `src/models.ts` — Pure registry; no repo imports; `MODEL_REGISTRY`, `PROVIDER_IDS`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `routableModelCount`
+- `src/models.ts` — Pure registry; no repo imports; `MODEL_REGISTRY`, `PROVIDER_IDS`, `DEFAULT_REASONING_EFFORTS`, `reasoningEffortsForModel`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `routableModelCount`
 - `src/plain-object.ts` — Shared `isPlainObject` guard for `doctor.ts` and `init.ts`; `config.ts` keeps its own private copy (prototype-pollution boundary)
 
 ## Related
@@ -345,3 +347,5 @@ name the source containing the offending key. `configuredProviders` reflects all
 
 `src/clients.ts` owns the supported-client IDs and the `all` selector. Legacy `both`
 normalizes to `all`; model JSON uses the canonical `client: "all"` discriminator.
+
+`src/claude-models.ts`'s `isOpenaiModelName` (the gate behind `codexIngress.claude.aliases`) is built by `buildOpenaiModelNamePredicate(MODEL_REGISTRY)` rather than a hand-written alternation, so a family added to the registry is automatically reserved on the claude-ingress alias leg with no code change. Full detail in the codex-leg KB.
