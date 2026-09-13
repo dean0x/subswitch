@@ -5,29 +5,16 @@ import * as net from "node:net";
 import { once } from "node:events";
 import { createCodexRecorderServer } from "../../e2e/capture/codex-recorder.js";
 
-const listen = async (server: http.Server): Promise<string> => {
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-  return `http://127.0.0.1:${address.port}`;
-};
-
-const close = async (server: http.Server): Promise<void> => {
-  server.close();
-  await once(server, "close");
-};
-
 /**
- * Close a server without waiting on connections the test deliberately left open.
- * `server.close()` alone waits for every live socket, which turns an assertion
- * failure in the streaming tests below into a suite hang instead of a red test.
+ * Deadline every helper in this file answers to.
+ *
+ * An unbounded helper turns a regression into the 30 s suite timeout, which names
+ * neither the test that stalled nor the assertion that would have explained it. Each
+ * helper below instead fails at this bound with a message naming what never finished.
+ * Nothing in a passing run waits on it — the whole suite settles in well under a
+ * second — so the bound is a failure path only and the suite stays deterministic.
  */
-const closeHard = async (server: http.Server): Promise<void> => {
-  server.closeAllConnections();
-  server.close();
-  await once(server, "close");
-};
+const HELPER_TIMEOUT_MS = 5_000;
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 
@@ -43,15 +30,61 @@ const withTimeout = async <T>(promise: Promise<T>, ms: number, message: string):
   }
 };
 
-const post = (base: string, path: string, body: string): Promise<{ status: number; body: Buffer }> => new Promise((resolve, reject) => {
-  const request = http.request(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" } }, (response) => {
-    const chunks: Buffer[] = [];
-    response.on("data", (chunk: Buffer) => chunks.push(chunk));
-    response.on("end", () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks) }));
-  });
-  request.on("error", reject);
-  request.end(body);
+const listen = async (server: http.Server): Promise<string> => {
+  server.listen(0, "127.0.0.1");
+  await withTimeout(once(server, "listening"), HELPER_TIMEOUT_MS, "server never reached the listening state");
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  return `http://127.0.0.1:${address.port}`;
+};
+
+const close = async (server: http.Server): Promise<void> => {
+  server.close();
+  await withTimeout(once(server, "close"), HELPER_TIMEOUT_MS, "server.close() never completed: a connection is still live");
+};
+
+/**
+ * Close a server without waiting on connections the test deliberately left open.
+ * `server.close()` alone waits for every live socket, which turns an assertion
+ * failure in the streaming tests below into a suite hang instead of a red test.
+ */
+const closeHard = async (server: http.Server): Promise<void> => {
+  server.closeAllConnections();
+  server.close();
+  await withTimeout(once(server, "close"), HELPER_TIMEOUT_MS, "server.close() never completed after closeAllConnections()");
+};
+
+/** Name what stalled when the deadline aborts a request, rather than surfacing a bare AbortError. */
+const requestFailure = (err: Error, what: string): Error =>
+  (err as NodeJS.ErrnoException).code === "ABORT_ERR"
+    ? new Error(`${what} produced no complete response within ${HELPER_TIMEOUT_MS} ms`)
+    : err;
+
+/**
+ * Options shared by the buffered request helpers: a JSON body with an explicit
+ * content-length (so a body rides on any method, not just the ones Node frames by
+ * default) and the deadline above.
+ */
+const jsonRequest = (body: string, method: string): http.RequestOptions => ({
+  method,
+  headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) },
+  signal: AbortSignal.timeout(HELPER_TIMEOUT_MS),
 });
+
+/** Send one buffered JSON request and read the whole response body. */
+const send = (base: string, path: string, body: string, method = "POST"): Promise<{ status: number; body: Buffer }> =>
+  new Promise((resolve, reject) => {
+    const request = http.request(`${base}${path}`, jsonRequest(body, method), (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks) }));
+    });
+    request.on("error", (err: Error) => reject(requestFailure(err, `${method} ${path}`)));
+    request.end(body);
+  });
+
+const post = (base: string, path: string, body: string): Promise<{ status: number; body: Buffer }> =>
+  send(base, path, body, "POST");
 
 /**
  * Same as `post`, but sampling `heapUsed` on every delivered chunk. Received
@@ -60,7 +93,7 @@ const post = (base: string, path: string, body: string): Promise<{ status: numbe
  */
 const postSampled = (base: string, path: string, body: string): Promise<{ status: number; body: Buffer; peakHeap: number }> =>
   new Promise((resolve, reject) => {
-    const request = http.request(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" } }, (response) => {
+    const request = http.request(`${base}${path}`, jsonRequest(body, "POST"), (response) => {
       const chunks: Buffer[] = [];
       let peakHeap = 0;
       response.on("data", (chunk: Buffer) => {
@@ -70,17 +103,27 @@ const postSampled = (base: string, path: string, body: string): Promise<{ status
       });
       response.on("end", () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks), peakHeap }));
     });
-    request.on("error", reject);
+    request.on("error", (err: Error) => reject(requestFailure(err, `POST ${path} (heap-sampled)`)));
     request.end(body);
   });
 
-/** POST and hand back the live response before a single body byte is consumed. */
+/**
+ * POST and hand back the live response before a single body byte is consumed.
+ *
+ * Only the wait for headers is bounded, and by a race rather than by an abort: the
+ * caller deliberately stops reading for a while, so a deadline on the request itself
+ * would cut the very stream this helper exists to hand over.
+ */
 const postStreaming = (base: string, path: string, body: string): Promise<http.IncomingMessage> =>
-  new Promise((resolve, reject) => {
-    const request = http.request(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" } }, resolve);
-    request.on("error", reject);
-    request.end(body);
-  });
+  withTimeout(
+    new Promise<http.IncomingMessage>((resolve, reject) => {
+      const request = http.request(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" } }, resolve);
+      request.on("error", reject);
+      request.end(body);
+    }),
+    HELPER_TIMEOUT_MS,
+    `POST ${path} produced no response headers within ${HELPER_TIMEOUT_MS} ms`,
+  );
 
 /**
  * Send a hand-written request line that `http.request` would refuse to encode,
@@ -95,11 +138,38 @@ const rawPost = (base: string, target: string, body: string): Promise<string> =>
       `Connection: close\r\n\r\n${body}`,
     );
   });
+  // Idle bound: a recorder that answers nothing at all leaves this socket silent, and
+  // a silent socket would otherwise be held until the suite timeout.
+  socket.setTimeout(HELPER_TIMEOUT_MS, () => {
+    socket.destroy();
+    reject(new Error(`raw POST ${target} produced no complete response within ${HELPER_TIMEOUT_MS} ms`));
+  });
   const chunks: Buffer[] = [];
   socket.on("data", (chunk: Buffer) => chunks.push(chunk));
   socket.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
   socket.on("error", reject);
 });
+
+/**
+ * Build an SSE body of `count` event blocks.
+ *
+ * `completions` maps a 0-based event index to the `input_tokens` count that event
+ * reports, so a fixture can place a `response.completed` on either side of the
+ * printed-event cap; every other index is an ordinary delta.
+ */
+const sseWire = (count: number, completions: ReadonlyMap<number, number>): string => {
+  const blocks: string[] = [];
+  // Bounded by `count`, the literal each caller supplies.
+  for (let index = 0; index < count; index++) {
+    const inputTokens = completions.get(index);
+    blocks.push(
+      inputTokens === undefined
+        ? 'data: {"type":"response.output_text.delta"}\n\n'
+        : `data: ${JSON.stringify({ type: "response.completed", response: { usage: { input_tokens: inputTokens } } })}\n\n`,
+    );
+  }
+  return blocks.join("");
+};
 
 /** Every `REQUEST #n` sequence number a transcript carries, in order, as strings. */
 const seqNumbers = (transcript: readonly string[]): string[] =>
@@ -213,6 +283,41 @@ describe("dev Codex recorder", () => {
       assert.equal(result.status, 429);
       assert.deepEqual(result.body, body);
       assert.equal(output.some((line) => line === "SSE EVENTS:"), false);
+    } finally {
+      await close(recorder);
+      await close(upstream);
+    }
+  });
+
+  /**
+   * PF-013 keeps the headerless-SSE rule pinned clause by clause, each clause with its
+   * own negative test so deleting it cannot stay green behind a cheaper clause:
+   *   path     → "does not inspect missing-header responses outside successful streamed POST /responses" (`/other`)
+   *   request  → "passes a headerless POST /responses through when the request body did not declare stream"
+   *   status   → "passes a headerless streamed POST /responses through when upstream did not answer 2xx"
+   *   method   → this test
+   */
+  it("passes a headerless streamed /responses through when the method is not POST", async () => {
+    // A genuine SSE body: were the method clause dropped, this request would clear every
+    // remaining clause and print `[1] type=response.created`, which is what the
+    // assertions below deny. A body on a GET is deliberate — `stream: true` has to reach
+    // the recorder for the method to be the only clause left refusing.
+    const wire = Buffer.from('data: {"type":"response.created"}\n\n');
+    const upstream = http.createServer((_req, res) => { res.writeHead(200); res.end(wire); });
+    const upstreamUrl = await listen(upstream);
+    const output: string[] = [];
+    const recorder = createCodexRecorderServer(upstreamUrl, (line) => output.push(line));
+    const recorderUrl = await listen(recorder);
+    try {
+      const result = await send(recorderUrl, "/responses", JSON.stringify({ stream: true }), "GET");
+      assert.equal(result.status, 200);
+      assert.deepEqual(result.body, wire, "a pass-through body must reach the client verbatim (ADR-010)");
+      assert.equal(output.some((line) => line === "SSE EVENTS:"), false, "a non-POST must take the pass-through arm");
+      assert.deepEqual(
+        output.filter((line) => line.startsWith("  [")),
+        [],
+        "no event line may be printed for a request the eligibility rule refuses",
+      );
     } finally {
       await close(recorder);
       await close(upstream);
@@ -561,6 +666,96 @@ describe("dev Codex recorder", () => {
     } finally {
       await close(recorder);
       await close(upstream);
+    }
+  });
+
+  /**
+   * The printed-event cap and the terminal-usage latch are separate controls, so the
+   * numbers here are separate too: importing `MAX_SSE_EVENTS` would make the test agree
+   * with whatever the code currently says instead of pinning what it must say (PF-011).
+   * 205 streamed events against 200 expected printed lines is the control.
+   */
+  it("prints only the first 200 event lines and keeps the earlier terminal usage", async () => {
+    const eventCount = 205;
+    const printedCap = 200;
+    // A completion on each side of the cap, carrying different counts: the first one
+    // wins the TERMINAL USAGE line and the second must not produce a second line.
+    const wire = sseWire(eventCount, new Map([[0, 11], [eventCount - 1, 22]]));
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200); // deliberately no Content-Type
+      res.end(wire);
+    });
+    const upstreamUrl = await listen(upstream);
+    const output: string[] = [];
+    const recorder = createCodexRecorderServer(upstreamUrl, (line) => output.push(line));
+    const recorderUrl = await listen(recorder);
+    try {
+      const result = await post(recorderUrl, "/responses", JSON.stringify({ stream: true }));
+      assert.equal(result.status, 200);
+      // Buffer.equals is deepEqual for Buffers without dumping the whole stream on failure.
+      assert.ok(result.body.equals(Buffer.from(wire)), "the print cap may bound capture, never the forward (ADR-010)");
+
+      const eventLines = output.filter((line) => line.startsWith("  ["));
+      assert.equal(
+        eventLines.length,
+        printedCap,
+        `expected exactly ${printedCap} printed event lines from ${eventCount} events, got ${eventLines.length}`,
+      );
+      assert.equal(eventLines[0], '  [1] type=response.completed  usage={"input_tokens":11}');
+      assert.equal(eventLines[printedCap - 1], `  [${printedCap}] type=response.output_text.delta`);
+
+      assert.deepEqual(
+        output.filter((line) => line.includes("(cap:")),
+        ["  ... (cap: first 200 events printed; counting only)"],
+        "the cap notice must be printed exactly once, on the event that crosses it",
+      );
+      assert.deepEqual(
+        output.filter((line) => line.includes("TERMINAL USAGE:")),
+        ['  TERMINAL USAGE: {"input_tokens":11}'],
+        "terminal usage is latched: the first completion wins and no later one reopens it",
+      );
+      assert.ok(
+        output.includes(`\n  SSE TOTAL: ${eventCount} events`),
+        `the counter must keep running past the print cap, got ${JSON.stringify(output.filter((line) => line.includes("SSE TOTAL")))}`,
+      );
+    } finally {
+      await closeHard(recorder);
+      await closeHard(upstream);
+    }
+  });
+
+  it("records a terminal usage that arrives after the event cap", async () => {
+    const eventCount = 205;
+    const printedCap = 200;
+    // The only completion sits past the cap. Usage is terminal accounting, not event
+    // detail, so the cap that silences the event line must not silence the usage.
+    const wire = sseWire(eventCount, new Map([[eventCount - 1, 7]]));
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200); // deliberately no Content-Type
+      res.end(wire);
+    });
+    const upstreamUrl = await listen(upstream);
+    const output: string[] = [];
+    const recorder = createCodexRecorderServer(upstreamUrl, (line) => output.push(line));
+    const recorderUrl = await listen(recorder);
+    try {
+      const result = await post(recorderUrl, "/responses", JSON.stringify({ stream: true }));
+      assert.ok(result.body.equals(Buffer.from(wire)), "the print cap may bound capture, never the forward (ADR-010)");
+
+      assert.deepEqual(
+        output.filter((line) => line.includes("TERMINAL USAGE:")),
+        ['  TERMINAL USAGE: {"input_tokens":7}'],
+        "a completion past the print cap must still report its usage",
+      );
+      assert.equal(output.filter((line) => line.startsWith("  [")).length, printedCap);
+      assert.equal(
+        output.some((line) => line.includes("type=response.completed")),
+        false,
+        "the completed event itself fell past the print cap, so only its usage survives",
+      );
+    } finally {
+      await closeHard(recorder);
+      await closeHard(upstream);
     }
   });
 
