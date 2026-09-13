@@ -260,12 +260,12 @@ produces an explicit error; keep the proxy running during active translated sess
 
 The optional `effort` frontmatter field works on the Codex leg too. Claude Code
 sends it as `output_config.effort`, and subswitch forwards it as Responses
-`reasoning.effort`. Most registered Codex models retain the backend set: `none`,
-`minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. Astra accepts `low`,
-`medium`, `high`, `xhigh`, and `max`; its `none` and `minimal` values are dropped.
-An unsupported value is dropped with an `unsupported_effort_dropped` warning and
-the backend default applies. When effort is forwarded, subswitch logs
-`codex_effort_applied`.
+`reasoning.effort`. Every registered model except Astra retains the backend set:
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` (Claude Code itself
+emits only the last five). Astra accepts `low`, `medium`, `high`, `xhigh`, and
+`max`; its `none` and `minimal` values are dropped. An unsupported value is
+dropped with an `unsupported_effort_dropped` warning and the backend default
+applies. When effort is forwarded, subswitch logs `codex_effort_applied`.
 
 ## Configuration
 

@@ -32,6 +32,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Invalid user configuration can therefore prevent startup; diagnostics show its source.
 - Raw relay headers named by `Connection` are stripped on both legs in both directions.
 - Native Codex setup requires explicit trust for a custom upstream host before it writes files.
+- `astra` is now a reserved OpenAI model name for claude-ingress aliases (matched
+  case-insensitively, including `astra[...]` family-suffix variants); a
+  `codexIngress.claude.aliases` entry that claims it is rejected at config load,
+  and the relay refuses to start until the alias is removed or renamed.
 
 ### Fixed
 
@@ -511,6 +515,14 @@ before adding a second production provider:
   out-of-tree probe, but no in-suite test can distinguish them until a second id ships.
   The tests that touch these axes say so at the assertion site; do not read their green
   as coverage.
+- **`e2e/capture/codex-recorder.ts` cannot capture SSE from the live backend**: its
+  detection gates on `contentType.includes("text/event-stream")`, but the production
+  `/responses` stream sends no `Content-Type` header at all, so the recorder silently
+  degrades to pass-through mode and captures no events and no `usage`. It works correctly
+  only against local fixture upstreams, which do set the header. A one-line
+  `|| contentType === ""` relaxation fixes it. Anyone repeating the live-capture protocol
+  with the checked-in recorder will get empty event captures and may wrongly conclude the
+  stream is broken. ([#21](https://github.com/dean0x/subswitch/issues/21))
 - **`e2e/README.md` parity-gaps table is derived from the wrong transport**: the
   six-row table was measured against HTTP analytics REST calls from `codex exec`, which
   routes AI inference over a WebSocket app-server transport — not the HTTP `/responses`
