@@ -222,9 +222,9 @@ const stripCacheControl = (value: Record<string, unknown>): Record<string, unkno
  * @param model MUST be the CANONICAL registry id, never an alias or family name.
  *              An alias falls back to the default set and would silently WIDEN
  *              validation for a model that declares a narrower one.
- *              codex-handler.ts:179-187 substitutes the canonical id into the request
- *              before translateRequest reads it — that is what guarantees this
- *              precondition holds here. (applies ADR-007)
+ *              `handleMessages` in codex-handler.ts substitutes the canonical id into
+ *              the request before translateRequest reads it — that is what guarantees
+ *              this precondition holds here. (applies ADR-007)
  */
 const translateEffort = (
   model: string,

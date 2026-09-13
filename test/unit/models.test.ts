@@ -348,23 +348,23 @@ describe("reasoningEffortsForModel", () => {
   // Synthetic registry with made-up ids. The accessor takes the registry as its first
   // parameter — like every other consumer in this module — so the per-model rule is
   // testable without pinning whichever real ids happen to declare reasoningEfforts.
-  const SYNTHETIC: readonly ModelEntry[] = [
+  const SYNTHETIC_REGISTRY: readonly ModelEntry[] = [
     { id: "gpt-9-nova", provider: "codex", family: "nova", gen: [9], reasoningEfforts: ["gentle", "fierce"] },
     { id: "gpt-9-plain", provider: "codex", gen: [9] },
   ];
 
   it("returns the declaring entry's own list", () => {
-    assert.deepEqual(reasoningEffortsForModel(SYNTHETIC, "gpt-9-nova"), ["gentle", "fierce"]);
+    assert.deepEqual(reasoningEffortsForModel(SYNTHETIC_REGISTRY, "gpt-9-nova"), ["gentle", "fierce"]);
   });
 
   // TOTAL: the accessor never returns undefined, so callers make ONE positive
   // membership test instead of branching between two spellings of the vocabulary.
   it("falls back to the default set when the entry declares no reasoningEfforts", () => {
-    assert.deepEqual(reasoningEffortsForModel(SYNTHETIC, "gpt-9-plain"), [...DEFAULT_REASONING_EFFORTS]);
+    assert.deepEqual(reasoningEffortsForModel(SYNTHETIC_REGISTRY, "gpt-9-plain"), [...DEFAULT_REASONING_EFFORTS]);
   });
 
   it("falls back to the default set for an id absent from the registry", () => {
-    assert.deepEqual(reasoningEffortsForModel(SYNTHETIC, "gpt-9-nonexistent"), [...DEFAULT_REASONING_EFFORTS]);
+    assert.deepEqual(reasoningEffortsForModel(SYNTHETIC_REGISTRY, "gpt-9-nonexistent"), [...DEFAULT_REASONING_EFFORTS]);
   });
 
   it("declares the backend-wide effort set as the single vocabulary (avoids PF-014)", () => {

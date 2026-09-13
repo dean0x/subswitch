@@ -500,6 +500,16 @@ function failExchange(res: http.ServerResponse, status: number, message: string,
 }
 
 /**
+ * End a mid-stream upstream failure. Both response arms handle one identically —
+ * tear the exchange down, then reject the promise `handleRequest` awaits — so the
+ * synthesized status and the client-visible message are stated once, not per arm.
+ */
+function failUpstreamStream(res: http.ServerResponse, settle: Settle, error: Error): void {
+  failExchange(res, UPSTREAM_FAILURE_STATUS, "upstream stream error", error);
+  settle.reject(error);
+}
+
+/**
  * Capture arm: forward every upstream byte to the client untouched while
  * parsing a copy of the stream into event-type lines and terminal usage.
  */
@@ -509,7 +519,7 @@ function recordSseStream(
   printer: Printer,
   settle: Settle,
 ): void {
-  const println = printer.println;
+  const { println } = printer;
   println("SSE EVENTS:");
   let sseEventCount = 0;
   let terminalUsagePrinted = false;
@@ -604,16 +614,15 @@ function recordSseStream(
     upstreamRes.pause();
     // PF-009 class: `res` may close while the drain is pending, and a drain that
     // never arrives would leave the upstream paused for the life of the process.
-    // Whichever of the two fires first detaches both and resumes; the client-close
-    // handler in `handleRequest` owns the actual teardown.
-    const detach = (): void => {
-      res.off("drain", onDrain);
-      res.off("close", onClose);
+    // One listener on both events: whichever fires first detaches the other and
+    // resumes; the client-close handler in `handleRequest` owns the actual teardown.
+    const resumeUpstream = (): void => {
+      res.off("drain", resumeUpstream);
+      res.off("close", resumeUpstream);
+      upstreamRes.resume();
     };
-    const onDrain = (): void => { detach(); upstreamRes.resume(); };
-    const onClose = (): void => { detach(); upstreamRes.resume(); };
-    res.once("drain", onDrain);
-    res.once("close", onClose);
+    res.once("drain", resumeUpstream);
+    res.once("close", resumeUpstream);
   };
 
   upstreamRes.on("data", (chunk: Buffer) => {
@@ -636,10 +645,8 @@ function recordSseStream(
   });
 
   upstreamRes.on("error", (err) => {
-    const error = err as Error;
-    println(`  SSE UPSTREAM ERROR: ${error.message}`);
-    failExchange(res, UPSTREAM_FAILURE_STATUS, "upstream stream error", error);
-    settle.reject(error);
+    println(`  SSE UPSTREAM ERROR: ${err.message}`);
+    failUpstreamStream(res, settle, err);
   });
 }
 
@@ -654,9 +661,7 @@ function pipeThrough(
   upstreamRes.on("error", (err) => {
     // `pipe` unpipes on a source error but leaves the destination open, so without
     // this the client waits forever on a body that can never be completed.
-    const error = err as Error;
-    failExchange(res, UPSTREAM_FAILURE_STATUS, "upstream stream error", error);
-    settle.reject(error);
+    failUpstreamStream(res, settle, err);
   });
 }
 
@@ -819,10 +824,9 @@ async function handleRequest(
 
     upstreamReq.on("error", (err) => {
       if (clientGone) return;
-      const error = err as Error;
-      println(`UPSTREAM CONNECTION ERROR: ${error.message}`);
-      failExchange(res, UPSTREAM_FAILURE_STATUS, "upstream connection error", error);
-      reject(error);
+      println(`UPSTREAM CONNECTION ERROR: ${err.message}`);
+      failExchange(res, UPSTREAM_FAILURE_STATUS, "upstream connection error", err);
+      reject(err);
     });
 
     // A client that walks away mid-stream must not leave the upstream streaming into

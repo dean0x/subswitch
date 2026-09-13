@@ -72,7 +72,7 @@ const jsonRequest = (body: string, method: string): http.RequestOptions => ({
 });
 
 /** Send one buffered JSON request and read the whole response body. */
-const send = (base: string, path: string, body: string, method = "POST"): Promise<{ status: number; body: Buffer }> =>
+const send = (base: string, path: string, body: string, method: string): Promise<{ status: number; body: Buffer }> =>
   new Promise((resolve, reject) => {
     const request = http.request(`${base}${path}`, jsonRequest(body, method), (response) => {
       const chunks: Buffer[] = [];

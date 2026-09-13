@@ -196,8 +196,8 @@ const DEFAULT_REASONING_EFFORT_SET: ReadonlySet<string> = new Set(DEFAULT_REASON
  *                 An alias misses the `find` and falls back to the default set, which
  *                 silently WIDENS validation for a model that declares a narrower one
  *                 (e.g. `astra` would accept `none`, which `gpt-6-astra` rejects).
- *                 codex-handler.ts:179-187 substitutes the canonical id before calling
- *                 translateRequest, which is what guarantees this precondition. (applies ADR-007)
+ *                 `handleMessages` in codex-handler.ts substitutes the canonical id before
+ *                 calling translateRequest, which guarantees this precondition. (applies ADR-007)
  */
 export const reasoningEffortsForModel = (
   registry: readonly ModelEntry[],

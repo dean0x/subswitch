@@ -184,8 +184,8 @@ describe("translateRequest", () => {
     assert.deepEqual(result.value.warnings, ["unsupported_effort_dropped"]);
   });
 
-  // Real ids on purpose: translateRequest takes no registry — it threads MODEL_REGISTRY
-  // internally (codex-request.ts:236) — so these three pin the LIVE registry end-to-end.
+  // Real ids on purpose: translateRequest takes no registry — `translateEffort` threads
+  // MODEL_REGISTRY internally — so these three pin the LIVE registry end-to-end.
   // The per-model vocabulary RULE is unit-tested against a synthetic registry in
   // models.test.ts — do not re-derive it from real ids here.
   it("forwards every effort inside Astra's declared set", () => {
