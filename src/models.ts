@@ -105,6 +105,17 @@ export interface RoutingTableBuild {
   }[];
   /** Registry entries whose id or family is a reserved Anthropic name (self-check). */
   readonly reservedNameEntries: readonly string[];
+  /**
+   * Registry entries declaring a `reasoningEfforts` value outside DEFAULT_REASONING_EFFORTS,
+   * with only the offending values listed.
+   *
+   * `reasoningEfforts` is meant to NARROW the backend vocabulary, so a value the backend
+   * never accepts is a typo (`"xhig"` for `"xhigh"`). The effect is silent: the model simply
+   * stops accepting an effort it should accept, and the request degrades to the backend
+   * default with a warning that names the request, not the registry. Reported as data
+   * rather than thrown — buildRoutingTable is total.
+   */
+  readonly unknownReasoningEfforts: readonly { readonly id: string; readonly efforts: readonly string[] }[];
 }
 
 /**
@@ -138,6 +149,15 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
     provider: "codex",
     family: "astra",
     gen: [6],
+    // Five values, deliberately. test/fixtures/native/codex-0.153.3-model.json advertises a
+    // sixth (`ultra`) and is NOT evidence for adding it: that fixture is the native Codex
+    // CLI's own model catalog, captured on the reverse-ingress leg, not the /responses HTTP
+    // leg this registry validates. The rest of the tree agrees on five — reverse-adapter
+    // rejects `ultra` with `unsupported_reasoning_effort`, and README's "Effort control"
+    // section and src/claude-models.ts both document five. Adding `ultra` here would make
+    // this leg forward a value the other leg rejects. There is deliberately no
+    // registry-vs-fixture equality test: the two describe different legs and must be free
+    // to disagree. (avoids PF-004, PF-023)
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
   },
   { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
@@ -146,9 +166,43 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   { id: "gpt-5.5", provider: "codex", gen: [5, 5] },
 ];
 
-/** Model-specific effort metadata, when the canonical registry entry declares it. */
-export const reasoningEffortsForModel = (id: string): readonly string[] | undefined =>
-  MODEL_REGISTRY.find((entry) => entry.id === id)?.reasoningEfforts;
+// ---------------------------------------------------------------------------
+// Reasoning effort vocabulary
+// ---------------------------------------------------------------------------
+
+/**
+ * Effort values the Codex backend accepts for `reasoning.effort` when a registry
+ * entry declares no narrower set of its own. Its 400 error enumerates exactly this
+ * set (verified live 2026-07-21).
+ *
+ * THE vocabulary — declared once, next to the registry it describes. A registry
+ * entry's `reasoningEfforts` narrows this set; nothing else may re-spell it, because
+ * a literal duplicated across files drifts the moment one copy is updated (PF-014).
+ */
+export const DEFAULT_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/** Widened membership view of DEFAULT_REASONING_EFFORTS — derived, never re-spelled. */
+const DEFAULT_REASONING_EFFORT_SET: ReadonlySet<string> = new Set(DEFAULT_REASONING_EFFORTS);
+
+/**
+ * The accepted effort vocabulary for one model.
+ *
+ * TOTAL: returns the entry's own `reasoningEfforts` when it declares one, otherwise
+ * `DEFAULT_REASONING_EFFORTS`. Never returns undefined, so the caller makes a single
+ * positive membership test rather than branching between two authorities.
+ *
+ * @param registry Model registry (pass MODEL_REGISTRY in production).
+ * @param model    MUST be the CANONICAL registry id, never an alias or family name.
+ *                 An alias misses the `find` and falls back to the default set, which
+ *                 silently WIDENS validation for a model that declares a narrower one
+ *                 (e.g. `astra` would accept `none`, which `gpt-6-astra` rejects).
+ *                 codex-handler.ts:179-187 substitutes the canonical id before calling
+ *                 translateRequest, which is what guarantees this precondition. (applies ADR-007)
+ */
+export const reasoningEffortsForModel = (
+  registry: readonly ModelEntry[],
+  model: string,
+): readonly string[] => registry.find((entry) => entry.id === model)?.reasoningEfforts ?? DEFAULT_REASONING_EFFORTS;
 
 // ---------------------------------------------------------------------------
 // Anthropic-leg model names
@@ -398,10 +452,17 @@ export const buildRoutingTable = (
   // Any entry whose id or family is a reserved Anthropic name is reported.
   // The registry has never been validated against this — hypothetical Bedrock ids
   // (e.g. "anthropic.claude-3-5-sonnet-*") would be literally Anthropic names.
+  // The same pass checks declared effort vocabularies: `reasoningEfforts` narrows
+  // DEFAULT_REASONING_EFFORTS, so a value outside it is unreachable by construction.
   const reservedNameEntries: string[] = [];
+  const unknownReasoningEfforts: { readonly id: string; readonly efforts: readonly string[] }[] = [];
   for (const entry of registry) {
     if (isReservedAnthropicName(entry.id) || (entry.family !== undefined && isReservedAnthropicName(entry.family))) {
       reservedNameEntries.push(entry.id);
+    }
+    if (entry.reasoningEfforts !== undefined) {
+      const unknown = entry.reasoningEfforts.filter((effort) => !DEFAULT_REASONING_EFFORT_SET.has(effort));
+      if (unknown.length > 0) unknownReasoningEfforts.push({ id: entry.id, efforts: unknown });
     }
   }
 
@@ -507,7 +568,7 @@ export const buildRoutingTable = (
     byAlias,
   };
 
-  return { table, rejectedAliases, danglingAliases, ambiguousFamilies, reservedNameEntries };
+  return { table, rejectedAliases, danglingAliases, ambiguousFamilies, reservedNameEntries, unknownReasoningEfforts };
 };
 
 // ---------------------------------------------------------------------------

@@ -184,6 +184,9 @@ describe("translateRequest", () => {
     assert.deepEqual(result.value.warnings, ["unsupported_effort_dropped"]);
   });
 
+  // Real ids on purpose: translateRequest closes over MODEL_REGISTRY, so this pins the LIVE
+  // registry end-to-end. The per-model vocabulary RULE is unit-tested against a synthetic
+  // registry in models.test.ts — do not re-derive it from real ids here.
   it("enforces Astra's documented effort set while preserving other models", () => {
     for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
       const result = translateRequest(AnthropicRequestSchema.parse({

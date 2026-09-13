@@ -3,7 +3,7 @@ import type { ProxyError } from "./errors.js";
 import type { ReasoningCache } from "./reasoning-cache.js";
 import type { AnthropicRequest, AnthropicMessage } from "./anthropic-wire-types.js";
 import { buildInstructions, textOfBlocks } from "./anthropic-parse.js";
-import { reasoningEffortsForModel } from "./models.js";
+import { MODEL_REGISTRY, reasoningEffortsForModel } from "./models.js";
 
 /**
  * Warnings are closed codes (never request content) so they can be logged
@@ -213,12 +213,19 @@ const stripCacheControl = (value: Record<string, unknown>): Record<string, unkno
   return rest;
 };
 
-// Effort values the Codex backend accepts for reasoning.effort (its own 400
-// error enumerates exactly this set; verified live 2026-07-21). Claude Code's
-// `effort` agent frontmatter arrives as output_config.effort with a subset of
-// these values, so mapping is a direct pass-through.
-const CODEX_EFFORT_VALUES = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
-
+/**
+ * Map Claude Code's `output_config.effort` onto Responses `reasoning.effort`.
+ *
+ * The accepted vocabulary lives in models.ts and is read through a TOTAL accessor,
+ * so this is one positive membership test against one authority.
+ *
+ * @param model MUST be the CANONICAL registry id, never an alias or family name.
+ *              An alias falls back to the default set and would silently WIDEN
+ *              validation for a model that declares a narrower one.
+ *              codex-handler.ts:179-187 substitutes the canonical id into the request
+ *              before translateRequest reads it — that is what guarantees this
+ *              precondition holds here. (applies ADR-007)
+ */
 const translateEffort = (
   model: string,
   outputConfig: AnthropicRequest["output_config"],
@@ -226,12 +233,9 @@ const translateEffort = (
 ): string | undefined => {
   const effort = outputConfig?.effort;
   if (effort === undefined) return undefined;
-  const supported = reasoningEffortsForModel(model);
-  // Per-model metadata is authoritative; models without it retain the
-  // established backend-wide behavior.
-  if (supported !== undefined ? !supported.includes(effort) : !CODEX_EFFORT_VALUES.has(effort)) {
+  if (!reasoningEffortsForModel(MODEL_REGISTRY, model).includes(effort)) {
     // Effort is a hint: an unrecognized value degrades to the backend default
-    // instead of failing the whole request with an upstream 400.
+    // instead of failing the whole request with an upstream 400. (avoids PF-004)
     warnings.push("unsupported_effort_dropped");
     return undefined;
   }
