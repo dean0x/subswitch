@@ -3,7 +3,10 @@
  *
  * NOT-PRODUCTION: Dev-only wire-capture recorder.
  * Run via:  npx tsx e2e/capture/codex-recorder.ts
- * Excluded from tsconfig "include" and npm test globs — never bundled.
+ * Type-checked by tsconfig.json and exercised by
+ * test/integration/codex-recorder.test.ts, which drives the exported factory
+ * against loopback upstreams. Never bundled: tsconfig.build.json compiles src
+ * only, so nothing here reaches dist.
  *
  * ╔══════════════════════════════════════════════════════════════════════╗
  * ║  **NEVER COMMIT CAPTURED OUTPUT.**                                  ║
@@ -27,6 +30,11 @@
  *   CODEX_RECORDER_UPSTREAM=https://chatgpt.com/backend-api/codex \
  *   npx tsx e2e/capture/codex-recorder.ts
  *   # then: codex -c chatgpt_base_url="http://127.0.0.1:4142/backend-api/codex" exec "say hi"
+ *
+ * The upstream URL carries credentials, so it is vetted before anything listens
+ * (ADR-009): https to chatgpt.com, or any scheme to a loopback host. Any other
+ * https host needs CODEX_RECORDER_ALLOW_INSECURE_UPSTREAM=1; cleartext http to a
+ * non-loopback host is refused outright.
  */
 
 import * as http from "node:http";
@@ -34,6 +42,10 @@ import * as https from "node:https";
 import * as crypto from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
+// The e2e tree already imports production modules directly — e2e/gates/native-claude.ts
+// imports this same module. Reusing the predicate is mandatory rather than stylistic:
+// PF-026 records that a hand-rolled `startsWith("127.")` admits 127.0.0.1.evil.test.
+import { isLoopbackHost } from "../../src/config.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -41,8 +53,12 @@ import { pathToFileURL } from "node:url";
 
 const LISTEN_PORT = 4142;
 const LISTEN_HOST = "127.0.0.1";
-const UPSTREAM_BASE =
-  process.env["CODEX_RECORDER_UPSTREAM"] ?? "https://chatgpt.com/backend-api/codex";
+/** Host the recorder is built to capture; any other https host needs the opt-in. */
+const DEFAULT_UPSTREAM_HOST = "chatgpt.com";
+const DEFAULT_UPSTREAM = `https://${DEFAULT_UPSTREAM_HOST}/backend-api/codex`;
+const UPSTREAM_BASE = process.env["CODEX_RECORDER_UPSTREAM"] ?? DEFAULT_UPSTREAM;
+/** Opt-in env var mirroring ADR-009's `allowInsecureBaseUrl`: a greppable, deliberate statement. */
+const ALLOW_INSECURE_UPSTREAM = process.env["CODEX_RECORDER_ALLOW_INSECURE_UPSTREAM"] === "1";
 
 /** Maximum number of fields serialised per body shape (across all depths). */
 const MAX_SHAPE_FIELDS = 100;
@@ -278,8 +294,6 @@ function buildForwardHeaders(
 // Printing
 // ---------------------------------------------------------------------------
 
-let requestSeq = 0;
-
 export type RecorderOutput = (line: string) => void;
 
 const stdoutOutput: RecorderOutput = (line) => process.stdout.write(line + "\n");
@@ -316,6 +330,82 @@ const createPrinter = (output: RecorderOutput): Printer => {
     },
   };
 };
+
+// ---------------------------------------------------------------------------
+// Capture-text hygiene: upstream text may never forge a transcript line
+// ---------------------------------------------------------------------------
+
+/**
+ * C0 controls, DEL, and C1 controls — the exact range `renderToken` strips in
+ * src/logger.ts, for the same reason (ADR-008). A newline forges a whole capture
+ * line; a cursor-movement or erase-line escape forges one without needing a newline
+ * at all, overwriting the real prefix in a terminal. Real event types and usage keys
+ * contain none of these, so this is a no-op on every line a live capture emits.
+ */
+const CAPTURE_CONTROL_CHARS = /[ --]/g;
+
+/** Longest upstream-supplied token rendered verbatim; beyond this the tail is elided. */
+const MAX_CAPTURE_TOKEN_CHARS = 128;
+
+/**
+ * Render one upstream-controlled string as a single safe transcript token.
+ *
+ * The header promises the transcript carries structure, never message text, and
+ * everything reaching this function came off the upstream stream. Stripping the
+ * control range keeps a crafted value on one line; the length cap keeps a
+ * megabyte-long value from burying the capture around it.
+ */
+const renderCaptureToken = (value: string): string => {
+  const safe = value.replace(CAPTURE_CONTROL_CHARS, "");
+  return safe.length > MAX_CAPTURE_TOKEN_CHARS
+    ? `${safe.slice(0, MAX_CAPTURE_TOKEN_CHARS)}…`
+    : safe;
+};
+
+/** Maximum nesting depth projected out of an upstream `usage` object. */
+const MAX_USAGE_DEPTH = 3;
+/** Maximum number of usage fields projected, across all depths. */
+const MAX_USAGE_FIELDS = 32;
+
+/**
+ * Project an upstream `usage` object down to its finite numbers.
+ *
+ * Token counts are the only thing the transcript wants here, and the live shape
+ * nests them (`input_tokens_details.cached_tokens`), so the projection recurses —
+ * bounded in both depth and field count. Non-numeric leaves are dropped rather than
+ * rendered: a `usage` carrying a crafted string value is otherwise a free-text write
+ * into the capture, and keys get the same hygiene as any other upstream token.
+ */
+const numericUsage = (
+  usage: Record<string, unknown>,
+  depth: number,
+  counter: FieldCounter,
+): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(usage)) {
+    if (counter.n >= MAX_USAGE_FIELDS) break;
+    counter.n++;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      out[renderCaptureToken(key)] = value;
+    } else if (
+      depth + 1 < MAX_USAGE_DEPTH &&
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value)
+    ) {
+      out[renderCaptureToken(key)] = numericUsage(value as Record<string, unknown>, depth + 1, counter);
+    }
+  }
+  return out;
+};
+
+/** Render a `usage` object as JSON carrying only finite numbers. */
+const renderUsage = (usage: Record<string, unknown>): string =>
+  JSON.stringify(numericUsage(usage, 0, { n: 0 }));
+
+/** The `  usage=…` suffix on a completed-event line; `""` when the event carries none. */
+const formatUsageSuffix = (usage: Record<string, unknown> | undefined): string =>
+  usage === undefined ? "" : `  usage=${renderUsage(usage)}`;
 
 // ---------------------------------------------------------------------------
 // SSE event parser
@@ -451,14 +541,14 @@ function recordSseStream(
   const recordEvent = (event: SseEventRecord): void => {
     const usage = event.type === "response.completed" ? extractUsage(event.data) : undefined;
     if (sseEventCount < MAX_SSE_EVENTS) {
-      println(`  [${sseEventCount + 1}] type=${event.type}${usage !== undefined ? `  usage=${JSON.stringify(usage)}` : ""}`);
+      println(`  [${sseEventCount + 1}] type=${renderCaptureToken(event.type)}${formatUsageSuffix(usage)}`);
     } else if (sseEventCount === MAX_SSE_EVENTS) {
       println(`  ... (cap: first ${MAX_SSE_EVENTS} events printed; counting only)`);
     }
     // Usage is terminal accounting rather than event detail. Keep it even
     // after the event-detail cap and when completion arrives at EOF.
     if (usage !== undefined && !terminalUsagePrinted) {
-      println(`  TERMINAL USAGE: ${JSON.stringify(usage)}`);
+      println(`  TERMINAL USAGE: ${renderUsage(usage)}`);
       terminalUsagePrinted = true;
     }
     sseEventCount++;
@@ -646,10 +736,10 @@ async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   context: RecorderContext,
+  seq: number,
 ): Promise<void> {
   const { upstreamBase, printer } = context;
   const { println, separator, indent } = printer;
-  const seq = ++requestSeq;
   const method = req.method ?? "GET";
   const path = req.url ?? "/";
   const ts = new Date().toISOString();
@@ -758,17 +848,79 @@ async function handleRequest(
 // Server
 // ---------------------------------------------------------------------------
 
+/** Knobs a caller may set beyond the upstream URL and the output sink. */
+export interface RecorderOptions {
+  /**
+   * Opt in to an https upstream on a host other than `chatgpt.com` — for replaying
+   * captures against a stand-in backend. Never relaxes the cleartext rule: `http:`
+   * to a non-loopback host stays fatal either way.
+   */
+  readonly allowInsecureUpstream?: boolean;
+}
+
+/**
+ * Reject an upstream URL that would carry the operator's ChatGPT credentials
+ * somewhere they do not belong.
+ *
+ * `buildForwardHeaders` relays `authorization`, `chatgpt-account-id` and `cookie`
+ * verbatim — the `REDACT_*` sets govern the transcript, not the wire — so the
+ * upstream URL is a credential-bearing URL and ADR-009 applies to it: vet against
+ * the expected default host, fail closed, and make the unsafe configuration a
+ * deliberate opt-in rather than an accident. Loopback is always exempt, and the
+ * loopback arm is `src/config.ts`'s exact-form predicate, never a prefix test
+ * (PF-026: `startsWith("127.")` admits `127.0.0.1.evil.test`).
+ *
+ * Returns the refusal message, or `undefined` when the URL is acceptable.
+ */
+const upstreamRefusal = (upstreamUrl: string, allowInsecureUpstream: boolean): string | undefined => {
+  const shown = renderCaptureToken(upstreamUrl);
+  let url: URL;
+  try {
+    url = new URL(upstreamUrl);
+  } catch {
+    return `upstream '${shown}' is not a URL`;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    return `upstream '${shown}' must use https: (or http: to loopback), not ${url.protocol}`;
+  }
+  if (isLoopbackHost(url.hostname)) return undefined;
+  if (url.protocol === "http:") {
+    return (
+      `upstream '${shown}' is cleartext http: to the non-loopback host '${url.host}'. ` +
+      "The recorder forwards your ChatGPT credentials verbatim, so they would travel unencrypted."
+    );
+  }
+  if (url.hostname === DEFAULT_UPSTREAM_HOST || allowInsecureUpstream) return undefined;
+  return (
+    `upstream '${shown}' points at '${url.host}' (expected '${DEFAULT_UPSTREAM_HOST}'). ` +
+    "The recorder forwards your ChatGPT credentials verbatim, so they would reach an untrusted host. " +
+    "Set CODEX_RECORDER_ALLOW_INSECURE_UPSTREAM=1 to opt in."
+  );
+};
+
 /**
  * Create a dev-only recorder without binding a port. Tests and local probes can
  * listen on an ephemeral loopback port; importing this module has no side effect.
+ *
+ * ARCHITECTURE EXCEPTION: throws on a refused upstream URL rather than returning a
+ * Result. Construction is the configuration boundary — the throw lands on the caller
+ * that supplied the URL, before anything can listen or forward a credential — and the
+ * factory's existing contract is a bare `http.Server` that every caller uses directly.
  */
 export const createCodexRecorderServer = (
   upstreamUrl: string,
   output: RecorderOutput = stdoutOutput,
+  options: RecorderOptions = {},
 ): http.Server => {
+  const refusal = upstreamRefusal(upstreamUrl, options.allowInsecureUpstream === true);
+  if (refusal !== undefined) throw new Error(`codex-recorder: ${refusal}`);
+
   const context: RecorderContext = { upstreamBase: upstreamUrl, printer: createPrinter(output) };
+  // Per recorder, not per process: several recorders in one process (the integration
+  // suite runs several) must each number their own requests from #1.
+  let requestSeq = 0;
   return http.createServer((req, res) => {
-    handleRequest(req, res, context).catch((err: unknown) => {
+    handleRequest(req, res, context, ++requestSeq).catch((err: unknown) => {
       const error = err instanceof Error ? err : new Error(String(err));
       output(`HANDLER ERROR: ${error.message}`);
       failExchange(res, RECORDER_FAILURE_STATUS, "recorder error", error);
@@ -786,7 +938,17 @@ if (isDirectExecution) {
     stdoutOutput(`UNCAUGHT (recorder still listening): ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
   });
 
-  const server = createCodexRecorderServer(UPSTREAM_BASE);
+  // The handler above would otherwise swallow a refused upstream and leave a
+  // process that prints "still listening" while listening on nothing.
+  let server: http.Server;
+  try {
+    server = createCodexRecorderServer(UPSTREAM_BASE, stdoutOutput, {
+      allowInsecureUpstream: ALLOW_INSECURE_UPSTREAM,
+    });
+  } catch (err: unknown) {
+    stdoutOutput(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
   server.listen(LISTEN_PORT, LISTEN_HOST, () => {
     stdoutOutput("╔══════════════════════════════════════════════════════════════╗");
     stdoutOutput("║         subswitch Codex wire-capture recorder (dev only)        ║");
@@ -797,7 +959,8 @@ if (isDirectExecution) {
     stdoutOutput("  To route subswitch through this recorder, set codex.baseUrl in");
     stdoutOutput(`  subswitch.config.json to "http://${LISTEN_HOST}:${LISTEN_PORT}"`);
     stdoutOutput("");
-    stdoutOutput("  Override upstream: CODEX_RECORDER_UPSTREAM=https://... npx tsx ...");
+    stdoutOutput(`  Override upstream: CODEX_RECORDER_UPSTREAM=https://${DEFAULT_UPSTREAM_HOST}/... npx tsx ...`);
+    stdoutOutput("  (another https host needs CODEX_RECORDER_ALLOW_INSECURE_UPSTREAM=1)");
     stdoutOutput("");
   });
   process.on("SIGINT", () => {

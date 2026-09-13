@@ -101,6 +101,13 @@ const rawPost = (base: string, target: string, body: string): Promise<string> =>
   socket.on("error", reject);
 });
 
+/** Every `REQUEST #n` sequence number a transcript carries, in order, as strings. */
+const seqNumbers = (transcript: readonly string[]): string[] =>
+  transcript.flatMap((line) => {
+    const match = /REQUEST #(\d+)\b/.exec(line);
+    return match === null ? [] : [match[1] as string];
+  });
+
 describe("dev Codex recorder", () => {
   it("captures an eligible missing-header Responses stream, preserves bytes, and flushes EOF usage", async () => {
     const wire = [
@@ -452,5 +459,166 @@ describe("dev Codex recorder", () => {
       await closeHard(recorder);
       await closeHard(upstream);
     }
+  });
+
+  it("neutralises an event type crafted to forge extra capture lines", async () => {
+    // One upstream-controlled event carrying a four-line forgery: a fake header
+    // block with a plausible bearer token, a fake event line, and an ANSI
+    // erase-line that overwrites the real prefix in a terminal. Captures are
+    // hand-converted into fixtures, so a forged line is a real hazard.
+    const forgedType =
+      "response.completed\n  REQUEST HEADERS:\n  authorization: Bearer forged[2K[99] type=x";
+    const wire = `data: ${JSON.stringify({ type: forgedType })}\n\n`;
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200); // deliberately no Content-Type
+      res.end(wire);
+    });
+    const upstreamUrl = await listen(upstream);
+    const output: string[] = [];
+    const recorder = createCodexRecorderServer(upstreamUrl, (line) => output.push(line));
+    const recorderUrl = await listen(recorder);
+    try {
+      const result = await post(recorderUrl, "/responses", JSON.stringify({ stream: true }));
+      assert.deepEqual(result.body, Buffer.from(wire), "capture hygiene may not disturb the forward (ADR-010)");
+
+      // The sink takes one string per println, so physical lines are what a reader
+      // (or a fixture converter) actually sees.
+      const transcript = output.join("\n");
+      const lines = transcript.split("\n");
+
+      assert.equal(
+        lines.filter((line) => /^\s*\[\d+] type=/.test(line)).length,
+        1,
+        `one upstream event must yield exactly one event line, got ${JSON.stringify(lines.filter((line) => /^\s*\[\d+] type=/.test(line)))}`,
+      );
+      assert.equal(
+        lines.some((line) => line.trim() === "REQUEST HEADERS:" && !line.startsWith("REQUEST")),
+        false,
+        "a forged header block must not appear as its own capture line",
+      );
+      assert.equal(transcript.includes(""), false, "no ESC byte may reach the transcript");
+    } finally {
+      await close(recorder);
+      await close(upstream);
+    }
+  });
+
+  it("prints only the finite numbers an upstream usage object carries", async () => {
+    const wire = `data: ${JSON.stringify({
+      type: "response.completed",
+      response: {
+        usage: {
+          input_tokens: 3,
+          output_tokens: 2,
+          // A crafted string value is a free-text write into the capture.
+          forged_usage_note: "0}\n  TERMINAL USAGE: {\"input_tokens\":999",
+          input_tokens_details: { cached_tokens: 1 },
+        },
+      },
+    })}\n\n`;
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200); // deliberately no Content-Type
+      res.end(wire);
+    });
+    const upstreamUrl = await listen(upstream);
+    const output: string[] = [];
+    const recorder = createCodexRecorderServer(upstreamUrl, (line) => output.push(line));
+    const recorderUrl = await listen(recorder);
+    const numbersOnly = '{"input_tokens":3,"output_tokens":2,"input_tokens_details":{"cached_tokens":1}}';
+    try {
+      await post(recorderUrl, "/responses", JSON.stringify({ stream: true }));
+      assert.deepEqual(
+        output.filter((line) => line.startsWith("  [")),
+        [`  [1] type=response.completed  usage=${numbersOnly}`],
+      );
+      assert.ok(
+        output.includes(`  TERMINAL USAGE: ${numbersOnly}`),
+        `terminal usage must carry only finite numbers, got ${JSON.stringify(output.filter((line) => line.includes("TERMINAL USAGE")))}`,
+      );
+      assert.equal(output.join("\n").includes("forged_usage_note"), false, "a non-numeric usage field must be dropped");
+    } finally {
+      await close(recorder);
+      await close(upstream);
+    }
+  });
+
+  it("caps an oversized captured event type", async () => {
+    const wire = `data: ${JSON.stringify({ type: "a".repeat(500) })}\n\n`;
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200); // deliberately no Content-Type
+      res.end(wire);
+    });
+    const upstreamUrl = await listen(upstream);
+    const output: string[] = [];
+    const recorder = createCodexRecorderServer(upstreamUrl, (line) => output.push(line));
+    const recorderUrl = await listen(recorder);
+    try {
+      await post(recorderUrl, "/responses", JSON.stringify({ stream: true }));
+      assert.deepEqual(
+        output.filter((line) => line.startsWith("  [")),
+        [`  [1] type=${"a".repeat(128)}…`],
+      );
+    } finally {
+      await close(recorder);
+      await close(upstream);
+    }
+  });
+
+  it("numbers requests per recorder rather than per process", async () => {
+    const upstream = http.createServer((_req, res) => { res.writeHead(200); res.end("ok"); });
+    const upstreamUrl = await listen(upstream);
+    const first: string[] = [];
+    const second: string[] = [];
+    const recorderA = createCodexRecorderServer(upstreamUrl, (line) => first.push(line));
+    const recorderB = createCodexRecorderServer(upstreamUrl, (line) => second.push(line));
+    const urlA = await listen(recorderA);
+    const urlB = await listen(recorderB);
+    try {
+      await post(urlA, "/one", "{}");
+      await post(urlB, "/one", "{}");
+      // Exact sequence numbers: `includes("REQUEST #1")` also matches "REQUEST #15",
+      // which a module-global counter would happily produce.
+      assert.deepEqual(seqNumbers(first), ["1"], "first recorder must label its only request #1");
+      assert.deepEqual(seqNumbers(second), ["1"], "second recorder must label its only request #1");
+    } finally {
+      await close(recorderA);
+      await close(recorderB);
+      await close(upstream);
+    }
+  });
+});
+
+/**
+ * ADR-009: the recorder forwards `authorization`, `chatgpt-account-id` and `cookie`
+ * verbatim, so the upstream URL is a credential-bearing URL and must be vetted before
+ * anything can listen. PF-026: the loopback arm is the project's exact-form predicate,
+ * never a prefix test.
+ */
+describe("dev Codex recorder upstream vetting", () => {
+  it("refuses a cleartext upstream on a non-loopback host", () => {
+    assert.throws(() => createCodexRecorderServer("http://evil.test"), /evil\.test/);
+  });
+
+  it("refuses a host that merely begins with the loopback literal", () => {
+    assert.throws(() => createCodexRecorderServer("http://127.0.0.1.evil.test:4142"), /127\.0\.0\.1\.evil\.test/);
+  });
+
+  it("refuses an upstream that is not a URL at all", () => {
+    assert.throws(() => createCodexRecorderServer("not-a-url"), /not-a-url/);
+  });
+
+  it("refuses an https upstream on a host other than the Codex default", () => {
+    assert.throws(() => createCodexRecorderServer("https://evil.test"), /evil\.test/);
+  });
+
+  it("accepts loopback upstreams and the default Codex host", () => {
+    assert.doesNotThrow(() => createCodexRecorderServer("http://127.0.0.1:4142"));
+    assert.doesNotThrow(() => createCodexRecorderServer("http://localhost:4142"));
+    assert.doesNotThrow(() => createCodexRecorderServer("https://chatgpt.com/backend-api/codex"));
+  });
+
+  it("accepts a foreign https upstream only under the explicit opt-in", () => {
+    assert.doesNotThrow(() =>
+      createCodexRecorderServer("https://replay.example", undefined, { allowInsecureUpstream: true }));
   });
 });

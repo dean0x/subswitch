@@ -15,5 +15,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "e2e/gates/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "e2e/gates/**/*.ts", "e2e/capture/**/*.ts"]
 }
