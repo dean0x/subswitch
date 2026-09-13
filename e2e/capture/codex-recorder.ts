@@ -244,6 +244,39 @@ export type RecorderOutput = (line: string) => void;
 
 const stdoutOutput: RecorderOutput = (line) => process.stdout.write(line + "\n");
 
+/** Column width of the horizontal rules drawn around each transcript block. */
+const SEPARATOR_WIDTH = 64;
+
+/** The line-oriented printing surface bound to one recorder's output sink. */
+interface Printer {
+  /** Emit one transcript line. */
+  readonly println: RecorderOutput;
+  /** Emit a labelled block header framed by two horizontal rules. */
+  readonly separator: (label: string) => void;
+  /** Emit a multi-line value, prefixing every line. */
+  readonly indent: (value: string, prefix?: string) => void;
+}
+
+/**
+ * Build the printing surface once per recorder. The rule string is computed a
+ * single time rather than per request, and `output` is the only sink: nothing
+ * here writes to stdout directly.
+ */
+const createPrinter = (output: RecorderOutput): Printer => {
+  const rule = "─".repeat(SEPARATOR_WIDTH);
+  return {
+    println: output,
+    separator: (label) => {
+      output(`\n${rule}`);
+      output(`  ${label}`);
+      output(rule);
+    },
+    indent: (value, prefix = "  ") => {
+      for (const line of value.split("\n")) output(`${prefix}${line}`);
+    },
+  };
+};
+
 // ---------------------------------------------------------------------------
 // SSE event parser
 // ---------------------------------------------------------------------------
@@ -296,6 +329,99 @@ function extractUsage(data: unknown): Record<string, unknown> | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Response arms
+// ---------------------------------------------------------------------------
+
+/** Settlement handles for the promise tracking one upstream exchange. */
+interface Settle {
+  readonly resolve: () => void;
+  readonly reject: (err: Error) => void;
+}
+
+/**
+ * Capture arm: forward every upstream byte to the client untouched while
+ * parsing a copy of the stream into event-type lines and terminal usage.
+ */
+function recordSseStream(
+  upstreamRes: http.IncomingMessage,
+  res: http.ServerResponse,
+  printer: Printer,
+  settle: Settle,
+): void {
+  const println = printer.println;
+  println("SSE EVENTS:");
+  let sseEventCount = 0;
+  let lineBuf = "";
+  let terminalUsagePrinted = false;
+
+  const recordEvent = (event: SseEventRecord): void => {
+    const usage = event.type === "response.completed" ? extractUsage(event.data) : undefined;
+    if (sseEventCount < MAX_SSE_EVENTS) {
+      println(`  [${sseEventCount + 1}] type=${event.type}${usage !== undefined ? `  usage=${JSON.stringify(usage)}` : ""}`);
+    } else if (sseEventCount === MAX_SSE_EVENTS) {
+      println(`  ... (cap: first ${MAX_SSE_EVENTS} events printed; counting only)`);
+    }
+    // Usage is terminal accounting rather than event detail. Keep it even
+    // after the event-detail cap and when completion arrives at EOF.
+    if (usage !== undefined && !terminalUsagePrinted) {
+      println(`  TERMINAL USAGE: ${JSON.stringify(usage)}`);
+      terminalUsagePrinted = true;
+    }
+    sseEventCount++;
+  };
+
+  upstreamRes.on("data", (chunk: Buffer) => {
+    // Forward to client immediately (no buffering of response body)
+    res.write(chunk);
+
+    // Accumulate for SSE parsing
+    lineBuf += chunk.toString("utf8");
+
+    // Split on double-newline (SSE event boundary)
+    const blocks = lineBuf.split(/\r?\n\r?\n/);
+    // Last element is a partial block (keep in buffer)
+    lineBuf = blocks.pop() ?? "";
+
+    for (const block of blocks) {
+      if (block.trim() === "") continue;
+      const event = parseSseBlock(block);
+      if (event === undefined) continue;
+
+      recordEvent(event);
+    }
+  });
+
+  upstreamRes.on("end", () => {
+    // Flush any remaining partial block
+    if (lineBuf.trim() !== "") {
+      const event = parseSseBlock(lineBuf);
+      if (event !== undefined) {
+        recordEvent(event);
+      }
+    }
+    println(`\n  SSE TOTAL: ${sseEventCount} events`);
+    res.end();
+    settle.resolve();
+  });
+
+  upstreamRes.on("error", (err) => {
+    println(`  SSE UPSTREAM ERROR: ${(err as Error).message}`);
+    settle.reject(err);
+  });
+}
+
+/** Pass-through arm: relay the body verbatim, with no inspection. */
+function pipeThrough(
+  upstreamRes: http.IncomingMessage,
+  res: http.ServerResponse,
+  settle: Settle,
+): void {
+  upstreamRes.pipe(res);
+  upstreamRes.on("end", settle.resolve);
+  upstreamRes.on("error", settle.reject);
+}
+
+// ---------------------------------------------------------------------------
 // Request handler
 // ---------------------------------------------------------------------------
 
@@ -310,21 +436,19 @@ const isExpectedMissingHeaderStream = (method: string, path: string, body: Buffe
   }
 };
 
+/** Per-server state threaded into every request the recorder serves. */
+interface RecorderContext {
+  readonly upstreamBase: string;
+  readonly printer: Printer;
+}
+
 async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  upstreamBase: string,
-  output: RecorderOutput,
+  context: RecorderContext,
 ): Promise<void> {
-  const println = output;
-  const separator = (label: string): void => {
-    println(`\n${"─".repeat(64)}`);
-    println(`  ${label}`);
-    println("─".repeat(64));
-  };
-  const indent = (value: string, prefix = "  "): void => {
-    for (const line of value.split("\n")) println(`${prefix}${line}`);
-  };
+  const { upstreamBase, printer } = context;
+  const { println, separator, indent } = printer;
   const seq = ++requestSeq;
   const method = req.method ?? "GET";
   const path = req.url ?? "/";
@@ -369,6 +493,7 @@ async function handleRequest(
   };
 
   await new Promise<void>((resolve, reject) => {
+    const settle: Settle = { resolve: () => resolve(), reject };
     const upstreamReq = transport.request(upstreamOptions, (upstreamRes) => {
       separator(`RESPONSE #${seq}  status=${upstreamRes.statusCode ?? "?"}`);
 
@@ -391,70 +516,9 @@ async function handleRequest(
         (contentType === "" && isExpectedMissingHeaderStream(method, path, rawBody, upstreamRes.statusCode));
 
       if (isSse) {
-        println("SSE EVENTS:");
-        let sseEventCount = 0;
-        let lineBuf = "";
-        let terminalUsagePrinted = false;
-
-        const recordEvent = (event: SseEventRecord): void => {
-          const usage = event.type === "response.completed" ? extractUsage(event.data) : undefined;
-          if (sseEventCount < MAX_SSE_EVENTS) {
-            println(`  [${sseEventCount + 1}] type=${event.type}${usage !== undefined ? `  usage=${JSON.stringify(usage)}` : ""}`);
-          } else if (sseEventCount === MAX_SSE_EVENTS) {
-            println(`  ... (cap: first ${MAX_SSE_EVENTS} events printed; counting only)`);
-          }
-          // Usage is terminal accounting rather than event detail. Keep it even
-          // after the event-detail cap and when completion arrives at EOF.
-          if (usage !== undefined && !terminalUsagePrinted) {
-            println(`  TERMINAL USAGE: ${JSON.stringify(usage)}`);
-            terminalUsagePrinted = true;
-          }
-          sseEventCount++;
-        };
-
-        upstreamRes.on("data", (chunk: Buffer) => {
-          // Forward to client immediately (no buffering of response body)
-          res.write(chunk);
-
-          // Accumulate for SSE parsing
-          lineBuf += chunk.toString("utf8");
-
-          // Split on double-newline (SSE event boundary)
-          const blocks = lineBuf.split(/\r?\n\r?\n/);
-          // Last element is a partial block (keep in buffer)
-          lineBuf = blocks.pop() ?? "";
-
-          for (const block of blocks) {
-            if (block.trim() === "") continue;
-            const event = parseSseBlock(block);
-            if (event === undefined) continue;
-
-            recordEvent(event);
-          }
-        });
-
-        upstreamRes.on("end", () => {
-          // Flush any remaining partial block
-          if (lineBuf.trim() !== "") {
-            const event = parseSseBlock(lineBuf);
-            if (event !== undefined) {
-              recordEvent(event);
-            }
-          }
-          println(`\n  SSE TOTAL: ${sseEventCount} events`);
-          res.end();
-          resolve();
-        });
-
-        upstreamRes.on("error", (err) => {
-          println(`  SSE UPSTREAM ERROR: ${(err as Error).message}`);
-          reject(err);
-        });
+        recordSseStream(upstreamRes, res, printer, settle);
       } else {
-        // Non-SSE: pipe directly, no body inspection
-        upstreamRes.pipe(res);
-        upstreamRes.on("end", resolve);
-        upstreamRes.on("error", reject);
+        pipeThrough(upstreamRes, res, settle);
       }
     });
 
@@ -484,16 +548,19 @@ async function handleRequest(
 export const createCodexRecorderServer = (
   upstreamUrl: string,
   output: RecorderOutput = stdoutOutput,
-): http.Server => http.createServer((req, res) => {
-  handleRequest(req, res, upstreamUrl, output).catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    output(`HANDLER ERROR: ${msg}`);
-    if (!res.headersSent) {
-      res.writeHead(500);
-      res.end("recorder error");
-    }
+): http.Server => {
+  const context: RecorderContext = { upstreamBase: upstreamUrl, printer: createPrinter(output) };
+  return http.createServer((req, res) => {
+    handleRequest(req, res, context).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      output(`HANDLER ERROR: ${msg}`);
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end("recorder error");
+      }
+    });
   });
-});
+};
 
 const isDirectExecution = process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
 if (isDirectExecution) {

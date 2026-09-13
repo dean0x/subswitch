@@ -55,6 +55,37 @@ describe("dev Codex recorder", () => {
     }
   });
 
+  it("prints 64-column separators, numbered event lines, and a total for a captured stream", async () => {
+    const wire = [
+      'data: {"type":"response.created"}\n\n',
+      'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":2}}}\n\n',
+    ].join("");
+    const upstream = http.createServer((_req, res) => {
+      res.writeHead(200); // deliberately no Content-Type
+      res.end(wire);
+    });
+    const upstreamUrl = await listen(upstream);
+    const output: string[] = [];
+    const recorder = createCodexRecorderServer(upstreamUrl, (line) => output.push(line));
+    const recorderUrl = await listen(recorder);
+    try {
+      const result = await post(recorderUrl, "/responses", JSON.stringify({ stream: true }));
+      assert.deepEqual(result.body, Buffer.from(wire));
+      assert.ok(
+        output.includes("─".repeat(64)),
+        `expected a separator rule of exactly 64 "─", got ${JSON.stringify(output.filter((line) => line.includes("─")))}`,
+      );
+      assert.deepEqual(output.filter((line) => line.startsWith("  [")), [
+        "  [1] type=response.created",
+        '  [2] type=response.completed  usage={"input_tokens":3,"output_tokens":2}',
+      ]);
+      assert.ok(output.includes("\n  SSE TOTAL: 2 events"), "SSE TOTAL line must report both events");
+    } finally {
+      await close(recorder);
+      await close(upstream);
+    }
+  });
+
   it("does not inspect missing-header responses outside successful streamed POST /responses", async () => {
     const body = Buffer.from("not an SSE body");
     const upstream = http.createServer((_req, res) => { res.writeHead(200); res.end(body); });
