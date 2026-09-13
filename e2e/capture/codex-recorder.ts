@@ -32,6 +32,7 @@
 import * as http from "node:http";
 import * as https from "node:https";
 import * as crypto from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,19 @@ const MAX_SHAPE_FIELDS = 100;
 const MAX_SHAPE_DEPTH = 6;
 /** Maximum number of SSE event-type lines printed per response; beyond this only a counter runs. */
 const MAX_SSE_EVENTS = 200;
+/**
+ * Maximum undelivered capture text held while waiting for an SSE event boundary.
+ *
+ * Counts UTF-16 code units, not bytes — the same unit the production
+ * `maxSseEventBytes` bound uses (see `createSseParser` in src/codex-response.ts).
+ *
+ * The capture arm is chosen from the REQUEST shape (PF-013), so a 2xx response that
+ * carries no blank line at all — JSON, HTML, a CDN interstitial — would otherwise be
+ * retained in full. `MAX_SSE_EVENTS` caps printing; this caps memory. On overflow the
+ * residual is dropped and parsing stops while every byte keeps flowing to the client
+ * untouched: capture degrades, the forward never does (ADR-010, ADR-012).
+ */
+const MAX_SSE_BUFFER_CHARS = 4 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Structural redaction (ADR-002: never print credential values)
@@ -314,6 +328,13 @@ interface SseEventRecord {
   data: unknown;
 }
 
+/** SSE event boundary: a blank line, in either newline convention. */
+const SSE_SEPARATOR = /\r?\n\r?\n/;
+/** The same boundary anchored, for trimming a consumed block's trailing separator. */
+const LEADING_SSE_SEPARATOR = /^\r?\n\r?\n/;
+/** The longest boundary is `\r\n\r\n`; carrying 3 chars catches one split across chunks. */
+const SSE_CARRY_CHARS = 3;
+
 /**
  * Parse a raw SSE event block (everything between two blank-line delimiters)
  * into a structured record. Returns undefined for comments, [DONE], and
@@ -364,6 +385,30 @@ interface Settle {
   readonly reject: (err: Error) => void;
 }
 
+/** Status synthesized when the upstream leg fails before the client was answered. */
+const UPSTREAM_FAILURE_STATUS = 502;
+/** Status synthesized when the recorder itself fails before the client was answered. */
+const RECORDER_FAILURE_STATUS = 500;
+
+/**
+ * Terminate a failed exchange.
+ *
+ * PF-022: `res.headersSent` is the "have we replied" latch, claimed the moment the
+ * upstream status is relayed, and it cannot double as the teardown guard — gating
+ * cleanup on it skips teardown for exactly the mid-stream failure teardown exists to
+ * handle, leaving the client's chunked body unterminated forever. Teardown therefore
+ * gets its own predicate: before the reply, synthesize a status; after it, destroy the
+ * socket so the client sees a broken connection instead of a stream that never ends.
+ */
+function failExchange(res: http.ServerResponse, status: number, message: string, err: Error): void {
+  if (!res.headersSent) {
+    res.writeHead(status);
+    res.end(message);
+    return;
+  }
+  if (!res.writableFinished) res.destroy(err);
+}
+
 /**
  * Capture arm: forward every upstream byte to the client untouched while
  * parsing a copy of the stream into event-type lines and terminal usage.
@@ -377,8 +422,31 @@ function recordSseStream(
   const println = printer.println;
   println("SSE EVENTS:");
   let sseEventCount = 0;
-  let lineBuf = "";
   let terminalUsagePrinted = false;
+
+  // One decoder for the whole response: a multi-byte sequence split across two
+  // writes must not decode as two replacement characters.
+  const decoder = new StringDecoder("utf8");
+  /**
+   * Undelivered capture text, held as segments and joined only on the chunk that
+   * completes an event. `pending += chunk` outside the boundary branch is quadratic
+   * in stream length (38x slower at 8 MiB per the codex-leg KB); this mirrors the
+   * production `createSseParser`.
+   */
+  const pending: string[] = [];
+  /** Sum of `pending[i].length`, maintained incrementally so reading it needs no join. */
+  let pendingLen = 0;
+  /** Last `min(SSE_CARRY_CHARS, pendingLen)` chars of the joined pending. */
+  let carry = "";
+  /** Set once the residual overflowed: capture is over for this response, forwarding is not. */
+  let captureCapped = false;
+
+  const resetAccumulator = (residual: string): void => {
+    pending.length = 0;
+    if (residual !== "") pending.push(residual);
+    pendingLen = residual.length;
+    carry = residual.slice(-SSE_CARRY_CHARS);
+  };
 
   const recordEvent = (event: SseEventRecord): void => {
     const usage = event.type === "response.completed" ? extractUsage(event.data) : undefined;
@@ -396,43 +464,92 @@ function recordSseStream(
     sseEventCount++;
   };
 
-  upstreamRes.on("data", (chunk: Buffer) => {
-    // Forward to client immediately (no buffering of response body)
-    res.write(chunk);
+  /**
+   * Absorb one decoded chunk into the accumulator, draining every event it completes.
+   * The search covers `carry + text` rather than the whole accumulation, so the cost
+   * is O(chunk) per chunk instead of O(total).
+   */
+  const capture = (text: string): void => {
+    const search = carry + text;
+    const rel = search.search(SSE_SEPARATOR);
 
-    // Accumulate for SSE parsing
-    lineBuf += chunk.toString("utf8");
-
-    // Split on double-newline (SSE event boundary)
-    const blocks = lineBuf.split(/\r?\n\r?\n/);
-    // Last element is a partial block (keep in buffer)
-    lineBuf = blocks.pop() ?? "";
-
-    for (const block of blocks) {
-      if (block.trim() === "") continue;
-      const event = parseSseBlock(block);
-      if (event === undefined) continue;
-
-      recordEvent(event);
+    if (rel === -1) {
+      // No boundary: extend the accumulator without materialising it. Empty segments
+      // are dropped (StringDecoder returns "" while holding a partial code point), so
+      // the segment count cannot grow without `pendingLen` growing with it.
+      if (text !== "") pending.push(text);
+      pendingLen += text.length;
+      carry = search.slice(-SSE_CARRY_CHARS);
+    } else {
+      // A boundary completes in this chunk, so join once and drain every block the
+      // accumulator now holds. `pendingLen - carry.length` is where the search began.
+      let buf = pending.join("") + text;
+      let boundary = pendingLen - carry.length + rel;
+      // Bounded: each turn removes a block plus at least the two chars of its
+      // separator from `buf`, so it runs at most buf.length / 2 times.
+      while (boundary !== -1) {
+        const event = parseSseBlock(buf.slice(0, boundary));
+        if (event !== undefined) recordEvent(event);
+        buf = buf.slice(boundary).replace(LEADING_SSE_SEPARATOR, "");
+        boundary = buf.search(SSE_SEPARATOR);
+      }
+      resetAccumulator(buf);
     }
+
+    if (pendingLen > MAX_SSE_BUFFER_CHARS) {
+      println(`  <cap:sse-residual> ${pendingLen} chars held with no event boundary; capture stopped for this response (bytes still forwarded verbatim)`);
+      captureCapped = true;
+      resetAccumulator("");
+    }
+  };
+
+  /**
+   * Relay one chunk to the client. Transparency runs before capture (ADR-010) and the
+   * write's return value is honoured, so a client that reads slowly throttles the
+   * upstream instead of making Node queue the whole stream in memory.
+   */
+  const forward = (chunk: Buffer): void => {
+    if (res.destroyed || res.writableEnded) return;
+    if (res.write(chunk)) return;
+    upstreamRes.pause();
+    // PF-009 class: `res` may close while the drain is pending, and a drain that
+    // never arrives would leave the upstream paused for the life of the process.
+    // Whichever of the two fires first detaches both and resumes; the client-close
+    // handler in `handleRequest` owns the actual teardown.
+    const detach = (): void => {
+      res.off("drain", onDrain);
+      res.off("close", onClose);
+    };
+    const onDrain = (): void => { detach(); upstreamRes.resume(); };
+    const onClose = (): void => { detach(); upstreamRes.resume(); };
+    res.once("drain", onDrain);
+    res.once("close", onClose);
+  };
+
+  upstreamRes.on("data", (chunk: Buffer) => {
+    forward(chunk);
+    // Once capped, not even the decode runs: the residual is gone and nothing this
+    // response still carries can complete an event.
+    if (!captureCapped) capture(decoder.write(chunk));
   });
 
   upstreamRes.on("end", () => {
-    // Flush any remaining partial block
-    if (lineBuf.trim() !== "") {
-      const event = parseSseBlock(lineBuf);
-      if (event !== undefined) {
-        recordEvent(event);
-      }
+    if (!captureCapped) {
+      // Flush any remaining partial block.
+      const event = parseSseBlock(pending.join("") + decoder.end());
+      if (event !== undefined) recordEvent(event);
+      resetAccumulator("");
     }
     println(`\n  SSE TOTAL: ${sseEventCount} events`);
-    res.end();
+    if (!res.destroyed) res.end();
     settle.resolve();
   });
 
   upstreamRes.on("error", (err) => {
-    println(`  SSE UPSTREAM ERROR: ${(err as Error).message}`);
-    settle.reject(err);
+    const error = err as Error;
+    println(`  SSE UPSTREAM ERROR: ${error.message}`);
+    failExchange(res, UPSTREAM_FAILURE_STATUS, "upstream stream error", error);
+    settle.reject(error);
   });
 }
 
@@ -444,7 +561,13 @@ function pipeThrough(
 ): void {
   upstreamRes.pipe(res);
   upstreamRes.on("end", settle.resolve);
-  upstreamRes.on("error", settle.reject);
+  upstreamRes.on("error", (err) => {
+    // `pipe` unpipes on a source error but leaves the destination open, so without
+    // this the client waits forever on a body that can never be completed.
+    const error = err as Error;
+    failExchange(res, UPSTREAM_FAILURE_STATUS, "upstream stream error", error);
+    settle.reject(error);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -572,6 +695,9 @@ async function handleRequest(
   };
 
   await new Promise<void>((resolve, reject) => {
+    // True once we tore the upstream down ourselves, so the error that teardown
+    // provokes is not reported as an upstream failure.
+    let clientGone = false;
     const settle: Settle = { resolve: () => resolve(), reject };
     const upstreamReq = transport.request(upstreamOptions, (upstreamRes) => {
       separator(`RESPONSE #${seq}  status=${upstreamRes.statusCode ?? "?"}`);
@@ -602,14 +728,26 @@ async function handleRequest(
     });
 
     upstreamReq.on("error", (err) => {
-      const msg = (err as Error).message;
-      println(`UPSTREAM CONNECTION ERROR: ${msg}`);
-      if (!res.headersSent) {
-        res.writeHead(502);
-        res.end("upstream connection error");
-      }
-      reject(err);
+      if (clientGone) return;
+      const error = err as Error;
+      println(`UPSTREAM CONNECTION ERROR: ${error.message}`);
+      failExchange(res, UPSTREAM_FAILURE_STATUS, "upstream connection error", error);
+      reject(error);
     });
+
+    // A client that walks away mid-stream must not leave the upstream streaming into
+    // a dead socket. `res.writableFinished` separates a completed exchange from an
+    // abandoned one — unlike `headersSent`, it is not claimed by relaying a status.
+    const onClientClose = (): void => {
+      if (res.writableFinished) return;
+      clientGone = true;
+      println(`CLIENT DISCONNECTED #${seq}: tearing down upstream`);
+      upstreamReq.destroy();
+      resolve();
+    };
+    // PF-009 class: a `close` listener on an already-closed `res` never fires.
+    if (res.destroyed) onClientClose();
+    else res.once("close", onClientClose);
 
     upstreamReq.write(rawBody);
     upstreamReq.end();
@@ -631,12 +769,9 @@ export const createCodexRecorderServer = (
   const context: RecorderContext = { upstreamBase: upstreamUrl, printer: createPrinter(output) };
   return http.createServer((req, res) => {
     handleRequest(req, res, context).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      output(`HANDLER ERROR: ${msg}`);
-      if (!res.headersSent) {
-        res.writeHead(500);
-        res.end("recorder error");
-      }
+      const error = err instanceof Error ? err : new Error(String(err));
+      output(`HANDLER ERROR: ${error.message}`);
+      failExchange(res, RECORDER_FAILURE_STATUS, "recorder error", error);
     });
   });
 };

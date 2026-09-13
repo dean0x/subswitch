@@ -180,6 +180,7 @@ not capture WebSocket traffic.
 | Max body-shape fields | 100 |
 | Max body-shape depth | 6 |
 | SSE events printed | 200 (counter continues) |
+| SSE capture buffer | 4 Mi chars (residual dropped; bytes still forwarded) |
 
 The recorder never writes files. All output goes to stdout.
 
