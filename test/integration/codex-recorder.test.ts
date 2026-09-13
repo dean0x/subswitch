@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as http from "node:http";
+import * as net from "node:net";
 import { once } from "node:events";
 import { createCodexRecorderServer } from "../../e2e/capture/codex-recorder.js";
 
@@ -25,6 +26,25 @@ const post = (base: string, path: string, body: string): Promise<{ status: numbe
   });
   request.on("error", reject);
   request.end(body);
+});
+
+/**
+ * Send a hand-written request line that `http.request` would refuse to encode,
+ * so the recorder sees a raw, malformed request target.
+ */
+const rawPost = (base: string, target: string, body: string): Promise<string> => new Promise((resolve, reject) => {
+  const port = Number(new URL(base).port);
+  const socket = net.connect(port, "127.0.0.1", () => {
+    socket.write(
+      `POST ${target} HTTP/1.1\r\nHost: x\r\n` +
+      `Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n` +
+      `Connection: close\r\n\r\n${body}`,
+    );
+  });
+  const chunks: Buffer[] = [];
+  socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+  socket.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+  socket.on("error", reject);
 });
 
 describe("dev Codex recorder", () => {
@@ -97,6 +117,68 @@ describe("dev Codex recorder", () => {
       const result = await post(recorderUrl, "/other", JSON.stringify({ stream: true }));
       assert.deepEqual(result.body, body);
       assert.equal(output.some((line) => line === "SSE EVENTS:"), false);
+    } finally {
+      await close(recorder);
+      await close(upstream);
+    }
+  });
+
+  it("passes a headerless POST /responses through when the request body did not declare stream", async () => {
+    const body = Buffer.from("not an SSE body");
+    const upstream = http.createServer((_req, res) => { res.writeHead(200); res.end(body); });
+    const upstreamUrl = await listen(upstream);
+    const output: string[] = [];
+    const recorder = createCodexRecorderServer(upstreamUrl, (line) => output.push(line));
+    const recorderUrl = await listen(recorder);
+    try {
+      const result = await post(recorderUrl, "/responses", JSON.stringify({ stream: false }));
+      assert.deepEqual(result.body, body);
+      assert.equal(output.some((line) => line === "SSE EVENTS:"), false);
+    } finally {
+      await close(recorder);
+      await close(upstream);
+    }
+  });
+
+  it("passes a headerless streamed POST /responses through when upstream did not answer 2xx", async () => {
+    const body = Buffer.from('data: {"type":"response.created"}\n\n');
+    const upstream = http.createServer((_req, res) => { res.writeHead(429); res.end(body); });
+    const upstreamUrl = await listen(upstream);
+    const output: string[] = [];
+    const recorder = createCodexRecorderServer(upstreamUrl, (line) => output.push(line));
+    const recorderUrl = await listen(recorder);
+    try {
+      const result = await post(recorderUrl, "/responses", JSON.stringify({ stream: true }));
+      assert.equal(result.status, 429);
+      assert.deepEqual(result.body, body);
+      assert.equal(output.some((line) => line === "SSE EVENTS:"), false);
+    } finally {
+      await close(recorder);
+      await close(upstream);
+    }
+  });
+
+  it("survives a malformed request target that reaches the eligibility check", async () => {
+    const body = Buffer.from("not an SSE body");
+    const upstream = http.createServer((_req, res) => { res.writeHead(200); res.end(body); });
+    const upstreamUrl = await listen(upstream);
+    const output: string[] = [];
+    const recorder = createCodexRecorderServer(upstreamUrl, (line) => output.push(line));
+    const recorderUrl = await listen(recorder);
+    try {
+      // "//" is a protocol-relative target: `new URL("//", base)` throws
+      // ERR_INVALID_URL. The eligibility check runs in the upstream response
+      // callback, outside the promise handleRequest rejects, so an escaping
+      // throw reaches uncaughtException and kills the recorder process.
+      // The streamed body is required — it clears every cheaper clause so the
+      // request target actually gets parsed.
+      const raw = await rawPost(recorderUrl, "//", JSON.stringify({ stream: true }));
+      assert.match(raw, /^HTTP\/1\.1 200/);
+
+      // The recorder must still be serving after the malformed target.
+      const after = await post(recorderUrl, "/responses", JSON.stringify({ stream: false }));
+      assert.equal(after.status, 200);
+      assert.deepEqual(after.body, body);
     } finally {
       await close(recorder);
       await close(upstream);

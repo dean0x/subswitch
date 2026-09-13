@@ -143,11 +143,43 @@ function shapeOf(value: unknown, depth: number, counter: FieldCounter): unknown 
   return "<unknown>";
 }
 
+/** Outcome of decoding a buffered body as JSON. */
+type JsonParse =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false };
+
+const NOT_JSON: JsonParse = { ok: false };
+
 /**
- * Return a pretty-printed shape skeleton for a request/response body buffer.
- * Falls back to a byte count when the body cannot be parsed as JSON.
+ * Decode a buffered body as JSON exactly once. Codex request bodies carry whole
+ * conversation histories, so the decode + parse sits on the time-to-first-byte
+ * path: every consumer (the printed shape, the streamed-Responses eligibility
+ * rule) reads this single result rather than re-parsing the buffer.
  */
-function bodyShape(body: Buffer, contentType: string | undefined): string {
+function parseJsonBody(body: Buffer): JsonParse {
+  if (body.byteLength === 0) return NOT_JSON;
+  try {
+    return { ok: true, value: JSON.parse(body.toString("utf8")) as unknown };
+  } catch {
+    return NOT_JSON;
+  }
+}
+
+/**
+ * True when the request body declared `"stream": true` — the request-side
+ * clause of the headerless-SSE eligibility rule (PF-013).
+ */
+function declaresStream(parse: JsonParse): boolean {
+  if (!parse.ok) return false;
+  const { value } = parse;
+  return typeof value === "object" && value !== null && (value as Record<string, unknown>)["stream"] === true;
+}
+
+/**
+ * Return a pretty-printed shape skeleton for an already-parsed body buffer.
+ * Falls back to a byte count when the body is not JSON.
+ */
+function bodyShape(body: Buffer, contentType: string | undefined, parse: JsonParse): string {
   if (body.byteLength === 0) return "<empty>";
 
   const looksJson =
@@ -159,16 +191,10 @@ function bodyShape(body: Buffer, contentType: string | undefined): string {
       })());
 
   if (!looksJson) return `<binary: ${body.byteLength} bytes>`;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body.toString("utf8")) as unknown;
-  } catch {
-    return `<invalid-json: ${body.byteLength} bytes>`;
-  }
+  if (!parse.ok) return `<invalid-json: ${body.byteLength} bytes>`;
 
   const counter: FieldCounter = { n: 0 };
-  const shape = shapeOf(parsed, 0, counter);
+  const shape = shapeOf(parse.value, 0, counter);
   return JSON.stringify(shape, null, 2);
 }
 
@@ -425,16 +451,67 @@ function pipeThrough(
 // Request handler
 // ---------------------------------------------------------------------------
 
-const isExpectedMissingHeaderStream = (method: string, path: string, body: Buffer, status: number | undefined): boolean => {
-  if (method !== "POST" || status === undefined || status < 200 || status >= 300) return false;
-  if (!new URL(path, "http://recorder.invalid").pathname.endsWith("/responses")) return false;
+/** Media type the Responses endpoint declares when it declares one at all. */
+const SSE_CONTENT_TYPE = "text/event-stream";
+/** Path suffix identifying the Responses endpoint under any upstream base path. */
+const RESPONSES_PATH_SUFFIX = "/responses";
+/** Origin used solely to resolve a raw request target into a pathname; never dialled. */
+const PATH_PARSE_BASE = "http://recorder.invalid";
+
+/** True for any 2xx upstream status. */
+const isSuccessStatus = (status: number | undefined): boolean =>
+  status !== undefined && status >= 200 && status < 300;
+
+/**
+ * True when the raw request target resolves to a Responses endpoint path.
+ *
+ * A malformed target (`//`, `http://[`) makes the exchange ineligible rather
+ * than fatal: this runs inside the upstream response callback, which is outside
+ * the promise `handleRequest` awaits, so a throw here would escape the
+ * `.catch()` on the handler and kill the recorder via `uncaughtException`.
+ */
+const isResponsesPath = (path: string): boolean => {
   try {
-    const parsed = JSON.parse(body.toString("utf8")) as unknown;
-    return typeof parsed === "object" && parsed !== null && (parsed as Record<string, unknown>)["stream"] === true;
+    return new URL(path, PATH_PARSE_BASE).pathname.endsWith(RESPONSES_PATH_SUFFIX);
   } catch {
     return false;
   }
 };
+
+/**
+ * The facts the response-arm dispatch weighs, named rather than positional so
+ * no caller can transpose the two adjacent strings.
+ */
+interface StreamProbe {
+  /** Request method, as received. */
+  readonly method: string;
+  /** Raw request target, as received — not yet known to be a well-formed URL. */
+  readonly path: string;
+  /** The request body declared `"stream": true` (decided once, before forwarding). */
+  readonly requestIsStreamedResponses: boolean;
+  /** Upstream `Content-Type`, trimmed; `""` when the header is absent. */
+  readonly contentType: string;
+  /** Upstream status, or undefined when it could not be read. */
+  readonly status: number | undefined;
+}
+
+/**
+ * PF-013: the live Responses endpoint streams SSE with no Content-Type at all.
+ * Eligibility keeps all four clauses — POST, a `/responses` path, a 2xx status,
+ * and a request that asked for a stream — so ordinary proxy behaviour is
+ * preserved everywhere else. Clauses run cheapest-first; the target is parsed
+ * only once everything else already matches.
+ */
+const isExpectedMissingHeaderStream = (probe: StreamProbe): boolean =>
+  probe.method === "POST" &&
+  probe.requestIsStreamedResponses &&
+  isSuccessStatus(probe.status) &&
+  isResponsesPath(probe.path);
+
+/** Choose the capture arm: an explicit SSE content type, or the PF-013 headerless case. */
+const isSseResponse = (probe: StreamProbe): boolean =>
+  probe.contentType.toLowerCase().includes(SSE_CONTENT_TYPE) ||
+  (probe.contentType === "" && isExpectedMissingHeaderStream(probe));
 
 /** Per-server state threaded into every request the recorder serves. */
 interface RecorderContext {
@@ -466,9 +543,11 @@ async function handleRequest(
     chunks.push(chunk as Buffer);
   }
   const rawBody = Buffer.concat(chunks);
+  const bodyParse = parseJsonBody(rawBody);
+  const requestIsStreamedResponses = declaresStream(bodyParse);
 
   println("\nREQUEST BODY SHAPE:");
-  indent(bodyShape(rawBody, req.headers["content-type"]));
+  indent(bodyShape(rawBody, req.headers["content-type"], bodyParse));
 
   // Resolve upstream URL: append the incoming path onto the configured base path.
   // e.g. UPSTREAM_BASE=https://chatgpt.com/backend-api/codex + path=/responses
@@ -507,15 +586,15 @@ async function handleRequest(
       delete fwdHeaders["content-length"];
       res.writeHead(upstreamRes.statusCode ?? 502, fwdHeaders);
 
-      const rawContentType = upstreamRes.headers["content-type"];
-      const contentType = (Array.isArray(rawContentType) ? rawContentType[0] : rawContentType ?? "").trim();
-      // The live Responses endpoint omits Content-Type. Do not broadly treat
-      // missing headers as SSE: only inspect the precise streamed Responses
-      // shape, preserving ordinary proxy behavior everywhere else.
-      const isSse = contentType.toLowerCase().includes("text/event-stream") ||
-        (contentType === "" && isExpectedMissingHeaderStream(method, path, rawBody, upstreamRes.statusCode));
+      const probe: StreamProbe = {
+        method,
+        path,
+        requestIsStreamedResponses,
+        contentType: (upstreamRes.headers["content-type"] ?? "").trim(),
+        status: upstreamRes.statusCode,
+      };
 
-      if (isSse) {
+      if (isSseResponse(probe)) {
         recordSseStream(upstreamRes, res, printer, settle);
       } else {
         pipeThrough(upstreamRes, res, settle);
@@ -564,6 +643,14 @@ export const createCodexRecorderServer = (
 
 const isDirectExecution = process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
 if (isDirectExecution) {
+  // CLI-only last resort. A capture session is long and unattended, so a stray
+  // throw from an event callback must cost one transcript line, not the whole
+  // recording. Scoped here deliberately: the factory stays import-safe and
+  // never mutates process-global state for library consumers.
+  process.on("uncaughtException", (err: unknown) => {
+    stdoutOutput(`UNCAUGHT (recorder still listening): ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+  });
+
   const server = createCodexRecorderServer(UPSTREAM_BASE);
   server.listen(LISTEN_PORT, LISTEN_HOST, () => {
     stdoutOutput("╔══════════════════════════════════════════════════════════════╗");
