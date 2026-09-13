@@ -184,31 +184,57 @@ describe("translateRequest", () => {
     assert.deepEqual(result.value.warnings, ["unsupported_effort_dropped"]);
   });
 
-  // Real ids on purpose: translateRequest closes over MODEL_REGISTRY, so this pins the LIVE
-  // registry end-to-end. The per-model vocabulary RULE is unit-tested against a synthetic
-  // registry in models.test.ts — do not re-derive it from real ids here.
-  it("enforces Astra's documented effort set while preserving other models", () => {
+  // Real ids on purpose: translateRequest takes no registry — it threads MODEL_REGISTRY
+  // internally (codex-request.ts:236) — so these three pin the LIVE registry end-to-end.
+  // The per-model vocabulary RULE is unit-tested against a synthetic registry in
+  // models.test.ts — do not re-derive it from real ids here.
+  it("forwards every effort inside Astra's declared set", () => {
     for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
-      const result = translateRequest(AnthropicRequestSchema.parse({
-        model: "gpt-6-astra", messages: [{ role: "user", content: "hi" }], output_config: { effort },
-      }), new ReasoningCache(4, LARGE_BYTES));
+      const request = AnthropicRequestSchema.parse({
+        model: "gpt-6-astra",
+        messages: [{ role: "user", content: "hi" }],
+        output_config: { effort },
+      });
+      const result = translateRequest(request, new ReasoningCache(4, LARGE_BYTES));
       assert.ok(result.ok);
-      assert.deepEqual(result.value.body["reasoning"], { effort });
-      assert.deepEqual(result.value.warnings, []);
+      assert.deepEqual(result.value.body["reasoning"], { effort }, `${effort} must reach the wire body`);
+      // The outcome's own `effort` is what the handler logs; the body alone does not pin it.
+      assert.equal(result.value.effort, effort, `${effort} must be reported on the outcome`);
+      assert.deepEqual(result.value.warnings, [], `${effort} is declared, so nothing may warn`);
     }
+  });
+
+  it("drops an effort outside Astra's declared set, with a warning", () => {
+    // "none" and "minimal" are backend-wide values that Astra deliberately does NOT declare:
+    // the narrowed set must win over DEFAULT_REASONING_EFFORTS, and the request degrades to
+    // the backend default rather than being rejected. (avoids PF-004)
     for (const effort of ["none", "minimal", "unknown"]) {
-      const result = translateRequest(AnthropicRequestSchema.parse({
-        model: "gpt-6-astra", messages: [{ role: "user", content: "hi" }], output_config: { effort },
-      }), new ReasoningCache(4, LARGE_BYTES));
+      const request = AnthropicRequestSchema.parse({
+        model: "gpt-6-astra",
+        messages: [{ role: "user", content: "hi" }],
+        output_config: { effort },
+      });
+      const result = translateRequest(request, new ReasoningCache(4, LARGE_BYTES));
       assert.ok(result.ok);
-      assert.equal("reasoning" in result.value.body, false);
-      assert.deepEqual(result.value.warnings, ["unsupported_effort_dropped"]);
+      assert.equal("reasoning" in result.value.body, false, `${effort} must not reach the wire body`);
+      assert.equal(result.value.effort, undefined, `${effort} must not be reported on the outcome`);
+      assert.deepEqual(result.value.warnings, ["unsupported_effort_dropped"], `${effort} must warn exactly once`);
     }
-    const legacy = translateRequest(AnthropicRequestSchema.parse({
-      model: "gpt-5.6-luna", messages: [{ role: "user", content: "hi" }], output_config: { effort: "minimal" },
-    }), new ReasoningCache(4, LARGE_BYTES));
-    assert.ok(legacy.ok);
-    assert.deepEqual(legacy.value.body["reasoning"], { effort: "minimal" });
+  });
+
+  it("leaves a model that declares no narrower set on the backend-wide vocabulary", () => {
+    // gpt-5.6-luna declares no reasoningEfforts, so "minimal" — rejected for Astra above —
+    // is still forwarded here. Astra's narrowing must not leak onto its neighbours.
+    const request = AnthropicRequestSchema.parse({
+      model: "gpt-5.6-luna",
+      messages: [{ role: "user", content: "hi" }],
+      output_config: { effort: "minimal" },
+    });
+    const result = translateRequest(request, new ReasoningCache(4, LARGE_BYTES));
+    assert.ok(result.ok);
+    assert.deepEqual(result.value.body["reasoning"], { effort: "minimal" }, "minimal must reach the wire body");
+    assert.equal(result.value.effort, "minimal", "minimal must be reported on the outcome");
+    assert.deepEqual(result.value.warnings, [], "minimal is in the default set, so nothing may warn");
   });
 
   it("omits reasoning when the request carries no output_config", () => {

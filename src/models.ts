@@ -669,6 +669,14 @@ export interface ModelRow {
   readonly family?: string;
   /** Present when the generation is known (always for registry entries); absent means unknown. */
   readonly gen?: readonly number[];
+  /**
+   * Present only when the registry entry NARROWS the effort vocabulary; absent means
+   * DEFAULT_REASONING_EFFORTS applies. Absent is therefore meaningful, so the key is
+   * omitted rather than filled with the default set — emitting the default would make
+   * every row claim a narrowing it does not have, and would restate a vocabulary that
+   * already has exactly one home (PF-014).
+   */
+  readonly reasoningEfforts?: readonly string[];
   /** True when the model is not retired. */
   readonly routable: boolean;
   /** Always-present boolean — consumers write `if (m.preview)` with no `?? false`. */
@@ -820,6 +828,7 @@ export const buildModelRows = (
       aliases,
       ...(entry.family !== undefined ? { family: entry.family } : {}),
       ...(entry.gen.length > 0 ? { gen: entry.gen } : {}),
+      ...(entry.reasoningEfforts !== undefined ? { reasoningEfforts: entry.reasoningEfforts } : {}),
       routable: entry.retired !== true,
       preview: entry.preview === true,
       retired: entry.retired === true,

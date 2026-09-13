@@ -20,12 +20,19 @@ import {
 
 describe("routableModelCount", () => {
   it("returns the non-retired codex model count matching the live registry", () => {
-    // Canary: update when MODEL_REGISTRY changes.
-    const count = routableModelCount(MODEL_REGISTRY, "codex");
-    assert.ok(count > 0, "routableModelCount must be > 0 for codex");
-    // Double-check against a manual inline count so a divergence in the implementation is visible.
-    const manual = MODEL_REGISTRY.filter((e) => e.provider === "codex" && e.retired !== true).length;
-    assert.equal(count, manual, "routableModelCount must match manual filter count");
+    // Literal pin, deliberately. The previous form compared routableModelCount against an
+    // inline re-spelling of its own filter, so both sides moved together and the canary
+    // stayed green when the registry went 4 -> 5 — a control that cannot fire is not a
+    // control. One side of an assertion must be INDEPENDENT of the code under test.
+    // (avoids PF-011)
+    //
+    // MUTATION PROOF: changing this literal to 4 turns the assertion RED.
+    // Update the literal — never the registry — when MODEL_REGISTRY changes.
+    assert.equal(
+      routableModelCount(MODEL_REGISTRY, "codex"),
+      5,
+      "update this literal when MODEL_REGISTRY changes",
+    );
   });
 
   it("returns 0 when every registry entry for the provider is retired", () => {
