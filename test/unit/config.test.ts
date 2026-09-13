@@ -239,6 +239,54 @@ describe("loadConfig", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Alias validation (codexIngress.claude.aliases) — PF-007 in the reverse direction
+  //
+  // validClaudeAlias is the ONLY gate on this block: a reserved KEY would let a Claude
+  // alias claim an OpenAI model name and hijack it on the reverse leg, and a reserved
+  // TARGET would make that name resolvable through the Claude resolver. Neutering the
+  // refine at src/config.ts must fail these tests — nothing else asserts the gate at the
+  // consumer level (MUTATION PROOF: replacing the `.refine` predicate with `() => true`
+  // turns every rejection below into an `ok` result).
+  // -------------------------------------------------------------------------
+
+  const claudeIngressAliases = (aliases: Record<string, string>): string =>
+    JSON.stringify({ codexIngress: { claude: { aliases } } });
+
+  it("accepts a codexIngress.claude.aliases entry that claims no OpenAI name and targets a claude- id", () => {
+    const result = loadConfig({ configPath: "x", readFile: () => claudeIngressAliases({ fast: "claude-sonnet-5" }) });
+    assert.ok(result.ok);
+    assert.deepEqual(result.value.config.codexIngress.claude.aliases, { fast: "claude-sonnet-5" });
+  });
+
+  it("rejects a codexIngress.claude.aliases KEY that claims an OpenAI model name", () => {
+    for (const key of ["astra", "ASTRA", "astra[1m]", "sol", "gpt-6-astra", "codex:astra", "o3"]) {
+      const result = loadConfig({ configPath: "x", readFile: () => claudeIngressAliases({ [key]: "claude-sonnet-5" }) });
+      assert.ok(!result.ok, `should reject reserved alias key '${key}'`);
+      assert.equal(result.error.kind, "translate");
+      assert.match(result.error.message, /codexIngress\.claude\.aliases/, `error must name the offending alias block for key '${key}'`);
+      assert.match(result.error.message, /OpenAI model names/);
+    }
+  });
+
+  it("rejects a codexIngress.claude.aliases TARGET that is an OpenAI model name", () => {
+    for (const target of ["astra", "sol", "gpt-6-astra", "codex:astra"]) {
+      const result = loadConfig({ configPath: "x", readFile: () => claudeIngressAliases({ fast: target }) });
+      assert.ok(!result.ok, `should reject reserved alias target '${target}'`);
+      assert.equal(result.error.kind, "translate");
+      assert.match(result.error.message, /codexIngress\.claude\.aliases/, `error must name the offending alias block for target '${target}'`);
+    }
+  });
+
+  it("rejects a codexIngress.claude.aliases TARGET that is not a claude- id", () => {
+    for (const target of ["sonnet", "some-other-model"]) {
+      const result = loadConfig({ configPath: "x", readFile: () => claudeIngressAliases({ fast: target }) });
+      assert.ok(!result.ok, `should reject non-claude alias target '${target}'`);
+      assert.equal(result.error.kind, "translate");
+      assert.match(result.error.message, /codexIngress\.claude\.aliases/);
+    }
+  });
+
+  // -------------------------------------------------------------------------
   // Removed keys (hard-error via LEGACY_KEY_ENTRIES — BREAKING in 0.3.0)
   // -------------------------------------------------------------------------
 

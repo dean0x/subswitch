@@ -1,6 +1,6 @@
 /** The destination registry for Codex ingress. Forward-ingress reservation rules stay independent. */
 import { isPlainObject } from "./plain-object.js";
-import { compareGen } from "./models.js";
+import { compareGen, MODEL_REGISTRY, type ModelEntry } from "./models.js";
 export interface ClaudeModel {
   readonly id: string;
   readonly family: string;
@@ -16,8 +16,44 @@ export const CLAUDE_MODELS: readonly ClaudeModel[] = [
   { id: "claude-fable-5-1", family: "fable", gen: [5, 1], contextWindow: 1_000_000, maxOutputTokens: 128_000 },
 ];
 
-export const isOpenaiModelName = (name: string): boolean =>
-  /^(gpt-|o[134](?:-|$)|codex:|sol(?:$|\[)|terra(?:$|\[)|luna(?:$|\[)|astra(?:$|\[))/i.test(name);
+/** Escape regex metacharacters so a registry name matches literally (e.g. the `.` in `gpt-5.6-sol`). */
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Build the reverse-leg reservation predicate from a model registry.
+ *
+ * The registry is THE exact-membership set (applies ADR-005/ADR-006), so the names it
+ * reserves are derived from it rather than hand-listed. A hand-written alternation is a
+ * mirror leg that restarts at the pre-ADR baseline (avoids PF-028): a family added to
+ * MODEL_REGISTRY that the regex never learned about could be claimed by a Claude alias
+ * and hijacked on the reverse leg — the mirror image of PF-007, and `validClaudeAlias`
+ * is the ONLY gate on `codexIngress.claude.aliases`.
+ *
+ * The three fixed arms have no registry counterpart and stay literal:
+ * - `gpt-`, `o1`/`o3`/`o4`: OpenAI's naming space, including ids the registry does not list yet.
+ * - `codex:`: the provider-qualified form, reserved whatever follows it.
+ *
+ * Registry names match exactly or with a variant suffix (`sol`, `sol[1m]`) — never as the
+ * prefix of a longer word, so `solaris` stays available to the Claude leg.
+ *
+ * Exported so a test can build a predicate over a synthetic registry and prove the
+ * derivation is live; production callers use the module-level `isOpenaiModelName`.
+ *
+ * TOTAL: never throws. PURE: depends only on its argument.
+ */
+export const buildOpenaiModelNamePredicate = (registry: readonly ModelEntry[]): ((name: string) => boolean) => {
+  const names = [
+    ...new Set(registry.flatMap((entry) => (entry.family !== undefined ? [entry.id, entry.family] : [entry.id]))),
+  ].filter((name) => name.length > 0);
+  // Appended only when the registry declares names: an empty alternation arm matches the
+  // empty prefix of EVERY name, which would reserve the entire namespace against the Claude leg.
+  const registryArm = names.length > 0 ? `|(?:${names.map(escapeRegExp).join("|")})(?:$|\\[)` : "";
+  const pattern = new RegExp(`^(?:gpt-|o[134](?:-|$)|codex:${registryArm})`, "i");
+  return (name: string): boolean => pattern.test(name);
+};
+
+/** Built once at module load from the canonical registry. */
+export const isOpenaiModelName: (name: string) => boolean = buildOpenaiModelNamePredicate(MODEL_REGISTRY);
 
 export const validClaudeAlias = (name: string, target: string): boolean =>
   !isOpenaiModelName(name) && !isOpenaiModelName(target) && target.startsWith("claude-");
