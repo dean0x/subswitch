@@ -498,6 +498,11 @@ subswitch models --json | jq .models[].id
   `gen` is omitted when the generation is unknown; it is always present for registry entries.
 - `preview` and `retired` are always-present booleans — no `?? false` needed in consumers.
 - `family` is omitted for models with no family alias (e.g. `gpt-5.5`).
+- `reasoningEfforts` is an array of strings, present only when the registry entry
+  narrows the accepted Responses effort vocabulary below the backend default
+  (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Absence means the
+  full backend set applies. Astra (`gpt-6-astra`) is currently the only entry that
+  declares one (`low`, `medium`, `high`, `xhigh`, `max`).
 - Anthropic appears in `providers` with zero model rows. subswitch cannot enumerate Claude
   model names — it prefix-matches them and relays verbatim — so including a fabricated list
   would be a lie that consumers might cache. The `fallbackProvider: "anthropic"` field
