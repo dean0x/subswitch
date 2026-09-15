@@ -55,7 +55,7 @@
     "probe:native-production": "tsx e2e/gates/native-production.ts"
   },
   "dependencies": {
-    "@clack/prompts": "^1.7.0",
+    "@clack/prompts": "^1.8.0",
     "picocolors": "^1.1.1",
     "toml-eslint-parser": "^1.0.3",
     "ws": "^8.21.3",
