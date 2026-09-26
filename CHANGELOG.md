@@ -21,6 +21,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `--client all` selects all supported clients; `both` remains a compatibility alias.
 
+- GPT-6 Sol and Luna: `gpt-6-sol` and `gpt-6-luna` join the forward registry. Both
+  accept reasoning effort `low`, `medium`, `high`, `xhigh` and `max`; `none` and
+  `minimal` are dropped with an `unsupported_effort_dropped` warning.
+- Claude Opus 5.5 (`claude-opus-5-5`) on the Codex → Claude leg.
+- Per-model Claude capabilities: each registered Claude model declares its output-token
+  ceiling, whether it always thinks, whether it accepts forced tool choice, and its default
+  reasoning level. Native Codex model discovery advertises that default per model (`medium`
+  for Opus 5.5, `high` for the others).
+- New reverse-leg 400 errors, returned before any upstream call:
+  `reasoning_effort_unsupported_by_model` (effort `none` on a model that always thinks:
+  Opus 5.5, Fable 5, Fable 5.1), `tool_choice_unsupported_by_model` (`required` or a named
+  tool on Opus 5.5 or Fable 5.1), and `unregistered_claude_model` (a `claude-*` or
+  `claude:*` name that no registered model or `codexIngress.claude.aliases` entry routes).
+
 ### Changed
 
 - Supported Node versions are `^22.15.0 || >=24`, matching native zstd and runtime dependency requirements. Reverse routing includes the
@@ -36,8 +50,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   case-insensitively, including `astra[...]` family-suffix variants); a
   `codexIngress.claude.aliases` entry that claims it is rejected at config load,
   and the relay refuses to start until the alias is removed or renamed.
+- **The `sol` and `luna` family aliases now resolve to `gpt-6-sol` and `gpt-6-luna`.**
+  `terra` stays on `gpt-5.6-terra`. `gpt-5.6-sol` and `gpt-5.6-luna` still route by exact id
+  and appear as `(direct)` rows in `subswitch models`.
+- **The `opus` alias on the Codex → Claude leg now resolves to `claude-opus-5-5`.**
+  `claude-opus-5` still routes by its exact id.
+- `gpt-5.5` is retired ahead of its Codex shutdown on 2026-10-14. It still routes by exact
+  id (and as `codex:gpt-5.5`), but it no longer wins a family alias, counts toward the
+  routable set (now 6 models) or appears in the `subswitch models` table.
+  `models --json` lists it with `retired: true` and `routable: false`, and `doctor` reports
+  an agent pinned to it as an info finding.
+- `fable` and `best` are reserved Claude Code model names alongside `sonnet`, `opus`,
+  `haiku`, `inherit` and `claude-*`, as the exact word or with a `[...]` suffix. They are
+  rejected as `providers.codex.aliases` keys or targets, and `doctor` no longer flags an
+  agent with `model: fable` as unresolvable.
+- Reverse-leg `max_tokens` is capped at the model's output-token ceiling.
 
 ### Fixed
+
+- Unregistered `claude-*` model names on the Codex → Claude leg are refused with
+  `unregistered_claude_model` instead of being forwarded to OpenAI, on HTTP, WebSocket
+  and over-window requests.
+- `doctor` recognises `Claude-*` and `claude:*` agent models as Claude names; its check was
+  previously case-sensitive and missed the `claude:` form.
 
 - The development HTTP recorder now captures eligible streamed `/responses`
   replies even when the upstream omits `Content-Type`, without inspecting other
