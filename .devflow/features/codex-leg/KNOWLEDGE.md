@@ -349,7 +349,7 @@ IncomingMessage (Anthropic wire)
 
 - `src/server.ts` — Wiring site for resolve→route→send; `buildDeps` calls `buildRoutingTable` once and logs its diagnostics (`alias_rejected`, `alias_dangling_target`, `ambiguous_family`, `registry_entry_uses_reserved_name`, `registry_entry_unknown_effort`); `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; ambiguous fail-open policy; `IngestError` (server-local, single variant `client_disconnected`, not `ProxyError`); `readBodyForRouting` + over-window routing (Anthropic→stream, Codex→413); `drainRejectedUpload` in `dispatch().catch` for paused-req safety; `applyInboundPolicy` (from `src/inbound-policy.ts`) owns `SERVER_TUNING` + `clientError` handler
 - `src/models.ts` — Pure registry module (no repo imports); `MODEL_REGISTRY` (`gpt-6-astra` is the first entry with per-model `reasoningEfforts`), `PROVIDER_IDS`, `AliasesByProvider`, `DEFAULT_REASONING_EFFORTS`, `reasoningEffortsForModel`, `buildRoutingTable` (`unknownReasoningEfforts` diagnostic), `resolveModel`, `isReservedAnthropicName`, `routableModelCount`, `formatModelsReport`, `buildModelRows` (`ModelRow.reasoningEfforts`), `buildAliasRows`
-- `src/claude-models.ts` — Reverse-leg (Claude ingress) model registry; `buildOpenaiModelNamePredicate(registry)` derives `isOpenaiModelName` from `MODEL_REGISTRY` (mirror of PF-007 on the reverse leg — `astra` is now automatically reserved); `validClaudeAlias` (the only gate on `codexIngress.claude.aliases`); `claudeResolver`, `claudeModelRows`, `augmentCodexModels`
+- `src/claude-models.ts` — Reverse-leg (Claude ingress) model registry; `buildOpenaiModelNamePredicate(registry)` derives `isOpenaiModelName` from `MODEL_REGISTRY` (mirror of PF-007 on the reverse leg — `astra` is now automatically reserved); `validClaudeAlias` (the only gate on `codexIngress.claude.aliases`); `claudeResolver`, `claudeModelRows`, `augmentCodexModels` (advertises each model's own `defaultEffort` as `default_reasoning_level`, levels low..max); `CLAUDE_MODELS` entries carry REQUIRED capability fields (`maxOutputTokens`, `thinkingAlwaysOn`, `forcedToolChoice`, `defaultEffort`); `claudeModel(id)` lookup; `isClaudeModelName` (the `claude-`/`claude:` namespace, case-insensitive) and `displayModelName` (bounded, charset-neutralized echo of a client-supplied name)
 - `src/router.ts` — Pure routing decision; accepts `ModelResolution` (not raw string); zero name matching; exhaustive switch; classification only — policy lives in server.ts
 - `src/codex-handler.ts` — `createCodexHandler<P>(deps): ProviderHandler` entry point; `CodexHandlerDeps<P>`, `CodexTransportConstants` interface; `buildHeaders` (exported pure module-level fn); canonical substitution; sessionId before loop; bounded retry; `AbortController` above `auth.getCredentials()`; `handleCountTokens` (estimate, not forwarded)
 - `src/provider-transport.ts` — `createFrameWriter` (abort-safe, backpressure-aware); `respondJson`, `respondProxyError`, `readBoundedText`
@@ -408,6 +408,25 @@ native requests with substituted credentials may refresh and retry once after 40
 `buildOpenaiModelNamePredicate` rather than a hand-written alternation, so a family added
 to the registry (`astra`, and any future one) is automatically reserved against
 `codexIngress.claude.aliases` with no corresponding code change required.
+
+`CLAUDE_MODELS` (2026-09-26): claude-sonnet-5, claude-opus-5, claude-opus-5-5, claude-fable-5,
+claude-fable-5-1. Family winners by `gen`: `opus` -> claude-opus-5-5 (claude-opus-5 stays
+reachable by exact id), `fable` -> claude-fable-5-1, `sonnet` -> claude-sonnet-5. Every entry
+must declare its capabilities, and `claude-adapter.ts` enforces them on the resolved id:
+effort `none` on a `thinkingAlwaysOn` model (fable-5, fable-5-1, opus-5-5) is a 400
+`reasoning_effort_unsupported_by_model`, and a forced tool choice (`required` or a named tool)
+on a model with `forcedToolChoice: false` (fable-5-1, opus-5-5) is a 400
+`tool_choice_unsupported_by_model` - refused, never rewritten, and only when tools are sent.
+Outgoing `max_tokens` is clamped to the entry's `maxOutputTokens`; an alias-bridged target
+with no catalog entry is neither clamped nor refused (no data). `ReverseContractError` takes
+an optional `detail` that `claudeFailure` renders instead of the generic message.
+
+A `claude-*`/`claude:*` name (case-insensitive) that is neither a catalog id nor a configured
+alias or target resolves to `{ kind: "unregistered" }`, which `decideCodexRoute` turns into a
+400 `unregistered_claude_model` on HTTP, WebSocket and the over-window path - it is never
+forwarded to OpenAI (applies ADR-011: OpenAI could not act on it). The echoed name passes
+through `displayModelName`. This is refusal, not wildcard routing (ADR-005 holds). `codex
+doctor` uses the same `isClaudeModelName` predicate to flag agent models the gateway refuses.
 
 Claude credential infrastructure is created in `buildDeps`. Native token substitution
 is restricted to exact native endpoints and matching account IDs. `errors.ts` owns both
