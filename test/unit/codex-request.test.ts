@@ -222,6 +222,42 @@ describe("translateRequest", () => {
     }
   });
 
+  it("forwards every effort inside GPT-6 Sol's and Luna's declared set", () => {
+    for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+      for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+        const request = AnthropicRequestSchema.parse({
+          model,
+          messages: [{ role: "user", content: "hi" }],
+          output_config: { effort },
+        });
+        const result = translateRequest(request, new ReasoningCache(4, LARGE_BYTES));
+        assert.ok(result.ok);
+        assert.deepEqual(result.value.body["reasoning"], { effort }, `${model}/${effort} must reach the wire body`);
+        assert.equal(result.value.effort, effort, `${model}/${effort} must be reported on the outcome`);
+        assert.deepEqual(result.value.warnings, [], `${model}/${effort} is declared, so nothing may warn`);
+      }
+    }
+  });
+
+  it("drops none and minimal for GPT-6 Sol and Luna, with a warning", () => {
+    // Neither value is in the Codex catalog for the GPT-6 models, so neither is registered:
+    // an unverified effort degrades to the backend default rather than risking an upstream 400.
+    for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+      for (const effort of ["none", "minimal", "ultra"]) {
+        const request = AnthropicRequestSchema.parse({
+          model,
+          messages: [{ role: "user", content: "hi" }],
+          output_config: { effort },
+        });
+        const result = translateRequest(request, new ReasoningCache(4, LARGE_BYTES));
+        assert.ok(result.ok);
+        assert.equal("reasoning" in result.value.body, false, `${model}/${effort} must not reach the wire body`);
+        assert.equal(result.value.effort, undefined, `${model}/${effort} must not be reported on the outcome`);
+        assert.deepEqual(result.value.warnings, ["unsupported_effort_dropped"], `${model}/${effort} must warn exactly once`);
+      }
+    }
+  });
+
   it("leaves a model that declares no narrower set on the backend-wide vocabulary", () => {
     // gpt-5.6-luna declares no reasoningEfforts, so "minimal" — rejected for Astra above —
     // is still forwarded here. Astra's narrowing must not leak onto its neighbours.

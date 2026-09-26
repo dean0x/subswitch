@@ -492,6 +492,24 @@ describe("CLI models --json", () => {
     );
   });
 
+  it("lists gpt-6-sol and gpt-6-luna holding the sol and luna aliases, with their declared reasoningEfforts", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as {
+      models: Array<{ id: string; gen?: number[]; aliases?: Array<{ name: string }>; reasoningEfforts?: string[] }>;
+    };
+    for (const [id, family] of [["gpt-6-sol", "sol"], ["gpt-6-luna", "luna"]] as const) {
+      const model = parsed.models.find((m) => m.id === id);
+      assert.ok(model !== undefined, `models must include ${id}`);
+      assert.ok(model.aliases?.some((alias) => alias.name === family), `${id} must carry the derived '${family}' alias`);
+      assert.deepEqual(model.gen, [6], `gen for ${id} must be [6]`);
+      assert.deepEqual(model.reasoningEfforts, ["low", "medium", "high", "xhigh", "max"], `${id} reasoningEfforts`);
+    }
+    // The superseded 5.6 entries stay listed but no longer carry the family alias.
+    const oldSol = parsed.models.find((m) => m.id === "gpt-5.6-sol");
+    assert.ok(oldSol !== undefined, "models must still include gpt-5.6-sol");
+    assert.equal(oldSol.aliases?.some((alias) => alias.name === "sol"), false, "'sol' must have moved to gpt-6-sol");
+  });
+
   // Conditional spread, not `?? undefined`: exactOptionalPropertyTypes is on, so an entry
   // that declares no reasoningEfforts must omit the key entirely rather than emit null.
   it("omits reasoningEfforts for a model that declares none (gpt-5.6-sol)", async () => {

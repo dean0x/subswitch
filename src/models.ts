@@ -160,6 +160,31 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
     // to disagree. (avoids PF-004, PF-023)
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
   },
+  // GPT-6 Sol and Luna (released 2026-09-22; GPT-6 has no Terra, so `terra` stays on
+  // gpt-5.6-terra). Gen [6] beats [5, 6], so these two take over the `sol` and `luna`
+  // family aliases; gpt-5.6-sol and gpt-5.6-luna remain routable by exact id.
+  //
+  // Five efforts, for the same reason as Astra above. The Codex catalog lists
+  // low/medium/high/xhigh/max for both; Sol's catalog also shows a client-only `ultra`
+  // that the Codex client sends as `max` on the wire, so it is not a /responses value.
+  // `none` and `minimal` appear in the API docs but not in the Codex catalog for either
+  // model — unverified on this leg, so they are not registered: an unregistered effort
+  // degrades to the backend default with a warning instead of risking an upstream 400.
+  // (avoids PF-004, PF-023)
+  {
+    id: "gpt-6-sol",
+    provider: "codex",
+    family: "sol",
+    gen: [6],
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    id: "gpt-6-luna",
+    provider: "codex",
+    family: "luna",
+    gen: [6],
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  },
   { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
   { id: "gpt-5.6-terra", provider: "codex", family: "terra", gen: [5, 6] },
   { id: "gpt-5.6-luna", provider: "codex", family: "luna", gen: [5, 6] },

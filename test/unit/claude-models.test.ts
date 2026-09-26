@@ -34,6 +34,11 @@ describe("isOpenaiModelName", () => {
       assert.equal(isOpenaiModelName(name), false, `'${name}' is not a family name and must stay available`);
   });
 
+  it("reserves the GPT-6 Sol and Luna ids and their variants against the Claude leg", () => {
+    for (const name of ["gpt-6-sol", "gpt-6-luna", "GPT-6-SOL", "gpt-6-luna[1m]"])
+      assert.equal(isOpenaiModelName(name), true, `'${name}' must be reserved for OpenAI routing`);
+  });
+
   it("reserves every id and every family the registry declares (invariant, not a fixed list)", () => {
     for (const name of registryNames(MODEL_REGISTRY))
       assert.equal(isOpenaiModelName(name), true, `registry name '${name}' is not reserved on the reverse leg`);
