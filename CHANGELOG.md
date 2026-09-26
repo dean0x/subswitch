@@ -73,7 +73,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and over-window requests.
 - `doctor` recognises `Claude-*` and `claude:*` agent models as Claude names; its check was
   previously case-sensitive and missed the `claude:` form.
-
 - The development HTTP recorder now captures eligible streamed `/responses`
   replies even when the upstream omits `Content-Type`, without inspecting other
   missing-header responses.

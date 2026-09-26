@@ -170,9 +170,11 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   // low/medium/high/xhigh/max for both; Sol's catalog also shows a client-only `ultra`
   // that the Codex client sends as `max` on the wire, so it is not a /responses value.
   // `none` and `minimal` appear in the API docs but not in the Codex catalog for either
-  // model — unverified on this leg, so they are not registered: an unregistered effort
-  // degrades to the backend default with a warning instead of risking an upstream 400.
-  // (avoids PF-004, PF-023)
+  // model. A direct Codex backend probe (2026-09-26) rejected `minimal` with a 400 and
+  // accepted `none`. `none` is still deliberately not registered: the Codex catalog does
+  // not list it and Claude Code subagent frontmatter cannot send it, so a follow-up may
+  // add it. An unregistered effort degrades to the backend default with a warning instead
+  // of risking an upstream 400. (avoids PF-004, PF-023)
   {
     id: "gpt-6-sol",
     provider: "codex",
