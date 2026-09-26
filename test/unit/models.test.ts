@@ -30,7 +30,7 @@ describe("routableModelCount", () => {
     // Update the literal — never the registry — when MODEL_REGISTRY changes.
     assert.equal(
       routableModelCount(MODEL_REGISTRY, "codex"),
-      7,
+      6,
       "update this literal when MODEL_REGISTRY changes",
     );
   });
@@ -123,13 +123,24 @@ describe("formatModelsReport", () => {
     assert.ok(text.includes("(derived)"), "should also have derived aliases");
   });
 
-  it("includes a '(direct)' row for gpt-5.5 (no family alias)", () => {
-    // gpt-5.5 has no family field — it never appears as the canonical of an alias row.
-    // It must appear as a direct row with an empty alias column so the table is complete.
+  it("includes a '(direct)' row for a live model with no family alias", () => {
+    // A family-less entry never appears as the canonical of an alias row. It must appear
+    // as a direct row with an empty alias column so the table is complete.
+    const reg: readonly ModelEntry[] = [
+      { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
+      { id: "gpt-9-plain", provider: "codex", gen: [9] },
+    ];
+    const result = formatModelsReport({ registry: reg, aliasesByProvider: { codex: {} } });
+    const directLine = result.find((l) => l.includes("gpt-9-plain") && l.includes("(direct)"));
+    assert.ok(directLine !== undefined, "a family-less live model must appear as a (direct) row");
+    assert.ok(directLine.includes("enabled"), "the direct row must be marked enabled");
+  });
+
+  it("omits the retired gpt-5.5 from the human-readable table", () => {
+    // gpt-5.5 leaves ChatGPT/Codex on 2026-10-14. It is marked retired rather than deleted,
+    // so it stays routable by exact id but is no longer advertised as an option.
     const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
-    const directLine = result.find((l) => l.includes("gpt-5.5") && l.includes("(direct)"));
-    assert.ok(directLine !== undefined, "gpt-5.5 (no family alias) must appear as a (direct) row");
-    assert.ok(directLine.includes("enabled"), "gpt-5.5 direct row must be marked enabled");
+    assert.equal(result.some((l) => l.includes("gpt-5.5")), false, "retired gpt-5.5 must not be listed");
   });
 
   it("does not emit a '(direct)' row for an id already covered as a canonical of an alias row", () => {
@@ -452,7 +463,25 @@ describe("canary — current generation resolution via routing table (update whe
     assert.equal(resolvedId("gpt-5.6-luna"), "gpt-5.6-luna");
   });
 
-  it("'gpt-5.5' resolves by exact id (no family alias)", () => {
+  it("retired 'gpt-5.5' still resolves by exact id and by its qualified id", () => {
+    // Retiring must never unroute a pin: a pinned agent keeps reaching Codex and gets the
+    // upstream's own answer rather than being silently re-sent to Anthropic.
     assert.equal(resolvedId("gpt-5.5"), "gpt-5.5");
+    assert.equal(resolvedId("codex:gpt-5.5"), "gpt-5.5");
+  });
+
+  it("gpt-5.5 is marked retired and not routable in the model rows", () => {
+    const row = buildModelRows(MODEL_REGISTRY, { codex: {} }).find((r) => r.id === "gpt-5.5");
+    assert.ok(row !== undefined, "gpt-5.5 must stay in the registry — never delete, mark retired");
+    assert.equal(row.retired, true);
+    assert.equal(row.routable, false);
+    assert.deepEqual(row.aliases, [], "a retired model wins no family alias");
+  });
+
+  it("every live gpt-5.6 entry stays routable (only gpt-5.5 is retired)", () => {
+    const rows = buildModelRows(MODEL_REGISTRY, { codex: {} });
+    for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      assert.equal(rows.find((r) => r.id === id)?.routable, true, `${id} must remain routable`);
+    }
   });
 });

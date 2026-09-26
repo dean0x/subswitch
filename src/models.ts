@@ -139,9 +139,11 @@ export type ModelResolution =
 
 /**
  * Canonical model registry — THE exact-membership set for routing (applies ADR-005).
- * Never delete entries: deleting silently unroutes anyone who pinned that id.
- * Mark them `retired` instead, which keeps them resolvable and lets the upstream
- * return a truthful 404.
+ * Never delete entries: deleting silently unroutes anyone who pinned that id, sending
+ * that agent to Anthropic instead. Mark them `retired` instead, which keeps them
+ * resolvable so the request still reaches the provider and gets the upstream's own
+ * answer. For the Codex backend that answer is an HTTP 400 ("The `<model>` model is not
+ * supported when using Codex with a ChatGPT account"), not a 404.
  */
 export const MODEL_REGISTRY: readonly ModelEntry[] = [
   {
@@ -188,7 +190,8 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
   { id: "gpt-5.6-terra", provider: "codex", family: "terra", gen: [5, 6] },
   { id: "gpt-5.6-luna", provider: "codex", family: "luna", gen: [5, 6] },
-  { id: "gpt-5.5", provider: "codex", gen: [5, 5] },
+  // Retired from ChatGPT/Codex on 2026-10-14.
+  { id: "gpt-5.5", provider: "codex", gen: [5, 5], retired: true },
 ];
 
 // ---------------------------------------------------------------------------
@@ -492,8 +495,8 @@ export const buildRoutingTable = (
   }
 
   // --- 2. byId: all registry entries (including retired and preview) ---
-  // Retired entries stay in byId so a pin on a retired id keeps routing and gives a
-  // truthful upstream 404 naming the provider, rather than silently dropping through.
+  // Retired entries stay in byId so a pin on a retired id keeps routing and gets the
+  // upstream's own error naming the provider, rather than silently dropping through.
   const byId = new Map<string, ProviderId>();
   for (const entry of registry) {
     if (!byId.has(entry.id)) {

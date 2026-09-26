@@ -272,9 +272,20 @@ describe("checkAgentModels", () => {
   });
 
   it("returns no finding when the model is a canonical id in the registry", () => {
-    const files = [{ path: "/agent.md", text: "---\nmodel: gpt-5.5\n---\n" }];
+    const files = [{ path: "/agent.md", text: "---\nmodel: gpt-5.6-sol\n---\n" }];
     const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 0);
+  });
+
+  it("reports an informational 'retired' finding for an agent pinned to gpt-5.5", () => {
+    // gpt-5.5 is retired in the live registry: the pin still routes, but doctor tells the
+    // user to move off it before the backend stops serving it.
+    const files = [{ path: "/agent.md", text: "---\nmodel: gpt-5.5\n---\n" }];
+    const findings = checkAgentModels(files, table, configuredProviders);
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0]!.kind, "retired");
+    assert.equal(findings[0]!.severity, "info");
+    assert.equal(findings[0]!.canonical, "gpt-5.5");
   });
 
   // ------------------------------------------------------------------
