@@ -11,6 +11,17 @@ const request = () => ({ model: "claude-sonnet-5", instructions: "Keep all instr
     { type: "message", role: "user", content: [{ type: "input_text", text: "Read the fixture." }] }],
 });
 const rejects = (fn: () => unknown, code: string) => assert.throws(fn, error => error instanceof ReverseContractError && error.code === code);
+/** Like `rejects`, but returns the client-facing failure for further inspection (e.g. its message). */
+const rejectsWith = (fn: () => unknown, code: string) => {
+  let caught: unknown;
+  try {
+    fn();
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof ReverseContractError && caught.code === code, `expected to reject with ${code}, got ${String(caught)}`);
+  return claudeFailure(caught);
+};
 
 describe("experimental reverse native contract", () => {
   it("restores freeform namespace/type/input and replays its result without rewriting text", () => {
@@ -122,11 +133,10 @@ describe("experimental reverse native contract", () => {
   });
   it("rejects reasoning effort none on models whose thinking cannot be disabled, naming the model", () => {
     for (const model of ["claude-fable-5", "claude-fable-5-1", "claude-opus-5-5"]) {
-      let caught: unknown;
-      try { reverseRequest({ ...request(), model, reasoning: { effort: "none" } }); } catch (error) { caught = error; }
-      assert.ok(caught instanceof ReverseContractError, `${model} must reject effort none`);
-      assert.equal(caught.code, "reasoning_effort_unsupported_by_model");
-      const failure = claudeFailure(caught);
+      const failure = rejectsWith(
+        () => reverseRequest({ ...request(), model, reasoning: { effort: "none" } }),
+        "reasoning_effort_unsupported_by_model",
+      );
       assert.equal(failure.status, 400);
       assert.ok(failure.message.includes(`\`${model}\``), failure.message);
       assert.match(failure.message, /low, medium, high, xhigh, or max/);
@@ -151,11 +161,10 @@ describe("experimental reverse native contract", () => {
     const named = { type: "function", namespace: "functions", name: "read" };
     for (const model of ["claude-fable-5-1", "claude-opus-5-5"])
       for (const tool_choice of ["required", named]) {
-        let caught: unknown;
-        try { reverseRequest({ ...request(), model, tool_choice }); } catch (error) { caught = error; }
-        assert.ok(caught instanceof ReverseContractError, `${model} must reject tool_choice ${JSON.stringify(tool_choice)}`);
-        assert.equal(caught.code, "tool_choice_unsupported_by_model");
-        const failure = claudeFailure(caught);
+        const failure = rejectsWith(
+          () => reverseRequest({ ...request(), model, tool_choice }),
+          "tool_choice_unsupported_by_model",
+        );
         assert.equal(failure.status, 400);
         assert.ok(failure.message.includes(`\`${model}\``), failure.message);
       }
