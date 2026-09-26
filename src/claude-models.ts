@@ -81,6 +81,29 @@ export const CLAUDE_MODELS: readonly ClaudeModel[] = [
 /** The catalog entry for a canonical id; undefined for an alias-bridged target the catalog does not know. */
 export const claudeModel = (id: string): ClaudeModel | undefined => CLAUDE_MODELS.find((model) => model.id === id);
 
+/**
+ * True for names in the Claude namespace (`claude-*`, or the provider-qualified `claude:*`),
+ * case-insensitively. No OpenAI model lives there, so the reverse leg answers an unresolved
+ * name in it with a clear error rather than forwarding it to OpenAI. This rejects, it never
+ * routes: routing stays exact membership (applies ADR-005).
+ */
+export const isClaudeModelName = (name: string): boolean => /^claude[-:]/i.test(name);
+
+/** Longest client-supplied model name echoed back in an error message. */
+const DISPLAY_NAME_MAX_CHARS = 64;
+/** Characters a model name legitimately contains; anything else becomes `?`. */
+const UNSAFE_MODEL_NAME_CHARS = /[^A-Za-z0-9._:[\]-]/g;
+
+/**
+ * A client-supplied model name made safe to echo in an error message: bounded, and with
+ * control characters, whitespace, quotes, backticks and markup replaced by `?`, so a crafted
+ * name can neither forge log or terminal output nor smuggle markup into the reply.
+ */
+export const displayModelName = (name: string): string =>
+  name.length > DISPLAY_NAME_MAX_CHARS
+    ? `${name.slice(0, DISPLAY_NAME_MAX_CHARS).replace(UNSAFE_MODEL_NAME_CHARS, "?")}...`
+    : name.replace(UNSAFE_MODEL_NAME_CHARS, "?");
+
 /** Escape regex metacharacters so a registry name matches literally (e.g. the `.` in `gpt-5.6-sol`). */
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 

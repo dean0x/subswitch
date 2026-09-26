@@ -59,6 +59,7 @@ export const CLAUDE_ERROR_STATUS = {
   unknown_claude_tool: 502,
   unknown_tool: 400,
   unmatched_tool_result: 400,
+  unregistered_claude_model: 400,
   unsupported_claude_delta: 502,
   unsupported_claude_event: 502,
   unsupported_claude_output: 502,

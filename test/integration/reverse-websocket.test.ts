@@ -82,6 +82,32 @@ describe("production reverse WebSockets", () => {
     }
   });
 
+  it("answers an unregistered claude- model with a clear error event and never forwards it to OpenAI", async () => {
+    const server = http.createServer(); const wss = new WebSocketServer({ server });
+    const parentRequests: unknown[] = [];
+    wss.on("connection", ws => ws.on("message", data => parentRequests.push(JSON.parse(data.toString()))));
+    const upstream = await listen(server);
+    const proxy = await startSubswitch({ codexIngress: { enabled: true, apiBaseUrl: `${upstream}/v1`, claude: { enabled: true } } });
+    const client = new WebSocket(`${proxy.url.replace("http:", "ws:")}/codex/v1/responses`);
+    const events: Item[] = [];
+    client.on("message", data => events.push(JSON.parse(data.toString())));
+    try {
+      await new Promise<void>((resolve, reject) => { client.once("open", resolve); client.once("error", reject); });
+      client.send(JSON.stringify({ type: "response.create", model: "claude-sonnet-5-5", input: "hello", stream_id: "s1" }));
+      const deadline = Date.now() + 3000;
+      while (!events.some(event => event["type"] === "error")) {
+        if (Date.now() > deadline) throw new Error("WebSocket error event timed out");
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      const error = events.find(event => event["type"] === "error")!;
+      assert.equal(error["code"], "unregistered_claude_model"); assert.equal(error["status"], 400); assert.equal(error["stream_id"], "s1");
+      assert.equal(error["message"], "`claude-sonnet-5-5` is not a registered Claude model; add a `codexIngress.claude.aliases` entry to route it");
+      assert.equal(parentRequests.length, 0);
+    } finally {
+      client.terminate(); await proxy.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); await close(server);
+    }
+  });
+
   it("relays rejected upgrades and remains usable after the upstream closes", async () => {
     const server = http.createServer();
     server.on("upgrade", (_req, socket) => socket.end('HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 19\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}'));

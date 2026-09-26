@@ -15,7 +15,7 @@ import { object, type ObjectValue as Item } from "./plain-object.js";
 import { claudeFailure, ReverseContractError } from "./claude-errors.js";
 import { openaiWebSocketError } from "./errors.js";
 import { OPENAI_EVENTS } from "./provider-events.js";
-import { decideCodexRoute, type ClaudeResolution } from "./codex-route.js";
+import { decideCodexRoute, rejectionError, type ClaudeResolution } from "./codex-route.js";
 
 /** Owns handshake, client/upstream bridging, cancellation, and upgraded socket teardown. */
 export class CodexWebSockets {
@@ -240,7 +240,7 @@ export class CodexWebSockets {
       }
       const route = decideCodexRoute("/responses", this.options.destination(body));
       if (route.kind === "rejected") {
-        failure(new ReverseContractError(route.code), streamId);
+        failure(rejectionError(route), streamId);
         return;
       }
       if (route.kind === "parent") {

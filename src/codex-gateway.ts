@@ -1,7 +1,8 @@
 import { CodexWebSockets } from "./codex-ws.js";
 import { CodexUpstream } from "./codex-upstream.js";
 import { json, inputItems } from "./codex-body.js";
-import { decideCodexRoute, type ClaudeResolution } from "./codex-route.js";
+import { decideCodexRoute, rejectionError, unregisteredClaudeMessage, type ClaudeResolution } from "./codex-route.js";
+import { isClaudeModelName } from "./claude-models.js";
 import { CLAUDE_EVENTS, OPENAI_EVENTS } from "./provider-events.js";
 import { WebSocketBudget } from "./websocket-budget.js";
 import { CodexNativeAuth } from "./codex-native-auth.js";
@@ -159,11 +160,13 @@ export class CodexGateway implements CodexIngressEntry {
     if (body["generate"] !== false) delete full["generate"];
     return full;
   }
+  private resolveName(name: string): ClaudeResolution {
+    const model = this.resolve(name);
+    if (model) return { kind: "claude", model };
+    return isClaudeModelName(name) ? { kind: "unregistered", name } : { kind: "foreign" };
+  }
   private destination(body: Item): ClaudeResolution {
-    if (typeof body["model"] === "string") {
-      const model = this.resolve(body["model"]);
-      return model ? { kind: "claude", model } : { kind: "foreign" };
-    }
+    if (typeof body["model"] === "string") return this.resolveName(body["model"]);
     if (typeof body["previous_response_id"] === "string") {
       const snapshot = this.cache.get("snapshot", body["previous_response_id"]);
       if (typeof snapshot?.request["model"] === "string") return this.destination(snapshot.request);
@@ -244,9 +247,12 @@ export class CodexGateway implements CodexIngressEntry {
     const raw = consumed.bytes;
     if (consumed.kind === "prefix") {
       const name = sniffLeadingModel(raw.subarray(0, MODEL_SNIFF_BYTES));
-      if (name && this.resolve(name)) {
+      const resolution = name === undefined ? undefined : this.resolveName(name);
+      if (resolution?.kind === "claude" || resolution?.kind === "unregistered") {
         drainRejectedUpload(req);
-        throw new ReverseContractError("request_too_large");
+        throw resolution.kind === "claude"
+          ? new ReverseContractError("request_too_large")
+          : new ReverseContractError("unregistered_claude_model", unregisteredClaudeMessage(resolution.name));
       }
       const headers = await this.nativeAuth.headers(req, mode, path);
       this.logger.log("warn", OPENAI_EVENTS.compatOverWindowPassthrough, { bodyMode: "streamed" });
@@ -294,7 +300,7 @@ export class CodexGateway implements CodexIngressEntry {
         return;
       }
       case "rejected":
-        throw new ReverseContractError(route.code);
+        throw rejectionError(route);
       case "claude":
         return this.streamClaude(req, res, body, route.model);
       default: {

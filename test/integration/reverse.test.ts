@@ -120,6 +120,38 @@ describe("production reverse HTTP ingress", () => {
     } finally { await fixture.close(); }
   });
 
+  it("rejects an unregistered claude- model with a clear client error instead of forwarding it to OpenAI", async () => {
+    const fixture = await setup((_req, res) => res.end());
+    try {
+      for (const model of ["claude-sonnet-5-5", "Claude-Opus-5", "claude:opus-9"]) {
+        const response = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model, input: "hello" }) });
+        assert.equal(response.status, 400, model);
+        const body = await response.json() as { error: { code: string; message: string } };
+        assert.equal(body.error.code, "unregistered_claude_model");
+        assert.equal(body.error.message, `\`${model}\` is not a registered Claude model; add a \`codexIngress.claude.aliases\` entry to route it`);
+      }
+      assert.equal(fixture.openai.requests.length, 0, "an unregistered Claude name must never reach OpenAI");
+      assert.equal(fixture.claude.requests.length, 0);
+    } finally { await fixture.close(); }
+  });
+
+  it("bounds and neutralizes the echoed name of an unregistered claude- model", async () => {
+    const fixture = await setup((_req, res) => res.end());
+    try {
+      const model = `claude-\u001b[31mred\r\nforged: yes\u0000<script>${"x".repeat(500)}`;
+      const response = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model, input: "hello" }) });
+      assert.equal(response.status, 400);
+      const { error } = await response.json() as { error: { code: string; message: string } };
+      assert.equal(error.code, "unregistered_claude_model");
+      const echoed = /^`([^`]*)` is not a registered Claude model/.exec(error.message)?.[1];
+      assert.ok(echoed !== undefined, error.message);
+      assert.ok(echoed.startsWith("claude-"), echoed);
+      assert.ok(echoed.length <= 80, `echoed name is ${echoed.length} characters`);
+      assert.doesNotMatch(echoed, /[\u0000-\u001f\u007f<>\s]/);
+      assert.equal(fixture.openai.requests.length + fixture.claude.requests.length, 0);
+    } finally { await fixture.close(); }
+  });
+
   it("rejects effort none on a thinking-always-on model before contacting Claude", async () => {
     const fixture = await setup((_req, res) => res.end());
     try {
@@ -153,6 +185,9 @@ describe("production reverse HTTP ingress", () => {
       assert.equal(fixture.openai.requests[0]?.body.toString(), raw);
       const claude = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model: "sonnet", input: "x".repeat(8192) }) });
       assert.equal(claude.status, 413); await claude.text(); assert.equal(fixture.claude.requests.length, 0);
+      const unregistered = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model: "claude-sonnet-5-5", input: "x".repeat(8192) }) });
+      assert.equal(unregistered.status, 400); assert.match(await unregistered.text(), /unregistered_claude_model/);
+      assert.equal(fixture.openai.requests.length, 1, "an over-window unregistered Claude name must not be streamed to OpenAI");
     } finally { await fixture.close(); }
   });
 

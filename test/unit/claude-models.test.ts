@@ -6,6 +6,7 @@ import {
   buildOpenaiModelNamePredicate,
   claudeResolver,
   augmentCodexModels,
+  isClaudeModelName,
   CLAUDE_MODELS,
 } from "../../src/claude-models.js";
 import { MODEL_REGISTRY, type ModelEntry } from "../../src/models.js";
@@ -148,6 +149,15 @@ describe("claudeResolver", () => {
 
   it("does not resolve the announced-but-unpublished Sonnet 5.5", () => {
     assert.equal(claudeResolver({})("claude-sonnet-5-5"), undefined);
+  });
+});
+
+describe("isClaudeModelName", () => {
+  it("claims the claude- and claude: namespaces case-insensitively and nothing else", () => {
+    for (const name of ["claude-sonnet-5-5", "CLAUDE-OPUS-9", "Claude-x", "claude:anything"])
+      assert.equal(isClaudeModelName(name), true, `'${name}' is in the Claude namespace`);
+    for (const name of ["", "claude", "claudette", "sonnet", "gpt-6-sol", "my-claude-sonnet"])
+      assert.equal(isClaudeModelName(name), false, `'${name}' is not in the Claude namespace`);
   });
 });
 
