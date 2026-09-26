@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { parseTOML, getStaticTOMLValue } from "toml-eslint-parser";
 import { object } from "./claude-contract.js";
-import { CLAUDE_MODELS, claudeResolver, claudeModelRows } from "./claude-models.js";
+import { CLAUDE_MODELS, claudeResolver, claudeModelRows, isClaudeModelName } from "./claude-models.js";
 import { createClaudeCredentialStore, inspectClaudeAuth } from "./claude-auth.js";
 import { expandHome, isLoopbackHost, type Config } from "./config.js";
 import { doctorRow, makeLiveHttpGet, makeLiveTlsConnect, type HttpGetResult, type TlsStatus } from "./doctor.js";
@@ -163,7 +163,8 @@ const checkNativeConfig = async (
         if (typeof model !== "string") continue;
         const destination = resolve(model);
         if (destination) write(`  agent ${name}: ${model} → ${destination}`);
-        else if (model.startsWith("claude-") || CLAUDE_MODELS.some((entry) => entry.family === model))
+        // The same namespace test the gateway uses to refuse a name, so doctor flags exactly what it refuses.
+        else if (isClaudeModelName(model) || CLAUDE_MODELS.some((entry) => entry.family === model))
           report(`agent ${name}`, false, "Claude model is not in the registry or configured aliases");
       } catch {
         report(`agent ${name}`, false, "cannot read or parse role configuration");

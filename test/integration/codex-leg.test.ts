@@ -260,6 +260,60 @@ describe("codex leg", () => {
   });
 
   /**
+   * OpenAI's Codex backend signals throttling with finer-grained error codes than the
+   * status alone: 429 `slow_down` and 503 `server_is_overloaded`, either may carry
+   * Retry-After. The mapping is status-based, so both must land on the same Anthropic
+   * type as any other 429/503, keep the upstream code visible in the message, and relay
+   * Retry-After so Claude Code's own backoff honours the upstream's schedule.
+   *
+   * Mutation that MUST turn these red: drop the `retry-after` passthrough in the
+   * codex handler's non-2xx branch. Proven red: the retry-after assertions fail.
+   */
+  it("maps a 429 slow_down to rate_limit_error and relays retry-after and the upstream code", async () => {
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(429, { "content-type": "application/json", "retry-after": "3" });
+      res.end(JSON.stringify({ error: { type: "rate_limit_error", code: "slow_down", message: "Please slow down." } }));
+    });
+
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get("retry-after"), "3");
+    const body = (await response.json()) as { error: { type: string; message: string } };
+    assert.equal(body.error.type, "rate_limit_error");
+    assert.match(body.error.message, /slow_down/, "the upstream error code must stay visible to the user");
+    assert.equal(rig.anthropic.requests.length, 0, "a Codex 429 must not fall back to Anthropic");
+  });
+
+  it("maps a 503 server_is_overloaded to api_error and relays retry-after and the upstream code", async () => {
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(503, { "content-type": "application/json", "retry-after": "11" });
+      res.end(JSON.stringify({ error: { type: "server_error", code: "server_is_overloaded", message: "Server is overloaded." } }));
+    });
+
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
+    assert.equal(response.status, 503, "the upstream status is relayed, not rewritten");
+    assert.equal(response.headers.get("retry-after"), "11");
+    const body = (await response.json()) as { error: { type: string; message: string } };
+    // overloaded_error is not in AnthropicErrorType: every upstream 5xx maps to api_error.
+    assert.equal(body.error.type, "api_error");
+    assert.match(body.error.message, /server_is_overloaded/, "the upstream error code must stay visible to the user");
+    assert.doesNotMatch(body.error.message, /run `/, "remediation suffix must not appear on 503");
+  });
+
+  it("maps a 503 server_is_overloaded without retry-after and adds no retry-after of its own", async () => {
+    const rig = await setupRig((_req, res) => {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { type: "server_error", code: "server_is_overloaded", message: "Server is overloaded." } }));
+    });
+
+    const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("retry-after"), null, "the relay must not invent a Retry-After (ADR-010)");
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "api_error");
+  });
+
+  /**
    * I3.1 — upstream returns 500 with a body containing a JWT.
    * The client-visible body must contain no `eyJ…` prefix but MUST retain
    * the surrounding words — proving surgical redaction, not message erasure.
@@ -781,14 +835,14 @@ describe("codex leg", () => {
 
   it("sends the canonical model id upstream when a derived family alias is used in the request", async () => {
     // Default config uses the built-in model registry — all non-retired registry ids are routable.
-    // "sol" is a derived family alias for "gpt-5.6-sol".
+    // "sol" is a derived family alias for "gpt-6-sol".
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
     const body = JSON.stringify({ model: "sol", stream: true, messages: [{ role: "user", content: "hi" }] });
     const response = await postMessages(rig.subswitch, body);
     assert.equal(response.status, 200);
     await response.text();
     const sent = JSON.parse(rig.codex.requests[0]!.body.toString("utf8")) as Record<string, unknown>;
-    assert.equal(sent["model"], "gpt-5.6-sol", "alias must be resolved to canonical before going upstream");
+    assert.equal(sent["model"], "gpt-6-sol", "alias must be resolved to canonical before going upstream");
     assert.equal(rig.anthropic.requests.length, 0, "alias for a codex model must not leak to Anthropic");
   });
 
@@ -813,7 +867,7 @@ describe("codex leg", () => {
 
   it("alias and its canonical produce the same session_id and prompt_cache_key", async () => {
     // This test is the critical invariant of Phase B: canonical threading ensures that
-    // a user sending "sol" and a user sending "gpt-5.6-sol" share a conversation id.
+    // a user sending "sol" and a user sending "gpt-6-sol" share a conversation id.
     const scripts = [loadSse("text-only.sse"), loadSse("text-only.sse")];
     const rig = await setupRig((_req, res, _body, index) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -822,7 +876,7 @@ describe("codex leg", () => {
 
     const userMsg = [{ role: "user", content: "same conversation content" }];
     const reqAlias = JSON.stringify({ model: "sol", stream: true, messages: userMsg });
-    const reqCanonical = JSON.stringify({ model: "gpt-5.6-sol", stream: true, messages: userMsg });
+    const reqCanonical = JSON.stringify({ model: "gpt-6-sol", stream: true, messages: userMsg });
 
     const r1 = await postMessages(rig.subswitch, reqAlias);
     await r1.text();
@@ -871,7 +925,7 @@ describe("codex leg", () => {
     const startLine = startFrame.split("\n").find((l) => l.startsWith("data: "));
     assert.ok(startLine !== undefined);
     const startData = JSON.parse(startLine.slice(6)) as { message: { model: string } };
-    assert.equal(startData.message.model, "gpt-5.6-sol", "options.model fallback must be the canonical, not the alias");
+    assert.equal(startData.message.model, "gpt-6-sol", "options.model fallback must be the canonical, not the alias");
   });
 
   it("a codex.aliases config override routes a non-registry id upstream and proves override precedence", async () => {

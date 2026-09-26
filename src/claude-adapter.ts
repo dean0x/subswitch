@@ -5,9 +5,10 @@ import { replayIdentity, type ReverseState } from "./claude-state.js";
 
 export type { ObjectValue as Item } from "./plain-object.js";
 import { ReverseContractError, type ClaudeErrorCode } from "./claude-errors.js";
+import { CLAUDE_REASONING_EFFORTS, claudeModel, type ClaudeModel } from "./claude-models.js";
 export { ReverseContractError } from "./claude-errors.js";
-const fail = (code: ClaudeErrorCode): never => {
-  throw new ReverseContractError(code);
+const fail = (code: ClaudeErrorCode, detail?: string): never => {
+  throw new ReverseContractError(code, detail);
 };
 const string = (value: unknown): string => (typeof value === "string" ? value : fail("expected_string"));
 const item = (value: unknown): Item => object(value) ?? fail("expected_object");
@@ -225,23 +226,46 @@ const resolveToolChoice = (request: Item, tools: ReadonlyMap<string, ToolMapping
   return choice;
 };
 
-const sampling = (request: Item): Item => {
+/** "low, medium, high, xhigh, or max" */
+const EFFORT_CHOICES = `${CLAUDE_REASONING_EFFORTS.slice(0, -1).join(", ")}, or ${CLAUDE_REASONING_EFFORTS.at(-1)}`;
+
+/**
+ * `model` is the canonical id, so it names a catalog entry or a configured alias target —
+ * never raw client text. `capability` is undefined for an alias-bridged target the catalog
+ * does not know: with no data, nothing is clamped or refused and the request goes as sent.
+ */
+const sampling = (request: Item, model: string, capability: ClaudeModel | undefined): Item => {
   const format = object(object(request["text"])?.["format"]);
   if (format && format["type"] !== "text") return fail("structured_output_unimplemented");
   const max = request["max_output_tokens"] ?? 4096;
   if (typeof max !== "number" || !Number.isSafeInteger(max) || max < 1) return fail("invalid_output_limit");
   const reasoning = object(request["reasoning"]);
   const effort = reasoning?.["effort"];
-  if (effort !== undefined && !["none", "low", "medium", "high", "xhigh", "max"].includes(String(effort)))
+  if (effort !== undefined && !["none", ...CLAUDE_REASONING_EFFORTS].includes(String(effort)))
     return fail("unsupported_reasoning_effort");
+  // Refused rather than rewritten: silently thinking anyway would change what the client asked for.
+  if (effort === "none" && capability?.thinkingAlwaysOn)
+    return fail(
+      "reasoning_effort_unsupported_by_model",
+      `\`${model}\` always thinks, so reasoning effort \`none\` cannot be honoured; use ${EFFORT_CHOICES}.`,
+    );
   return {
-    max_tokens: max,
+    max_tokens: capability ? Math.min(max, capability.maxOutputTokens) : max,
     ...(effort === "none"
       ? { thinking: { type: "disabled" } }
       : effort !== undefined
         ? { thinking: { type: "adaptive" }, output_config: { effort } }
         : {}),
   };
+};
+
+/** Refused rather than downgraded to `auto`: the client asked for a call to be guaranteed. */
+const requireToolChoiceSupport = (choice: Item, model: string, capability: ClaudeModel | undefined): void => {
+  if ((choice["type"] === "any" || choice["type"] === "tool") && capability?.forcedToolChoice === false)
+    fail(
+      "tool_choice_unsupported_by_model",
+      `\`${model}\` does not support forced tool choice (\`required\` or a named tool); use \`auto\`.`,
+    );
 };
 
 /** Caller supplies complete native history. Unknown opaque state is an explicit error. */
@@ -261,11 +285,15 @@ export const reverseRequest = (
   const messages = foldHistory(input, system, tools, state);
   const mappedTools = mapTools(tools);
   const choice = resolveToolChoice(request, tools);
+  const model = string(request["model"]);
+  const capability = claudeModel(model);
+  // tool_choice is only sent alongside tools, so an unsent forced choice is not refused.
+  if (mappedTools.length) requireToolChoiceSupport(choice, model, capability);
   return {
     tools,
     body: {
-      model: string(request["model"]),
-      ...sampling(request),
+      model,
+      ...sampling(request, model, capability),
       stream: false,
       cache_control: { type: "ephemeral" },
       ...(system.length ? { system } : {}),

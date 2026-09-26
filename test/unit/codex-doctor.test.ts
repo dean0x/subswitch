@@ -49,6 +49,22 @@ describe("Codex doctor", () => {
     });
     assert.equal(result, 0); assert.match(output.join("\n"), /agent worker: sonnet → claude-sonnet-5/);
   });
+  it("flags every agent model the reverse leg would refuse as an unregistered Claude name", async () => {
+    const loaded = loadConfig({ configPath: "fixture", readFile: () => '{"codexIngress":{"enabled":true,"claude":{"enabled":true}}}' });
+    assert.ok(loaded.ok);
+    const output: string[] = [];
+    await runCodexDoctor(loaded.value.config, line => output.push(line), {
+      env: { CODEX_HOME: "/fixture/native" }, project: "/fixture/project",
+      read: async path => path === "/fixture/native/config.toml"
+        ? '[agents.deep]\nmodel="opus"\n[agents.future]\nmodel="claude-sonnet-5-5"\n[agents.shouty]\nmodel="Claude-Opus-5"\n[agents.native]\nmodel="gpt-6-sol"' : null,
+      auth: async () => ({ available: true, expired: false, refreshable: true }),
+      httpGet: async () => ({ ok: false, connectionRefused: true }), tlsConnect: async () => ({ kind: "reachable" }),
+    });
+    const text = output.join("\n");
+    assert.match(text, /agent deep: opus → claude-opus-5-5/);
+    assert.match(text, /agent future:.*FAIL.*not in the registry/); assert.match(text, /agent shouty:.*FAIL.*not in the registry/);
+    assert.doesNotMatch(text, /agent native/);
+  });
   it("fails missing credentials, disabled routing, and unavailable native setup", async () => {
     const loaded = loadConfig({ configPath: "fixture", readFile: () => "{}" }); assert.ok(loaded.ok);
     const output: string[] = [];

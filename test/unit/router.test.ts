@@ -43,9 +43,9 @@ describe("decideRoute — exact id (F1)", () => {
 // ---------------------------------------------------------------------------
 
 describe("decideRoute — family alias (F2)", () => {
-  it("routes 'sol' (family alias → gpt-5.6-sol) to provider", () => {
+  it("routes 'sol' (family alias → gpt-6-sol) to provider", () => {
     const result = decideRoute("POST", "/v1/messages", resolve("sol"));
-    assert.deepEqual(result, { kind: "provider", provider: "codex" as ProviderId, model: "gpt-5.6-sol", endpoint: "messages" });
+    assert.deepEqual(result, { kind: "provider", provider: "codex" as ProviderId, model: "gpt-6-sol", endpoint: "messages" });
   });
 
   it("routes 'terra' (family alias → gpt-5.6-terra) to provider", () => {
@@ -53,9 +53,9 @@ describe("decideRoute — family alias (F2)", () => {
     assert.deepEqual(result, { kind: "provider", provider: "codex" as ProviderId, model: "gpt-5.6-terra", endpoint: "messages" });
   });
 
-  it("routes 'luna' (family alias → gpt-5.6-luna) to provider", () => {
+  it("routes 'luna' (family alias → gpt-6-luna) to provider", () => {
     const result = decideRoute("POST", "/v1/messages", resolve("luna"));
-    assert.deepEqual(result, { kind: "provider", provider: "codex" as ProviderId, model: "gpt-5.6-luna", endpoint: "messages" });
+    assert.deepEqual(result, { kind: "provider", provider: "codex" as ProviderId, model: "gpt-6-luna", endpoint: "messages" });
   });
 });
 
@@ -120,13 +120,13 @@ describe("decideRoute — non-POST / non-messages paths", () => {
 // ---------------------------------------------------------------------------
 
 describe("decideRoute — receives ModelResolution, not raw names (F13)", () => {
-  it("'sol' after resolution routes to gpt-5.6-sol, not anthropic", () => {
+  it("'sol' after resolution routes to gpt-6-sol, not anthropic", () => {
     // If decideRoute tried to match names itself, it would fail on "sol" (unrecognized).
     // The fact that it routes correctly proves resolution happened before routing.
     const result = decideRoute("POST", "/v1/messages", resolve("sol"));
     assert.equal(result.kind, "provider");
     if (result.kind === "provider") {
-      assert.equal(result.model, "gpt-5.6-sol");
+      assert.equal(result.model, "gpt-6-sol");
     }
   });
 });

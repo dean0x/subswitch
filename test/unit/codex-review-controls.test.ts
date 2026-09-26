@@ -98,5 +98,9 @@ describe("reverse ingress review controls", () => {
     assert.deepEqual(decideCodexRoute("/responses", { kind: "claude", model: "claude-future" }), { kind: "claude", model: "claude-future" });
     assert.deepEqual(decideCodexRoute("/responses/compact", { kind: "claude", model: "claude-future" }), { kind: "rejected", code: "translated_compaction_unavailable" });
     assert.deepEqual(decideCodexRoute("/responses", { kind: "foreign" }), { kind: "parent" });
+    const unregistered = { kind: "rejected", code: "unregistered_claude_model",
+      message: "`claude-next` is not a registered Claude model; add a `codexIngress.claude.aliases` entry to route it" };
+    assert.deepEqual(decideCodexRoute("/responses", { kind: "unregistered", name: "claude-next" }), unregistered);
+    assert.deepEqual(decideCodexRoute("/responses/compact", { kind: "unregistered", name: "claude-next" }), unregistered);
   });
 });

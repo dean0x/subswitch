@@ -139,9 +139,11 @@ export type ModelResolution =
 
 /**
  * Canonical model registry — THE exact-membership set for routing (applies ADR-005).
- * Never delete entries: deleting silently unroutes anyone who pinned that id.
- * Mark them `retired` instead, which keeps them resolvable and lets the upstream
- * return a truthful 404.
+ * Never delete entries: deleting silently unroutes anyone who pinned that id, sending
+ * that agent to Anthropic instead. Mark them `retired` instead, which keeps them
+ * resolvable so the request still reaches the provider and gets the upstream's own
+ * answer. For the Codex backend that answer is an HTTP 400 ("The `<model>` model is not
+ * supported when using Codex with a ChatGPT account"), not a 404.
  */
 export const MODEL_REGISTRY: readonly ModelEntry[] = [
   {
@@ -160,10 +162,38 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
     // to disagree. (avoids PF-004, PF-023)
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
   },
+  // GPT-6 Sol and Luna (released 2026-09-22; GPT-6 has no Terra, so `terra` stays on
+  // gpt-5.6-terra). Gen [6] beats [5, 6], so these two take over the `sol` and `luna`
+  // family aliases; gpt-5.6-sol and gpt-5.6-luna remain routable by exact id.
+  //
+  // Five efforts, for the same reason as Astra above. The Codex catalog lists
+  // low/medium/high/xhigh/max for both; Sol's catalog also shows a client-only `ultra`
+  // that the Codex client sends as `max` on the wire, so it is not a /responses value.
+  // `none` and `minimal` appear in the API docs but not in the Codex catalog for either
+  // model. A direct Codex backend probe (2026-09-26) rejected `minimal` with a 400 and
+  // accepted `none`. `none` is still deliberately not registered: the Codex catalog does
+  // not list it and Claude Code subagent frontmatter cannot send it, so a follow-up may
+  // add it. An unregistered effort degrades to the backend default with a warning instead
+  // of risking an upstream 400. (avoids PF-004, PF-023)
+  {
+    id: "gpt-6-sol",
+    provider: "codex",
+    family: "sol",
+    gen: [6],
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    id: "gpt-6-luna",
+    provider: "codex",
+    family: "luna",
+    gen: [6],
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  },
   { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
   { id: "gpt-5.6-terra", provider: "codex", family: "terra", gen: [5, 6] },
   { id: "gpt-5.6-luna", provider: "codex", family: "luna", gen: [5, 6] },
-  { id: "gpt-5.5", provider: "codex", gen: [5, 5] },
+  // Retired from ChatGPT/Codex on 2026-10-14.
+  { id: "gpt-5.5", provider: "codex", gen: [5, 5], retired: true },
 ];
 
 // ---------------------------------------------------------------------------
@@ -209,17 +239,30 @@ export const reasoningEffortsForModel = (
 // ---------------------------------------------------------------------------
 
 /**
- * Names Claude Code treats as Anthropic models. Prefix-matched so generation and
- * variant suffixes are covered too (`sonnet[1m]`, `opusplan`, `claude-3-7-sonnet-…`).
+ * Names Claude Code treats as Anthropic models — the `model:` values its docs list for
+ * subagents and its model-alias table (code.claude.com/docs/en/sub-agents and
+ * /docs/en/model-config, checked 2026-09-26). Two arms:
  *
+ * Prefix arm — generation and variant suffixes are covered too (`sonnet[1m]`,
+ * `opusplan`, `claude-3-7-sonnet-…`):
  * - `inherit`: Claude Code's "inherit parent model" sentinel.
- * - `sonnet`, `opus`, `haiku`: Claude tier short-names.
+ * - `sonnet`, `opus`, `haiku`: Claude tier short-names (`opus` also covers `opusplan`).
  * - `claude-`: any Claude model id.
+ *
+ * Word arm — the exact word, or the word followed by a `[…]` variant suffix
+ * (`fable[1m]`), never the prefix of a longer name, so `bestie` or `fabled` stay
+ * available as Codex alias keys:
+ * - `fable`: the Fable tier alias.
+ * - `best`: resolves to Fable where available, otherwise Opus.
+ *
+ * `default` is deliberately absent: Claude Code documents it as a value that clears a
+ * model override ("not itself a model alias"), not as a subagent `model:` value.
  */
-// Intentionally prefix-based (not exact) so variant tier names like `sonnet[1m]`
+// The prefix arm stays prefix-based (not exact) so variant tier names like `sonnet[1m]`
 // or `opusplan` are also caught. An exact match would let such names slip through
-// config validation and reopen the main-thread→Codex misroute hole.
-const ANTHROPIC_NAME_RE = /^(inherit|sonnet|opus|haiku|claude-)/i;
+// config validation and reopen the main-thread→Codex misroute hole (PF-007). The word
+// arm is exact because `best` and `fable` are ordinary English prefixes.
+const ANTHROPIC_NAME_RE = /^(?:inherit|sonnet|opus|haiku|claude-)|^(?:fable|best)(?:$|\[)/i;
 
 /**
  * True when `name` must never be resolvable in the routing table.
@@ -467,8 +510,8 @@ export const buildRoutingTable = (
   }
 
   // --- 2. byId: all registry entries (including retired and preview) ---
-  // Retired entries stay in byId so a pin on a retired id keeps routing and gives a
-  // truthful upstream 404 naming the provider, rather than silently dropping through.
+  // Retired entries stay in byId so a pin on a retired id keeps routing and gets the
+  // upstream's own error naming the provider, rather than silently dropping through.
   const byId = new Map<string, ProviderId>();
   for (const entry of registry) {
     if (!byId.has(entry.id)) {

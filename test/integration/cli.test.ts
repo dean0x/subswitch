@@ -372,14 +372,20 @@ describe("CLI models", () => {
     );
   });
 
-  it("shows gpt-5.5 as a (direct) row — it is routable by default but has no family alias", async () => {
-    // gpt-5.5 has no family field and therefore never appears as the canonical of an alias
-    // row.  Without a direct row, gpt-5.5 would silently disappear from the output even
-    // though it is routable.
+  it("shows gpt-5.6-sol as a (direct) row — still routable after GPT-6 took the sol alias", async () => {
+    // gpt-5.6-sol is no longer the canonical of any alias row. Without a direct row it
+    // would silently disappear from the output even though it is routable by exact id.
     const result = await runCli(["models"]);
     assert.equal(result.exitCode, 0);
-    assert.ok(result.stdout.includes("gpt-5.5"), "output must include gpt-5.5");
-    assert.ok(result.stdout.includes("(direct)"), "gpt-5.5 must appear as a (direct) row");
+    const line = result.stdout.split("\n").find((l) => l.includes("gpt-5.6-sol"));
+    assert.ok(line !== undefined, "output must include gpt-5.6-sol");
+    assert.ok(line.includes("(direct)"), "gpt-5.6-sol must appear as a (direct) row");
+  });
+
+  it("omits the retired gpt-5.5 from the human-readable table", async () => {
+    const result = await runCli(["models"]);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout.includes("gpt-5.5"), false, "retired gpt-5.5 must not be listed");
   });
 
   it("shows the provider column in human-readable output", async () => {
@@ -490,6 +496,33 @@ describe("CLI models --json", () => {
       ["low", "medium", "high", "xhigh", "max"],
       "reasoningEfforts for gpt-6-astra must be its five declared values",
     );
+  });
+
+  it("lists gpt-6-sol and gpt-6-luna holding the sol and luna aliases, with their declared reasoningEfforts", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as {
+      models: Array<{ id: string; gen?: number[]; aliases?: Array<{ name: string }>; reasoningEfforts?: string[] }>;
+    };
+    for (const [id, family] of [["gpt-6-sol", "sol"], ["gpt-6-luna", "luna"]] as const) {
+      const model = parsed.models.find((m) => m.id === id);
+      assert.ok(model !== undefined, `models must include ${id}`);
+      assert.ok(model.aliases?.some((alias) => alias.name === family), `${id} must carry the derived '${family}' alias`);
+      assert.deepEqual(model.gen, [6], `gen for ${id} must be [6]`);
+      assert.deepEqual(model.reasoningEfforts, ["low", "medium", "high", "xhigh", "max"], `${id} reasoningEfforts`);
+    }
+    // The superseded 5.6 entries stay listed but no longer carry the family alias.
+    const oldSol = parsed.models.find((m) => m.id === "gpt-5.6-sol");
+    assert.ok(oldSol !== undefined, "models must still include gpt-5.6-sol");
+    assert.equal(oldSol.aliases?.some((alias) => alias.name === "sol"), false, "'sol' must have moved to gpt-6-sol");
+  });
+
+  it("lists the retired gpt-5.5 as retired and not routable", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as { models: Array<{ id: string; retired: boolean; routable: boolean }> };
+    const gpt55 = parsed.models.find((m) => m.id === "gpt-5.5");
+    assert.ok(gpt55 !== undefined, "retired models stay in the registry and in models --json");
+    assert.equal(gpt55.retired, true, "gpt-5.5 must be marked retired");
+    assert.equal(gpt55.routable, false, "gpt-5.5 must not be advertised as routable");
   });
 
   // Conditional spread, not `?? undefined`: exactOptionalPropertyTypes is on, so an entry

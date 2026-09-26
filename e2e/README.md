@@ -42,7 +42,7 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:4141 claude -p "Use the gpt-worker agent to 
 ```
 
 This exercises, in one run:
-- the Codex leg (`model: gpt-5.5` from the agent frontmatter routes to chatgpt.com
+- the Codex leg (`model: gpt-6-sol` from the agent frontmatter routes to chatgpt.com
   via exact-id routing — the e2e fixture intentionally pins the canonical id to keep
   exact-id routing verified separately from alias routing),
 - multi-turn tool calling — the second Codex request must carry the cached
@@ -50,9 +50,10 @@ This exercises, in one run:
   subswitch log; there should be none),
 - concurrent `claude-*` utility traffic on the Anthropic leg.
 
-**Alias routing variant (optional):** replace `model: gpt-5.5` with `model: sol`
-in the scratch agent and repeat. Subswitch should resolve `sol` to `gpt-5.6-sol`
-and route the request to Codex. The `subswitch models` command shows the effective
+**Alias routing variant (optional):** replace `model: gpt-6-sol` with `model: sol`
+in the scratch agent and repeat. Subswitch should resolve `sol` to `gpt-6-sol`
+and route the request to Codex; the `request_complete` line shows `model=sol` with
+`route=codex:messages:gpt-6-sol`. The `subswitch models` command shows the effective
 alias table and confirms resolution before the test.
 
 ## 4. Per-project wiring (the deliverable)
