@@ -102,6 +102,9 @@ describe("production reverse HTTP ingress", () => {
       const body = await response.json() as { models: Item[]; etag_hint: string };
       assert.deepEqual(body.models[0], original); assert.equal(body.etag_hint, "unchanged");
       assert.ok(body.models.some(model => model["slug"] === "sonnet")); assert.ok(body.models.some(model => model["slug"] === "claude-opus-5"));
+      assert.ok(body.models.some(model => model["slug"] === "claude-opus-5-5"));
+      assert.equal(body.models.find(model => model["slug"] === "opus")?.["default_reasoning_level"], "medium");
+      assert.equal(body.models.find(model => model["slug"] === "sonnet")?.["default_reasoning_level"], "high");
       assert.equal(fixture.claude.requests.length, 0);
     } finally { await fixture.close(); }
   });

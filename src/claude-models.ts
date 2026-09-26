@@ -1,20 +1,85 @@
 /** The destination registry for Codex ingress. Forward-ingress reservation rules stay independent. */
 import { isPlainObject } from "./plain-object.js";
 import { compareGen, MODEL_REGISTRY, type ModelEntry } from "./models.js";
+/** The reasoning efforts every catalogued Claude model accepts on `output_config.effort`. */
+export const CLAUDE_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_EFFORTS)[number];
+
+/**
+ * One reverse-leg destination. Every capability field is REQUIRED, so a new model
+ * (e.g. a future Sonnet 5.5) cannot be catalogued without deciding each one.
+ * Values come from platform.claude.com (fetched 2026-09-26).
+ */
 export interface ClaudeModel {
   readonly id: string;
   readonly family: string;
   readonly gen: readonly number[];
   readonly contextWindow: number;
+  /** The Messages API `max_tokens` ceiling; the adapter clamps outgoing requests to it. */
   readonly maxOutputTokens: number;
+  /** Adaptive thinking cannot be switched off: `thinking: {type: "disabled"}` is a 400. */
+  readonly thinkingAlwaysOn: boolean;
+  /** Accepts `tool_choice` `{type: "any"}` / `{type: "tool"}`; when false both are a 400. */
+  readonly forcedToolChoice: boolean;
+  /** The effort the model uses when none is sent, advertised as Codex's default level. */
+  readonly defaultEffort: ClaudeReasoningEffort;
 }
 
 export const CLAUDE_MODELS: readonly ClaudeModel[] = [
-  { id: "claude-sonnet-5", family: "sonnet", gen: [5], contextWindow: 1_000_000, maxOutputTokens: 128_000 },
-  { id: "claude-opus-5", family: "opus", gen: [5], contextWindow: 1_000_000, maxOutputTokens: 128_000 },
-  { id: "claude-fable-5", family: "fable", gen: [5], contextWindow: 1_000_000, maxOutputTokens: 128_000 },
-  { id: "claude-fable-5-1", family: "fable", gen: [5, 1], contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+  {
+    id: "claude-sonnet-5",
+    family: "sonnet",
+    gen: [5],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    thinkingAlwaysOn: false,
+    forcedToolChoice: true,
+    defaultEffort: "high",
+  },
+  {
+    id: "claude-opus-5",
+    family: "opus",
+    gen: [5],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    thinkingAlwaysOn: false,
+    forcedToolChoice: true,
+    defaultEffort: "high",
+  },
+  {
+    id: "claude-opus-5-5",
+    family: "opus",
+    gen: [5, 5],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    thinkingAlwaysOn: true,
+    forcedToolChoice: false,
+    defaultEffort: "medium",
+  },
+  {
+    id: "claude-fable-5",
+    family: "fable",
+    gen: [5],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    thinkingAlwaysOn: true,
+    forcedToolChoice: true,
+    defaultEffort: "high",
+  },
+  {
+    id: "claude-fable-5-1",
+    family: "fable",
+    gen: [5, 1],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    thinkingAlwaysOn: true,
+    forcedToolChoice: false,
+    defaultEffort: "high",
+  },
 ];
+
+/** The catalog entry for a canonical id; undefined for an alias-bridged target the catalog does not know. */
+export const claudeModel = (id: string): ClaudeModel | undefined => CLAUDE_MODELS.find((model) => model.id === id);
 
 /** Escape regex metacharacters so a registry name matches literally (e.g. the `.` in `gpt-5.6-sol`). */
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -124,7 +189,7 @@ export function augmentCodexModels(
   const template = models.find((model) => model["tool_mode"] === "code_mode_only") ?? models[0]!;
   const present = new Set(models.map((model) => model["slug"]));
   const additions = claudeModelRows(aliases).flatMap((row) => {
-    const capability = CLAUDE_MODELS.find((model) => model.id === row.id);
+    const capability = claudeModel(row.id);
     if (!capability) return []; // Custom aliases route, but unverified capabilities are not advertised.
     return [row.id, ...row.aliases]
       .filter((slug) => !present.has(slug))
@@ -136,8 +201,9 @@ export function augmentCodexModels(
         supported_in_api: true,
         context_window: capability.contextWindow,
         max_context_window: capability.contextWindow,
-        default_reasoning_level: "high",
-        supported_reasoning_levels: ["low", "medium", "high", "xhigh", "max"].map((effort) => ({
+        default_reasoning_level: capability.defaultEffort,
+        // `none` is never offered: it cannot be honoured on thinking-always-on models.
+        supported_reasoning_levels: CLAUDE_REASONING_EFFORTS.map((effort) => ({
           effort,
           description: effort,
         })),
