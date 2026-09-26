@@ -24,6 +24,11 @@ discovery (no seeded model cache), the production gateway passed:
 | GPT-6 Astra | Sonnet 5 | Native HTTP fallback | Tool read, continuation, parent delivery and same-child follow-up |
 | GPT-5.5 | Sonnet 5 | Native defaults | Configured child/tool round trip and parent delivery |
 
+These rows were recorded when `opus` resolved to Opus 5; `opus` now resolves to
+Opus 5.5, so the `opus` command below exercises Opus 5.5. The GPT-5.5 row predates
+that model's retirement (Codex stops serving it on 2026-10-14); the non-v2 parent
+variant below now uses `gpt-5.6-luna`, whose catalog entry is multi-agent v1.
+
 The files contain unpredictable values absent from the prompts. Success requires
 real Codex tool execution and the correct values reaching the parent. A later
 Sonnet follow-up run also observed prompt-cache reads. The existing Claude Code →
@@ -34,7 +39,7 @@ node --import tsx e2e/gates/native-production.ts sonnet
 node --import tsx e2e/gates/native-production.ts opus --no-followup
 node --import tsx e2e/gates/native-production.ts fable --no-followup
 node --import tsx e2e/gates/native-production.ts sonnet --http
-node --import tsx e2e/gates/native-production.ts sonnet --no-followup --parent gpt-5.5
+node --import tsx e2e/gates/native-production.ts sonnet --no-followup --parent gpt-5.6-luna
 ```
 
 The runner points native Codex at the actual production gateway, uses temporary
@@ -42,6 +47,26 @@ access-only credential copies, and lets native Codex fetch its own model catalog
 The optional HTTP relay rejects upgrades, then forwards HTTP bytes to the real
 OpenAI endpoint. No model requests or tool responses are fabricated in these runs.
 The native Claude binary is not used by this production runner.
+
+## Model catalog refresh — 2026-09-26
+
+Environment: Codex CLI 0.157.1, Claude Code 2.1.283, macOS, subscription
+authentication on both sides.
+
+| Check | Result |
+| --- | --- |
+| Responses client → production gateway → Claude, `claude-opus-5-5` at effort `medium` and `max`, and `opus` at `low` | HTTP 200, completed stream, response model `claude-opus-5-5` |
+| Same gateway, `claude-fable-5-1` or `fable` with effort `none` | HTTP 400 `reasoning_effort_unsupported_by_model`, no upstream call |
+| Same gateway, `claude-opus-5-5` with `tool_choice: "required"` | HTTP 400 `tool_choice_unsupported_by_model`, no upstream call |
+| Same gateway, `claude-sonnet-5-5` | HTTP 400 `unregistered_claude_model`, not forwarded to OpenAI |
+| Native Claude Code parent → `gpt-6-sol` child → Read → parent (`probe:native-claude -- --openai`) | Pass: 2 translated requests, tool-result continuation, upstream 200s |
+| `native-production.ts` with `opus` and with `sonnet` | Blocked: native Codex 0.157.1 fails workspace routing discovery with 401 using the runner's refresh-disabled credential copy, before any request reaches the gateway |
+
+The Responses client in the first rows is a direct HTTP client, not native Codex, so
+those rows establish translation and subscription authentication for Opus 5.5, not
+native sub-agent orchestration. A direct Messages request with a forced tool choice
+confirmed that the Opus 5.5 upstream rejects `tool` and `any` tool choice, which is
+what the `tool_choice_unsupported_by_model` refusal anticipates.
 
 ## Important corrections from prototype to production
 
