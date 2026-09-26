@@ -237,17 +237,30 @@ export const reasoningEffortsForModel = (
 // ---------------------------------------------------------------------------
 
 /**
- * Names Claude Code treats as Anthropic models. Prefix-matched so generation and
- * variant suffixes are covered too (`sonnet[1m]`, `opusplan`, `claude-3-7-sonnet-…`).
+ * Names Claude Code treats as Anthropic models — the `model:` values its docs list for
+ * subagents and its model-alias table (code.claude.com/docs/en/sub-agents and
+ * /docs/en/model-config, checked 2026-09-26). Two arms:
  *
+ * Prefix arm — generation and variant suffixes are covered too (`sonnet[1m]`,
+ * `opusplan`, `claude-3-7-sonnet-…`):
  * - `inherit`: Claude Code's "inherit parent model" sentinel.
- * - `sonnet`, `opus`, `haiku`: Claude tier short-names.
+ * - `sonnet`, `opus`, `haiku`: Claude tier short-names (`opus` also covers `opusplan`).
  * - `claude-`: any Claude model id.
+ *
+ * Word arm — the exact word, or the word followed by a `[…]` variant suffix
+ * (`fable[1m]`), never the prefix of a longer name, so `bestie` or `fabled` stay
+ * available as Codex alias keys:
+ * - `fable`: the Fable tier alias.
+ * - `best`: resolves to Fable where available, otherwise Opus.
+ *
+ * `default` is deliberately absent: Claude Code documents it as a value that clears a
+ * model override ("not itself a model alias"), not as a subagent `model:` value.
  */
-// Intentionally prefix-based (not exact) so variant tier names like `sonnet[1m]`
+// The prefix arm stays prefix-based (not exact) so variant tier names like `sonnet[1m]`
 // or `opusplan` are also caught. An exact match would let such names slip through
-// config validation and reopen the main-thread→Codex misroute hole.
-const ANTHROPIC_NAME_RE = /^(inherit|sonnet|opus|haiku|claude-)/i;
+// config validation and reopen the main-thread→Codex misroute hole (PF-007). The word
+// arm is exact because `best` and `fable` are ordinary English prefixes.
+const ANTHROPIC_NAME_RE = /^(?:inherit|sonnet|opus|haiku|claude-)|^(?:fable|best)(?:$|\[)/i;
 
 /**
  * True when `name` must never be resolvable in the routing table.

@@ -74,9 +74,10 @@ Credential state is deliberately **not** an input to `buildRoutingTable`: gating
 
 **`preview: true`** entries are excluded from `byFamily` but resolvable by exact id. **`retired: true`** entries are excluded from `byFamily` and from qualified-family lookups, but resolvable by exact id and by `"provider:id"` qualified lookup.
 
-**`isReservedAnthropicName` (renamed from `isAnthropicModelName`; regex unchanged).** Prefix-based, covering `inherit|sonnet|opus|haiku|claude-*`. Used in two places that must never disagree:
+**`isReservedAnthropicName` (renamed from `isAnthropicModelName`).** Two arms, case-insensitive: a prefix arm `inherit|sonnet|opus|haiku|claude-*` (so `sonnet[1m]`, `opusplan` are covered), and a word arm `fable|best` that matches the exact word or the word followed by a `[…]` variant suffix only (`fable[1m]` yes, `bestie`/`fabled` no). The list tracks Claude Code's documented subagent `model:` values and model-alias table (code.claude.com/docs/en/sub-agents, /docs/en/model-config, checked 2026-09-26); `default` is deliberately not reserved — the docs call it a reset value, "not itself a model alias". Used in three places that must never disagree:
 - `config.ts` AliasesSchema refines — reject alias keys or values at config-parse time.
 - `buildRoutingTable` `byAlias` construction — entries matching the predicate are added to `rejectedAliases` and skipped.
+- `agent-scan.ts` `checkAgentModels` — a reserved name is skipped, so doctor never flags a Claude subagent (e.g. `model: fable`) as unresolvable.
 
 ### Reasoning Effort Vocabulary (src/models.ts)
 

@@ -4,6 +4,7 @@ import {
   DEFAULT_REASONING_EFFORTS,
   MODEL_REGISTRY,
   formatModelsReport,
+  isReservedAnthropicName,
   buildAliasRows,
   buildModelRows,
   buildRoutingTable,
@@ -68,6 +69,39 @@ describe("routableModelCount", () => {
       1,
       "retired entry must not be counted — if this fails, the retired guard is missing",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isReservedAnthropicName — Claude Code model names the forward leg must never claim
+// ---------------------------------------------------------------------------
+
+describe("isReservedAnthropicName", () => {
+  // Source: code.claude.com/docs/en/model-config (alias table) and /docs/en/sub-agents
+  // (subagent `model:` values), fetched 2026-09-26.
+  it("reserves every Claude Code model alias and the inherit sentinel", () => {
+    for (const name of ["inherit", "sonnet", "opus", "haiku", "fable", "best", "opusplan", "claude-opus-5-5"])
+      assert.equal(isReservedAnthropicName(name), true, `'${name}' must be reserved for the Anthropic leg`);
+  });
+
+  it("reserves fable and best case-insensitively and with a variant suffix", () => {
+    for (const name of ["FABLE", "Best", "fable[1m]", "best[1m]", "opusplan[1m]"])
+      assert.equal(isReservedAnthropicName(name), true, `'${name}' must be reserved for the Anthropic leg`);
+  });
+
+  it("reserves fable and best as whole words only, never as the prefix of a longer name", () => {
+    for (const name of ["bestie", "best-effort", "fabled", "fables", "fable-worker"])
+      assert.equal(isReservedAnthropicName(name), false, `'${name}' is not a Claude alias and must stay available`);
+  });
+
+  it("does not reserve 'default' — Claude Code documents it as a reset value, not a model alias", () => {
+    for (const name of ["default", "default[1m]", "default-x"])
+      assert.equal(isReservedAnthropicName(name), false, `'${name}' must stay available`);
+  });
+
+  it("does not reserve OpenAI registry names", () => {
+    for (const name of ["sol", "luna", "terra", "astra", "gpt-6-sol", "gpt-5.5"])
+      assert.equal(isReservedAnthropicName(name), false, `'${name}' must stay routable to Codex`);
   });
 });
 

@@ -206,8 +206,8 @@ describe("loadConfig", () => {
     assert.match(result.error.message, /claude/i);
   });
 
-  it("rejects providers.codex.aliases with a key matching an Anthropic tier word (sonnet, opus, haiku, inherit)", () => {
-    for (const tierWord of ["sonnet", "opus", "haiku", "inherit"]) {
+  it("rejects providers.codex.aliases with a key matching a Claude Code model alias (sonnet, opus, haiku, fable, best, inherit)", () => {
+    for (const tierWord of ["sonnet", "opus", "haiku", "fable", "best", "inherit", "fable[1m]"]) {
       const result = loadConfig({
         configPath: "x",
         readFile: () => JSON.stringify({ providers: { codex: { aliases: { [tierWord]: "gpt-5.6-sol" } } } }),
@@ -228,7 +228,7 @@ describe("loadConfig", () => {
   });
 
   it("rejects a providers.codex.aliases TARGET matching an Anthropic tier word", () => {
-    for (const tierWord of ["sonnet", "opus", "haiku", "inherit"]) {
+    for (const tierWord of ["sonnet", "opus", "haiku", "fable", "best", "inherit"]) {
       const result = loadConfig({
         configPath: "x",
         readFile: () => JSON.stringify({ providers: { codex: { aliases: { fast: tierWord } } } }),
@@ -236,6 +236,25 @@ describe("loadConfig", () => {
       assert.ok(!result.ok, `should reject tier-word target '${tierWord}'`);
       assert.equal(result.error.kind, "translate");
     }
+  });
+
+  it("names fable and best in the rejection message so the user can see why", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ providers: { codex: { aliases: { fable: "gpt-6-sol" } } } }),
+    });
+    assert.ok(!result.ok);
+    assert.match(result.error.message, /fable/);
+    assert.match(result.error.message, /best/);
+  });
+
+  it("accepts alias keys that merely start with a Claude alias word (bestie, fabled)", () => {
+    const result = loadConfig({
+      configPath: "x",
+      readFile: () => JSON.stringify({ providers: { codex: { aliases: { bestie: "gpt-6-sol", fabled: "gpt-6-luna" } } } }),
+    });
+    assert.ok(result.ok, "only the exact alias word (or its [..] variant) is reserved");
+    assert.deepEqual(result.value.config.providers.codex.aliases, { bestie: "gpt-6-sol", fabled: "gpt-6-luna" });
   });
 
   // -------------------------------------------------------------------------

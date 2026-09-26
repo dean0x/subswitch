@@ -167,11 +167,11 @@ const AliasesSchema = z
   .record(z.string().min(1).max(200), z.string().min(1).max(200))
   .refine((aliases) => !Object.keys(aliases).some(isReservedAnthropicName), {
     message:
-      "alias keys matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",
+      "alias keys matching 'claude-*' or Claude Code model names (sonnet, opus, haiku, fable, best, inherit) are rejected — they would silently misroute Anthropic traffic to Codex",
   })
   .refine((aliases) => !Object.values(aliases).some(isReservedAnthropicName), {
     message:
-      "alias targets matching 'claude-*' or Anthropic tier words (sonnet, opus, haiku, inherit) are rejected — the target becomes routable and would silently misroute Anthropic traffic to Codex",
+      "alias targets matching 'claude-*' or Claude Code model names (sonnet, opus, haiku, fable, best, inherit) are rejected — the target becomes routable and would silently misroute Anthropic traffic to Codex",
   })
   .default({});
 

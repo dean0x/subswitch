@@ -250,6 +250,17 @@ describe("checkAgentModels", () => {
     assert.equal(findings.length, 0, "claude-* models should be silently skipped");
   });
 
+  it("produces no finding for the fable and best Claude Code aliases", () => {
+    for (const model of ["fable", "best", "fable[1m]", "best[1m]"]) {
+      const findings = checkAgentModels(
+        [{ path: "/agent.md", text: `---\nmodel: ${model}\n---\n` }],
+        table,
+        configuredProviders,
+      );
+      assert.equal(findings.length, 0, `${model} should be silently skipped, not flagged unresolvable`);
+    }
+  });
+
   it("produces no finding for Anthropic tier names carrying a variant suffix", () => {
     for (const model of ["sonnet[1m]", "opusplan", "haiku-3-5", "Claude-Sonnet-4-5"]) {
       const findings = checkAgentModels(
