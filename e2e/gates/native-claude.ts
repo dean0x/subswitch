@@ -101,7 +101,7 @@ export async function runNativeClaude(destination: "claude" | "openai" = "claude
       "--tools", "Agent,Read", "--allowedTools", "Agent,Read", "--permission-mode", "dontAsk",
       "--model", "sonnet", "--output-format", "json",
       "--agents", JSON.stringify({ sonnet_probe: {
-        description: "Read the isolated contract fixture.", model: destination === "openai" ? "gpt-5.5" : "sonnet", tools: ["Read"],
+        description: "Read the isolated contract fixture.", model: destination === "openai" ? "gpt-6-sol" : "sonnet", tools: ["Read"],
         prompt: "Read check.txt with the Read tool and report its exact content. Do not use other tools.",
       } }),
       "Delegate to sonnet_probe to read check.txt. Return the exact value reported by that child. Do not read it yourself.",

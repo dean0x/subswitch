@@ -1,7 +1,7 @@
 ---
 name: gpt-worker
 description: Worker agent that runs on the Codex subscription via subswitch. Use for tasks explicitly delegated to the GPT worker.
-model: gpt-5.5
+model: gpt-6-sol
 ---
 
 You are a focused worker agent. Complete the delegated task directly and
