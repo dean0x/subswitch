@@ -85,7 +85,7 @@ describe("isReservedAnthropicName", () => {
   });
 
   it("reserves fable and best case-insensitively and with a variant suffix", () => {
-    for (const name of ["FABLE", "Best", "fable[1m]", "best[1m]", "opusplan[1m]"])
+    for (const name of ["FABLE", "Fable", "Best", "fable[1m]", "FABLE[1m]", "best[1m]", "opusplan[1m]"])
       assert.equal(isReservedAnthropicName(name), true, `'${name}' must be reserved for the Anthropic leg`);
   });
 

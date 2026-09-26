@@ -21,7 +21,7 @@ permissions, and execution loop.
 
 SubSwitch does not switch models or billing modes after a failure. Unknown models
 retain their originating provider's fallback behavior, except that an unregistered
-`claude-*` name sent by Codex is refused rather than forwarded to OpenAI. Native
+`claude-*` or `claude:*` name sent by Codex is refused rather than forwarded to OpenAI. Native
 settings and client binaries are not patched or downgraded.
 
 ```

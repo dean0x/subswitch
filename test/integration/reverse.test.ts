@@ -17,14 +17,15 @@ const sse = (content: Item[], stop = "end_turn") => {
   return frames.map(frame => `event: ${frame["type"]}\ndata: ${JSON.stringify(frame)}\n\n`).join("");
 };
 
-async function setup(handler: UpstreamHandler, openaiHandler: UpstreamHandler = (_req, res, body) => res.end(body), overrides: Record<string, unknown> = {}) {
+async function setup(handler: UpstreamHandler, openaiHandler: UpstreamHandler = (_req, res, body) => res.end(body), overrides: Record<string, unknown> = {},
+  claudeAliases: Record<string, string> = {}) {
   const temp = await mkdtemp(join(tmpdir(), "subswitch-reverse-test-"));
   const authFile = join(temp, "claude.json");
   await writeFile(authFile, JSON.stringify({ claudeAiOauth: { accessToken: "claude-private-fixture", expiresAt: Date.now() + 3600000 } }), { mode: 0o600 });
   const claude = await startFakeUpstream(handler), openai = await startFakeUpstream(openaiHandler);
   const logs: unknown[] = [];
   const proxy = await startSubswitch({ ...overrides, codexIngress: { enabled: true, apiBaseUrl: `${openai.url}/v1`, subscriptionBaseUrl: `${openai.url}/backend-api/codex`,
-    claude: { enabled: true, baseUrl: claude.url, authFile } } }, { logger: { log: (level, event, fields) => logs.push({ level, event, fields }) } });
+    claude: { enabled: true, baseUrl: claude.url, authFile, aliases: claudeAliases } } }, { logger: { log: (level, event, fields) => logs.push({ level, event, fields }) } });
   return { proxy, claude, openai, logs, close: async () => { await proxy.close(); await claude.close(); await openai.close(); await rm(temp, { recursive: true, force: true }); } };
 }
 const readTool = { type: "function", name: "read", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } };
@@ -132,6 +133,23 @@ describe("production reverse HTTP ingress", () => {
       }
       assert.equal(fixture.openai.requests.length, 0, "an unregistered Claude name must never reach OpenAI");
       assert.equal(fixture.claude.requests.length, 0);
+    } finally { await fixture.close(); }
+  });
+
+  it("routes an alias whose target is an uncatalogued claude- id, by alias, target and qualified name, without clamping", async () => {
+    const fixture = await setup((_req, res) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.end(sse([{ type: "text", text: "ok" }])); },
+      undefined, {}, { "sonnet-next": "claude-sonnet-5-5" });
+    try {
+      for (const model of ["sonnet-next", "claude-sonnet-5-5", "claude:sonnet-next", "claude:claude-sonnet-5-5"]) {
+        const response = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model, input: "hello", max_output_tokens: 300_000 }) });
+        assert.equal(response.status, 200, model); await response.text();
+      }
+      const sent = fixture.claude.requests.map(request => JSON.parse(request.body.toString()) as { model: string; max_tokens: number });
+      assert.deepEqual(sent.map(body => [body.model, body.max_tokens]), Array(4).fill(["claude-sonnet-5-5", 300_000]));
+      // Case variants are not aliases: the resolver is exact, so they are refused, not guessed.
+      const variant = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model: "Claude-Sonnet-5-5", input: "hello" }) });
+      assert.equal(variant.status, 400); assert.match(await variant.text(), /unregistered_claude_model/);
+      assert.equal(fixture.openai.requests.length, 0);
     } finally { await fixture.close(); }
   });
 
