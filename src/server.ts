@@ -135,10 +135,9 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
 
   // Build the routing table once. The resolver is a pure closure over this table;
   // "built once at startup" is a structural guarantee, not a comment. (applies ADR-005)
-  const { table, rejectedAliases, danglingAliases, ambiguousFamilies, reservedNameEntries } = buildRoutingTable(
-    MODEL_REGISTRY,
-    aliasesByProvider(config),
-  );
+  const {
+    table, rejectedAliases, danglingAliases, ambiguousFamilies, reservedNameEntries, unknownReasoningEfforts,
+  } = buildRoutingTable(MODEL_REGISTRY, aliasesByProvider(config));
 
   // buildRoutingTable is total and reports problems as data rather than throwing —
   // which only helps if someone reads them. Silence here would mean an alias the user
@@ -154,6 +153,12 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
   }
   for (const id of reservedNameEntries) {
     logger.log("warn", "registry_entry_uses_reserved_name", { model: id });
+  }
+  // Same reason as the loops above: a registry entry declaring an effort the backend never
+  // accepts silently stops accepting an effort it should, and every request-level warning
+  // names the request rather than the registry line that caused it.
+  for (const { id, efforts } of unknownReasoningEfforts) {
+    logger.log("warn", "registry_entry_unknown_effort", { model: `${id} (${efforts.join(", ")})` });
   }
 
   const resolveClaude = claudeResolver(config.codexIngress.claude.aliases);

@@ -259,12 +259,13 @@ produces an explicit error; keep the proxy running during active translated sess
 ## Effort control
 
 The optional `effort` frontmatter field works on the Codex leg too. Claude Code
-sends it as `output_config.effort`, and subswitch forwards it verbatim as Responses
-`reasoning.effort`. The Codex backend accepts `none`, `minimal`, `low`,
-`medium`, `high`, `xhigh`, and `max` (Claude Code itself emits the last five); a
-value outside that set is dropped with an `unsupported_effort_dropped` warning
-and the backend default applies. When effort is forwarded, subswitch logs
-`codex_effort_applied`.
+sends it as `output_config.effort`, and subswitch forwards it as Responses
+`reasoning.effort`. Every registered model except Astra retains the backend set:
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` (Claude Code itself
+emits only the last five). Astra accepts `low`, `medium`, `high`, `xhigh`, and
+`max`; its `none` and `minimal` values are dropped. An unsupported value is
+dropped with an `unsupported_effort_dropped` warning and the backend default
+applies. When effort is forwarded, subswitch logs `codex_effort_applied`.
 
 ## Configuration
 
@@ -304,13 +305,13 @@ to run on the raw file first and why a refusal to start is the better failure.
 
 ### Routable set and aliases
 
-The routable set is the **built-in model registry** — `gpt-5.6-sol`,
+The routable set is the **built-in model registry** — `gpt-6-astra`, `gpt-5.6-sol`,
 `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.5`. It is not configurable: routing
 follows the registry so a new model becomes available on upgrade with no config
 edit, and everything outside it passes through to Anthropic. Run
 `subswitch models --json` for the machine-readable registry.
 
-**Family aliases** (`sol`, `terra`, `luna`) let you write a model name that
+**Family aliases** (`astra`, `sol`, `terra`, `luna`) let you write a model name that
 auto-tracks the latest generation in that family — `model: sol` always resolves
 to whichever `gpt-5.6-sol` (or future `gpt-5.7-sol`) generation is in the registry,
 without any config change. Exact canonical ids (`gpt-5.6-sol`) are also accepted
@@ -497,6 +498,11 @@ subswitch models --json | jq .models[].id
   `gen` is omitted when the generation is unknown; it is always present for registry entries.
 - `preview` and `retired` are always-present booleans — no `?? false` needed in consumers.
 - `family` is omitted for models with no family alias (e.g. `gpt-5.5`).
+- `reasoningEfforts` is an array of strings, present only when the registry entry
+  narrows the accepted Responses effort vocabulary below the backend default
+  (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Absence means the
+  full backend set applies. Astra (`gpt-6-astra`) is currently the only entry that
+  declares one (`low`, `medium`, `high`, `xhigh`, `max`).
 - Anthropic appears in `providers` with zero model rows. subswitch cannot enumerate Claude
   model names — it prefix-matches them and relays verbatim — so including a fabricated list
   would be a lie that consumers might cache. The `fallbackProvider: "anthropic"` field
@@ -662,14 +668,9 @@ End-to-end verification against the real CLI and real upstreams:
   `image_dropped`).
 - One subswitch instance holds the reasoning cache in memory; restarting it
   mid-conversation degrades the next Codex turn to a cache miss.
-- The wire recorder (`e2e/capture/codex-recorder.ts`) silently degrades to
-  pass-through when run against the live Codex backend: the production
-  `/responses` stream carries no `content-type` header, so the recorder's SSE
-  detection never fires and it records zero events and no usage — with no error
-  and no warning. The recorder works correctly only against local fixture
-  upstreams, which do set the header. Anyone repeating the live-capture workflow
-  with the checked-in recorder will get an empty capture and may wrongly conclude
-  the stream is broken.
+- The wire recorder is HTTP-only. It inspects explicit SSE responses and successful
+  streamed `POST .../responses` requests whose upstream omits `Content-Type`; other
+  missing-header responses remain transparent pass-through.
 
 ## Contributing
 

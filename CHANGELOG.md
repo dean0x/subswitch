@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Astra routing: `gpt-6-astra` and its `astra` family alias, with Astra-specific
+  reasoning effort validation.
+
 - Opt-in native Codex → Claude routing for Sonnet, Opus and Fable, while OpenAI
   models continue to OpenAI and Codex retains native agents, tools and permissions.
 - Subscription authentication, credential refresh, readable collaboration messages,
@@ -29,8 +32,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Invalid user configuration can therefore prevent startup; diagnostics show its source.
 - Raw relay headers named by `Connection` are stripped on both legs in both directions.
 - Native Codex setup requires explicit trust for a custom upstream host before it writes files.
+- `astra` is now a reserved OpenAI model name for claude-ingress aliases (matched
+  case-insensitively, including `astra[...]` family-suffix variants); a
+  `codexIngress.claude.aliases` entry that claims it is rejected at config load,
+  and the relay refuses to start until the alias is removed or renamed.
 
 ### Fixed
+
+- The development HTTP recorder now captures eligible streamed `/responses`
+  replies even when the upstream omits `Content-Type`, without inspecting other
+  missing-header responses.
 
 - Native Codex conversations can continue after cancelling a Claude response; pending
   replay handles and ordered cancellation notices no longer cause 409/400 failures.

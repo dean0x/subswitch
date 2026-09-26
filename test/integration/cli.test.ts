@@ -470,6 +470,38 @@ describe("CLI models --json", () => {
     assert.deepEqual(solModel.gen, [5, 6], "gen for gpt-5.6-sol must be [5, 6]");
   });
 
+  it("lists gpt-6-astra with its Astra family alias, gen tuple and declared reasoningEfforts", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as {
+      models: Array<{ id: string; gen?: number[]; aliases?: Array<{ name: string }>; reasoningEfforts?: string[] }>;
+    };
+    const astra = parsed.models.find((model) => model.id === "gpt-6-astra");
+    assert.ok(astra !== undefined, "models must include gpt-6-astra");
+    assert.ok(
+      astra.aliases?.some((alias) => alias.name === "astra"),
+      "gpt-6-astra must carry its derived 'astra' family alias",
+    );
+    // Single-element gen tuple — the only one in the registry, so nothing else pins this shape.
+    assert.deepEqual(astra.gen, [6], "gen for gpt-6-astra must be [6]");
+    // The registry's narrowed effort vocabulary must reach the machine-readable registry:
+    // a consumer that cannot see it will offer efforts this model rejects. (avoids PF-004)
+    assert.deepEqual(
+      astra.reasoningEfforts,
+      ["low", "medium", "high", "xhigh", "max"],
+      "reasoningEfforts for gpt-6-astra must be its five declared values",
+    );
+  });
+
+  // Conditional spread, not `?? undefined`: exactOptionalPropertyTypes is on, so an entry
+  // that declares no reasoningEfforts must omit the key entirely rather than emit null.
+  it("omits reasoningEfforts for a model that declares none (gpt-5.6-sol)", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as { models: Array<Record<string, unknown>> };
+    const sol = parsed.models.find((model) => model["id"] === "gpt-5.6-sol");
+    assert.ok(sol !== undefined, "models must include gpt-5.6-sol");
+    assert.equal("reasoningEfforts" in sol, false, "gpt-5.6-sol declares no reasoningEfforts, so the key must be absent");
+  });
+
   // ANSI bleed prevention: JSON branch returns before resolveColorEnabled.
   // With FORCE_COLOR=1, human-readable `models` stdout has ANSI; `models --json` stdout must NOT.
   it("FORCE_COLOR=1 does NOT bleed ANSI codes into JSON output (structural: JSON branch exits early)", async () => {

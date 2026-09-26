@@ -1,11 +1,11 @@
 ---
 feature: codex-leg
 name: Codex translation leg (gpt-* → /responses)
-description: "Use when modifying Codex request translation, model alias resolution, session/cache key derivation, protocol headers, reasoning round-trips, count_tokens estimation, ambiguous-model routing policy, timeout asymmetry, or the codex-recorder dev tool. Keywords: codex, gpt, responses, conversation key, session_id, prompt_cache_key, reasoning, effort, translation, routing table, alias, family, canonical, buildRoutingTable, resolveModel, ModelResolution, buildHeaders, CodexTransportConstants, maxAggregateBytes, forceRefresh, count_tokens, estimateTokens, ambiguous_model_name, IngestError, readBodyForRouting, sniffLeadingModel, maxBufferedBodyBytes, bodyMode, anthropic:streamed, ADR-010, streamIdleTimeoutMs."
+description: "Use when modifying Codex request translation, model alias resolution, session/cache key derivation, protocol headers, reasoning round-trips, count_tokens estimation, ambiguous-model routing policy, timeout asymmetry, or the codex-recorder dev tool. Keywords: codex, gpt, responses, conversation key, session_id, prompt_cache_key, reasoning, effort, translation, routing table, alias, family, canonical, buildRoutingTable, resolveModel, ModelResolution, buildHeaders, CodexTransportConstants, maxAggregateBytes, forceRefresh, count_tokens, estimateTokens, ambiguous_model_name, IngestError, readBodyForRouting, sniffLeadingModel, maxBufferedBodyBytes, bodyMode, anthropic:streamed, ADR-010, streamIdleTimeoutMs, astra, reasoningEfforts, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, unknownReasoningEfforts, buildOpenaiModelNamePredicate, createCodexRecorderServer, MAX_SSE_BUFFER_CHARS, allowInsecureUpstream."
 category: domain-knowledge
 directories: [src]
 created: 2026-07-22
-updated: 2026-08-19
+updated: 2026-09-14
 ---
 
 # Codex Translation Leg (gpt-* → /responses)
@@ -50,7 +50,7 @@ Consequence: subswitch's `/responses` protocol constants were independently veri
 
 Credential state is deliberately **not** an input to `buildRoutingTable`: gating routability on credential presence turns a clear `401 "run codex login"` into an opaque Anthropic 404, collapsing two distinguishable failure modes into one.
 
-`buildRoutingTable` is **total** — problems (rejected aliases, dangling targets, ambiguous families, reserved-name registry entries) are returned as diagnostic lists in `RoutingTableBuild`, not thrown. `buildDeps` logs each diagnostic and moves on.
+`buildRoutingTable` is **total** — problems (rejected aliases, dangling targets, ambiguous families, reserved-name registry entries, unknown reasoning-effort declarations) are returned as diagnostic lists in `RoutingTableBuild`, not thrown. `buildDeps` logs each diagnostic and moves on.
 
 ### Five-Rule Resolution Contract (src/models.ts — resolveModel)
 
@@ -78,6 +78,18 @@ Credential state is deliberately **not** an input to `buildRoutingTable`: gating
 - `config.ts` AliasesSchema refines — reject alias keys or values at config-parse time.
 - `buildRoutingTable` `byAlias` construction — entries matching the predicate are added to `rejectedAliases` and skipped.
 
+### Reasoning Effort Vocabulary (src/models.ts)
+
+`DEFAULT_REASONING_EFFORTS` (`as const`) is now the single effort vocabulary for the whole Codex leg — `["none", "minimal", "low", "medium", "high", "xhigh", "max"]`. The former `CODEX_EFFORT_VALUES` constant that used to live in `codex-request.ts` is **gone**; `codex-request.ts` imports `reasoningEffortsForModel` from `models.ts` instead of holding a second copy — a duplicated vocabulary drifts the moment one copy is updated.
+
+`reasoningEffortsForModel(registry, model)` is TOTAL: it returns the matching entry's own `reasoningEfforts` when the registry declares one, otherwise `DEFAULT_REASONING_EFFORTS`. Every consumer does one positive membership test against one authority rather than branching between two. **The `model` argument MUST be the canonical registry id** — an alias misses the internal `find` and silently falls back to the wider default set, which would let a model that declares a narrower vocabulary accept an effort it should reject. This precondition is the same one ADR-007 documents for conversation-key derivation; `handleMessages` substitutes the canonical id before `translateRequest` runs, and `translateEffort` (the only call site, in `codex-request.ts`) inherits that guarantee.
+
+`gpt-6-astra` (family `astra`, `gen: [6]`) is the first registry entry to declare a narrower `reasoningEfforts` set: `["low", "medium", "high", "xhigh", "max"]` — five values, deliberately excluding `ultra`. `test/fixtures/native/codex-0.153.3-model.json` (the native Codex CLI's own model catalog, captured on the reverse-ingress leg) advertises a sixth value (`ultra`), but that is **not** evidence for adding it here: the reverse adapter rejects `ultra` with `unsupported_reasoning_effort`, and the two legs describe different backends and are allowed to disagree. Do not add a registry-vs-fixture equality test (avoids PF-004, PF-023).
+
+`buildRoutingTable`'s self-check pass also flags any registry entry whose `reasoningEfforts` contains a value outside `DEFAULT_REASONING_EFFORTS` — reported as `unknownReasoningEfforts: { id, efforts }[]` on `RoutingTableBuild` (a narrowing set can only shrink the backend vocabulary, so a value outside it is unreachable and almost certainly a typo). `buildDeps` logs each as `warn registry_entry_unknown_effort`, alongside the other `buildRoutingTable` diagnostics (`alias_rejected`, `alias_dangling_target`, `ambiguous_family`, `registry_entry_uses_reserved_name`).
+
+`buildModelRows` emits the per-model `reasoningEfforts` field on `ModelRow` **only** when the registry entry declares one — absence means the default set applies; emitting the default unconditionally would make every row claim a narrowing it does not have. This is what `subswitch models --json` surfaces per model.
+
 ### Ambiguous Model Policy: Fail Open (src/server.ts)
 
 When `decideRoute` returns `{ kind: "ambiguous" }`, the server **forwards to Anthropic** rather than synthesizing a 400. This is ADR-010 applied to routing: a relay-invented 400 that names our provider registry in the error message is a status the origin never emits. The origin may support the name unambiguously; at minimum, forwarding lets it answer with its own error.
@@ -102,7 +114,7 @@ The body is JSON-parsed **once** in `server.ts`. The parsed value (`parsedBody`)
 
 ### Canonical threading through handleMessages (src/codex-handler.ts)
 
-`handleMessages` signature: `(req, res, rawBody, parsed, canonicalModel)`. The canonical model is threaded because `deriveConversationKey` hashes the model string — an alias and its canonical produce DIFFERENT `session_id` and `prompt_cache_key` without substitution.
+`handleMessages` signature: `(req, res, rawBody, parsed, canonicalModel)`. The canonical model is threaded because `deriveConversationKey` hashes the model string — an alias and its canonical produce DIFFERENT `session_id` and `prompt_cache_key` without substitution. The same threaded canonical is what `translateEffort` (via `reasoningEffortsForModel`) depends on — see Reasoning Effort Vocabulary above.
 
 `model` is NEVER reassigned — all log calls use the as-requested name. `request` (with canonical model) is passed to `deriveConversationKey` and `translateRequest`.
 
@@ -122,7 +134,7 @@ Credential headers land first so auth appears before transport constants on the 
 **Fields that are translated:**
 - Anthropic `system` field → Responses API `instructions` (top-level string). `buildInstructions` lives in `src/anthropic-parse.ts` (moved from `codex-request.ts`).
 - `system`-role messages inside `messages[]` → `developer`-role input items (applies PF-003).
-- `output_config.effort` → `reasoning: { effort }` (applies PF-004). Unknown values emit `unsupported_effort_dropped` and degrade to the backend default, never 400.
+- `output_config.effort` → `reasoning: { effort }` (applies PF-004). `translateEffort` validates the value against `reasoningEffortsForModel(MODEL_REGISTRY, model)` — a per-model vocabulary, not one fixed set (see Reasoning Effort Vocabulary above). Unknown values emit `unsupported_effort_dropped` and degrade to the backend default, never 400.
 
 **Fields that are always injected:**
 - `store: false` — prevents reasoning items from persisting server-side (applies ADR-003).
@@ -198,7 +210,8 @@ IncomingMessage (Anthropic wire)
       → deriveConversationKey (hashes canonical model + system + first user msg)
       → AbortController constructed (BEFORE auth.getCredentials — RELI-04)
       → auth.getCredentials() → ProviderCredential<"codex">
-      → translateRequest (codex-request.ts; ReasoningCache for reasoning re-injection)
+      → translateRequest (codex-request.ts; ReasoningCache for reasoning re-injection;
+        translateEffort validates against reasoningEffortsForModel(MODEL_REGISTRY, canonical))
       → buildHeaders(credential, sessionId, transportConstants)
           ← transportConstants built once per handler instance; pure module-level fn
           ← credential.authHeaders seed; put() guard lowercased; transport constants appended
@@ -263,7 +276,7 @@ IncomingMessage (Anthropic wire)
 
 **Deriving the conversation key from builder output.** `deriveConversationKey` must receive `request` (with canonical model substitution), not the result of `translateRequest`. Builder output may have system-role messages translated to developer-role (PF-003).
 
-**Passing an alias instead of a canonical to handleMessages.** The fifth parameter `canonicalModel` must be a resolved canonical id. Passing an alias means `deriveConversationKey` hashes the alias — breaking cache coherence and session correlation.
+**Passing an alias instead of a canonical to handleMessages.** The fifth parameter `canonicalModel` must be a resolved canonical id. Passing an alias means `deriveConversationKey` hashes the alias — breaking cache coherence and session correlation. The same holds for `translateEffort`'s call into `reasoningEffortsForModel` (applies ADR-007).
 
 **Moving sessionId derivation inside the retry loop.** The 401-refresh retry reuses the same `sessionId` computed before the loop. A new id per attempt breaks session correlation on the backend.
 
@@ -275,11 +288,15 @@ IncomingMessage (Anthropic wire)
 
 **Re-deriving a family winner anywhere outside `selectFamilyWinners`.** Consume `claims` or `flattenUniqueFamilies(claims)`.
 
+**Re-deriving the reasoning-effort vocabulary instead of calling `reasoningEffortsForModel`.** `DEFAULT_REASONING_EFFORTS` has exactly one home in `models.ts`. A second hardcoded list — the deleted `CODEX_EFFORT_VALUES` was exactly this — drifts the moment one copy is updated.
+
+**Hand-listing reserved OpenAI names on the Claude ingress leg instead of deriving them from `MODEL_REGISTRY`.** `isOpenaiModelName` is built by `buildOpenaiModelNamePredicate(MODEL_REGISTRY)` precisely so a family added to the registry (e.g. `astra`) is automatically reserved against `codexIngress.claude.aliases` — the mirror image of PF-007 on the reverse leg. A hand-written alternation silently misses new registry entries.
+
 **Falling back to `PROVIDER_IDS[0]` for an unknown provider.** The declaring provider is always in hand — `collectAliasDeclarations` carries it. A first-provider assumption is correct only by coincidence while `PROVIDER_IDS.length === 1`.
 
 **Regenerating `test/fixtures/sse-splits.golden.json` to make a parser change pass.** The golden was captured from the parser before the deferred-join rewrite and is the definition of "frame boundaries unchanged". Regenerate it only when the corpus itself grows.
 
-**Joining the SSE accumulator outside the boundary branch.** `createSseParser` holds undelivered text as an array of segments and joins only on the chunk that completes an event. Adding a `pending.join("")` on the no-boundary path restores the quadratic behaviour — 38x slower at 8 MiB.
+**Joining the SSE accumulator outside the boundary branch.** `createSseParser` holds undelivered text as an array of segments and joins only on the chunk that completes an event. Adding a `pending.join("")` on the no-boundary path restores the quadratic behaviour — 38x slower at 8 MiB. `codex-recorder.ts`'s capture accumulator mirrors this pattern for the same reason.
 
 **"Fixing" count_tokens by forwarding to Anthropic.** The estimate is deliberate: Anthropic returns counts for Claude's tokenizer, not for the Codex model. The chars/4 heuristic is correct; forwarding is wrong.
 
@@ -301,7 +318,7 @@ IncomingMessage (Anthropic wire)
 
 **`prompt_cache_key` is absent from `codex exec` HTTP captures.** This is correct — inference goes via WebSocket, not HTTP. The field IS valid on the `/responses` HTTP API (proved by 76% cache hit observed live 2026-07-21).
 
-**`maxSseEventBytes` counts UTF-16 code units, not bytes, despite the name.** The check runs per chunk against the undelivered residual, bounding accumulated text length; segment-array object and header overhead is uncounted, so actual heap can exceed the limit significantly at per-byte-chunk scale (roughly 96 MiB uncounted at the 4 MiB default with 1-byte chunks).
+**`maxSseEventBytes` counts UTF-16 code units, not bytes, despite the name.** The check runs per chunk against the undelivered residual, bounding accumulated text length; segment-array object and header overhead is uncounted, so actual heap can exceed the limit significantly at per-byte-chunk scale (roughly 96 MiB uncounted at the 4 MiB default with 1-byte chunks). `codex-recorder.ts`'s `MAX_SSE_BUFFER_CHARS` uses the same unit for the same reason.
 
 **`MIN_COMPACT_CHARS` compaction ADDS copying — that is the accepted cost.** Compaction's actual payoff is bounding segment-array overhead in the small-chunk case: a 1 MiB event arriving in 1-byte chunks would build ~1M segments without it; with it the peak is halved. The copy overhead is linear (+50%/+20%/+23% at 2/4/8 MiB). A fixed-count trigger would reintroduce O(n²/N) and must be rejected.
 
@@ -309,7 +326,17 @@ IncomingMessage (Anthropic wire)
 
 **No test in the suite can catch an SSE-parser performance regression.** The slow path is byte-for-byte correct, so it passes all golden split assertions. `node --import tsx test/tools/sse-parser.bench.ts` is the only artifact that distinguishes them — run it after any `createSseParser` edit.
 
-**`codex-recorder.ts` cannot capture SSE events from the live backend.** Its detection gates on `contentType.includes("text/event-stream")`, but the production `/responses` stream sends **no `Content-Type` header at all** (avoids PF-013). The recorder therefore silently degrades to pass-through mode. It works correctly only against local fixture upstreams.
+**`codex-recorder.ts`'s headerless-SSE capture defect is FIXED — PF-013 is resolved.** Eligibility for the capture arm is now `POST` method **+** path ends `/responses` **+** a 2xx upstream status **+** a request body that declared `"stream": true` (`isExpectedMissingHeaderStream`), evaluated alongside the original explicit `Content-Type: text/event-stream` check (`isSseResponse`). The request body is decoded and JSON-parsed exactly once (`parseJsonBody`); that single result feeds both the printed body-shape skeleton and the stream-eligibility check. `forward()` runs before `capture()` per chunk (ADR-010 — transparency does not wait on successful parsing) and honours `res.write`'s backpressure signal by pausing/resuming the upstream response; one `StringDecoder` per response prevents a multi-byte sequence split across writes from decoding as replacement characters.
+
+**The recorder's capture buffer is bounded independently of the forward path.** `MAX_SSE_BUFFER_CHARS` (4 MiB, UTF-16 code units) bounds the undelivered-segment accumulator; on overflow, capture prints a `<cap:sse-residual>` notice and stops for that response, while every byte keeps flowing to the client untouched (ADR-010, ADR-012). `MAX_SSE_EVENTS = 200` separately caps how many event-type lines are *printed* (a counter keeps running past it); the `TERMINAL USAGE:` line for `response.completed` prints once regardless of the event-print cap — decoupled from `MAX_SSE_EVENTS`.
+
+**`createCodexRecorderServer(upstream, output?, { allowInsecureUpstream }?)` is import-safe and vets its upstream at construction, not at listen time.** It returns an `http.Server` that does not call `.listen()` — tests and local probes bind an ephemeral loopback port themselves. `upstreamRefusal` applies ADR-009: any scheme to a loopback host is exempt (via `isLoopbackHost` imported from `src/config.ts`, never a hand-rolled prefix test — PF-026); `https://chatgpt.com` is the trusted default; any other https host needs `CODEX_RECORDER_ALLOW_INSECURE_UPSTREAM=1` or `{ allowInsecureUpstream: true }`; cleartext `http:` to a non-loopback host is refused outright regardless of the opt-in.
+
+**`failExchange`'s teardown predicate is independent of `res.headersSent` (PF-022).** `headersSent` is the "have we replied" latch, claimed the moment a status is relayed — it cannot double as the teardown guard, because that would skip cleanup for exactly the mid-stream failure teardown exists to handle. Before a reply, `failExchange` synthesizes a status; after one, it destroys the socket. Separately, `res.once("close", …)` destroys the in-flight upstream request when the *client* disconnects mid-exchange.
+
+**Captured text is sanitized before it reaches the transcript.** `renderCaptureToken` strips C0/C1 control characters and DEL, then caps length at 128 chars, applied to every upstream-controlled string (event `type`, usage keys) — the header's promise that the transcript never forges a line is enforced here, not assumed. `numericUsage` separately projects a `usage` object down to finite numbers only, bounded in depth (3) and field count (32); non-numeric leaves are dropped.
+
+**The recorder's request counter, uncaught-exception guard, and build inclusion are all scoped narrowly.** `requestSeq` is a closure variable inside `createCodexRecorderServer`, so several recorders constructed in one process (as the integration suite does) each number their own requests starting from `#1`. The `uncaughtException` handler is registered only inside the `isDirectExecution` (CLI) block, not the factory — the factory stays import-safe for library/test consumers. The file is in `tsconfig.json`'s `include` (type-checked) but absent from `tsconfig.build.json` (`src/**/*.ts` only) — it never reaches `dist`.
 
 **The Codex leg has a stream idle timeout; the Anthropic leg does not — this is a genuine asymmetry.** `providers.codex.streamIdleTimeoutMs` is live and intentional (default 300 s). The Anthropic leg has no post-connect timer at all by design (ADR-010): `connectTimeoutMs` bounds DNS+TCP establishment only. `anthropic.streamIdleTimeoutMs` was **removed** in 0.3.0 — it is a `removed`-kind row in `LEGACY_KEY_ENTRIES` and `loadConfig` returns `err` (the relay refuses to start) if it appears in config. `anthropic.headerTimeoutMs` was never shipped and is not in `LEGACY_KEY_ENTRIES`; it is rejected by `z.strictObject` as an unrecognised field. `LEGACY_KEY_ENTRIES` has a `moved` row migrating `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs`; there is no Anthropic equivalent. Any code that assumes both legs have matching timeout behavior is wrong.
 
@@ -319,44 +346,52 @@ IncomingMessage (Anthropic wire)
 
 ## Key Files
 
-- `src/server.ts` — Wiring site for resolve→route→send; `buildDeps` calls `buildRoutingTable` once; `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; ambiguous fail-open policy; `IngestError` (server-local, single variant `client_disconnected`, not `ProxyError`); `readBodyForRouting` + over-window routing (Anthropic→stream, Codex→413); `drainRejectedUpload` in `dispatch().catch` for paused-req safety; `applyInboundPolicy` (from `src/inbound-policy.ts`) owns `SERVER_TUNING` + `clientError` handler
-- `src/models.ts` — Pure registry module (no repo imports); `MODEL_REGISTRY`, `PROVIDER_IDS`, `AliasesByProvider`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `routableModelCount`, `formatModelsReport`, `buildModelRows`, `buildAliasRows`
+- `src/server.ts` — Wiring site for resolve→route→send; `buildDeps` calls `buildRoutingTable` once and logs its diagnostics (`alias_rejected`, `alias_dangling_target`, `ambiguous_family`, `registry_entry_uses_reserved_name`, `registry_entry_unknown_effort`); `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; ambiguous fail-open policy; `IngestError` (server-local, single variant `client_disconnected`, not `ProxyError`); `readBodyForRouting` + over-window routing (Anthropic→stream, Codex→413); `drainRejectedUpload` in `dispatch().catch` for paused-req safety; `applyInboundPolicy` (from `src/inbound-policy.ts`) owns `SERVER_TUNING` + `clientError` handler
+- `src/models.ts` — Pure registry module (no repo imports); `MODEL_REGISTRY` (`gpt-6-astra` is the first entry with per-model `reasoningEfforts`), `PROVIDER_IDS`, `AliasesByProvider`, `DEFAULT_REASONING_EFFORTS`, `reasoningEffortsForModel`, `buildRoutingTable` (`unknownReasoningEfforts` diagnostic), `resolveModel`, `isReservedAnthropicName`, `routableModelCount`, `formatModelsReport`, `buildModelRows` (`ModelRow.reasoningEfforts`), `buildAliasRows`
+- `src/claude-models.ts` — Reverse-leg (Claude ingress) model registry; `buildOpenaiModelNamePredicate(registry)` derives `isOpenaiModelName` from `MODEL_REGISTRY` (mirror of PF-007 on the reverse leg — `astra` is now automatically reserved); `validClaudeAlias` (the only gate on `codexIngress.claude.aliases`); `claudeResolver`, `claudeModelRows`, `augmentCodexModels`
 - `src/router.ts` — Pure routing decision; accepts `ModelResolution` (not raw string); zero name matching; exhaustive switch; classification only — policy lives in server.ts
 - `src/codex-handler.ts` — `createCodexHandler<P>(deps): ProviderHandler` entry point; `CodexHandlerDeps<P>`, `CodexTransportConstants` interface; `buildHeaders` (exported pure module-level fn); canonical substitution; sessionId before loop; bounded retry; `AbortController` above `auth.getCredentials()`; `handleCountTokens` (estimate, not forwarded)
 - `src/provider-transport.ts` — `createFrameWriter` (abort-safe, backpressure-aware); `respondJson`, `respondProxyError`, `readBoundedText`
 - `src/provider-handler.ts` — `ProviderHandler` interface; P4 contract documented
-- `src/codex-request.ts` — All request translation logic; `translateRequest`, `translateEffort`, `estimateTokens` (chars/4 heuristic)
+- `src/codex-request.ts` — All request translation logic; `translateRequest`, `translateEffort` (validates via `reasoningEffortsForModel(MODEL_REGISTRY, model)`), `estimateTokens` (chars/4 heuristic)
 - `src/anthropic-parse.ts` — `buildInstructions` (moved from `codex-request.ts`); `textOfBlocks`
 - `src/conversation-key.ts` — Deterministic v7-shaped UUID from sha256 of canonical request
 - `src/codex-response.ts` — `MAX_CONTENT_BLOCKS`; SSE parser (segment array; linear); Anthropic SSE translator state machine; `aggregateFrames`; `blockIndexByKey` NOT pruned on stop
 - `src/codex-auth.ts` — `CodexAuthManager`; all 7 auth events now table-derived via `events: ProviderEvents<"codex">`; `callTokenEndpoint` uses `AbortSignal.timeout(15_000)`; `forceRefresh()` 30s cooldown; `writeAtomic` self-heals EEXIST
 - `src/provider-events.ts` — `providerEvents<P>(id): ProviderEvents<P>`; 19-field table (11 handler/translator events + 1 insecureBaseUrlScheme + 7 auth events); compile-time log-injection control
-- `src/config.ts` — `providers.codex.streamIdleTimeoutMs` (default 300 s, live); `anthropic.streamIdleTimeoutMs` removed in 0.3.0 (ADR-010) — `removed`-kind row in `LEGACY_KEY_ENTRIES`, hard-errors on load; `anthropic.headerTimeoutMs` never shipped — rejected by `z.strictObject`, not in table; `LEGACY_KEY_ENTRIES` has a `moved` row for `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs`; `providers.codex.maxAggregateBytes` (64 MiB default); strict schemas via `z.strictObject`
+- `src/config.ts` — `providers.codex.streamIdleTimeoutMs` (default 300 s, live); `anthropic.streamIdleTimeoutMs` removed in 0.3.0 (ADR-010) — `removed`-kind row in `LEGACY_KEY_ENTRIES`, hard-errors on load; `anthropic.headerTimeoutMs` never shipped — rejected by `z.strictObject`, not in table; `LEGACY_KEY_ENTRIES` has a `moved` row for `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs`; `providers.codex.maxAggregateBytes` (64 MiB default); strict schemas via `z.strictObject`; `isLoopbackHost` (exact-form predicate, reused by `codex-recorder.ts`)
 - `src/errors.ts` — `ProxyError` union (auth/upstream/translate/timeout); `IngestError` is server-local (single variant `client_disconnected`, excluded from `ProxyError`); `AnthropicErrorType` includes `not_found_error`; `upstreamStatusToAnthropicError`; 504→timeout and 502→upstream are both intentional (ADR-010)
 - `src/agent-scan.ts` — `unknown_provider` severity is `"info"`; `ambiguous` severity is `"fail"`
 - `test/tools/` — `sse-parser.bench.ts` (the only guard against an SSE-parser perf regression)
 - `test/fixtures/sse-splits.golden.json` — Frame-boundary pin for `createSseParser`; 66,039 splits asserted
-- `e2e/capture/codex-recorder.ts` — Dev-only transparent forwarder. **Known defect**: cannot capture SSE from live backend (no `Content-Type` header — avoids PF-013)
+- `e2e/capture/codex-recorder.ts` — Dev-only transparent wire-capture forwarder; `createCodexRecorderServer` factory (import-safe; upstream vetted at construction per ADR-009); the PF-013 headerless-SSE capture defect is **fixed**; capture bounded by `MAX_SSE_BUFFER_CHARS` (4 MiB) while forwarding never is (ADR-010/ADR-012)
+- `test/integration/codex-recorder.test.ts` — 25 tests; the only executable proof of the recorder's eligibility rule, backpressure, teardown, and upstream-vetting behavior
 
 ## Related
 
-- ADR-010 (Accepted): relay must be indistinguishable from the origin — drove removal of slot-based admission gate, removal (not deprecation) of Anthropic-leg stream timeout, and fail-open policy for ambiguous/unknown-provider routes
+- ADR-010 (Accepted): relay must be indistinguishable from the origin — drove removal of slot-based admission gate, removal (not deprecation) of Anthropic-leg stream timeout, and fail-open policy for ambiguous/unknown-provider routes; also governs `codex-recorder.ts`'s forward-before-capture ordering
 - ADR-006 (Accepted): Source the routable set from `MODEL_REGISTRY`, not a user-maintained `codex.models` list
 - ADR-005 (Accepted): Route by exact model-name membership; resolution strictly before `decideRoute`; `decideRoute` now accepts `ModelResolution` (not raw string) enforcing this structurally
+- ADR-007 (Accepted): Canonical id routes and is hashed into the conversation key, while the as-requested name stays in a separate local for logs — the same precondition `reasoningEffortsForModel` depends on
 - ADR-008 (Accepted): Apply credential redaction once at the error render site (`toAnthropicErrorBody`); `redactCredentials` is called inside `toAnthropicErrorBody`, not at each relay call site
+- ADR-009 (Accepted): Vet every credential-bearing URL against its expected default host at startup, opt-in for a mismatch — governs `codex-recorder.ts`'s `upstreamRefusal`
+- ADR-012 (Accepted): An ingestion cap must be a memory bound, not an admission gate — the same principle `MAX_SSE_BUFFER_CHARS` follows in `codex-recorder.ts` (capture degrades on overflow; forwarding never does)
 - ADR-002: Subscription OAuth passthrough — credentials from `~/.codex/auth.json`
 - ADR-003: `store:false` encrypted reasoning round-trip; `sessionId` derived once outside retry loop
 - ADR-004: `@types/node` pinned to Node-22 major
 - PF-002: Drop `max_output_tokens` — backend rejects this field with 400
 - PF-003: `system`-role → `developer`-role translation
-- PF-004: `output_config.effort` → `reasoning.effort` propagation
+- PF-004: `output_config.effort` → `reasoning.effort` propagation; also why `gpt-6-astra` deliberately excludes `ultra` from its `reasoningEfforts`
 - PF-005: The `e2e/README.md` parity table is the WRONG transport — do not use it to change header **names or values** in `buildHeaders`; it does **not** govern header **order**
 - PF-006: Doctor's non-zero exit is load-bearing; never assert doctor exits 0
-- PF-007: Alias targets validated, not just keys — a `claude-*` target becomes routable and misroutes main-thread traffic
+- PF-007: Alias targets validated, not just keys — a `claude-*` target becomes routable and misroutes main-thread traffic; `buildOpenaiModelNamePredicate` is the mirror image on the reverse leg
 - PF-008: An upstream without a per-item done event needs a synthesized close, or `aggregateFrames` returns a 200 with empty content; `flush()` now emits terminal frames when content is recoverable
 - PF-011: A green suite proves nothing until each control has been proven RED against the mutation it claims to catch
 - PF-012: The mutation-proof pass needs its own controls
-- PF-013: The live Codex `/responses` stream sends no content-type header — the recorder cannot capture SSE without this
+- PF-013: The live Codex `/responses` stream sends no content-type header — **fixed** in `codex-recorder.ts`: capture eligibility now also accepts a request that declared `stream:true` on a 2xx `/responses` POST, in addition to an explicit SSE content type
+- PF-022: A one-way "we have replied" latch cannot guard teardown — `codex-recorder.ts`'s `failExchange` predicate is independent of `res.headersSent`
+- PF-023: Prose drifts — cited by the `gpt-6-astra` registry comment for why no registry-vs-native-fixture equality test exists
+- PF-026: A loopback predicate must not be a prefix test — `codex-recorder.ts` reuses `isLoopbackHost` from `src/config.ts` rather than a hand-rolled check
 - `.devflow/features/cli-ux/KNOWLEDGE.md` — CLI UX layer; `subswitch models` command; doctor agent-scan; N-provider fan-out; `ProviderEvents<P>` compile-time log-injection control
 
 ## Native Codex → Claude ingress (2026-09-08)
@@ -367,6 +402,11 @@ resolve by exact membership; `decideCodexRoute` consumes a typed resolution for 
 HTTP and WebSockets. `CodexGateway` wires `CodexUpstream`, `CodexWebSockets`, native auth,
 and `ClaudeHandler`. Both HTTP directions use `createRawHttpForwarder`; only complete
 native requests with substituted credentials may refresh and retry once after 401.
+
+`src/claude-models.ts`'s `isOpenaiModelName` is derived from `MODEL_REGISTRY` via
+`buildOpenaiModelNamePredicate` rather than a hand-written alternation, so a family added
+to the registry (`astra`, and any future one) is automatically reserved against
+`codexIngress.claude.aliases` with no corresponding code change required.
 
 Claude credential infrastructure is created in `buildDeps`. Native token substitution
 is restricted to exact native endpoints and matching account IDs. `errors.ts` owns both

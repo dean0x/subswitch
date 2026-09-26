@@ -3,7 +3,10 @@
  *
  * NOT-PRODUCTION: Dev-only wire-capture recorder.
  * Run via:  npx tsx e2e/capture/codex-recorder.ts
- * Excluded from tsconfig "include" and npm test globs — never bundled.
+ * Type-checked by tsconfig.json and exercised by
+ * test/integration/codex-recorder.test.ts, which drives the exported factory
+ * against loopback upstreams. Never bundled: tsconfig.build.json compiles src
+ * only, so nothing here reaches dist.
  *
  * ╔══════════════════════════════════════════════════════════════════════╗
  * ║  **NEVER COMMIT CAPTURED OUTPUT.**                                  ║
@@ -27,11 +30,22 @@
  *   CODEX_RECORDER_UPSTREAM=https://chatgpt.com/backend-api/codex \
  *   npx tsx e2e/capture/codex-recorder.ts
  *   # then: codex -c chatgpt_base_url="http://127.0.0.1:4142/backend-api/codex" exec "say hi"
+ *
+ * The upstream URL carries credentials, so it is vetted before anything listens
+ * (ADR-009): https to chatgpt.com, or any scheme to a loopback host. Any other
+ * https host needs CODEX_RECORDER_ALLOW_INSECURE_UPSTREAM=1; cleartext http to a
+ * non-loopback host is refused outright.
  */
 
 import * as http from "node:http";
 import * as https from "node:https";
 import * as crypto from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
+import { pathToFileURL } from "node:url";
+// The e2e tree already imports production modules directly — e2e/gates/native-claude.ts
+// imports this same module. Reusing the predicate is mandatory rather than stylistic:
+// PF-026 records that a hand-rolled `startsWith("127.")` admits 127.0.0.1.evil.test.
+import { isLoopbackHost } from "../../src/config.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -39,8 +53,12 @@ import * as crypto from "node:crypto";
 
 const LISTEN_PORT = 4142;
 const LISTEN_HOST = "127.0.0.1";
-const UPSTREAM_BASE =
-  process.env["CODEX_RECORDER_UPSTREAM"] ?? "https://chatgpt.com/backend-api/codex";
+/** Host the recorder is built to capture; any other https host needs the opt-in. */
+const DEFAULT_UPSTREAM_HOST = "chatgpt.com";
+const DEFAULT_UPSTREAM = `https://${DEFAULT_UPSTREAM_HOST}/backend-api/codex`;
+const UPSTREAM_BASE = process.env["CODEX_RECORDER_UPSTREAM"] ?? DEFAULT_UPSTREAM;
+/** Opt-in env var mirroring ADR-009's `allowInsecureBaseUrl`: a greppable, deliberate statement. */
+const ALLOW_INSECURE_UPSTREAM = process.env["CODEX_RECORDER_ALLOW_INSECURE_UPSTREAM"] === "1";
 
 /** Maximum number of fields serialised per body shape (across all depths). */
 const MAX_SHAPE_FIELDS = 100;
@@ -48,6 +66,19 @@ const MAX_SHAPE_FIELDS = 100;
 const MAX_SHAPE_DEPTH = 6;
 /** Maximum number of SSE event-type lines printed per response; beyond this only a counter runs. */
 const MAX_SSE_EVENTS = 200;
+/**
+ * Maximum undelivered capture text held while waiting for an SSE event boundary.
+ *
+ * Counts UTF-16 code units, not bytes — the same unit the production
+ * `maxSseEventBytes` bound uses (see `createSseParser` in src/codex-response.ts).
+ *
+ * The capture arm is chosen from the REQUEST shape (PF-013), so a 2xx response that
+ * carries no blank line at all — JSON, HTML, a CDN interstitial — would otherwise be
+ * retained in full. `MAX_SSE_EVENTS` caps printing; this caps memory. On overflow the
+ * residual is dropped and parsing stops while every byte keeps flowing to the client
+ * untouched: capture degrades, the forward never does (ADR-010, ADR-012).
+ */
+const MAX_SSE_BUFFER_CHARS = 4 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Structural redaction (ADR-002: never print credential values)
@@ -142,11 +173,43 @@ function shapeOf(value: unknown, depth: number, counter: FieldCounter): unknown 
   return "<unknown>";
 }
 
+/** Outcome of decoding a buffered body as JSON. */
+type JsonParse =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false };
+
+const NOT_JSON: JsonParse = { ok: false };
+
 /**
- * Return a pretty-printed shape skeleton for a request/response body buffer.
- * Falls back to a byte count when the body cannot be parsed as JSON.
+ * Decode a buffered body as JSON exactly once. Codex request bodies carry whole
+ * conversation histories, so the decode + parse sits on the time-to-first-byte
+ * path: every consumer (the printed shape, the streamed-Responses eligibility
+ * rule) reads this single result rather than re-parsing the buffer.
  */
-function bodyShape(body: Buffer, contentType: string | undefined): string {
+function parseJsonBody(body: Buffer): JsonParse {
+  if (body.byteLength === 0) return NOT_JSON;
+  try {
+    return { ok: true, value: JSON.parse(body.toString("utf8")) as unknown };
+  } catch {
+    return NOT_JSON;
+  }
+}
+
+/**
+ * True when the request body declared `"stream": true` — the request-side
+ * clause of the headerless-SSE eligibility rule (PF-013).
+ */
+function declaresStream(parse: JsonParse): boolean {
+  if (!parse.ok) return false;
+  const { value } = parse;
+  return typeof value === "object" && value !== null && (value as Record<string, unknown>)["stream"] === true;
+}
+
+/**
+ * Return a pretty-printed shape skeleton for an already-parsed body buffer.
+ * Falls back to a byte count when the body is not JSON.
+ */
+function bodyShape(body: Buffer, contentType: string | undefined, parse: JsonParse): string {
   if (body.byteLength === 0) return "<empty>";
 
   const looksJson =
@@ -158,16 +221,10 @@ function bodyShape(body: Buffer, contentType: string | undefined): string {
       })());
 
   if (!looksJson) return `<binary: ${body.byteLength} bytes>`;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body.toString("utf8")) as unknown;
-  } catch {
-    return `<invalid-json: ${body.byteLength} bytes>`;
-  }
+  if (!parse.ok) return `<invalid-json: ${body.byteLength} bytes>`;
 
   const counter: FieldCounter = { n: 0 };
-  const shape = shapeOf(parsed, 0, counter);
+  const shape = shapeOf(parse.value, 0, counter);
   return JSON.stringify(shape, null, 2);
 }
 
@@ -237,21 +294,118 @@ function buildForwardHeaders(
 // Printing
 // ---------------------------------------------------------------------------
 
-let requestSeq = 0;
+export type RecorderOutput = (line: string) => void;
 
-function println(line: string): void {
-  process.stdout.write(line + "\n");
+const stdoutOutput: RecorderOutput = (line) => process.stdout.write(line + "\n");
+
+/** Column width of the horizontal rules drawn around each transcript block. */
+const SEPARATOR_WIDTH = 64;
+
+/** The line-oriented printing surface bound to one recorder's output sink. */
+interface Printer {
+  /** Emit one transcript line. */
+  readonly println: RecorderOutput;
+  /** Emit a labelled block header framed by two horizontal rules. */
+  readonly separator: (label: string) => void;
+  /** Emit a multi-line value, prefixing every line. */
+  readonly indent: (value: string, prefix?: string) => void;
 }
 
-function separator(label: string): void {
-  println(`\n${"─".repeat(64)}`);
-  println(`  ${label}`);
-  println("─".repeat(64));
-}
+/**
+ * Build the printing surface once per recorder. The rule string is computed a
+ * single time rather than per request, and `output` is the only sink: nothing
+ * here writes to stdout directly.
+ */
+const createPrinter = (output: RecorderOutput): Printer => {
+  const rule = "─".repeat(SEPARATOR_WIDTH);
+  return {
+    println: output,
+    separator: (label) => {
+      output(`\n${rule}`);
+      output(`  ${label}`);
+      output(rule);
+    },
+    indent: (value, prefix = "  ") => {
+      for (const line of value.split("\n")) output(`${prefix}${line}`);
+    },
+  };
+};
 
-function indent(text: string, prefix = "  "): void {
-  for (const line of text.split("\n")) println(`${prefix}${line}`);
-}
+// ---------------------------------------------------------------------------
+// Capture-text hygiene: upstream text may never forge a transcript line
+// ---------------------------------------------------------------------------
+
+/**
+ * C0 controls, DEL, and C1 controls — the exact range `renderToken` strips in
+ * src/logger.ts, for the same reason (ADR-008). A newline forges a whole capture
+ * line; a cursor-movement or erase-line escape forges one without needing a newline
+ * at all, overwriting the real prefix in a terminal. Real event types and usage keys
+ * contain none of these, so this is a no-op on every line a live capture emits.
+ */
+const CAPTURE_CONTROL_CHARS = /[ --]/g;
+
+/** Longest upstream-supplied token rendered verbatim; beyond this the tail is elided. */
+const MAX_CAPTURE_TOKEN_CHARS = 128;
+
+/**
+ * Render one upstream-controlled string as a single safe transcript token.
+ *
+ * The header promises the transcript carries structure, never message text, and
+ * everything reaching this function came off the upstream stream. Stripping the
+ * control range keeps a crafted value on one line; the length cap keeps a
+ * megabyte-long value from burying the capture around it.
+ */
+const renderCaptureToken = (value: string): string => {
+  const safe = value.replace(CAPTURE_CONTROL_CHARS, "");
+  return safe.length > MAX_CAPTURE_TOKEN_CHARS
+    ? `${safe.slice(0, MAX_CAPTURE_TOKEN_CHARS)}…`
+    : safe;
+};
+
+/** Maximum nesting depth projected out of an upstream `usage` object. */
+const MAX_USAGE_DEPTH = 3;
+/** Maximum number of usage fields projected, across all depths. */
+const MAX_USAGE_FIELDS = 32;
+
+/**
+ * Project an upstream `usage` object down to its finite numbers.
+ *
+ * Token counts are the only thing the transcript wants here, and the live shape
+ * nests them (`input_tokens_details.cached_tokens`), so the projection recurses —
+ * bounded in both depth and field count. Non-numeric leaves are dropped rather than
+ * rendered: a `usage` carrying a crafted string value is otherwise a free-text write
+ * into the capture, and keys get the same hygiene as any other upstream token.
+ */
+const numericUsage = (
+  usage: Record<string, unknown>,
+  depth: number,
+  counter: FieldCounter,
+): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(usage)) {
+    if (counter.n >= MAX_USAGE_FIELDS) break;
+    counter.n++;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      out[renderCaptureToken(key)] = value;
+    } else if (
+      depth + 1 < MAX_USAGE_DEPTH &&
+      typeof value === "object" &&
+      value !== null &&
+      !Array.isArray(value)
+    ) {
+      out[renderCaptureToken(key)] = numericUsage(value as Record<string, unknown>, depth + 1, counter);
+    }
+  }
+  return out;
+};
+
+/** Render a `usage` object as JSON carrying only finite numbers. */
+const renderUsage = (usage: Record<string, unknown>): string =>
+  JSON.stringify(numericUsage(usage, 0, { n: 0 }));
+
+/** The `  usage=…` suffix on a completed-event line; `""` when the event carries none. */
+const formatUsageSuffix = (usage: Record<string, unknown> | undefined): string =>
+  usage === undefined ? "" : `  usage=${renderUsage(usage)}`;
 
 // ---------------------------------------------------------------------------
 // SSE event parser
@@ -263,6 +417,13 @@ interface SseEventRecord {
   /** Parsed JSON data payload (if any). */
   data: unknown;
 }
+
+/** SSE event boundary: a blank line, in either newline convention. */
+const SSE_SEPARATOR = /\r?\n\r?\n/;
+/** The same boundary anchored, for trimming a consumed block's trailing separator. */
+const LEADING_SSE_SEPARATOR = /^\r?\n\r?\n/;
+/** The longest boundary is `\r\n\r\n`; carrying 3 chars catches one split across chunks. */
+const SSE_CARRY_CHARS = 3;
 
 /**
  * Parse a raw SSE event block (everything between two blank-line delimiters)
@@ -305,14 +466,285 @@ function extractUsage(data: unknown): Record<string, unknown> | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// Response arms
+// ---------------------------------------------------------------------------
+
+/** Settlement handles for the promise tracking one upstream exchange. */
+interface Settle {
+  readonly resolve: () => void;
+  readonly reject: (err: Error) => void;
+}
+
+/** Status synthesized when the upstream leg fails before the client was answered. */
+const UPSTREAM_FAILURE_STATUS = 502;
+/** Status synthesized when the recorder itself fails before the client was answered. */
+const RECORDER_FAILURE_STATUS = 500;
+
+/**
+ * Terminate a failed exchange.
+ *
+ * PF-022: `res.headersSent` is the "have we replied" latch, claimed the moment the
+ * upstream status is relayed, and it cannot double as the teardown guard — gating
+ * cleanup on it skips teardown for exactly the mid-stream failure teardown exists to
+ * handle, leaving the client's chunked body unterminated forever. Teardown therefore
+ * gets its own predicate: before the reply, synthesize a status; after it, destroy the
+ * socket so the client sees a broken connection instead of a stream that never ends.
+ */
+function failExchange(res: http.ServerResponse, status: number, message: string, err: Error): void {
+  if (!res.headersSent) {
+    res.writeHead(status);
+    res.end(message);
+    return;
+  }
+  if (!res.writableFinished) res.destroy(err);
+}
+
+/**
+ * End a mid-stream upstream failure. Both response arms handle one identically —
+ * tear the exchange down, then reject the promise `handleRequest` awaits — so the
+ * synthesized status and the client-visible message are stated once, not per arm.
+ */
+function failUpstreamStream(res: http.ServerResponse, settle: Settle, error: Error): void {
+  failExchange(res, UPSTREAM_FAILURE_STATUS, "upstream stream error", error);
+  settle.reject(error);
+}
+
+/**
+ * Capture arm: forward every upstream byte to the client untouched while
+ * parsing a copy of the stream into event-type lines and terminal usage.
+ */
+function recordSseStream(
+  upstreamRes: http.IncomingMessage,
+  res: http.ServerResponse,
+  printer: Printer,
+  settle: Settle,
+): void {
+  const { println } = printer;
+  println("SSE EVENTS:");
+  let sseEventCount = 0;
+  let terminalUsagePrinted = false;
+
+  // One decoder for the whole response: a multi-byte sequence split across two
+  // writes must not decode as two replacement characters.
+  const decoder = new StringDecoder("utf8");
+  /**
+   * Undelivered capture text, held as segments and joined only on the chunk that
+   * completes an event. `pending += chunk` outside the boundary branch is quadratic
+   * in stream length (38x slower at 8 MiB per the codex-leg KB); this mirrors the
+   * production `createSseParser`.
+   */
+  const pending: string[] = [];
+  /** Sum of `pending[i].length`, maintained incrementally so reading it needs no join. */
+  let pendingLen = 0;
+  /** Last `min(SSE_CARRY_CHARS, pendingLen)` chars of the joined pending. */
+  let carry = "";
+  /** Set once the residual overflowed: capture is over for this response, forwarding is not. */
+  let captureCapped = false;
+
+  const resetAccumulator = (residual: string): void => {
+    pending.length = 0;
+    if (residual !== "") pending.push(residual);
+    pendingLen = residual.length;
+    carry = residual.slice(-SSE_CARRY_CHARS);
+  };
+
+  const recordEvent = (event: SseEventRecord): void => {
+    const usage = event.type === "response.completed" ? extractUsage(event.data) : undefined;
+    if (sseEventCount < MAX_SSE_EVENTS) {
+      println(`  [${sseEventCount + 1}] type=${renderCaptureToken(event.type)}${formatUsageSuffix(usage)}`);
+    } else if (sseEventCount === MAX_SSE_EVENTS) {
+      println(`  ... (cap: first ${MAX_SSE_EVENTS} events printed; counting only)`);
+    }
+    // Usage is terminal accounting rather than event detail. Keep it even
+    // after the event-detail cap and when completion arrives at EOF.
+    if (usage !== undefined && !terminalUsagePrinted) {
+      println(`  TERMINAL USAGE: ${renderUsage(usage)}`);
+      terminalUsagePrinted = true;
+    }
+    sseEventCount++;
+  };
+
+  /**
+   * Absorb one decoded chunk into the accumulator, draining every event it completes.
+   * The search covers `carry + text` rather than the whole accumulation, so the cost
+   * is O(chunk) per chunk instead of O(total).
+   */
+  const capture = (text: string): void => {
+    const search = carry + text;
+    const rel = search.search(SSE_SEPARATOR);
+
+    if (rel === -1) {
+      // No boundary: extend the accumulator without materialising it. Empty segments
+      // are dropped (StringDecoder returns "" while holding a partial code point), so
+      // the segment count cannot grow without `pendingLen` growing with it.
+      if (text !== "") pending.push(text);
+      pendingLen += text.length;
+      carry = search.slice(-SSE_CARRY_CHARS);
+    } else {
+      // A boundary completes in this chunk, so join once and drain every block the
+      // accumulator now holds. `pendingLen - carry.length` is where the search began.
+      let buf = pending.join("") + text;
+      let boundary = pendingLen - carry.length + rel;
+      // Bounded: each turn removes a block plus at least the two chars of its
+      // separator from `buf`, so it runs at most buf.length / 2 times.
+      while (boundary !== -1) {
+        const event = parseSseBlock(buf.slice(0, boundary));
+        if (event !== undefined) recordEvent(event);
+        buf = buf.slice(boundary).replace(LEADING_SSE_SEPARATOR, "");
+        boundary = buf.search(SSE_SEPARATOR);
+      }
+      resetAccumulator(buf);
+    }
+
+    if (pendingLen > MAX_SSE_BUFFER_CHARS) {
+      println(`  <cap:sse-residual> ${pendingLen} chars held with no event boundary; capture stopped for this response (bytes still forwarded verbatim)`);
+      captureCapped = true;
+      resetAccumulator("");
+    }
+  };
+
+  /**
+   * Relay one chunk to the client. Transparency runs before capture (ADR-010) and the
+   * write's return value is honoured, so a client that reads slowly throttles the
+   * upstream instead of making Node queue the whole stream in memory.
+   */
+  const forward = (chunk: Buffer): void => {
+    if (res.destroyed || res.writableEnded) return;
+    if (res.write(chunk)) return;
+    upstreamRes.pause();
+    // PF-009 class: `res` may close while the drain is pending, and a drain that
+    // never arrives would leave the upstream paused for the life of the process.
+    // One listener on both events: whichever fires first detaches the other and
+    // resumes; the client-close handler in `handleRequest` owns the actual teardown.
+    const resumeUpstream = (): void => {
+      res.off("drain", resumeUpstream);
+      res.off("close", resumeUpstream);
+      upstreamRes.resume();
+    };
+    res.once("drain", resumeUpstream);
+    res.once("close", resumeUpstream);
+  };
+
+  upstreamRes.on("data", (chunk: Buffer) => {
+    forward(chunk);
+    // Once capped, not even the decode runs: the residual is gone and nothing this
+    // response still carries can complete an event.
+    if (!captureCapped) capture(decoder.write(chunk));
+  });
+
+  upstreamRes.on("end", () => {
+    if (!captureCapped) {
+      // Flush any remaining partial block.
+      const event = parseSseBlock(pending.join("") + decoder.end());
+      if (event !== undefined) recordEvent(event);
+      resetAccumulator("");
+    }
+    println(`\n  SSE TOTAL: ${sseEventCount} events`);
+    if (!res.destroyed) res.end();
+    settle.resolve();
+  });
+
+  upstreamRes.on("error", (err) => {
+    println(`  SSE UPSTREAM ERROR: ${err.message}`);
+    failUpstreamStream(res, settle, err);
+  });
+}
+
+/** Pass-through arm: relay the body verbatim, with no inspection. */
+function pipeThrough(
+  upstreamRes: http.IncomingMessage,
+  res: http.ServerResponse,
+  settle: Settle,
+): void {
+  upstreamRes.pipe(res);
+  upstreamRes.on("end", settle.resolve);
+  upstreamRes.on("error", (err) => {
+    // `pipe` unpipes on a source error but leaves the destination open, so without
+    // this the client waits forever on a body that can never be completed.
+    failUpstreamStream(res, settle, err);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Request handler
 // ---------------------------------------------------------------------------
+
+/** Media type the Responses endpoint declares when it declares one at all. */
+const SSE_CONTENT_TYPE = "text/event-stream";
+/** Path suffix identifying the Responses endpoint under any upstream base path. */
+const RESPONSES_PATH_SUFFIX = "/responses";
+/** Origin used solely to resolve a raw request target into a pathname; never dialled. */
+const PATH_PARSE_BASE = "http://recorder.invalid";
+
+/** True for any 2xx upstream status. */
+const isSuccessStatus = (status: number | undefined): boolean =>
+  status !== undefined && status >= 200 && status < 300;
+
+/**
+ * True when the raw request target resolves to a Responses endpoint path.
+ *
+ * A malformed target (`//`, `http://[`) makes the exchange ineligible rather
+ * than fatal: this runs inside the upstream response callback, which is outside
+ * the promise `handleRequest` awaits, so a throw here would escape the
+ * `.catch()` on the handler and kill the recorder via `uncaughtException`.
+ */
+const isResponsesPath = (path: string): boolean => {
+  try {
+    return new URL(path, PATH_PARSE_BASE).pathname.endsWith(RESPONSES_PATH_SUFFIX);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The facts the response-arm dispatch weighs, named rather than positional so
+ * no caller can transpose the two adjacent strings.
+ */
+interface StreamProbe {
+  /** Request method, as received. */
+  readonly method: string;
+  /** Raw request target, as received — not yet known to be a well-formed URL. */
+  readonly path: string;
+  /** The request body declared `"stream": true` (decided once, before forwarding). */
+  readonly requestIsStreamedResponses: boolean;
+  /** Upstream `Content-Type`, trimmed; `""` when the header is absent. */
+  readonly contentType: string;
+  /** Upstream status, or undefined when it could not be read. */
+  readonly status: number | undefined;
+}
+
+/**
+ * PF-013: the live Responses endpoint streams SSE with no Content-Type at all.
+ * Eligibility keeps all four clauses — POST, a `/responses` path, a 2xx status,
+ * and a request that asked for a stream — so ordinary proxy behaviour is
+ * preserved everywhere else. Clauses run cheapest-first; the target is parsed
+ * only once everything else already matches.
+ */
+const isExpectedMissingHeaderStream = (probe: StreamProbe): boolean =>
+  probe.method === "POST" &&
+  probe.requestIsStreamedResponses &&
+  isSuccessStatus(probe.status) &&
+  isResponsesPath(probe.path);
+
+/** Choose the capture arm: an explicit SSE content type, or the PF-013 headerless case. */
+const isSseResponse = (probe: StreamProbe): boolean =>
+  probe.contentType.toLowerCase().includes(SSE_CONTENT_TYPE) ||
+  (probe.contentType === "" && isExpectedMissingHeaderStream(probe));
+
+/** Per-server state threaded into every request the recorder serves. */
+interface RecorderContext {
+  readonly upstreamBase: string;
+  readonly printer: Printer;
+}
 
 async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
+  context: RecorderContext,
+  seq: number,
 ): Promise<void> {
-  const seq = ++requestSeq;
+  const { upstreamBase, printer } = context;
+  const { println, separator, indent } = printer;
   const method = req.method ?? "GET";
   const path = req.url ?? "/";
   const ts = new Date().toISOString();
@@ -329,14 +761,16 @@ async function handleRequest(
     chunks.push(chunk as Buffer);
   }
   const rawBody = Buffer.concat(chunks);
+  const bodyParse = parseJsonBody(rawBody);
+  const requestIsStreamedResponses = declaresStream(bodyParse);
 
   println("\nREQUEST BODY SHAPE:");
-  indent(bodyShape(rawBody, req.headers["content-type"]));
+  indent(bodyShape(rawBody, req.headers["content-type"], bodyParse));
 
   // Resolve upstream URL: append the incoming path onto the configured base path.
   // e.g. UPSTREAM_BASE=https://chatgpt.com/backend-api/codex + path=/responses
   //   → hostname=chatgpt.com, upstreamPath=/backend-api/codex/responses
-  const upstreamTarget = new URL(UPSTREAM_BASE.replace(/\/$/, ""));
+  const upstreamTarget = new URL(upstreamBase.replace(/\/$/, ""));
   const upstreamPath = upstreamTarget.pathname.replace(/\/$/, "") + path;
 
   const isHttps = upstreamTarget.protocol === "https:";
@@ -356,6 +790,10 @@ async function handleRequest(
   };
 
   await new Promise<void>((resolve, reject) => {
+    // True once we tore the upstream down ourselves, so the error that teardown
+    // provokes is not reported as an upstream failure.
+    let clientGone = false;
+    const settle: Settle = { resolve: () => resolve(), reject };
     const upstreamReq = transport.request(upstreamOptions, (upstreamRes) => {
       separator(`RESPONSE #${seq}  status=${upstreamRes.statusCode ?? "?"}`);
 
@@ -369,84 +807,41 @@ async function handleRequest(
       delete fwdHeaders["content-length"];
       res.writeHead(upstreamRes.statusCode ?? 502, fwdHeaders);
 
-      const contentType = (upstreamRes.headers["content-type"] ?? "") as string;
-      const isSse = contentType.includes("text/event-stream");
+      const probe: StreamProbe = {
+        method,
+        path,
+        requestIsStreamedResponses,
+        contentType: (upstreamRes.headers["content-type"] ?? "").trim(),
+        status: upstreamRes.statusCode,
+      };
 
-      if (isSse) {
-        println("SSE EVENTS:");
-        let sseEventCount = 0;
-        let lineBuf = "";
-
-        upstreamRes.on("data", (chunk: Buffer) => {
-          // Forward to client immediately (no buffering of response body)
-          res.write(chunk);
-
-          // Accumulate for SSE parsing
-          lineBuf += chunk.toString("utf8");
-
-          // Split on double-newline (SSE event boundary)
-          const blocks = lineBuf.split(/\r?\n\r?\n/);
-          // Last element is a partial block (keep in buffer)
-          lineBuf = blocks.pop() ?? "";
-
-          for (const block of blocks) {
-            if (block.trim() === "") continue;
-            const event = parseSseBlock(block);
-            if (event === undefined) continue;
-
-            if (sseEventCount < MAX_SSE_EVENTS) {
-              let suffix = "";
-              if (event.type === "response.completed") {
-                const usage = extractUsage(event.data);
-                if (usage !== undefined) {
-                  suffix = `  usage=${JSON.stringify(usage)}`;
-                }
-              }
-              println(`  [${sseEventCount + 1}] type=${event.type}${suffix}`);
-            } else if (sseEventCount === MAX_SSE_EVENTS) {
-              println(`  ... (cap: first ${MAX_SSE_EVENTS} events printed; counting only)`);
-            }
-            sseEventCount++;
-          }
-        });
-
-        upstreamRes.on("end", () => {
-          // Flush any remaining partial block
-          if (lineBuf.trim() !== "") {
-            const event = parseSseBlock(lineBuf);
-            if (event !== undefined) {
-              if (sseEventCount < MAX_SSE_EVENTS) {
-                println(`  [${sseEventCount + 1}] type=${event.type}`);
-              }
-              sseEventCount++;
-            }
-          }
-          println(`\n  SSE TOTAL: ${sseEventCount} events`);
-          res.end();
-          resolve();
-        });
-
-        upstreamRes.on("error", (err) => {
-          println(`  SSE UPSTREAM ERROR: ${(err as Error).message}`);
-          reject(err);
-        });
+      if (isSseResponse(probe)) {
+        recordSseStream(upstreamRes, res, printer, settle);
       } else {
-        // Non-SSE: pipe directly, no body inspection
-        upstreamRes.pipe(res);
-        upstreamRes.on("end", resolve);
-        upstreamRes.on("error", reject);
+        pipeThrough(upstreamRes, res, settle);
       }
     });
 
     upstreamReq.on("error", (err) => {
-      const msg = (err as Error).message;
-      println(`UPSTREAM CONNECTION ERROR: ${msg}`);
-      if (!res.headersSent) {
-        res.writeHead(502);
-        res.end("upstream connection error");
-      }
+      if (clientGone) return;
+      println(`UPSTREAM CONNECTION ERROR: ${err.message}`);
+      failExchange(res, UPSTREAM_FAILURE_STATUS, "upstream connection error", err);
       reject(err);
     });
+
+    // A client that walks away mid-stream must not leave the upstream streaming into
+    // a dead socket. `res.writableFinished` separates a completed exchange from an
+    // abandoned one — unlike `headersSent`, it is not claimed by relaying a status.
+    const onClientClose = (): void => {
+      if (res.writableFinished) return;
+      clientGone = true;
+      println(`CLIENT DISCONNECTED #${seq}: tearing down upstream`);
+      upstreamReq.destroy();
+      resolve();
+    };
+    // PF-009 class: a `close` listener on an already-closed `res` never fires.
+    if (res.destroyed) onClientClose();
+    else res.once("close", onClientClose);
 
     upstreamReq.write(rawBody);
     upstreamReq.end();
@@ -457,33 +852,124 @@ async function handleRequest(
 // Server
 // ---------------------------------------------------------------------------
 
-const server = http.createServer((req, res) => {
-  handleRequest(req, res).catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    println(`HANDLER ERROR: ${msg}`);
-    if (!res.headersSent) {
-      res.writeHead(500);
-      res.end("recorder error");
-    }
+/** Knobs a caller may set beyond the upstream URL and the output sink. */
+export interface RecorderOptions {
+  /**
+   * Opt in to an https upstream on a host other than `chatgpt.com` — for replaying
+   * captures against a stand-in backend. Never relaxes the cleartext rule: `http:`
+   * to a non-loopback host stays fatal either way.
+   */
+  readonly allowInsecureUpstream?: boolean;
+}
+
+/**
+ * Reject an upstream URL that would carry the operator's ChatGPT credentials
+ * somewhere they do not belong.
+ *
+ * `buildForwardHeaders` relays `authorization`, `chatgpt-account-id` and `cookie`
+ * verbatim — the `REDACT_*` sets govern the transcript, not the wire — so the
+ * upstream URL is a credential-bearing URL and ADR-009 applies to it: vet against
+ * the expected default host, fail closed, and make the unsafe configuration a
+ * deliberate opt-in rather than an accident. Loopback is always exempt, and the
+ * loopback arm is `src/config.ts`'s exact-form predicate, never a prefix test
+ * (PF-026: `startsWith("127.")` admits `127.0.0.1.evil.test`).
+ *
+ * Returns the refusal message, or `undefined` when the URL is acceptable.
+ */
+const upstreamRefusal = (upstreamUrl: string, allowInsecureUpstream: boolean): string | undefined => {
+  const shown = renderCaptureToken(upstreamUrl);
+  let url: URL;
+  try {
+    url = new URL(upstreamUrl);
+  } catch {
+    return `upstream '${shown}' is not a URL`;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    return `upstream '${shown}' must use https: (or http: to loopback), not ${url.protocol}`;
+  }
+  if (isLoopbackHost(url.hostname)) return undefined;
+  if (url.protocol === "http:") {
+    return (
+      `upstream '${shown}' is cleartext http: to the non-loopback host '${url.host}'. ` +
+      "The recorder forwards your ChatGPT credentials verbatim, so they would travel unencrypted."
+    );
+  }
+  if (url.hostname === DEFAULT_UPSTREAM_HOST || allowInsecureUpstream) return undefined;
+  return (
+    `upstream '${shown}' points at '${url.host}' (expected '${DEFAULT_UPSTREAM_HOST}'). ` +
+    "The recorder forwards your ChatGPT credentials verbatim, so they would reach an untrusted host. " +
+    "Set CODEX_RECORDER_ALLOW_INSECURE_UPSTREAM=1 to opt in."
+  );
+};
+
+/**
+ * Create a dev-only recorder without binding a port. Tests and local probes can
+ * listen on an ephemeral loopback port; importing this module has no side effect.
+ *
+ * ARCHITECTURE EXCEPTION: throws on a refused upstream URL rather than returning a
+ * Result. Construction is the configuration boundary — the throw lands on the caller
+ * that supplied the URL, before anything can listen or forward a credential — and the
+ * factory's existing contract is a bare `http.Server` that every caller uses directly.
+ */
+export const createCodexRecorderServer = (
+  upstreamUrl: string,
+  output: RecorderOutput = stdoutOutput,
+  options: RecorderOptions = {},
+): http.Server => {
+  const refusal = upstreamRefusal(upstreamUrl, options.allowInsecureUpstream === true);
+  if (refusal !== undefined) throw new Error(`codex-recorder: ${refusal}`);
+
+  const context: RecorderContext = { upstreamBase: upstreamUrl, printer: createPrinter(output) };
+  // Per recorder, not per process: several recorders in one process (the integration
+  // suite runs several) must each number their own requests from #1.
+  let requestSeq = 0;
+  return http.createServer((req, res) => {
+    handleRequest(req, res, context, ++requestSeq).catch((err: unknown) => {
+      const error = err instanceof Error ? err : new Error(String(err));
+      output(`HANDLER ERROR: ${error.message}`);
+      failExchange(res, RECORDER_FAILURE_STATUS, "recorder error", error);
+    });
   });
-});
+};
 
-server.listen(LISTEN_PORT, LISTEN_HOST, () => {
-  println("╔══════════════════════════════════════════════════════════════╗");
-  println("║         subswitch Codex wire-capture recorder (dev only)        ║");
-  println("╚══════════════════════════════════════════════════════════════╝");
-  println(`  Listening : http://${LISTEN_HOST}:${LISTEN_PORT}`);
-  println(`  Upstream  : ${UPSTREAM_BASE}`);
-  println("");
-  println("  To route subswitch through this recorder, set codex.baseUrl in");
-  println(`  subswitch.config.json to "http://${LISTEN_HOST}:${LISTEN_PORT}"`);
-  println("");
-  println("  Override upstream: CODEX_RECORDER_UPSTREAM=https://... npx tsx ...");
-  println("");
-});
+const isDirectExecution = process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (isDirectExecution) {
+  // CLI-only last resort. A capture session is long and unattended, so a stray
+  // throw from an event callback must cost one transcript line, not the whole
+  // recording. Scoped here deliberately: the factory stays import-safe and
+  // never mutates process-global state for library consumers.
+  process.on("uncaughtException", (err: unknown) => {
+    stdoutOutput(`UNCAUGHT (recorder still listening): ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+  });
 
-process.on("SIGINT", () => {
-  println("\nShutting down recorder.");
-  server.close();
-  process.exit(0);
-});
+  // The handler above would otherwise swallow a refused upstream and leave a
+  // process that prints "still listening" while listening on nothing.
+  let server: http.Server;
+  try {
+    server = createCodexRecorderServer(UPSTREAM_BASE, stdoutOutput, {
+      allowInsecureUpstream: ALLOW_INSECURE_UPSTREAM,
+    });
+  } catch (err: unknown) {
+    stdoutOutput(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+  server.listen(LISTEN_PORT, LISTEN_HOST, () => {
+    stdoutOutput("╔══════════════════════════════════════════════════════════════╗");
+    stdoutOutput("║         subswitch Codex wire-capture recorder (dev only)        ║");
+    stdoutOutput("╚══════════════════════════════════════════════════════════════╝");
+    stdoutOutput(`  Listening : http://${LISTEN_HOST}:${LISTEN_PORT}`);
+    stdoutOutput(`  Upstream  : ${UPSTREAM_BASE}`);
+    stdoutOutput("");
+    stdoutOutput("  To route subswitch through this recorder, set codex.baseUrl in");
+    stdoutOutput(`  subswitch.config.json to "http://${LISTEN_HOST}:${LISTEN_PORT}"`);
+    stdoutOutput("");
+    stdoutOutput(`  Override upstream: CODEX_RECORDER_UPSTREAM=https://${DEFAULT_UPSTREAM_HOST}/... npx tsx ...`);
+    stdoutOutput("  (another https host needs CODEX_RECORDER_ALLOW_INSECURE_UPSTREAM=1)");
+    stdoutOutput("");
+  });
+  process.on("SIGINT", () => {
+    stdoutOutput("\nShutting down recorder.");
+    server.close();
+    process.exit(0);
+  });
+}

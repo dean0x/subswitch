@@ -1,11 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  DEFAULT_REASONING_EFFORTS,
   MODEL_REGISTRY,
   formatModelsReport,
   buildAliasRows,
   buildModelRows,
   buildRoutingTable,
+  reasoningEffortsForModel,
   resolveModel,
   routableModelCount,
   type ModelEntry,
@@ -18,12 +20,19 @@ import {
 
 describe("routableModelCount", () => {
   it("returns the non-retired codex model count matching the live registry", () => {
-    // Canary: update when MODEL_REGISTRY changes.
-    const count = routableModelCount(MODEL_REGISTRY, "codex");
-    assert.ok(count > 0, "routableModelCount must be > 0 for codex");
-    // Double-check against a manual inline count so a divergence in the implementation is visible.
-    const manual = MODEL_REGISTRY.filter((e) => e.provider === "codex" && e.retired !== true).length;
-    assert.equal(count, manual, "routableModelCount must match manual filter count");
+    // Literal pin, deliberately. The previous form compared routableModelCount against an
+    // inline re-spelling of its own filter, so both sides moved together and the canary
+    // stayed green when the registry went 4 -> 5 — a control that cannot fire is not a
+    // control. One side of an assertion must be INDEPENDENT of the code under test.
+    // (avoids PF-011)
+    //
+    // MUTATION PROOF: changing this literal to 4 turns the assertion RED.
+    // Update the literal — never the registry — when MODEL_REGISTRY changes.
+    assert.equal(
+      routableModelCount(MODEL_REGISTRY, "codex"),
+      5,
+      "update this literal when MODEL_REGISTRY changes",
+    );
   });
 
   it("returns 0 when every registry entry for the provider is retired", () => {
@@ -328,6 +337,75 @@ describe("Preview exclusion from family alias derivation", () => {
     const { table } = buildRoutingTable(reg, { codex: {} });
     const resolution = resolveModel(table, "sol");
     assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-5.6-sol");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reasoningEffortsForModel — per-model effort vocabulary
+// ---------------------------------------------------------------------------
+
+describe("reasoningEffortsForModel", () => {
+  // Synthetic registry with made-up ids. The accessor takes the registry as its first
+  // parameter — like every other consumer in this module — so the per-model rule is
+  // testable without pinning whichever real ids happen to declare reasoningEfforts.
+  const SYNTHETIC_REGISTRY: readonly ModelEntry[] = [
+    { id: "gpt-9-nova", provider: "codex", family: "nova", gen: [9], reasoningEfforts: ["gentle", "fierce"] },
+    { id: "gpt-9-plain", provider: "codex", gen: [9] },
+  ];
+
+  it("returns the declaring entry's own list", () => {
+    assert.deepEqual(reasoningEffortsForModel(SYNTHETIC_REGISTRY, "gpt-9-nova"), ["gentle", "fierce"]);
+  });
+
+  // TOTAL: the accessor never returns undefined, so callers make ONE positive
+  // membership test instead of branching between two spellings of the vocabulary.
+  it("falls back to the default set when the entry declares no reasoningEfforts", () => {
+    assert.deepEqual(reasoningEffortsForModel(SYNTHETIC_REGISTRY, "gpt-9-plain"), [...DEFAULT_REASONING_EFFORTS]);
+  });
+
+  it("falls back to the default set for an id absent from the registry", () => {
+    assert.deepEqual(reasoningEffortsForModel(SYNTHETIC_REGISTRY, "gpt-9-nonexistent"), [...DEFAULT_REASONING_EFFORTS]);
+  });
+
+  it("declares the backend-wide effort set as the single vocabulary (avoids PF-014)", () => {
+    assert.deepEqual([...DEFAULT_REASONING_EFFORTS], ["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRoutingTable — reasoningEfforts registry self-check (reliability-09)
+// ---------------------------------------------------------------------------
+
+describe("buildRoutingTable — reasoningEfforts self-check", () => {
+  it("diagnoses an entry whose reasoningEfforts are not a subset of the default set", () => {
+    const reg: readonly ModelEntry[] = [
+      { id: "gpt-9-typo", provider: "codex", family: "typo", gen: [9], reasoningEfforts: ["xhig"] },
+    ];
+    const build = buildRoutingTable(reg, { codex: {} });
+    assert.deepEqual(build.unknownReasoningEfforts, [{ id: "gpt-9-typo", efforts: ["xhig"] }]);
+    // TOTAL: a typo is reported as data, never thrown, and the entry still routes.
+    assert.equal(build.table.byId.get("gpt-9-typo"), "codex");
+  });
+
+  it("reports only the offending values, leaving valid neighbours out", () => {
+    const reg: readonly ModelEntry[] = [
+      { id: "gpt-9-mixed", provider: "codex", gen: [9], reasoningEfforts: ["low", "xhig", "maxx"] },
+    ];
+    assert.deepEqual(buildRoutingTable(reg, { codex: {} }).unknownReasoningEfforts, [
+      { id: "gpt-9-mixed", efforts: ["xhig", "maxx"] },
+    ]);
+  });
+
+  it("says nothing about entries that declare a valid subset, or none at all", () => {
+    const reg: readonly ModelEntry[] = [
+      { id: "gpt-9-narrow", provider: "codex", gen: [9], reasoningEfforts: ["low", "high"] },
+      { id: "gpt-9-plain", provider: "codex", gen: [9] },
+    ];
+    assert.deepEqual(buildRoutingTable(reg, { codex: {} }).unknownReasoningEfforts, []);
+  });
+
+  it("reports nothing for the live registry", () => {
+    assert.deepEqual(buildRoutingTable(MODEL_REGISTRY, { codex: {} }).unknownReasoningEfforts, []);
   });
 });
 

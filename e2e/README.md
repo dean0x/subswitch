@@ -126,6 +126,27 @@ CODEX_RECORDER_UPSTREAM=https://chatgpt.com/backend-api/codex \
   npx tsx e2e/capture/codex-recorder.ts
 ```
 
+#### Which upstreams are accepted
+
+The recorder forwards `authorization`, `chatgpt-account-id` and `cookie` to the
+upstream verbatim — the redaction rules govern the transcript, not the wire — so
+the upstream URL is a credential-bearing URL and is vetted before anything listens
+(ADR-009):
+
+| Upstream | Accepted |
+|---|---|
+| Any scheme to a loopback host (`127.x.y.z`, `localhost`, `[::1]`) | always |
+| `https:` to `chatgpt.com` | always — this is the default |
+| `https:` to any other host | only with `CODEX_RECORDER_ALLOW_INSECURE_UPSTREAM=1` |
+| `http:` to a non-loopback host | never — the opt-in does not relax this |
+| Anything that is not an `http:`/`https:` URL | never |
+
+A refused upstream is fatal at construction, before a port is bound: the CLI prints
+the refusal and exits `1`, and `createCodexRecorderServer` throws (its in-process
+form of the opt-in is `{ allowInsecureUpstream: true }`). Loopback is matched with
+the project's exact-form `isLoopbackHost` predicate from `src/config.ts`, so
+`127.0.0.1.evil.test` is not loopback (PF-026).
+
 ### Routing subswitch through the recorder
 
 Edit (or create) `subswitch.config.json` and set `providers.codex.baseUrl` to point
@@ -145,6 +166,46 @@ Then start subswitch as normal (`npm run serve`). Every Codex-leg request will
 flow through the recorder, which logs the wire details and forwards them to
 the real backend transparently.
 
+### Using the recorder from a test
+
+The module is import-safe: importing it binds no port and installs no process
+handlers. Only running it directly (`npx tsx e2e/capture/codex-recorder.ts`) listens
+on 4142 and installs the `uncaughtException` and `SIGINT` handlers, and the
+`CODEX_RECORDER_*` environment variables configure that CLI path alone — a caller of
+the factory passes its upstream and its opt-in explicitly. Tests drive the exported
+factory instead — see `test/integration/codex-recorder.test.ts`:
+
+```ts
+import { once } from "node:events";
+import type { AddressInfo } from "node:net";
+import { createCodexRecorderServer, type RecorderOutput } from "../../e2e/capture/codex-recorder.js";
+
+const output: string[] = [];
+const sink: RecorderOutput = (line) => output.push(line);
+const recorder = createCodexRecorderServer(upstreamUrl, sink);
+
+// The factory returns a plain http.Server that is not listening yet.
+recorder.listen(0, "127.0.0.1");
+await once(recorder, "listening");
+const { port } = recorder.address() as AddressInfo;
+// ...drive `http://127.0.0.1:${port}`, assert on `output`, then:
+recorder.close();
+```
+
+`createCodexRecorderServer(upstreamUrl, output?, options?)` takes:
+
+- `upstreamUrl` — vetted immediately against the table above; a refused URL throws
+  rather than returning a server.
+- `output` — a `RecorderOutput`, i.e. `(line: string) => void`, called once per
+  transcript line. This is where every captured line goes, so a test asserts on the
+  array it collects instead of on stdout. Defaults to stdout.
+- `options.allowInsecureUpstream` — the in-process form of
+  `CODEX_RECORDER_ALLOW_INSECURE_UPSTREAM=1`, for pointing a test at a stand-in
+  https backend.
+
+Request numbering (`REQUEST #n`) is per server, so two recorders in one process
+each start at `#1`.
+
 ### What the output means
 
 For each round-trip the recorder prints two sections separated by a
@@ -156,16 +217,36 @@ horizontal rule.
 - `REQUEST BODY SHAPE` — structural skeleton of the JSON body. Every string
   value is replaced with `<len:N>`. JWT-looking strings get
   `<jwt,len:N,sha8:XXXXXXXX>`. Arrays appear as `{ "_array": N, "_item": <shape> }`.
-  Numbers and booleans are shown verbatim (non-sensitive). Capped at 100
-  fields / depth 6.
+  Numbers are shown verbatim and booleans as `<bool:true>` / `<bool:false>`
+  (non-sensitive). Capped at 100 fields / depth 6.
 
 **RESPONSE block** — logged while streaming:
 - `RESPONSE HEADERS` — same redaction rules as request headers
-- `SSE EVENTS` — one line per event showing its `type` field (from the JSON
-  `data` payload). For `response.completed` events the `usage` object is
-  printed verbatim (token counts are not sensitive). Capped at the first 200
-  events; beyond that a running counter appears.
-- `SSE TOTAL` — total event count for the response.
+- `SSE EVENTS` — one `  [n] type=<type>` line per event, showing the `type` field
+  from the JSON `data` payload; `response.completed` events carry a `usage={…}`
+  suffix with that event's token counts. Only the first 200 events are **printed**:
+  the event that crosses the cap emits a single
+  `... (cap: first 200 events printed; counting only)` line and later events are
+  counted but not printed. Both the type and the usage are upstream-controlled, so
+  they pass through capture hygiene — control characters are stripped, a type longer
+  than 128 characters is truncated with `…`, and only finite numbers survive from
+  `usage` (nested objects up to 3 levels, 32 fields).
+- `TERMINAL USAGE` — printed at most once per response, on the first
+  `response.completed` that carries a `usage` object. Deliberately decoupled from the
+  200-event print cap: the line still appears when that completion arrives past the
+  cap, and when it arrives as the final block flushed at end of stream.
+- `<cap:sse-residual>` — printed if 4 Mi chars accumulate with no SSE event
+  boundary (a 2xx body that is eligible by request shape but carries no blank line
+  at all). Capture stops for that response; every byte still reaches the client
+  untouched.
+- `SSE TOTAL` — total event count for the response, counting events past the print
+  cap.
+
+The recorder inspects explicit `text/event-stream` responses. When an upstream
+omits `Content-Type`, it additionally inspects only a successful 2xx response to
+a JSON `POST` whose path ends in `/responses` and has `stream: true`. Other
+missing-header responses remain pass-through. The recorder is HTTP-only and does
+not capture WebSocket traffic.
 
 ### Bounds and safety
 
@@ -173,7 +254,10 @@ horizontal rule.
 |---|---|
 | Max body-shape fields | 100 |
 | Max body-shape depth | 6 |
-| SSE events printed | 200 (counter continues) |
+| SSE events printed | 200 (counter continues; terminal usage is not capped) |
+| SSE capture buffer | 4 Mi chars (residual dropped; bytes still forwarded) |
+| Max captured event-type chars | 128 (tail elided with `…`) |
+| Max usage fields / depth | 32 / 3 (non-numeric leaves dropped) |
 
 The recorder never writes files. All output goes to stdout.
 
