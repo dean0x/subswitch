@@ -1,6 +1,6 @@
 {
   "name": "subswitch",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "Local subscription-routing proxy for native Claude Code and Codex sub-agents. Model-based routing with native tool execution.",
   "bin": {

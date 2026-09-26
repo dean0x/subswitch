@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.5.0] - 2026-09-27
 
 ### Added
 
@@ -37,8 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Supported Node versions are `^22.15.0 || >=24`, matching native zstd and runtime dependency requirements. Reverse routing includes the
-  documented Claude identity preamble. Durable restart/compaction, setup undo and
+- Supported Node versions are `^22.15.0 || >=24`, matching native zstd and runtime dependency requirements.
+- Reverse routing includes the documented Claude identity preamble. Durable restart/compaction, setup undo and
   explicit API authentication for translated inference remain separate shared work.
 
 - User-level configuration now participates in every implicit config load, including
