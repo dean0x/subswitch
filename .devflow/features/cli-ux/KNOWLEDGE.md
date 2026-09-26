@@ -1,11 +1,11 @@
 ---
 feature: cli-ux
 name: CLI / init command / terminal UX
-description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, log event names, config load and provider config resolution, the models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, providerEvents, provider-events, log injection, FIELD_KEYS, renderToken, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, buildDeps, ProviderConfigs, PROVIDER_SCHEMAS, PROVIDER_RESOLVERS, detectUnknownProviderKeys, detectLegacyConfigKeys, LEGACY_KEY_ENTRIES, renderLegacyKeyEntry, credentialUsable, providersWithCredentials, enumerateDestinations, RoutingDestination, isLoopbackHost, isLoopbackHostname, strictObject, oauthTokenUrl, PROVIDER_AUTH_INSPECTORS, plain-object, SERVER_TUNING, applyInboundPolicy, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, drainRejectedUpload, hostGateVerdict, responseForClientError, client_disconnected, respondJson, anthropic:ambiguous, anthropic:fallback, maxBufferedBodyBytes, readBodyForRouting, IngestError, bodyMode, anthropic:streamed, sniffLeadingModel, ADR-010, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, registry_entry_unknown_effort, buildOpenaiModelNamePredicate."
+description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, log event names, config load and provider config resolution, the models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, providerEvents, provider-events, log injection, FIELD_KEYS, renderToken, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, buildDeps, ProviderConfigs, PROVIDER_SCHEMAS, PROVIDER_RESOLVERS, detectUnknownProviderKeys, detectLegacyConfigKeys, LEGACY_KEY_ENTRIES, renderLegacyKeyEntry, credentialUsable, providersWithCredentials, enumerateDestinations, RoutingDestination, isLoopbackHost, isLoopbackHostname, strictObject, oauthTokenUrl, PROVIDER_AUTH_INSPECTORS, plain-object, SERVER_TUNING, applyInboundPolicy, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, drainRejectedUpload, hostGateVerdict, responseForClientError, client_disconnected, respondJson, anthropic:ambiguous, anthropic:fallback, maxBufferedBodyBytes, readBodyForRouting, IngestError, bodyMode, anthropic:streamed, sniffLeadingModel, ADR-010, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, registry_entry_unknown_effort, buildOpenaiModelNamePredicate, isReservedAnthropicName, ANTHROPIC_NAME_RE, routableModelCount, retired, gpt-6-sol, gpt-6-luna, fable, best, isClaudeModelName, codex-doctor."
 category: architecture
-directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts, src/provider-transport.ts]
+directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/codex-doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts, src/provider-transport.ts]
 created: 2026-07-23
-updated: 2026-09-14
+updated: 2026-09-27
 ---
 
 # CLI / init command / terminal UX
@@ -97,6 +97,10 @@ Deliberately imports nothing from the rest of the repo — `config.ts` imports i
 Key exports: `PROVIDER_IDS`, `ProviderId`, `AliasesByProvider`, `MODEL_REGISTRY`, `routableModelCount`, `DEFAULT_REASONING_EFFORTS`, `reasoningEffortsForModel`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `formatModelsReport`, `buildModelRows`, `buildAliasRows`.
 
 `buildModelRows` emits `ModelRow.reasoningEfforts` (surfaced by `subswitch models --json`) only when a registry entry narrows the default effort vocabulary. `buildRoutingTable` also reports an `unknownReasoningEfforts` diagnostic that `buildDeps` logs as `registry_entry_unknown_effort`, alongside its other startup diagnostics (`alias_rejected`, `alias_dangling_target`, `ambiguous_family`, `registry_entry_uses_reserved_name`).
+
+**Never delete a `MODEL_REGISTRY` entry — mark it `retired: true` instead.** Deleting silently unroutes anyone pinned to that id (they'd fall through to Anthropic instead); `retired: true` keeps the id in `byId` so the request still reaches the provider and gets the upstream's own answer (a Codex 400, not a relay-invented 404). Retired entries are excluded from `routableModelCount` and from family-alias derivation (`selectFamilyWinners` skips `retired === true`), but `buildAliasRows` still renders a `direct` row for them with `enabled: false`, and `buildModelRows` always emits `routable: entry.retired !== true` / `retired: entry.retired === true` so `models --json` is exhaustive over history. `gpt-5.5` (retired 2026-10-14) is the live example: hidden from the human `models` table, still present in `models --json` as `{"id":"gpt-5.5", "retired":true, "routable":false}`, and an agent frontmatter pin to it produces `checkAgentModels`' `"retired"` finding at severity `"info"` (not `"fail"`) — it still routes.
+
+**`isReservedAnthropicName` / `ANTHROPIC_NAME_RE` is two arms, not one regex style.** A prefix arm (`^(?:inherit|sonnet|opus|haiku|claude-)`) catches variant suffixes (`sonnet[1m]`, `opusplan`, `claude-3-7-sonnet-…`) by design (ADR-005 exact-membership routing still needs the *reservation* check to be prefix-based, or a variant tier name could slip through and reopen the main-thread→Codex misroute hole, PF-007). A second, exact-word arm (`` ^(?:fable|best)(?:$|\[) ``, case-insensitive) reserves the Claude Code `fable`/`best` aliases without reserving every word that starts with them — `bestie` and `fabled` stay available as ordinary Codex alias keys. `default` is deliberately NOT in either arm: Claude Code documents it as a value that *clears* a model override, not a subagent `model:` value, so a Codex alias literally named `default` still routes.
 
 ### src/cli.ts — Dispatcher
 
@@ -201,9 +205,15 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 
 ### src/agent-scan.ts — Agent frontmatter scanner
 
-`parseFrontmatterModel(text)` hand-rolled, no YAML dependency. `checkAgentModels(files, table, configuredProviders)` maps to six finding kinds.
+`parseFrontmatterModel(text)` hand-rolled, no YAML dependency. `checkAgentModels(files, table, configuredProviders)` maps to six finding kinds (`retired` among them, severity `"info"`).
 
 **`unknown_provider` is now severity `"info"`, not `"fail"` (ADR-010).** An unknown qualifier does not make the request fail — subswitch forwards it to Anthropic unchanged. By contrast `ambiguous` stays `"fail"` because that conflict is subswitch-derived and WILL produce a routing error.
+
+**`fable` and `best` (and their `[…]`-suffixed variants) are silently skipped, not flagged.** `checkAgentModels` treats them the same as `sonnet`/`opus`/`haiku`/`claude-*` — they resolve on the Claude Code side, so an agent frontmatter pin to `model: best` produces zero findings, not an `unresolvable` one.
+
+### src/codex-doctor.ts — `doctor --client codex` (reverse-leg checks)
+
+`runCodexDoctor(config, write, options)` is the `--client codex` half of the doctor dispatch (native routing/auth/config checks; no refresh). Its agent-model scan reuses `isClaudeModelName` from `src/claude-models.ts` — the **same case-insensitive `claude-`/`claude:` namespace predicate** the reverse-leg gateway uses to refuse a name — so doctor flags exactly the agent models the gateway would reject (`Claude-Opus-5` fails identically to `claude-opus-5`), never more, never less. Full reverse-leg model-resolution contract (`CLAUDE_MODELS`, `claudeModel`, `displayModelName`, `unregistered_claude_model`) lives in the codex-leg KB — this file only owns the CLI-surfaced doctor row.
 
 ### src/logger.ts — Structured key=value logger
 
@@ -252,6 +262,8 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 
 - **Adding a config restructure without a `LEGACY_KEY_ENTRIES` row** — reintroduces PF-010. Both renamed keys (`moved`) and removed keys (`removed`) go into `LEGACY_KEY_ENTRIES` as hard errors; there is no soft-deprecation path.
 
+- **Reserving a new Claude Code alias word with the prefix arm instead of the exact-word arm** — `sonnet`/`opus`/`haiku`/`claude-`/`inherit` are genuinely prefix-shaped (variant suffixes like `sonnet[1m]` must also be caught), but an ordinary English word like `fable` or `best` needs the exact-word arm (`^word(?:$|\[)`) or it silently blocks legitimate Codex alias keys that merely start with it (`fabled`, `bestie`).
+
 - **Calling `out()` / `errOut()` from `serve` for runtime request logs** — use the structured logger.
 
 - **Assembling the `providers[]` array independently in health or models --json** — always use `enumerateDestinations(config)`.
@@ -286,6 +298,10 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 
 **`maxHeaderSize` must go through `http.createServer({ maxHeaderSize }, ...)`.** It is not a settable property on the server object after construction.
 
+**A `retired: true` registry entry disappears from the human `models` table but not from `models --json` or routing.** `buildAliasRows` still emits a `direct` row for it (`enabled: false`), `buildModelRows` always reports both `routable` and `retired` booleans, and `byId` still resolves it — only `routableModelCount` and family-alias derivation exclude it. An agent frontmatter pin to a retired id is an `"info"` doctor finding, not a `"fail"` — the pin still works, it is a nudge to move off it before the upstream stops answering.
+
+**`default` is deliberately not a reserved Claude Code alias name.** Unlike `sonnet`/`opus`/`haiku`/`fable`/`best`, Claude Code documents `default` as a sentinel that *clears* a model override rather than a subagent `model:` value — a Codex config alias key literally named `default` is untouched by `isReservedAnthropicName` and still routes normally.
+
 **Test suite gotchas:**
 - Test globs are FLAT and NON-RECURSIVE (`test/unit/*.test.ts`, `test/integration/*.test.ts`). A new test file in a subdirectory silently never runs.
 - Run the suite alone — it has wall-clock assertions and flakes under parallel load alongside other processes (e.g., concurrent `tsc`).
@@ -307,7 +323,8 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 - `src/doctor.ts` — `runDoctor`; `PROVIDER_AUTH_INSPECTORS` (exported totality anchor); `makeLiveListAgentFiles` (absolute-path resolution critical)
 - `src/init.ts` — Pure planning + `InitFsDeps` / `InitPrompts` seams; wizard prompts only port + settings-target
 - `src/agent-scan.ts` — `parseFrontmatterModel`; `checkAgentModels`; `unknown_provider` severity `"info"` (ADR-010)
-- `src/models.ts` — Pure registry; no repo imports; `MODEL_REGISTRY`, `PROVIDER_IDS`, `DEFAULT_REASONING_EFFORTS`, `reasoningEffortsForModel`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName`, `routableModelCount`
+- `src/models.ts` — Pure registry; no repo imports; `MODEL_REGISTRY` (`retired`/`preview` flags, never delete an entry); `PROVIDER_IDS`, `DEFAULT_REASONING_EFFORTS`, `reasoningEffortsForModel`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName` (two-arm `ANTHROPIC_NAME_RE`: prefix arm for `sonnet`/`opus`/`haiku`/`claude-`/`inherit`, exact-word arm for `fable`/`best`), `routableModelCount` (excludes retired)
+- `src/codex-doctor.ts` — `runCodexDoctor`; reuses `isClaudeModelName` (case-insensitive) from `src/claude-models.ts` so its agent-model scan matches the reverse-leg gateway's own refusal predicate exactly
 - `src/plain-object.ts` — Shared `isPlainObject` guard for `doctor.ts` and `init.ts`; `config.ts` keeps its own private copy (prototype-pollution boundary)
 
 ## Related
@@ -316,7 +333,8 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 - ADR-009: Credential vetting — `isLoopbackHost` strictness is load-bearing here; the loopback exemption is what makes `http://127.0.0.1:4142` reachable in dev.
 - ADR-008: Credential redaction applied once at the error render site — the chokepoint pattern also used for the 404 body (no path reflection).
 - ADR-006: `MODEL_REGISTRY` as sole routable set source.
-- ADR-005: Live-verified protocol constants must not be re-derived.
+- PF-007: Alias TARGETS need the same reservation check as alias keys — `isReservedAnthropicName` is applied to both `Object.keys` and `Object.values` of `AliasesSchema`; the `fable`/`best` word-arm closes the same hole for the two new reserved names.
+- ADR-005: Route by exact model-name membership in the routable set, not by prefix matching — governs why `isReservedAnthropicName`'s prefix arm exists (a variant suffix must still be caught) alongside the exact-word arm for `fable`/`best`.
 - ADR-004: `@types/node` pinned to Node-22 majors — affects `parseArgs` type signatures.
 - ADR-002: Subscription OAuth passthrough — why `anthropic` has no auth config of its own.
 - PF-025: `respondJson` extraHeaders marker-last ordering — the synthesized marker must always be the last header written so it cannot be shadowed.
