@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { reverseRequest, reverseResponse, reverseEvents, ReverseContractError } from "../../src/claude-adapter.js";
 import { ReverseState, replayIdentity } from "../../src/claude-state.js";
+import { claudeFailure } from "../../src/claude-errors.js";
 
 const code = { type: "custom", name: "exec", description: "Execute JavaScript with the native tools object.", format: { type: "text" } };
 const tool = { type: "function", name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } };
@@ -119,6 +120,82 @@ describe("experimental reverse native contract", () => {
     assert.deepEqual(disabled.body["thinking"], { type: "disabled" });
     rejects(() => reverseRequest({ ...request(), reasoning: { effort: "ultra" } }), "unsupported_reasoning_effort");
   });
+  it("rejects reasoning effort none on models whose thinking cannot be disabled, naming the model", () => {
+    for (const model of ["claude-fable-5", "claude-fable-5-1", "claude-opus-5-5"]) {
+      let caught: unknown;
+      try { reverseRequest({ ...request(), model, reasoning: { effort: "none" } }); } catch (error) { caught = error; }
+      assert.ok(caught instanceof ReverseContractError, `${model} must reject effort none`);
+      assert.equal(caught.code, "reasoning_effort_unsupported_by_model");
+      const failure = claudeFailure(caught);
+      assert.equal(failure.status, 400);
+      assert.ok(failure.message.includes(`\`${model}\``), failure.message);
+      assert.match(failure.message, /low, medium, high, xhigh, or max/);
+    }
+  });
+
+  it("keeps disabling thinking for effort none on models that allow it", () => {
+    for (const model of ["claude-sonnet-5", "claude-opus-5"]) {
+      const translated = reverseRequest({ ...request(), model, reasoning: { effort: "none" } });
+      assert.deepEqual(translated.body["thinking"], { type: "disabled" }, model);
+      assert.equal(translated.body["output_config"], undefined, model);
+    }
+  });
+
+  it("sends explicit efforts to thinking-always-on models unchanged", () => {
+    const translated = reverseRequest({ ...request(), model: "claude-opus-5-5", reasoning: { effort: "max" } });
+    assert.deepEqual(translated.body["thinking"], { type: "adaptive" });
+    assert.deepEqual(translated.body["output_config"], { effort: "max" });
+  });
+
+  it("rejects forced tool choice on models that do not support it, naming the model", () => {
+    const named = { type: "function", namespace: "functions", name: "read" };
+    for (const model of ["claude-fable-5-1", "claude-opus-5-5"])
+      for (const tool_choice of ["required", named]) {
+        let caught: unknown;
+        try { reverseRequest({ ...request(), model, tool_choice }); } catch (error) { caught = error; }
+        assert.ok(caught instanceof ReverseContractError, `${model} must reject tool_choice ${JSON.stringify(tool_choice)}`);
+        assert.equal(caught.code, "tool_choice_unsupported_by_model");
+        const failure = claudeFailure(caught);
+        assert.equal(failure.status, 400);
+        assert.ok(failure.message.includes(`\`${model}\``), failure.message);
+      }
+  });
+
+  it("keeps forcing tool choice on models that support it", () => {
+    for (const model of ["claude-sonnet-5", "claude-opus-5", "claude-fable-5"]) {
+      assert.deepEqual(reverseRequest({ ...request(), model, tool_choice: "required" }).body["tool_choice"], { type: "any" }, model);
+      const named = reverseRequest({ ...request(), model, tool_choice: { type: "function", namespace: "functions", name: "read" } });
+      assert.equal((named.body["tool_choice"] as Record<string, unknown>)["type"], "tool", model);
+    }
+  });
+
+  it("allows automatic and disabled tool choice on every model", () => {
+    for (const model of ["claude-fable-5-1", "claude-opus-5-5"])
+      for (const tool_choice of ["auto", "none", undefined])
+        assert.doesNotThrow(() => reverseRequest({ ...request(), model, tool_choice }), `${model} ${String(tool_choice)}`);
+  });
+
+  it("does not reject a forced tool choice that is never sent because the request carries no tools", () => {
+    const translated = reverseRequest({ model: "claude-opus-5-5", input: "hello", tool_choice: "required" });
+    assert.equal(translated.body["tool_choice"], undefined);
+  });
+
+  it("clamps max_tokens to the resolved model's output ceiling", () => {
+    assert.equal(reverseRequest({ ...request(), model: "claude-opus-5-5", max_output_tokens: 500_000 }).body["max_tokens"], 128_000);
+    assert.equal(reverseRequest({ ...request(), model: "claude-sonnet-5", max_output_tokens: 128_001 }).body["max_tokens"], 128_000);
+    assert.equal(reverseRequest({ ...request(), model: "claude-sonnet-5", max_output_tokens: 128_000 }).body["max_tokens"], 128_000);
+    assert.equal(reverseRequest({ ...request(), model: "claude-sonnet-5", max_output_tokens: 1000 }).body["max_tokens"], 1000);
+    assert.equal(reverseRequest(request()).body["max_tokens"], 4096, "the adapter default is unchanged");
+  });
+
+  it("does not clamp an alias-bridged target that has no catalog entry", () => {
+    assert.equal(reverseRequest({ ...request(), model: "claude-future", max_output_tokens: 500_000 }).body["max_tokens"], 500_000);
+  });
+
+  it("still validates the requested limit before clamping", () => {
+    rejects(() => reverseRequest({ ...request(), model: "claude-opus-5-5", max_output_tokens: 0 }), "invalid_output_limit");
+  });
+
   it("accepts native replay serialization while preserving meaningful content and call arguments", () => {
     assert.equal(replayIdentity({ type: "message", role: "assistant", content: [{ type: "output_text", text: "hello", annotations: [] }] }),
       replayIdentity({ type: "message", role: "assistant", content: [{ type: "input_text", text: "hello" }] }));

@@ -120,6 +120,30 @@ describe("production reverse HTTP ingress", () => {
     } finally { await fixture.close(); }
   });
 
+  it("rejects effort none on a thinking-always-on model before contacting Claude", async () => {
+    const fixture = await setup((_req, res) => res.end());
+    try {
+      const response = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model: "fable", input: "hello", reasoning: { effort: "none" } }) });
+      assert.equal(response.status, 400);
+      const { error } = await response.json() as { error: { code: string; message: string } };
+      assert.equal(error.code, "reasoning_effort_unsupported_by_model");
+      assert.match(error.message, /`claude-fable-5-1`/);
+      assert.equal(fixture.openai.requests.length + fixture.claude.requests.length, 0);
+    } finally { await fixture.close(); }
+  });
+
+  it("clamps the outgoing max_tokens to the model's output ceiling and keeps the relay default below it", async () => {
+    const fixture = await setup((_req, res) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.end(sse([{ type: "text", text: "ok" }])); });
+    try {
+      for (const body of [{ model: "opus", input: "hello", max_output_tokens: 300_000 }, { model: "opus", input: "hello" }]) {
+        const response = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify(body) });
+        assert.equal(response.status, 200); await response.text();
+      }
+      const sent = fixture.claude.requests.map(request => JSON.parse(request.body.toString()) as { model: string; max_tokens: number });
+      assert.deepEqual(sent.map(body => [body.model, body.max_tokens]), [["claude-opus-5-5", 128_000], ["claude-opus-5-5", 64_000]]);
+    } finally { await fixture.close(); }
+  });
+
   it("streams over-window OpenAI uploads while bounding translated Claude uploads", async () => {
     const fixture = await setup((_req, res) => res.end(), undefined, { limits: { maxBufferedBodyBytes: 1024 } });
     try {

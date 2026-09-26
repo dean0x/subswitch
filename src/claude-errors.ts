@@ -49,9 +49,11 @@ export const CLAUDE_ERROR_STATUS = {
   missing_tool_result: 400,
   nontext_system: 400,
   opaque_state_unimplemented: 409,
+  reasoning_effort_unsupported_by_model: 400,
   request_too_large: 413,
   state_history_mismatch: 409,
   structured_output_unimplemented: 400,
+  tool_choice_unsupported_by_model: 400,
   tool_definition_conflict: 400,
   translated_compaction_unavailable: 400,
   unknown_claude_tool: 502,
@@ -79,7 +81,16 @@ export const CLAUDE_ERROR_STATUS = {
 export type ClaudeErrorCode = keyof typeof CLAUDE_ERROR_STATUS;
 
 export class ReverseContractError extends Error {
-  constructor(readonly code: ClaudeErrorCode) {
+  /**
+   * `detail` replaces the generic client message when the code alone cannot tell the
+   * user what to change. It is rendered through openaiError, so it inherits the
+   * render-site redaction (applies ADR-008); any caller-supplied value in it must
+   * already be bounded and neutralized.
+   */
+  constructor(
+    readonly code: ClaudeErrorCode,
+    readonly detail?: string,
+  ) {
     super(code);
   }
 }
@@ -110,7 +121,10 @@ export const claudeFailure = (error: unknown) => {
   return {
     status: CLAUDE_ERROR_STATUS[code],
     code,
-    message: STATE_MESSAGES[code] ?? `SubSwitch could not translate this request (${code}).`,
+    message:
+      (error instanceof ReverseContractError ? error.detail : undefined) ??
+      STATE_MESSAGES[code] ??
+      `SubSwitch could not translate this request (${code}).`,
     retryAfter: undefined,
   };
 };
