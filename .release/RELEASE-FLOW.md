@@ -1,7 +1,7 @@
 # Release Flow — subswitch
 
 Learned config — first written after the v0.1.0 release on 2026-07-24;
-last verified against `release.yml` on 2026-08-20 (v0.3.0).
+last verified with the v0.5.0 release on 2026-09-27.
 Released to date: `git tag -l 'v*'` (authoritative: `npm view subswitch versions`).
 Release model: tag-push → CI publish with provenance.
 
@@ -68,7 +68,10 @@ Run these in order before pushing the release tag:
 ## Changelog
 
 - Format: [Keep a Changelog](https://keepachangelog.com/) with dated headers: `## [X.Y.Z] - YYYY-MM-DD`
-- No `Unreleased` section is kept between releases — the versioned entry is written directly
+- PRs accumulate entries under a `## [Unreleased]` heading at the top of `CHANGELOG.md`. At
+  release time, rename that heading to `## [X.Y.Z] - YYYY-MM-DD` (body unchanged) — no
+  `Unreleased` section remains after the release. `test/unit/version.test.ts` requires the
+  newest `## [X.Y.Z]` release heading (`## [Unreleased]` is skipped) to match `package.json`
 - GitHub Release notes are extracted verbatim from the matching `## [X.Y.Z]` section body in `CHANGELOG.md`
 
 ---
@@ -97,8 +100,8 @@ CI job. Do not remove `prepublishOnly`.
 **DO NOT run `npm publish` locally.** Publishing is CI-driven:
 
 1. Bump version in `package.json`, sync `package-lock.json` (run `npm install --package-lock-only`
-   to update the top-level `version` and `packages[""].version` in the lockfile), and update
-   `CHANGELOG.md`
+   to update the top-level `version` and `packages[""].version` in the lockfile), and rename
+   `## [Unreleased]` to the versioned heading in `CHANGELOG.md`
 2. Commit: `chore(release): vX.Y.Z`
 3. Create and push an **annotated** tag:
    ```
