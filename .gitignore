@@ -23,3 +23,5 @@ dist/
 .devflow/features/*/*
 !.devflow/features/*/KNOWLEDGE.md
 !.devflow/conventions.md
+.claudeignore
+!.devflow/policy.json
