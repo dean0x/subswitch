@@ -132,7 +132,7 @@ describe("experimental reverse native contract", () => {
     rejects(() => reverseRequest({ ...request(), reasoning: { effort: "ultra" } }), "unsupported_reasoning_effort");
   });
   it("rejects reasoning effort none on models whose thinking cannot be disabled, naming the model", () => {
-    for (const model of ["claude-fable-5", "claude-fable-5-1", "claude-opus-5-5"]) {
+    for (const model of ["claude-fable-5", "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"]) {
       const failure = rejectsWith(
         () => reverseRequest({ ...request(), model, reasoning: { effort: "none" } }),
         "reasoning_effort_unsupported_by_model",
@@ -144,7 +144,7 @@ describe("experimental reverse native contract", () => {
   });
 
   it("keeps disabling thinking for effort none on models that allow it", () => {
-    for (const model of ["claude-sonnet-5", "claude-opus-5"]) {
+    for (const model of ["claude-sonnet-5", "claude-opus-5", "claude-haiku-5-5"]) {
       const translated = reverseRequest({ ...request(), model, reasoning: { effort: "none" } });
       assert.deepEqual(translated.body["thinking"], { type: "disabled" }, model);
       assert.equal(translated.body["output_config"], undefined, model);
@@ -159,7 +159,7 @@ describe("experimental reverse native contract", () => {
 
   it("rejects forced tool choice on models that do not support it, naming the model", () => {
     const named = { type: "function", namespace: "functions", name: "read" };
-    for (const model of ["claude-fable-5-1", "claude-opus-5-5"])
+    for (const model of ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"])
       for (const tool_choice of ["required", named]) {
         const failure = rejectsWith(
           () => reverseRequest({ ...request(), model, tool_choice }),
@@ -171,7 +171,7 @@ describe("experimental reverse native contract", () => {
   });
 
   it("keeps forcing tool choice on models that support it", () => {
-    for (const model of ["claude-sonnet-5", "claude-opus-5", "claude-fable-5"]) {
+    for (const model of ["claude-sonnet-5", "claude-opus-5", "claude-fable-5", "claude-haiku-5-5"]) {
       assert.deepEqual(reverseRequest({ ...request(), model, tool_choice: "required" }).body["tool_choice"], { type: "any" }, model);
       const named = reverseRequest({ ...request(), model, tool_choice: { type: "function", namespace: "functions", name: "read" } });
       assert.equal((named.body["tool_choice"] as Record<string, unknown>)["type"], "tool", model);
@@ -179,7 +179,7 @@ describe("experimental reverse native contract", () => {
   });
 
   it("allows automatic and disabled tool choice on every model", () => {
-    for (const model of ["claude-fable-5-1", "claude-opus-5-5"])
+    for (const model of ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5"])
       for (const tool_choice of ["auto", "none", undefined])
         assert.doesNotThrow(() => reverseRequest({ ...request(), model, tool_choice }), `${model} ${String(tool_choice)}`);
   });

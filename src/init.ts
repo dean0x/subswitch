@@ -606,7 +606,7 @@ export const runInitInteractive = async (
       `  2. Run \`subswitch doctor\` to verify config + codex auth health`,
       `  3. Restart any running Claude Code session to pick up ANTHROPIC_BASE_URL`,
       `  4. Route a subagent to Codex by adding to its frontmatter:`,
-      `       model: sol   # alias — always the latest generation`,
+      `       model: sol   # newest Sol registered in this SubSwitch version`,
       `       effort: low  # optional reasoning effort`,
     ].join("\n"),
     "Setup complete",
@@ -701,6 +701,6 @@ export const runInitNonInteractive = async (
   write(`Written: ${settingsFile}`);
   write(`Next: run \`subswitch serve\` from ${projectDir}`);
   write(`      run \`subswitch doctor\` to verify config + codex auth health`);
-  write(`      add \`model: sol\` to a subagent's frontmatter to route it (alias — auto-tracks latest generation)`);
+  write(`      add \`model: sol\` to a subagent's frontmatter to route it (newest Sol registered in this SubSwitch version)`);
   return 0;
 };

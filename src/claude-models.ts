@@ -7,8 +7,8 @@ export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_EFFORTS)[number];
 
 /**
  * One reverse-leg destination. Every capability field is REQUIRED, so a new model
- * (e.g. a future Sonnet 5.5) cannot be catalogued without deciding each one.
- * Values come from platform.claude.com (fetched 2026-09-26).
+ * cannot be catalogued without deciding each one.
+ * Values come from platform.claude.com (latest additions checked 2026-10-08).
  */
 export interface ClaudeModel {
   readonly id: string;
@@ -26,6 +26,31 @@ export interface ClaudeModel {
 }
 
 export const CLAUDE_MODELS: readonly ClaudeModel[] = [
+  // https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5
+  // `disabled` thinking and forced tool choice are rejected. `between_tools`
+  // still permits thinking between calls, so it cannot honour effort `none`.
+  {
+    id: "claude-sonnet-5-5",
+    family: "sonnet",
+    gen: [5, 5],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    thinkingAlwaysOn: true,
+    forcedToolChoice: false,
+    defaultEffort: "high",
+  },
+  // https://platform.claude.com/docs/en/models/haiku-5-5/overview
+  // Unlike Sonnet 5.5, Haiku accepts disabled thinking and forced tool choice.
+  {
+    id: "claude-haiku-5-5",
+    family: "haiku",
+    gen: [5, 5],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    thinkingAlwaysOn: false,
+    forcedToolChoice: true,
+    defaultEffort: "medium",
+  },
   {
     id: "claude-sonnet-5",
     family: "sonnet",

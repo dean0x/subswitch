@@ -93,7 +93,7 @@ describe("production reverse WebSockets", () => {
     client.on("message", data => events.push(JSON.parse(data.toString())));
     try {
       await new Promise<void>((resolve, reject) => { client.once("open", resolve); client.once("error", reject); });
-      client.send(JSON.stringify({ type: "response.create", model: "claude-sonnet-5-5", input: "hello", stream_id: "s1" }));
+      client.send(JSON.stringify({ type: "response.create", model: "claude-sonnet-future", input: "hello", stream_id: "s1" }));
       const deadline = Date.now() + 3000;
       while (!events.some(event => event["type"] === "error")) {
         if (Date.now() > deadline) throw new Error("WebSocket error event timed out");
@@ -101,7 +101,7 @@ describe("production reverse WebSockets", () => {
       }
       const error = events.find(event => event["type"] === "error")!;
       assert.equal(error["code"], "unregistered_claude_model"); assert.equal(error["status"], 400); assert.equal(error["stream_id"], "s1");
-      assert.equal(error["message"], "`claude-sonnet-5-5` is not a registered Claude model; add a `codexIngress.claude.aliases` entry to route it");
+      assert.equal(error["message"], "`claude-sonnet-future` is not a registered Claude model; add a `codexIngress.claude.aliases` entry to route it");
       assert.equal(parentRequests.length, 0);
     } finally {
       client.terminate(); await proxy.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); await close(server);

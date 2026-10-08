@@ -498,22 +498,23 @@ describe("CLI models --json", () => {
     );
   });
 
-  it("lists gpt-6-sol and gpt-6-luna holding the sol and luna aliases, with their declared reasoningEfforts", async () => {
+  it("lists Sol 6.1 and Luna 6 holding their aliases, with generations and reasoning efforts", async () => {
     const result = await runCli(["models", "--json"]);
     const parsed = JSON.parse(result.stdout) as {
       models: Array<{ id: string; gen?: number[]; aliases?: Array<{ name: string }>; reasoningEfforts?: string[] }>;
     };
-    for (const [id, family] of [["gpt-6-sol", "sol"], ["gpt-6-luna", "luna"]] as const) {
+    for (const [id, family, gen] of [["gpt-6.1-sol", "sol", [6, 1]], ["gpt-6-luna", "luna", [6]]] as const) {
       const model = parsed.models.find((m) => m.id === id);
       assert.ok(model !== undefined, `models must include ${id}`);
       assert.ok(model.aliases?.some((alias) => alias.name === family), `${id} must carry the derived '${family}' alias`);
-      assert.deepEqual(model.gen, [6], `gen for ${id} must be [6]`);
+      assert.deepEqual(model.gen, gen, `gen for ${id}`);
       assert.deepEqual(model.reasoningEfforts, ["low", "medium", "high", "xhigh", "max"], `${id} reasoningEfforts`);
     }
-    // The superseded 5.6 entries stay listed but no longer carry the family alias.
-    const oldSol = parsed.models.find((m) => m.id === "gpt-5.6-sol");
-    assert.ok(oldSol !== undefined, "models must still include gpt-5.6-sol");
-    assert.equal(oldSol.aliases?.some((alias) => alias.name === "sol"), false, "'sol' must have moved to gpt-6-sol");
+    for (const id of ["gpt-6-sol", "gpt-5.6-sol"]) {
+      const oldSol = parsed.models.find((m) => m.id === id);
+      assert.ok(oldSol !== undefined, `models must still include ${id}`);
+      assert.equal(oldSol.aliases?.some((alias) => alias.name === "sol"), false, "'sol' must have moved to gpt-6.1-sol");
+    }
   });
 
   it("lists the retired gpt-5.5 as retired and not routable", async () => {

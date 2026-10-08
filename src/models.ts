@@ -146,6 +146,16 @@ export type ModelResolution =
  * supported when using Codex with a ChatGPT account"), not a 404.
  */
 export const MODEL_REGISTRY: readonly ModelEntry[] = [
+  // Released 2026-09-29. The [6, 1] generation advances `sol` automatically;
+  // older Sol ids remain routable for explicitly pinned agents.
+  // https://developers.openai.com/api/docs/models/gpt-6.1-sol
+  {
+    id: "gpt-6.1-sol",
+    provider: "codex",
+    family: "sol",
+    gen: [6, 1],
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  },
   {
     id: "gpt-6-astra",
     provider: "codex",

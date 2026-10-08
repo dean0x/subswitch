@@ -223,7 +223,7 @@ describe("translateRequest", () => {
   });
 
   it("forwards every effort inside GPT-6 Sol's and Luna's declared set", () => {
-    for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+    for (const model of ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]) {
       for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
         const request = AnthropicRequestSchema.parse({
           model,
@@ -242,7 +242,7 @@ describe("translateRequest", () => {
   it("drops none and minimal for GPT-6 Sol and Luna, with a warning", () => {
     // Neither value is in the Codex catalog for the GPT-6 models, so neither is registered:
     // an unverified effort degrades to the backend default rather than risking an upstream 400.
-    for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+    for (const model of ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]) {
       for (const effort of ["none", "minimal", "ultra"]) {
         const request = AnthropicRequestSchema.parse({
           model,
