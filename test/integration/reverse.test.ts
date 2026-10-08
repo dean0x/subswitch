@@ -31,6 +31,34 @@ async function setup(handler: UpstreamHandler, openaiHandler: UpstreamHandler = 
 const readTool = { type: "function", name: "read", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } };
 
 describe("production reverse HTTP ingress", () => {
+  it("routes new Claude defaults with their capability limits and preserves explicit Sonnet 5 pins", async () => {
+    const fixture = await setup((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(sse([{ type: "text", text: "ok" }]));
+    });
+    try {
+      for (const model of ["sonnet", "haiku", "claude-sonnet-5"])
+        for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+          const response = await fetch(`${fixture.proxy.url}/codex/v1/responses`, {
+            method: "POST", body: JSON.stringify({ model, input: "hello", reasoning: { effort }, max_output_tokens: 300_000 }),
+          });
+          assert.equal(response.status, 200); await response.text();
+          const sent = JSON.parse(fixture.claude.requests.at(-1)!.body.toString());
+          assert.equal(sent.model, model === "sonnet" ? "claude-sonnet-5-5" : model === "haiku" ? "claude-haiku-5-5" : model);
+          assert.equal(sent.max_tokens, 128_000);
+          assert.deepEqual(sent.output_config, { effort });
+        }
+      for (const extra of [{ reasoning: { effort: "none" } }, { tools: [readTool], tool_choice: "required" }]) {
+        const response = await fetch(`${fixture.proxy.url}/codex/v1/responses`, {
+          method: "POST", body: JSON.stringify({ model: "sonnet", input: "hello", ...extra }),
+        });
+        assert.equal(response.status, 400); await response.text();
+      }
+      assert.equal(fixture.claude.requests.length, 15, "unsupported Sonnet settings must be rejected before inference");
+      assert.equal(fixture.openai.requests.length, 0);
+    } finally { await fixture.close(); }
+  });
+
   it("routes Claude aliases, preserves thinking/tool results, and isolates credentials", async () => {
     const fixture = await setup((_req, res, raw, index) => {
       const body = JSON.parse(raw.toString());
@@ -52,7 +80,7 @@ describe("production reverse HTTP ingress", () => {
       assert.equal(fixture.openai.requests.length, 0); assert.equal(fixture.claude.requests.length, 2);
       for (const request of fixture.claude.requests) {
         assert.equal(request.headers.authorization, "Bearer claude-private-fixture"); assert.equal(request.headers["x-api-key"], undefined);
-        assert.equal(JSON.parse(request.body.toString()).model, "claude-sonnet-5");
+        assert.equal(JSON.parse(request.body.toString()).model, "claude-sonnet-5-5");
         // MUTATION CHECK: deleting either identity field must fail this independent literal pin.
         assert.equal(request.headers["anthropic-beta"], "claude-code-20250219,oauth-2025-04-20");
         assert.equal(JSON.parse(request.body.toString()).system[0].text, "You are Claude Code, Anthropic's official CLI for Claude.");
@@ -106,6 +134,9 @@ describe("production reverse HTTP ingress", () => {
       assert.ok(body.models.some(model => model["slug"] === "claude-opus-5-5"));
       assert.equal(body.models.find(model => model["slug"] === "opus")?.["default_reasoning_level"], "medium");
       assert.equal(body.models.find(model => model["slug"] === "sonnet")?.["default_reasoning_level"], "high");
+      assert.equal(body.models.find(model => model["slug"] === "sonnet")?.["description"], "Claude via SubSwitch (claude-sonnet-5-5)");
+      assert.ok(body.models.some(model => model["slug"] === "claude-haiku-5-5"));
+      assert.equal(body.models.find(model => model["slug"] === "haiku")?.["default_reasoning_level"], "medium");
       assert.equal(fixture.claude.requests.length, 0);
     } finally { await fixture.close(); }
   });
@@ -124,7 +155,7 @@ describe("production reverse HTTP ingress", () => {
   it("rejects an unregistered claude- model with a clear client error instead of forwarding it to OpenAI", async () => {
     const fixture = await setup((_req, res) => res.end());
     try {
-      for (const model of ["claude-sonnet-5-5", "Claude-Opus-5", "claude:opus-9"]) {
+      for (const model of ["claude-sonnet-future", "Claude-Opus-5", "claude:opus-9"]) {
         const response = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model, input: "hello" }) });
         assert.equal(response.status, 400, model);
         const body = await response.json() as { error: { code: string; message: string } };
@@ -138,16 +169,16 @@ describe("production reverse HTTP ingress", () => {
 
   it("routes an alias whose target is an uncatalogued claude- id, by alias, target and qualified name, without clamping", async () => {
     const fixture = await setup((_req, res) => { res.writeHead(200, { "content-type": "text/event-stream" }); res.end(sse([{ type: "text", text: "ok" }])); },
-      undefined, {}, { "sonnet-next": "claude-sonnet-5-5" });
+      undefined, {}, { "sonnet-next": "claude-sonnet-future" });
     try {
-      for (const model of ["sonnet-next", "claude-sonnet-5-5", "claude:sonnet-next", "claude:claude-sonnet-5-5"]) {
+      for (const model of ["sonnet-next", "claude-sonnet-future", "claude:sonnet-next", "claude:claude-sonnet-future"]) {
         const response = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model, input: "hello", max_output_tokens: 300_000 }) });
         assert.equal(response.status, 200, model); await response.text();
       }
       const sent = fixture.claude.requests.map(request => JSON.parse(request.body.toString()) as { model: string; max_tokens: number });
-      assert.deepEqual(sent.map(body => [body.model, body.max_tokens]), Array(4).fill(["claude-sonnet-5-5", 300_000]));
+      assert.deepEqual(sent.map(body => [body.model, body.max_tokens]), Array(4).fill(["claude-sonnet-future", 300_000]));
       // Case variants are not aliases: the resolver is exact, so they are refused, not guessed.
-      const variant = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model: "Claude-Sonnet-5-5", input: "hello" }) });
+      const variant = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model: "Claude-Sonnet-Future", input: "hello" }) });
       assert.equal(variant.status, 400); assert.match(await variant.text(), /unregistered_claude_model/);
       assert.equal(fixture.openai.requests.length, 0);
     } finally { await fixture.close(); }
@@ -203,7 +234,7 @@ describe("production reverse HTTP ingress", () => {
       assert.equal(fixture.openai.requests[0]?.body.toString(), raw);
       const claude = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model: "sonnet", input: "x".repeat(8192) }) });
       assert.equal(claude.status, 413); await claude.text(); assert.equal(fixture.claude.requests.length, 0);
-      const unregistered = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model: "claude-sonnet-5-5", input: "x".repeat(8192) }) });
+      const unregistered = await fetch(`${fixture.proxy.url}/codex/v1/responses`, { method: "POST", body: JSON.stringify({ model: "claude-sonnet-future", input: "x".repeat(8192) }) });
       assert.equal(unregistered.status, 400); assert.match(await unregistered.text(), /unregistered_claude_model/);
       assert.equal(fixture.openai.requests.length, 1, "an over-window unregistered Claude name must not be streamed to OpenAI");
     } finally { await fixture.close(); }

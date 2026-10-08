@@ -835,14 +835,14 @@ describe("codex leg", () => {
 
   it("sends the canonical model id upstream when a derived family alias is used in the request", async () => {
     // Default config uses the built-in model registry — all non-retired registry ids are routable.
-    // "sol" is a derived family alias for "gpt-6-sol".
+    // "sol" is a derived family alias for "gpt-6.1-sol".
     const rig = await setupRig(sseHandler(loadSse("text-only.sse")));
     const body = JSON.stringify({ model: "sol", stream: true, messages: [{ role: "user", content: "hi" }] });
     const response = await postMessages(rig.subswitch, body);
     assert.equal(response.status, 200);
     await response.text();
     const sent = JSON.parse(rig.codex.requests[0]!.body.toString("utf8")) as Record<string, unknown>;
-    assert.equal(sent["model"], "gpt-6-sol", "alias must be resolved to canonical before going upstream");
+    assert.equal(sent["model"], "gpt-6.1-sol", "alias must be resolved to canonical before going upstream");
     assert.equal(rig.anthropic.requests.length, 0, "alias for a codex model must not leak to Anthropic");
   });
 
@@ -867,7 +867,7 @@ describe("codex leg", () => {
 
   it("alias and its canonical produce the same session_id and prompt_cache_key", async () => {
     // This test is the critical invariant of Phase B: canonical threading ensures that
-    // a user sending "sol" and a user sending "gpt-6-sol" share a conversation id.
+    // a user sending "sol" and a user sending "gpt-6.1-sol" share a conversation id.
     const scripts = [loadSse("text-only.sse"), loadSse("text-only.sse")];
     const rig = await setupRig((_req, res, _body, index) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -876,7 +876,7 @@ describe("codex leg", () => {
 
     const userMsg = [{ role: "user", content: "same conversation content" }];
     const reqAlias = JSON.stringify({ model: "sol", stream: true, messages: userMsg });
-    const reqCanonical = JSON.stringify({ model: "gpt-6-sol", stream: true, messages: userMsg });
+    const reqCanonical = JSON.stringify({ model: "gpt-6.1-sol", stream: true, messages: userMsg });
 
     const r1 = await postMessages(rig.subswitch, reqAlias);
     await r1.text();
@@ -925,7 +925,7 @@ describe("codex leg", () => {
     const startLine = startFrame.split("\n").find((l) => l.startsWith("data: "));
     assert.ok(startLine !== undefined);
     const startData = JSON.parse(startLine.slice(6)) as { message: { model: string } };
-    assert.equal(startData.message.model, "gpt-6-sol", "options.model fallback must be the canonical, not the alias");
+    assert.equal(startData.message.model, "gpt-6.1-sol", "options.model fallback must be the canonical, not the alias");
   });
 
   it("a codex.aliases config override routes a non-registry id upstream and proves override precedence", async () => {

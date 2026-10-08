@@ -51,9 +51,9 @@ This exercises, in one run:
 - concurrent `claude-*` utility traffic on the Anthropic leg.
 
 **Alias routing variant (optional):** replace `model: gpt-6-sol` with `model: sol`
-in the scratch agent and repeat. Subswitch should resolve `sol` to `gpt-6-sol`
+in the scratch agent and repeat. Subswitch should resolve `sol` to `gpt-6.1-sol`
 and route the request to Codex; the `request_complete` line shows `model=sol` with
-`route=codex:messages:gpt-6-sol`. The `subswitch models` command shows the effective
+`route=codex:messages:gpt-6.1-sol`. The `subswitch models` command shows the effective
 alias table and confirms resolution before the test.
 
 ## 4. Per-project wiring (the deliverable)

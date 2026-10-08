@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] - 2026-10-08
+
+### Added
+
+- GPT-6.1 Sol (`gpt-6.1-sol`) with reasoning efforts `low`, `medium`, `high`,
+  `xhigh`, and `max`. Unsupported efforts are dropped with a warning.
+- Claude Sonnet 5.5 (`claude-sonnet-5-5`) and Haiku 5.5 (`claude-haiku-5-5`) on
+  the opt-in Codex → Claude leg, including native model discovery, 1M context
+  windows, and 128K output ceilings. Haiku defaults to `medium` effort; Sonnet
+  defaults to `high`.
+
+### Changed
+
+- **`sol` now routes to `gpt-6.1-sol` without configuration.** `gpt-6-sol` and
+  older registered Sol IDs stay directly routable. Config overrides keep precedence.
+- **`sonnet` now routes to `claude-sonnet-5-5`; `haiku` routes to
+  `claude-haiku-5-5`.** Sonnet 5 remains directly routable. Sonnet 5.5 rejects
+  effort `none` and forced tool choice locally, matching its upstream restrictions;
+  Haiku 5.5 supports disabled thinking and forced tool choice.
+- Verified the remaining defaults: Astra 6, Luna 6, Terra 5.6, Opus 5.5, and
+  Fable 5.1. The README lists every family and its default target, and
+  `subswitch models --client all` exposes both effective catalogs.
+- Clarified that family aliases track the newest model registered in the installed
+  SubSwitch release. New provider releases require a SubSwitch update or a config
+  alias; the proxy does not discover or guess future versions at startup.
+
 ## [0.5.0] - 2026-09-27
 
 ### Added

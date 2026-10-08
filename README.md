@@ -81,7 +81,7 @@ subswitch doctor     # checks config + codex auth + network (exits non-zero on p
 ```yaml
 ---
 name: gpt-worker
-model: sol   # family alias — always the latest sol generation
+model: sol   # newest Sol generation registered in your installed SubSwitch
 effort: low  # optional reasoning effort (see Effort control below)
 ---
 ```
@@ -225,7 +225,7 @@ description = "Delegate a task to Claude"
 config_file = "claude-worker.toml"
 ```
 
-Use `sonnet`, `opus`, `fable`, or a listed canonical Claude ID. Custom aliases live
+Use `sonnet`, `opus`, `fable`, `haiku`, or a listed canonical Claude ID. Custom aliases live
 under `codexIngress.claude.aliases`. Canonical IDs retain precedence, and family
 aliases select the newest registered generation, as in the forward resolver.
 Custom targets outside the registry can route but do not gain invented native
@@ -234,15 +234,20 @@ account availability. Native model discovery preserves OpenAI's catalog and adds
 Claude entries. API-authenticated native Codex traffic retains its API endpoint;
 translated Claude inference uses the configured subscription, with no billing fallback.
 
-| Canonical ID | Alias | Always thinks | Forced tool choice | Default effort |
+| Canonical ID | Alias | Rejects effort `none` | Forced tool choice | Default effort |
 | --- | --- | --- | --- | --- |
-| `claude-sonnet-5` | `sonnet` | no | yes | `high` |
+| `claude-sonnet-5-5` | `sonnet` | yes | no | `high` |
+| `claude-haiku-5-5` | `haiku` | no | yes | `medium` |
+| `claude-sonnet-5` | — | no | yes | `high` |
 | `claude-opus-5` | — | no | yes | `high` |
 | `claude-opus-5-5` | `opus` | yes | no | `medium` |
 | `claude-fable-5` | — | yes | yes | `high` |
 | `claude-fable-5-1` | `fable` | yes | no | `high` |
 
-`opus` resolves to Opus 5.5; use `claude-opus-5` to keep the earlier model. Native
+`sonnet` resolves to Sonnet 5.5 and `opus` to Opus 5.5; use `claude-sonnet-5` or
+`claude-opus-5` to keep the earlier model. Sonnet 5.5 rejects disabled thinking;
+its upstream `between_tools` setting is not exposed as effort `none`, because it
+still permits thinking between tool calls. Native
 model discovery advertises each model's default effort, and outgoing `max_tokens` is
 capped at the model's output ceiling (128,000 tokens for every model listed). A request
 the model cannot honour is refused with a 400 before anything is sent to Claude:
@@ -255,7 +260,8 @@ the model cannot honour is refused with a 400 before anything is sent to Claude:
 - `unregistered_claude_model`: a `claude-*` (or `claude:*`) name that no registered model
   or alias routes. SubSwitch refuses it rather than forwarding it to OpenAI. To use a
   Claude model before SubSwitch registers it, add an alias that targets it, for example
-  `"codexIngress": { "claude": { "aliases": { "sonnet-next": "claude-sonnet-5-5" } } }`.
+  `"codexIngress": { "claude": { "aliases": { "sonnet-next": "claude-sonnet-future" } } }`
+  (replace the illustrative target with a real model ID available to your account).
   The alias and the target ID then both route. An unregistered target has no capability
   metadata, so SubSwitch neither caps its `max_tokens` nor applies the refusals above.
 
@@ -288,7 +294,7 @@ The optional `effort` frontmatter field works on the Codex leg too. Claude Code
 sends it as `output_config.effort`, and subswitch forwards it as Responses
 `reasoning.effort`. The GPT-5.6 models and `gpt-5.5` retain the backend set:
 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` (Claude Code itself
-emits only the last five). The GPT-6 models (`gpt-6-astra`, `gpt-6-sol`,
+emits only the last five). The GPT-6 models (`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`,
 `gpt-6-luna`) accept `low`, `medium`, `high`, `xhigh`, and `max`; `none` and
 `minimal` are dropped. An unsupported value is dropped with an
 `unsupported_effort_dropped` warning and the backend default applies. When effort
@@ -332,23 +338,40 @@ to run on the raw file first and why a refusal to start is the better failure.
 
 ### Routable set and aliases
 
-The routable set is the **built-in model registry** — `gpt-6-astra`, `gpt-6-sol`,
+The routable set is the **built-in model registry** — `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`,
 `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Routing follows
 the registry so a new model becomes available on upgrade with no config edit, and
 everything outside it passes through to Anthropic. The registry itself is not
 configurable; to reach a Codex model before subswitch registers it, point a
-`providers.codex.aliases` entry at its id (`"sol-next": "gpt-6.1-sol"`). The alias
+`providers.codex.aliases` entry at its id (`"sol-next": "gpt-future-sol"`, replacing
+the illustrative target with a real model ID available to your account). The alias
 routes to Codex, but `doctor` counts it as a failure (`target not in registry`)
 until a subswitch release registers that id. Run
 `subswitch models --json` for the machine-readable registry.
 
 **Family aliases** (`astra`, `sol`, `terra`, `luna`) let you write a model name that
-auto-tracks the latest generation in that family — `model: sol` resolves to
-`gpt-6-sol` today and to any newer Sol generation added to the registry later,
-without any config change. The current table is `astra` → `gpt-6-astra`,
-`sol` → `gpt-6-sol`, `luna` → `gpt-6-luna`, and `terra` → `gpt-5.6-terra`. Exact
-canonical ids (`gpt-5.6-sol`) are also accepted and resolve to themselves. Run
-`subswitch models` to see the current alias table.
+tracks the newest stable, non-retired generation registered in your installed
+SubSwitch. Upgrading SubSwitch advances these defaults without editing agents.
+The proxy does not poll provider catalogs or guess future model IDs at startup.
+Config aliases override family defaults, and exact canonical IDs stay pinned.
+
+Defaults verified against the [OpenAI catalog](https://developers.openai.com/api/docs/models)
+and [Claude catalog](https://platform.claude.com/docs/en/models/overview) on 2026-10-08:
+
+| Client | Agent model | Default upstream model |
+| --- | --- | --- |
+| Claude Code | `sol` | `gpt-6.1-sol` |
+| Claude Code | `astra` | `gpt-6-astra` |
+| Claude Code | `luna` | `gpt-6-luna` |
+| Claude Code | `terra` | `gpt-5.6-terra` |
+| Codex (Claude routing enabled) | `sonnet` | `claude-sonnet-5-5` |
+| Codex (Claude routing enabled) | `opus` | `claude-opus-5-5` |
+| Codex (Claude routing enabled) | `fable` | `claude-fable-5-1` |
+| Codex (Claude routing enabled) | `haiku` | `claude-haiku-5-5` |
+
+Run `subswitch models --client all` to see both catalogs and effective aliases,
+or add `--json` for machine-readable output. Older registered IDs such as
+`gpt-6-sol` and `claude-sonnet-5` remain available explicitly.
 
 An exact model id always wins over an alias, so a `providers.codex.aliases` entry
 can never hijack a real model name. Neither side of an alias entry may be a
@@ -517,11 +540,11 @@ subswitch models --json | jq .models[].id
   ],
   "models": [
     {
-      "id": "gpt-6-sol",
+      "id": "gpt-6.1-sol",
       "provider": "codex",
       "aliases": [{ "name": "sol", "source": "derived" }],
       "family": "sol",
-      "gen": [6],
+      "gen": [6, 1],
       "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
       "routable": true,
       "preview": false,
@@ -557,7 +580,7 @@ subswitch models --json | jq .models[].id
 - `reasoningEfforts` is an array of strings, present only when the registry entry
   narrows the accepted Responses effort vocabulary below the backend default
   (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Absence means the
-  full backend set applies. The GPT-6 entries (`gpt-6-astra`, `gpt-6-sol`,
+  full backend set applies. The GPT-6 entries (`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`,
   `gpt-6-luna`) declare `low`, `medium`, `high`, `xhigh`, `max`.
 - Anthropic appears in `providers` with zero model rows. subswitch cannot enumerate Claude
   model names — it prefix-matches them and relays verbatim — so including a fabricated list
@@ -569,7 +592,7 @@ subswitch models --json | jq .models[].id
 For `--client codex`, version 2 has this shape (model rows are abbreviated):
 
 ```json
-{"kind":"models","schemaVersion":2,"client":"codex","subswitchVersion":"0.4.0","fallbackProvider":"codex","enabled":true,"models":[{"id":"claude-sonnet-5","provider":"claude","registered":true,"aliases":["sonnet"]}]}
+{"kind":"models","schemaVersion":2,"client":"codex","subswitchVersion":"0.6.0","fallbackProvider":"codex","enabled":true,"models":[{"id":"claude-sonnet-5-5","provider":"claude","registered":true,"aliases":["sonnet"]}]}
 ```
 
 For `--client all`, version 2 uses `client: "all"` and a `clients` object:

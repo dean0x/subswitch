@@ -103,10 +103,12 @@ describe("validClaudeAlias", () => {
 
 /**
  * Independent literal pin of every catalog entry's capabilities (avoids PF-011's
- * self-referential pin): these values come from platform.claude.com (fetched 2026-09-26),
+ * self-referential pin): these values come from platform.claude.com (checked 2026-10-08),
  * not from CLAUDE_MODELS, so a wrong or drifted field turns this red.
  */
 const EXPECTED_CAPABILITIES = {
+  "claude-sonnet-5-5": { maxOutputTokens: 128_000, thinkingAlwaysOn: true, forcedToolChoice: false, defaultEffort: "high" },
+  "claude-haiku-5-5": { maxOutputTokens: 128_000, thinkingAlwaysOn: false, forcedToolChoice: true, defaultEffort: "medium" },
   "claude-sonnet-5": { maxOutputTokens: 128_000, thinkingAlwaysOn: false, forcedToolChoice: true, defaultEffort: "high" },
   "claude-opus-5": { maxOutputTokens: 128_000, thinkingAlwaysOn: false, forcedToolChoice: true, defaultEffort: "high" },
   "claude-opus-5-5": { maxOutputTokens: 128_000, thinkingAlwaysOn: true, forcedToolChoice: false, defaultEffort: "medium" },
@@ -115,7 +117,7 @@ const EXPECTED_CAPABILITIES = {
 } as const;
 
 describe("CLAUDE_MODELS", () => {
-  it("registers exactly the published Claude ids — no unpublished Sonnet 5.5, Haiku or Mythos", () => {
+  it("registers the verified Claude catalog including Sonnet and Haiku 5.5", () => {
     assert.deepEqual(CLAUDE_MODELS.map((model) => model.id).sort(), Object.keys(EXPECTED_CAPABILITIES).sort());
   });
 
@@ -143,12 +145,25 @@ describe("claudeResolver", () => {
     assert.equal(resolve("claude:opus"), "claude-opus-5-5");
     assert.equal(resolve("claude-opus-5-5"), "claude-opus-5-5");
     assert.equal(resolve("claude-opus-5"), "claude-opus-5");
-    assert.equal(resolve("sonnet"), "claude-sonnet-5");
+    assert.equal(resolve("sonnet"), "claude-sonnet-5-5");
     assert.equal(resolve("fable"), "claude-fable-5-1");
   });
 
-  it("does not resolve the announced-but-unpublished Sonnet 5.5", () => {
-    assert.equal(claudeResolver({})("claude-sonnet-5-5"), undefined);
+  it("routes the latest Sonnet and Haiku by family, qualified family, and exact id", () => {
+    const resolve = claudeResolver({});
+    for (const [family, id] of [["sonnet", "claude-sonnet-5-5"], ["haiku", "claude-haiku-5-5"]] as const) {
+      for (const name of [family, `claude:${family}`, id, `claude:${id}`])
+        assert.equal(resolve(name), id, name);
+    }
+    assert.equal(resolve("claude-sonnet-5"), "claude-sonnet-5");
+    assert.equal(resolve("claude-sonnet-future"), undefined);
+  });
+
+  it("lets config pin a family to an older model without changing exact ids", () => {
+    const resolve = claudeResolver({ sonnet: "claude-sonnet-5" });
+    assert.equal(resolve("sonnet"), "claude-sonnet-5");
+    assert.equal(resolve("claude:sonnet"), "claude-sonnet-5");
+    assert.equal(resolve("claude-sonnet-5-5"), "claude-sonnet-5-5");
   });
 });
 
@@ -185,7 +200,10 @@ describe("augmentCodexModels", () => {
       ["opus", "medium"],
       ["claude-opus-5", "high"],
       ["claude-sonnet-5", "high"],
+      ["claude-sonnet-5-5", "high"],
       ["sonnet", "high"],
+      ["claude-haiku-5-5", "medium"],
+      ["haiku", "medium"],
       ["claude-fable-5", "high"],
       ["claude-fable-5-1", "high"],
       ["fable", "high"],

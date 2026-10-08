@@ -78,10 +78,12 @@ describe("F2 — family alias resolution", () => {
   it("F2: resolves GPT-6 Sol and Luna by canonical id, bare/qualified family, and qualified id", () => {
     const { table } = buildRoutingTable(MODEL_REGISTRY, NO_ALIASES);
     const cases: ReadonlyArray<readonly [string, string]> = [
+      ["gpt-6.1-sol", "gpt-6.1-sol"],
+      ["codex:gpt-6.1-sol", "gpt-6.1-sol"],
       ["gpt-6-sol", "gpt-6-sol"],
-      ["sol", "gpt-6-sol"],
+      ["sol", "gpt-6.1-sol"],
       ["codex:gpt-6-sol", "gpt-6-sol"],
-      ["codex:sol", "gpt-6-sol"],
+      ["codex:sol", "gpt-6.1-sol"],
       ["gpt-6-luna", "gpt-6-luna"],
       ["luna", "gpt-6-luna"],
       ["codex:gpt-6-luna", "gpt-6-luna"],
@@ -116,11 +118,11 @@ describe("F2 — family alias resolution", () => {
     assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-5.6-sol");
   });
 
-  it("F2: real MODEL_REGISTRY — 'sol' resolves to gpt-6-sol (current generation)", () => {
+  it("F2: real MODEL_REGISTRY — 'sol' resolves to gpt-6.1-sol (current generation)", () => {
     const { table } = buildRoutingTable(MODEL_REGISTRY, NO_ALIASES);
     const resolution = resolveModel(table, "sol");
     assert.equal(resolution.kind, "resolved");
-    assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-6-sol");
+    assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-6.1-sol");
   });
 });
 

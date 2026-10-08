@@ -32,7 +32,7 @@ describe("Codex doctor", () => {
     });
     const text = output.join("\n");
     assert.match(text, /start subswitch serve/); assert.match(text, /agent broken:.*FAIL/);
-    assert.match(text, /agent working: sonnet → claude-sonnet-5/); assert.match(text, /refresh required/);
+    assert.match(text, /agent working: sonnet → claude-sonnet-5-5/); assert.match(text, /refresh required/);
   });
   it("checks routing, auth, native setup and configured agent model files without refreshing", async () => {
     const loaded = loadConfig({ configPath: "fixture", readFile: () => '{"providers":{"codex":{"authFile":"/fixture/native/auth.json"}},"codexIngress":{"enabled":true,"claude":{"enabled":true}}}' });
@@ -47,7 +47,7 @@ describe("Codex doctor", () => {
       httpGet: async () => ({ ok: true, status: 200, body: '{"codexIngress":{"schemaVersion":1,"enabled":true,"mode":"model-routing","translationAvailable":true,"credentials":"client","transports":["http","websocket"]}}' }),
       tlsConnect: async () => ({ kind: "reachable" }),
     });
-    assert.equal(result, 0); assert.match(output.join("\n"), /agent worker: sonnet → claude-sonnet-5/);
+    assert.equal(result, 0); assert.match(output.join("\n"), /agent worker: sonnet → claude-sonnet-5-5/);
   });
   it("flags every agent model the reverse leg would refuse as an unregistered Claude name", async () => {
     const loaded = loadConfig({ configPath: "fixture", readFile: () => '{"codexIngress":{"enabled":true,"claude":{"enabled":true}}}' });
@@ -56,7 +56,7 @@ describe("Codex doctor", () => {
     await runCodexDoctor(loaded.value.config, line => output.push(line), {
       env: { CODEX_HOME: "/fixture/native" }, project: "/fixture/project",
       read: async path => path === "/fixture/native/config.toml"
-        ? '[agents.deep]\nmodel="opus"\n[agents.future]\nmodel="claude-sonnet-5-5"\n[agents.shouty]\nmodel="Claude-Opus-5"\n[agents.native]\nmodel="gpt-6-sol"' : null,
+        ? '[agents.deep]\nmodel="opus"\n[agents.future]\nmodel="claude-sonnet-future"\n[agents.shouty]\nmodel="Claude-Opus-5"\n[agents.native]\nmodel="gpt-6-sol"' : null,
       auth: async () => ({ available: true, expired: false, refreshable: true }),
       httpGet: async () => ({ ok: false, connectionRefused: true }), tlsConnect: async () => ({ kind: "reachable" }),
     });
