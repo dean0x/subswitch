@@ -27,6 +27,14 @@ export interface LogFields {
    *  "buffered"  — body fit within the routing window; fully read before dispatch.
    *  "streamed"  — body exceeded the window; prefix sniffed, remainder piped to upstream. */
   readonly bodyMode?: string;
+  readonly attemptOrder?: number;
+  readonly targetProfile?: string;
+  readonly product?: string;
+  readonly commitState?: "uncommitted" | "committed";
+  readonly quotaWindow?: string;
+  readonly observationAgeMs?: number;
+  readonly retryEligible?: boolean;
+  readonly evidence?: "documented" | "source-inspected" | "live-observed" | "unknown";
 }
 
 export interface Logger {
@@ -47,6 +55,7 @@ export const FIELD_KEYS = [
   "cachedTokens",
   "sessionKey",
   "bodyMode",
+  "attemptOrder", "targetProfile", "product", "commitState", "quotaWindow", "observationAgeMs", "retryEligible", "evidence",
 ] as const satisfies readonly (keyof LogFields)[];
 // Completeness proof lives in test/unit/logger.types.test.ts (module-level type
 // proofs follow the *.types.test.ts convention; in-src guards are function-local

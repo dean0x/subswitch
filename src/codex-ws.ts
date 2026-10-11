@@ -7,6 +7,8 @@ import type { Logger } from "./logger.js";
 import { rejectCodexUpgrade, type OpenaiPassthrough } from "./openai-passthrough.js";
 import type { CodexNativeAuth } from "./codex-native-auth.js";
 import type { WebSocketBudget } from "./websocket-budget.js";
+import { RoutingError } from "./routing/routing-types.js";
+import { AttemptFailure } from "./routing/attempt-failure.js";
 import type { CodexEndpointMode } from "./codex-ingress.js";
 import { filterRawHeaders, HOP_BY_HOP, RESPONSE_STRIP } from "./raw-http-passthrough.js";
 import { json } from "./codex-body.js";
@@ -33,7 +35,8 @@ export class CodexWebSockets {
       controllers: Set<AbortController>;
       destination: (body: Item) => ClaudeResolution;
       parentRequest: (body: Item) => Item;
-      events: (body: Item, model: string, signal: AbortSignal, session?: string) => AsyncGenerator<Item>;
+      events: (body: Item, model: string, signal: AbortSignal, session?: string, req?: IncomingMessage) => AsyncGenerator<Item>;
+      explicitRoutes?: boolean;
       correlation: (req: IncomingMessage) => string | undefined;
     },
   ) {
@@ -57,6 +60,10 @@ export class CodexWebSockets {
       return;
     }
     this.options.budget.run(socket, () => {
+      if (this.options.explicitRoutes && path.split("?")[0] === "/responses") {
+        this.wss.handleUpgrade(req, socket, head, client => this.localBridge(req, client, mode, path));
+        return;
+      }
       socket.pause();
       this.pendingUpgrades.add(socket);
       socket.once("close", () => this.pendingUpgrades.delete(socket));
@@ -71,6 +78,82 @@ export class CodexWebSockets {
         });
     });
   }
+  /** Local routed sockets authenticate a native destination only if a message selects it. */
+  private localBridge(req: IncomingMessage, client: WebSocket, mode: CodexEndpointMode, path: string): void {
+    const active = new Map<string, AbortController>();
+    let parent: WebSocket | undefined, connecting: Promise<WebSocket> | undefined;
+    let queued = 0;
+    const send = (event: Item): Promise<void> => new Promise((resolve, reject) => {
+      const encoded = JSON.stringify(event);
+      if (client.readyState !== WebSocket.OPEN) { resolve(); return; }
+      if (client.bufferedAmount + Buffer.byteLength(encoded) > 32 * 1024 * 1024) { client.close(1009, "send_queue_limit"); reject(new RoutingError("websocket_send_queue_limit", 502)); return; }
+      client.send(encoded, error => error ? reject(error) : resolve());
+    });
+    const failure = (error: unknown, streamId?: string) => {
+      const result = error instanceof RoutingError ? { status: error.status, code: error.code, message: error.code } :
+        error instanceof AttemptFailure ? { status: error.clientStatus, code: error.clientCode, message: error.clientCode,
+          ...(error.failure.retryAt !== undefined ? { retryAfter: String(Math.max(0, Math.ceil((error.failure.retryAt - Date.now()) / 1000))) } : {}),
+        } : claudeFailure(error);
+      void send(openaiWebSocketError(result, streamId)).catch(() => undefined);
+    };
+    const connectParent = (): Promise<WebSocket> => {
+      if (connecting) return connecting;
+      connecting = this.options.nativeAuth.headers(req, mode, path).then(nativeHeaders => new Promise<WebSocket>((resolve, reject) => {
+        const target = this.target(mode, path); target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+        const flat = filterRawHeaders(nativeHeaders, new Set([...HOP_BY_HOP, "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions", "sec-websocket-protocol"]));
+        const headers: Record<string, string> = {}; for (let i = 0; i < flat.length; i += 2) headers[flat[i]!] = flat[i + 1]!;
+        const upstream = new WebSocket(target, { headers, maxPayload: this.options.config.limits.maxBufferedBodyBytes,
+          finishRequest: request => { boundTcpConnect(request, this.options.config.codexIngress.connectTimeoutMs); request.end(); } });
+        parent = upstream; this.upstreamSockets.add(upstream);
+        upstream.once("open", () => { if (client.readyState !== WebSocket.OPEN) upstream.terminate(); resolve(upstream); });
+        upstream.on("error", reject);
+        upstream.once("close", () => { this.upstreamSockets.delete(upstream); if (client.readyState === WebSocket.OPEN) client.close(1012, "Reconnect native stream"); });
+        let outputQueue = Promise.resolve(), count = 0;
+        upstream.on("message", data => {
+          if (++count > 16) { upstream.terminate(); return; }
+          upstream.pause(); outputQueue = outputQueue.then(async () => send(namespaceEvent(json(Buffer.from(data.toString())))))
+            .catch(error => failure(error)).finally(() => { if (--count === 0 && upstream.readyState === WebSocket.OPEN) upstream.resume(); });
+        });
+      }));
+      return connecting;
+    };
+    client.on("error", () => undefined);
+    client.once("close", () => { for (const c of active.values()) c.abort(); parent?.terminate(); });
+    client.on("message", data => {
+      let body: Item;
+      try { body = json(Buffer.from(data.toString())); } catch (error) { failure(error); return; }
+      const streamId = typeof body["stream_id"] === "string" ? body["stream_id"] : undefined;
+      if (body["type"] === "response.cancel") {
+        const id = String(body["response_id"] ?? streamId ?? "default");
+        const c = active.get(id); if (c) { c.abort(); return; }
+        if (id.startsWith("resp_subswitch_")) return;
+      }
+      const route = decideCodexRoute("/responses", this.options.destination(body));
+      if (route.kind === "rejected") { failure(rejectionError(route), streamId); return; }
+      if (route.kind === "parent") {
+        if (++queued > 16) { client.close(1009, "request_queue_limit"); return; }
+        void connectParent().then(upstream => {
+          const payload = JSON.stringify(this.options.parentRequest(body));
+          if (upstream.bufferedAmount + Buffer.byteLength(payload) > 32 * 1024 * 1024) throw new RoutingError("websocket_send_queue_limit", 502);
+          if (upstream.readyState === WebSocket.OPEN) upstream.send(payload);
+        }).catch(error => failure(error, streamId)).finally(() => queued--);
+        return;
+      }
+      const key = streamId ?? "default";
+      if (active.has(key) || new Set(active.values()).size >= 16) { failure(new RoutingError("concurrent_route_stream_id", 409), streamId); return; }
+      const controller = new AbortController(); active.set(key, controller); this.options.controllers.add(controller);
+      void (async () => {
+        try {
+          for await (const event of this.options.events(body, route.model, controller.signal, this.options.correlation(req), req)) {
+            const response = object(event["response"]); if (typeof response?.["id"] === "string") active.set(response["id"], controller);
+            await send({ ...event, ...(streamId ? { stream_id: streamId } : {}) });
+          }
+        } catch (error) { if (!controller.signal.aborted) failure(error, streamId); }
+        finally { for (const [id, c] of active) if (c === controller) active.delete(id); this.options.controllers.delete(controller); }
+      })();
+    });
+    req.socket.resume();
+  }
   private upgradeReady(
     req: IncomingMessage,
     socket: Duplex,
@@ -84,7 +167,7 @@ export class CodexWebSockets {
       rejectCodexUpgrade(req, socket, 400, "expected a WebSocket upgrade");
       return;
     }
-    if (!this.options.config.codexIngress.claude.enabled || path.split("?")[0] !== "/responses") {
+    if ((!this.options.config.codexIngress.claude.enabled && !this.options.explicitRoutes) || path.split("?")[0] !== "/responses") {
       this.pendingUpgrades.delete(socket);
       this.options.raw.upgrade(req, socket, head, mode, path, nativeHeaders);
       return;
@@ -272,6 +355,7 @@ export class CodexWebSockets {
             model,
             controller.signal,
             this.options.correlation(req),
+            req,
           )) {
             const response = object(event["response"]);
             if (typeof response?.["id"] === "string") active.set(response["id"], controller);

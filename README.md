@@ -102,6 +102,9 @@ Commands:
   init      Interactive setup — wires the selected client(s)
   models    Show effective alias table (registry × aliases)
             --json   Output model registry as JSON (no color, no TTY check)
+            --schema-version 3 --client <client> --json   Common route discovery
+  run-action --client <client> [--conversation <id>] -- <native command>
+            Scope one native invocation, including its tools and children
 
 Flags (global):
   -h, --help       Show this help message
@@ -137,6 +140,7 @@ Environment:
   NO_COLOR      Disable color output (also respected as standard)
   FORCE_COLOR   Force color output even when not a TTY
   CI            Non-interactive detection — init refuses without --yes
+
 ```
 
 **Exit codes:**
@@ -786,3 +790,9 @@ local development.
 ## License
 
 [MIT](LICENSE) © 2026 dean0x
+
+### Wave 1 explicit routes
+
+Version 2 access profiles, action-scoped failover, recovery behavior, configuration examples
+and current evidence gates are described in [the Wave 1 notes](e2e/gates/wave1.md).
+Kimi live compatibility is pending; see [the evidence manifest](e2e/gates/wave1-evidence.json).
