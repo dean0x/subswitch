@@ -237,6 +237,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   let started = false;
   let finished = false;
   let sawFunctionCall = false;
+  let sawRefusal = false;
   let nextBlockIndex = 0;
   const blockIndexByKey = new Map<string, number>();
   const reasoningItems: unknown[] = [];
@@ -422,7 +423,8 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           // reasoning items produce no Anthropic frames; captured at .done.
           break;
         }
-        case "response.output_text.delta": {
+        case "response.output_text.delta":
+        case "response.refusal.delta": {
           const parsed = ResponsesDeltaEventSchema.safeParse(json);
           if (!parsed.success) break;
           const index = lookupBlockIndex(parsed.data.item_id, parsed.data.output_index);
@@ -431,6 +433,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
             break;
           }
           blocksWithContent.add(index);
+          if (type === "response.refusal.delta") sawRefusal = true;
           this.push(
             frame("content_block_delta", {
               type: "content_block_delta",
@@ -490,7 +493,9 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const response = parsed.data.response;
           const hitMaxTokens =
             response.status === "incomplete" && response.incomplete_details?.reason === "max_output_tokens";
-          const stopReason = sawFunctionCall ? "tool_use" : hitMaxTokens ? "max_tokens" : "end_turn";
+          const filtered =
+            response.status === "incomplete" && response.incomplete_details?.reason === "content_filter";
+          const stopReason = hitMaxTokens ? "max_tokens" : sawFunctionCall ? "tool_use" : sawRefusal || filtered ? "refusal" : "end_turn";
           inputTokens = response.usage?.input_tokens ?? 0;
           this.push(
             frame("message_delta", {

@@ -31,13 +31,15 @@ export function toolWireName(namespace: string | undefined, name: string, type: 
     .slice(0, 32)}`;
 }
 
-function content(value: unknown, toolResult = false): Item[] {
+function content(value: unknown, toolResult = false, allowRefusal = false): Item[] {
   if (typeof value === "string") return [{ type: "text", text: value }];
   if (!Array.isArray(value)) return fail("unsupported_content");
   return value.map((value) => {
     const block = item(value);
     if (["input_text", "output_text", "text"].includes(String(block["type"])))
       return { type: "text", text: string(block["text"]) };
+    if (allowRefusal && block["type"] === "refusal")
+      return { type: "text", text: string(block["refusal"]) };
     if (block["type"] === "input_image") {
       const url = string(block["image_url"]);
       const inline = /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/=]+)$/.exec(url);
@@ -147,7 +149,7 @@ const foldHistory = (input: Item[], system: Item[], tools: ReadonlyMap<string, T
           return fail("mid_history_instructions_unimplemented");
         }
         system.push(...blocks);
-      } else if (role === "user" || role === "assistant") append(role, content(entry["content"]));
+      } else if (role === "user" || role === "assistant") append(role, content(entry["content"], false, role === "assistant"));
       else return fail("unsupported_message_role");
     } else if (type === "agent_message") {
       const blocks = content(entry["content"]);
@@ -179,7 +181,12 @@ const foldHistory = (input: Item[], system: Item[], tools: ReadonlyMap<string, T
       const id = string(entry["call_id"]);
       if (!calls.has(id) || results.has(id)) return fail("unmatched_tool_result");
       results.add(id);
-      append("user", [{ type: "tool_result", tool_use_id: id, content: content(entry["output"], true) }]);
+      append("user", [{
+        type: "tool_result",
+        tool_use_id: id,
+        content: content(entry["output"], true),
+        ...(typeof entry["is_error"] === "boolean" ? { is_error: entry["is_error"] } : {}),
+      }]);
     } else
       return fail(
         type === "reasoning" || type === "compaction" ? "opaque_state_unimplemented" : "unsupported_input_item",

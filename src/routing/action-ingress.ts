@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
 import { ActionStore } from "./action-store.js";
+import { ScopedLifecycle, type ScopedSocket } from "./scoped-lifecycle.js";
 import { object } from "../plain-object.js";
 import { respondJson } from "../provider-transport.js";
 import { toAnthropicErrorBody } from "../errors.js";
@@ -14,7 +16,31 @@ import {
 /** Explicit lifecycle transport. Provider terminals never close native actions. */
 export class ActionIngress {
   private readonly requests = new WeakMap<IncomingMessage, string>();
-  constructor(private readonly store: ActionStore) {}
+  private readonly lifecycle: ScopedLifecycle;
+  constructor(private readonly store: ActionStore) {
+    this.lifecycle = new ScopedLifecycle(store);
+  }
+  signal(req: IncomingMessage): AbortSignal | undefined {
+    return this.lifecycle.signal(req);
+  }
+  admitHttp(
+    req: IncomingMessage,
+    res: ServerResponse,
+    client: OriginatingClient,
+  ): AbortSignal | undefined {
+    const signal = this.lifecycle.signal(req);
+    if (signal) return signal;
+    const context = this.context(req, client, {});
+    return context ? this.lifecycle.admitHttp(req, res, context) : undefined;
+  }
+  socket(
+    req: IncomingMessage,
+    socket: Duplex,
+    client: OriginatingClient,
+  ): ScopedSocket | undefined {
+    const context = this.context(req, client, {});
+    return context ? this.lifecycle.socket(req, socket, context) : undefined;
+  }
   stripPrefix(req: IncomingMessage): void {
     const match =
       /^\/__subswitch\/action\/([a-f0-9-]{36})\/ingress(\/.*)$/.exec(
@@ -31,7 +57,10 @@ export class ActionIngress {
   ): ActionContext | undefined {
     const id = this.requests.get(req);
     if (!id) return undefined;
-    const context = this.store.context(id, client);
+    const admitted = this.lifecycle.admittedContext(req);
+    if (admitted && admitted.client !== client)
+      throw new RoutingError("action_state_lost", 409);
+    const context = admitted ?? this.store.context(id, client);
     // A complete explicit invocation includes children. Branch state is isolated by
     // observed thread identity; unverified lifecycle metadata never creates an action.
     const thread = req.headers["thread-id"] ?? req.headers["session-id"];

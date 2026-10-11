@@ -6,6 +6,7 @@ import { ClaudeCache } from "../claude-cache.js";
 import { ReverseState } from "../claude-state.js";
 import { ReasoningCache } from "../reasoning-cache.js";
 import { object } from "../plain-object.js";
+import { validateTargetCapabilities } from "./target-capabilities.js";
 import {
   renderResponsesHistory,
   type PortableTranscript,
@@ -51,6 +52,14 @@ export function adaptRequest(request: RequestAdaptation): {
     sessionId,
     priorOwner,
   } = request;
+  validateTargetCapabilities(
+    p,
+    t,
+    request.body,
+    ingress,
+    protocol,
+    transcript.tools.length > 0,
+  );
   let body: Item = {
     ...(p.provider === "kimi" && ingress === "responses"
       ? renderResponsesHistory(transcript)
@@ -66,7 +75,7 @@ export function adaptRequest(request: RequestAdaptation): {
       for (const block of m["content"]) {
         const b = object(block);
         if (b?.["type"] === "thinking" || b?.["type"] === "redacted_thinking") {
-          const signature = b["signature"] ?? b["data"];
+          const signature = b[b["type"] === "thinking" ? "signature" : "data"];
           const recorded =
             typeof signature === "string"
               ? stage.get(
@@ -76,7 +85,15 @@ export function adaptRequest(request: RequestAdaptation): {
               : undefined;
           if (
             !recorded ||
-            (b["type"] === "thinking" && b["thinking"] !== recorded["thinking"])
+            b["type"] !== recorded["type"] ||
+            (b["type"] === "thinking"
+              ? typeof b["thinking"] !== "string" ||
+                b["thinking"] !== recorded["thinking"] ||
+                b["signature"] !== recorded["signature"] ||
+                b["data"] !== undefined
+              : b["data"] !== recorded["data"] ||
+                b["signature"] !== undefined ||
+                b["thinking"] !== undefined)
           )
             throw new RoutingError("foreign_opaque_state", 409);
         }
@@ -142,6 +159,8 @@ export function adaptRequest(request: RequestAdaptation): {
     )
       throw new RoutingError("continuity_unavailable", 409);
     outbound = translated.value.body;
+    if (p.product === "openai-api" && body["max_tokens"] !== undefined)
+      outbound = { ...outbound, max_output_tokens: body["max_tokens"] };
     if (transcript?.toolErrors.size && Array.isArray(outbound["input"])) {
       outbound["input"] = outbound["input"].map((value) => {
         const entry = object(value);

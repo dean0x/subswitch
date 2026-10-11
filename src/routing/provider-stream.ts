@@ -43,6 +43,18 @@ export async function* validatedProviderEvents(
     response.body as import("node:stream/web").ReadableStream<Uint8Array>,
   );
   const parser = createSseParser(4 * 1024 * 1024, true);
+  let sourceFailure: unknown;
+  let parserFailed = false;
+  // Pipeline propagates a source error through the parser. Preserve which surface
+  // failed first, so a parser rejection that destroys its source stays a protocol failure.
+  const onSourceError = (error: unknown) => {
+    if (!parserFailed) sourceFailure = error;
+  };
+  const onParserError = () => {
+    parserFailed = true;
+  };
+  source.on("error", onSourceError);
+  parser.on("error", onParserError);
   let cancelIdle: (() => void) | undefined;
   const reset = () => {
     cancelIdle?.();
@@ -391,12 +403,27 @@ export async function* validatedProviderEvents(
   } catch (error) {
     if (signal.aborted)
       throw new RoutingError("provider_stream_timeout_or_cancelled", 504);
+    if (
+      sourceFailure !== undefined &&
+      !(error instanceof RoutingError) &&
+      error === sourceFailure
+    )
+      throw new AttemptFailure({
+        kind: "transport",
+        evidence: "unknown",
+        windows: [],
+        bodyTruncated: false,
+        responseCommitted: false,
+      });
     throw error;
   } finally {
     cancelIdle?.();
     source.destroy();
     parser.destroy();
     await running;
+    source.off("data", reset);
+    source.off("error", onSourceError);
+    parser.off("error", onParserError);
   }
 }
 
@@ -408,31 +435,41 @@ function validatePendingTools(
   const tools = output.filter((item) =>
     ["function_call", "custom_tool_call"].includes(String(item["type"])),
   );
+  const byCall = new Map(tools.map((tool) => [tool["call_id"], tool]));
+  const byId = new Map<unknown, Item>();
+  for (const tool of tools) {
+    if (typeof tool["id"] !== "string") continue;
+    if (byId.has(tool["id"]))
+      throw new RoutingError("inconsistent_provider_tool_id", 502);
+    byId.set(tool["id"], tool);
+  }
+  const completions = new Set<string>();
   for (const event of events) {
     const value = object(JSON.parse(event.data))!;
     const item = object(value["item"]);
     const completed = item
-      ? tools.find((tool) => tool["call_id"] === item["call_id"])
-      : tools.find(
-          (tool) =>
-            (typeof value["item_id"] === "string" &&
-              tool["id"] === value["item_id"]) ||
-            (typeof value["call_id"] === "string" &&
-              tool["call_id"] === value["call_id"]) ||
-            (Number.isInteger(value["output_index"]) &&
-              output[value["output_index"] as number] === tool),
-        );
+      ? byCall.get(item["call_id"])
+      : byId.get(value["item_id"]) ??
+        byCall.get(value["call_id"]) ??
+        (Number.isInteger(value["output_index"])
+          ? output[value["output_index"] as number]
+          : undefined);
     if (!completed)
       throw new RoutingError("inconsistent_provider_tool_missing", 502);
     if (
-      (!item &&
-        value["item_id"] !== undefined &&
+      (value["item_id"] !== undefined &&
         value["item_id"] !== completed["id"]) ||
-      (!item &&
-        value["call_id"] !== undefined &&
+      (value["call_id"] !== undefined &&
         value["call_id"] !== completed["call_id"]) ||
       (value["output_index"] !== undefined &&
-        output[value["output_index"] as number] !== completed)
+        output[value["output_index"] as number] !== completed) ||
+      !["function_call", "custom_tool_call"].includes(
+        String(completed["type"]),
+      ) ||
+      (value["type"] === "response.function_call_arguments.done" &&
+        completed["type"] !== "function_call") ||
+      (value["type"] === "response.custom_tool_call_input.done" &&
+        completed["type"] !== "custom_tool_call")
     )
       throw new RoutingError("inconsistent_provider_tool", 502);
     const fields = item
@@ -448,5 +485,9 @@ function validatePendingTools(
     );
     if (different)
       throw new RoutingError(`inconsistent_provider_tool_${different}`, 502);
+    const completion = JSON.stringify([value["type"], completed["call_id"]]);
+    if (completions.has(completion))
+      throw new RoutingError("duplicate_provider_tool_completion", 502);
+    completions.add(completion);
   }
 }

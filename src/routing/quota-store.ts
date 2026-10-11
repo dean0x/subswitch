@@ -22,6 +22,7 @@ interface ScopeState {
   probing: symbol | undefined;
   serviceable: boolean;
   observedAt: number;
+  failureRevision: number;
 }
 
 export const scopeKey = (scope: AllowanceScope): string =>
@@ -59,6 +60,7 @@ export class QuotaStore {
           probing: undefined,
           serviceable: false,
           observedAt: 0,
+          failureRevision: 0,
         };
   }
 
@@ -104,6 +106,7 @@ export class QuotaStore {
     if (reservation === undefined || state.probing === reservation)
       state.probing = undefined;
     state.failureAt = now;
+    state.failureRevision++;
     state.retryConstraint = Math.max(
       state.retryConstraint,
       failure.retryAt ?? 0,
@@ -128,7 +131,11 @@ export class QuotaStore {
     scope: AllowanceScope,
     windows: readonly QuotaObservation[],
     requestedAt: number,
-    options: { complete?: boolean; serviceableCredits?: boolean } = {},
+    options: {
+      complete?: boolean;
+      serviceableCredits?: boolean;
+      failureRevision?: number;
+    } = {},
   ): boolean {
     const state = this.copy(scope),
       now = this.clock.now();
@@ -136,6 +143,8 @@ export class QuotaStore {
       requestedAt < (state.failureAt ?? -Infinity) ||
       requestedAt < state.observedAt ||
       requestedAt > now ||
+      (options.failureRevision !== undefined &&
+        options.failureRevision !== state.failureRevision) ||
       (!windows.length && !options.complete)
     )
       return false;
@@ -248,6 +257,7 @@ export class QuotaStore {
     );
     state.failureAt = now;
     state.failures++;
+    state.failureRevision++;
     state.probing = undefined;
     this.publish(scope, state);
   }
@@ -256,6 +266,9 @@ export class QuotaStore {
     return [...(this.scopes.get(scopeKey(scope))?.windows.values() ?? [])].map(
       (window) => ({ ...window }),
     );
+  }
+  observationRevision(scope: AllowanceScope): number {
+    return this.scopes.get(scopeKey(scope))?.failureRevision ?? 0;
   }
 
   private validWindow(window: QuotaObservation): boolean {

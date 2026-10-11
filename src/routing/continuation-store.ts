@@ -36,6 +36,7 @@ export interface Continuation {
   output: Item[];
   owner: string;
   protocol: WireProtocol;
+  scope: "explicit" | "single-target";
 }
 /** Local response IDs never contain upstream handles. State is process-local and bounded. */
 export class ContinuationStore {
@@ -67,12 +68,21 @@ export class ContinuationStore {
       this.bytes += bytes;
     };
   }
-  get(id: string, conversation: string, route: string): Continuation {
+  get(
+    id: string,
+    conversation: string | undefined,
+    route: string,
+    protocol: WireProtocol,
+  ): Continuation {
     const entry = this.entries.get(id);
     if (!entry) throw new RoutingError("continuation_state_lost", 409);
     if (
-      entry.state.conversation !== conversation ||
-      entry.state.route !== route
+      entry.state.route !== route ||
+      entry.state.protocol !== protocol ||
+      (conversation === undefined
+        ? entry.state.scope !== "single-target"
+        : entry.state.scope !== "explicit" ||
+          entry.state.conversation !== conversation)
     )
       throw new RoutingError("continuation_scope_mismatch", 409);
     return structuredClone(entry.state);

@@ -37,6 +37,7 @@ import { hasNativeDecoders } from "./content-encoding.js";
 import { claudeResolver } from "./claude-models.js";
 import { codexIngressHealth } from "./codex-health.js";
 import { SharedRouting } from "./routing/shared-routing.js";
+import { RoutingError } from "./routing/routing-types.js";
 import { object as routingObject } from "./plain-object.js";
 
 export interface ServerDeps {
@@ -447,6 +448,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       }
 
       // Reserve the whole Codex namespace before the Claude-facing fallback.
+      deps.sharedRouting?.admitHttp(req, res, ingress.kind === "codex" ? "codex" : "claude-code");
       if (pathname.startsWith("/__subswitch/actions") && deps.sharedRouting) {
         await deps.sharedRouting.control(req, res); route = "action_control"; return;
       }
@@ -647,8 +649,8 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       route = "internal_error";
       logger.log("error", "request_failed", { path: logPath, errorCode: cause instanceof Error ? cause.name : "unknown" });
       if (!res.headersSent) {
-        res.writeHead(500, synthesizedHeaders());
-        const message = "subswitch internal error — this is a proxy fault, not an upstream failure";
+        res.writeHead(cause instanceof RoutingError ? cause.status : 500, synthesizedHeaders());
+        const message = cause instanceof RoutingError ? cause.code : "subswitch internal error — this is a proxy fault, not an upstream failure";
         res.end(ingress.kind === "other" ? toAnthropicErrorBody("api_error", message) : openaiErrorBody(message));
       } else if (!res.writableEnded) {
         res.destroy();

@@ -27,12 +27,14 @@ interface RoutedDispatch {
     route: string,
     signal: AbortSignal,
     context?: ActionContext,
+    admissionSignal?: AbortSignal,
   ): AsyncIterable<Item>;
   context(
     req: IncomingMessage,
     client: OriginatingClient,
     body: Item,
   ): ActionContext | undefined;
+  admissionSignal?(req: IncomingMessage): AbortSignal | undefined;
 }
 const terminal = (event: Item) =>
   ["response.completed", "response.incomplete", "message_stop"].includes(
@@ -69,6 +71,7 @@ export async function writeRoutedHttp(
       route,
       controller.signal,
       dispatch.context(req, client, body),
+      dispatch.admissionSignal?.(req),
     )) {
       if (body["stream"] === true) {
         if (!res.headersSent)

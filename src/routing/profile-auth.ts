@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { CodexAuthManager, createFsAuthFileStore } from "../codex-auth.js";
+import {
+  CodexAuthManager,
+  createFsAuthFileStore,
+  readCodexAccountIdentity,
+} from "../codex-auth.js";
 import {
   ClaudeAuthManager,
   createClaudeCredentialStore,
@@ -11,7 +15,8 @@ import type { ProviderCredential } from "../provider-auth.js";
 import type { Result } from "../result.js";
 import type { ProxyError } from "../errors.js";
 import { providerEvents } from "../provider-events.js";
-import { object } from "../plain-object.js";
+import { object, ownValue } from "../plain-object.js";
+import { abortable } from "../abortable.js";
 import {
   allowanceScope,
   RoutingError,
@@ -25,30 +30,6 @@ export interface BoundCredential
   profile: string;
   generation: string;
   binding: string;
-}
-export function abortable<T>(
-  promise: Promise<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  signal.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const cleanup = () => signal.removeEventListener("abort", abort);
-    const abort = () => {
-      cleanup();
-      reject(signal.reason);
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    promise.then(
-      (value) => {
-        cleanup();
-        resolve(value);
-      },
-      (error) => {
-        cleanup();
-        reject(error);
-      },
-    );
-  });
 }
 type NativeAuth = {
   getCredentials(): Promise<
@@ -78,6 +59,7 @@ export class ProfileAuth {
   private readonly generations = new Map<string, string>();
   private readonly refreshes = new Map<string, Promise<BoundCredential>>();
   private readonly fileAccounts = new Map<string, string>();
+  private readonly nativeStores = new Map<string, string>();
   private readonly claudeOwners = new Map<
     string,
     { owner: string; access: string }
@@ -90,6 +72,55 @@ export class ProfileAuth {
   ) {}
   private binding(id: string, p: AccessProfile): string {
     return digest([id, p]);
+  }
+  private bindNativeStore(
+    id: string,
+    p: AccessProfile,
+    storage: string | undefined,
+  ): string {
+    const key = JSON.stringify([p.provider, storage ?? id]);
+    const previous = this.nativeStores.get(id);
+    if (previous !== undefined && previous !== key) {
+      this.managers.delete(id);
+      this.generations.delete(id);
+    }
+    this.nativeStores.set(id, key);
+    return key;
+  }
+  private invalidateNativeStore(key: string): void {
+    for (const [id, storage] of this.nativeStores) {
+      if (storage === key) {
+        this.managers.delete(id);
+        this.generations.delete(id);
+      }
+    }
+  }
+  private observeClaudeOwner(
+    storage: string,
+    token: string,
+    refreshedFrom?: string,
+  ): void {
+    const previous = this.claudeOwners.get(storage);
+    const owner =
+      previous &&
+      (previous.access === token || previous.access === refreshedFrom)
+        ? previous.owner
+        : digest(token);
+    if (previous && previous.owner !== owner) {
+      // Aliases of one native store share one allowance transition. Updating each
+      // profile generation separately must not advance the allowance epoch again.
+      const groups = new Set<string>();
+      for (const [id, key] of this.nativeStores) {
+        if (key === storage)
+          groups.add(this.allowanceGroup(ownValue(this.profiles, id)!));
+      }
+      for (const group of groups)
+        this.allowanceEpochs.set(
+          group,
+          (this.allowanceEpochs.get(group) ?? 0) + 1,
+        );
+    }
+    this.claudeOwners.set(storage, { owner, access: token });
   }
   private manager(id: string, p: AccessProfile): NativeAuth {
     let manager = this.managers.get(id);
@@ -108,6 +139,7 @@ export class ProfileAuth {
       const store = createClaudeCredentialStore({
         authFile: p.credential.authFile,
       });
+      const ownerKey = this.bindNativeStore(id, p, store.coordinationKey);
       const access = (raw: string): string => {
         const token = object(object(JSON.parse(raw))?.["claudeAiOauth"])?.[
           "accessToken"
@@ -118,28 +150,18 @@ export class ProfileAuth {
       };
       manager = new ClaudeAuthManager({
         store: {
+          ...(store.coordinationKey
+            ? { coordinationKey: store.coordinationKey }
+            : {}),
+          observeRefresh: (token, refreshedFrom) =>
+            this.observeClaudeOwner(ownerKey, token, refreshedFrom),
           read: async () => {
-            const raw = await store.read(),
-              token = access(raw),
-              old = this.claudeOwners.get(id);
-            if (!old || old.access !== token)
-              this.claudeOwners.set(id, {
-                owner: digest(token),
-                access: token,
-              });
+            const raw = await store.read();
+            this.observeClaudeOwner(ownerKey, access(raw));
             return raw;
           },
-          write: async (raw) => {
-            await store.write(raw);
-            const token = access(raw),
-              old = this.claudeOwners.get(id);
-            // A refresh performed by this manager proves the same credential lineage.
-            // An external replacement has no such proof and conservatively invalidates replay.
-            this.claudeOwners.set(id, {
-              owner: old?.owner ?? digest(token),
-              access: token,
-            });
-          },
+          // The manager publishes the verified predecessor token after persistence.
+          write: (raw) => store.write(raw),
         },
         oauthTokenUrl: "https://platform.claude.com/v1/oauth/token",
         logger: this.logger,
@@ -150,22 +172,22 @@ export class ProfileAuth {
     return manager;
   }
   has(id: string): boolean {
-    const p = this.profiles[id];
+    const p = ownValue(this.profiles, id);
     if (!p) return false;
     return p.credential.kind === "native-oauth"
       ? existsSync(expandHome(p.credential.authFile))
-      : !!this.env[p.credential.name];
+      : !!ownValue(this.env, p.credential.name);
   }
   async get(
     id: string,
     signal: AbortSignal,
     refresh = false,
   ): Promise<BoundCredential> {
-    const p = this.profiles[id];
+    const p = ownValue(this.profiles, id);
     if (!p) throw new RoutingError("unknown_profile");
     let headers: Readonly<Record<string, string>>, owner: string;
     if (p.credential.kind === "env") {
-      const key = this.env[p.credential.name];
+      const key = ownValue(this.env, p.credential.name);
       if (!key) throw new RoutingError("profile_credentials_missing", 503);
       if (!/^[!-~]{1,8192}$/.test(key))
         throw new RoutingError("invalid_profile_credential", 503);
@@ -176,27 +198,26 @@ export class ProfileAuth {
       owner = digest(key);
     } else {
       if (p.provider === "codex") {
+        const store = createFsAuthFileStore(expandHome(p.credential.authFile));
+        const storage = this.bindNativeStore(id, p, store.coordinationKey);
         const read = await abortable(
-          createFsAuthFileStore(expandHome(p.credential.authFile)).read(),
+          store.read(),
           AbortSignal.any([signal, AbortSignal.timeout(10000)]),
         );
-        if (!read.ok) throw new RoutingError("profile_auth_unavailable", 503);
-        let account: unknown;
-        try {
-          account = object(object(JSON.parse(read.value))?.["tokens"])?.[
-            "account_id"
-          ];
-        } catch {
+        const account = read.ok ? readCodexAccountIdentity(read.value) : read;
+        if (!account.ok) {
+          // Losing a provable identity must invalidate previously bound credentials,
+          // rather than leave the manager's cached account available for authentication.
+          this.invalidateNativeStore(storage);
+          this.fileAccounts.delete(storage);
           throw new RoutingError("profile_auth_unavailable", 503);
         }
-        if (typeof account === "string") {
-          if (
-            this.fileAccounts.has(id) &&
-            this.fileAccounts.get(id) !== account
-          )
-            this.managers.delete(id);
-          this.fileAccounts.set(id, account);
-        }
+        if (
+          this.fileAccounts.has(storage) &&
+          this.fileAccounts.get(storage) !== account.value
+        )
+          this.invalidateNativeStore(storage);
+        this.fileAccounts.set(storage, account.value);
       }
       const manager = this.manager(id, p);
       const result = await abortable(
@@ -210,14 +231,23 @@ export class ProfileAuth {
       headers = result.value.authHeaders;
       // Native account identifiers, when supplied, survive refresh. Profile scope remains
       // conservative for Claude, whose native auth contract exposes no account header.
-      owner =
-        headers["chatgpt-account-id"] ??
-        this.claudeOwners.get(id)?.owner ??
-        p.account;
+      if (p.provider === "claude") {
+        const observed = this.claudeOwners.get(this.nativeStores.get(id) ?? id);
+        if (
+          !observed ||
+          headers["authorization"] !== `Bearer ${observed.access}`
+        )
+          throw new RoutingError("credential_owner_changed", 409);
+        owner = observed.owner;
+      } else owner = headers["chatgpt-account-id"] ?? p.account;
     }
     const generation = digest([this.binding(id, p), owner]);
     const previous = this.generations.get(id);
-    if (previous !== undefined && previous !== generation) {
+    if (
+      p.credential.kind === "env" &&
+      previous !== undefined &&
+      previous !== generation
+    ) {
       const group = this.allowanceGroup(p);
       this.allowanceEpochs.set(
         group,
@@ -240,7 +270,7 @@ export class ProfileAuth {
       )
     )
       throw new RoutingError("invalid_profile_credential", 503);
-    const p = this.profiles[credential.profile];
+    const p = ownValue(this.profiles, credential.profile);
     if (
       !p ||
       p.provider !== credential.provider ||
@@ -253,17 +283,32 @@ export class ProfileAuth {
       credential.generation !==
         digest([
           this.binding(credential.profile, p),
-          digest(this.env[p.credential.name]),
+          digest(ownValue(this.env, p.credential.name)),
         ])
     )
       throw new RoutingError("credential_owner_changed", 409);
+    if (p.credential.kind === "native-oauth") {
+      const storage = this.nativeStores.get(credential.profile);
+      const owner =
+        storage === undefined
+          ? undefined
+          : p.provider === "codex"
+            ? this.fileAccounts.get(storage)
+            : this.claudeOwners.get(storage)?.owner;
+      if (
+        owner === undefined ||
+        credential.generation !==
+          digest([this.binding(credential.profile, p), owner])
+      )
+        throw new RoutingError("credential_binding_mismatch", 503);
+    }
   }
   private allowanceGroup(p: AccessProfile): string {
     return JSON.stringify([p.provider, p.product, p.region, p.account]);
   }
   scope(credential: BoundCredential): AllowanceScope {
     this.validate(credential);
-    const profile = this.profiles[credential.profile]!;
+    const profile = ownValue(this.profiles, credential.profile)!;
     const nativeAccount = credential.authHeaders["chatgpt-account-id"];
     return {
       ...allowanceScope(profile),
@@ -273,7 +318,7 @@ export class ProfileAuth {
     };
   }
   refresh(id: string, signal: AbortSignal): Promise<BoundCredential> {
-    const p = this.profiles[id];
+    const p = ownValue(this.profiles, id);
     if (p?.credential.kind !== "native-oauth")
       throw new RoutingError("profile_not_refreshable", 401);
     let pending = this.refreshes.get(id);

@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "destination": "claude",
+  "explicitProfiles": false,
   "success": true,
   "nativeExit": "exit_0",
   "messages": 4,
@@ -21,5 +22,6 @@
   "clientVersion": "2.1.296",
   "synthetic": false,
   "childRequests": 0,
-  "parentRequests": 0
+  "parentRequests": 0,
+  "routeErrors": []
 }

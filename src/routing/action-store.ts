@@ -10,6 +10,7 @@ interface Action {
   context: ActionContext;
   phase: ActionAffinity["phase"];
   requests: Set<AbortController>;
+  transports: Set<() => void>;
   affinities: Map<string, ActionAffinity>;
 }
 /** No active entry eviction; exhaustion is truthful admission failure. */
@@ -48,6 +49,7 @@ export class ActionStore {
       },
       phase: "active",
       requests: new Set(),
+      transports: new Set(),
       affinities: new Map(),
     });
     return { id, ingressPrefix: `/__subswitch/action/${id}/ingress` };
@@ -100,8 +102,19 @@ export class ActionStore {
       throw new RoutingError("action_request_limit", 503);
     action.requests.add(controller);
     return () => {
-      action.requests.delete(controller);
+      if (!action.requests.delete(controller)) return;
       this.finalize(context.actionId, action);
+    };
+  }
+  /** Idle transports do not keep an invocation active; admitted requests do. */
+  attachTransport(context: ActionContext, close: () => void): () => void {
+    this.context(context.actionId, context.client);
+    const action = this.actions.get(context.actionId)!;
+    if (action.transports.size >= 16)
+      throw new RoutingError("action_transport_limit", 503);
+    action.transports.add(close);
+    return () => {
+      action.transports.delete(close);
     };
   }
   complete(id: string): void {
@@ -116,10 +129,14 @@ export class ActionStore {
     a.phase = "cancelled";
     for (const c of a.requests)
       c.abort(new RoutingError("action_cancelled", 499));
+    for (const close of a.transports) close();
     this.finalize(id, a);
   }
   private finalize(id: string, action: Action): void {
+    if (this.actions.get(id) !== action) return;
     if (action.phase !== "active" && !action.requests.size) {
+      for (const close of action.transports) close();
+      action.transports.clear();
       this.actions.delete(id);
       this.affinityCount -= action.affinities.size;
     }

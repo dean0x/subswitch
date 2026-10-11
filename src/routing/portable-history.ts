@@ -28,11 +28,19 @@ export function decodePortableHistory(
     errors = new Set<string>();
   let hasOpaqueReasoning = false,
     hasThinking = false;
-  const textContent = (content: unknown, types: readonly string[]) => {
+  const textContent = (
+    content: unknown,
+    types: readonly string[],
+    allowRefusal = false,
+  ) => {
     if (typeof content === "string") return;
     if (!Array.isArray(content)) fail();
     for (const value of content) {
       const block = object(value) ?? fail();
+      if (allowRefusal && block["type"] === "refusal") {
+        if (typeof block["refusal"] !== "string") fail();
+        continue;
+      }
       if (
         !types.includes(String(block["type"])) ||
         typeof block["text"] !== "string"
@@ -77,7 +85,11 @@ export function decodePortableHistory(
         throw new RoutingError("foreign_opaque_state", 409);
       if (type === "message") {
         if (!roles.includes(String(entry["role"]))) fail();
-        textContent(entry["content"], ["input_text", "output_text", "text"]);
+        textContent(
+          entry["content"],
+          ["input_text", "output_text", "text"],
+          entry["role"] === "assistant",
+        );
       }
       if (type === "agent_message") {
         if (

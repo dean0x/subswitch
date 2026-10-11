@@ -1,7 +1,7 @@
 import { QuotaStore } from "./quota-store.js";
 import { scopeKey } from "./quota-store.js";
 import type { AllowanceScope, QuotaObservation } from "./routing-types.js";
-import { abortable } from "./profile-auth.js";
+import { abortable } from "../abortable.js";
 import { scheduleRoutingTimer } from "./clock.js";
 
 export interface UsageSnapshot {
@@ -40,6 +40,7 @@ export class UsageCoordinator {
     )
       return Promise.resolve(false);
     this.queried.set(key, now);
+    const failureRevision = this.quota.observationRevision(scope);
     this.active++;
     const controller = new AbortController();
     this.controllers.add(controller);
@@ -59,7 +60,10 @@ export class UsageCoordinator {
         (snapshot) =>
           !!snapshot &&
           Buffer.byteLength(JSON.stringify(snapshot)) <= 65536 &&
-          this.quota.observe(scope, snapshot.windows, now, snapshot),
+          this.quota.observe(scope, snapshot.windows, now, {
+            ...snapshot,
+            failureRevision,
+          }),
       )
       .catch(() => false)
       .finally(() => {

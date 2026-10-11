@@ -7,6 +7,7 @@ import { gunzipSync, brotliDecompressSync, inflateSync, zstdDecompressSync } fro
 import { WebSocketServer } from "ws";
 import { loadConfig } from "../../src/config.js";
 import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
+import { RoutingError } from "../../src/routing/routing-types.js";
 import { object } from "./probe.js";
 import { nativeProcess, isolatedNativeEnv } from "./native-process.js";
 import { BRIDGE_NAMESPACE, namespaceRequest, namespaceEvent } from "./namespace-adapter.js";
@@ -73,14 +74,15 @@ async function catalog(version: "v1" | "v2"): Promise<Item[]> {
   }));
 }
 
-export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "websocket" | "http" = "websocket", adaptNamespace = false) {
-  const collaborationNamespace = adaptNamespace ? BRIDGE_NAMESPACE : "collaboration";
+export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "websocket" | "http" = "websocket", adaptNamespace = false, explicitRoutes = false, actionScoped = false) {
+  const routingEnabled = explicitRoutes || actionScoped;
+  const collaborationNamespace = adaptNamespace || routingEnabled ? BRIDGE_NAMESPACE : "collaboration";
   const models = await catalog(version);
   const temp = await mkdtemp(join(tmpdir(), "subswitch-codex-contract-"));
   const codexDir = join(temp, "codex");
   const work = join(temp, "work");
   const observations = {
-    version, transport, adaptNamespace, clientVersion: "unknown", websocketConnections: 0, httpResponses: 0, warmups: 0, continuations: 0, compressedRequests: 0,
+    version, transport, adaptNamespace, explicitRoutes: routingEnabled, actionScoped, actionClosed: false, clientVersion: "unknown", websocketConnections: 0, websocketUpgradeRejections: 0, httpResponses: 0, warmups: 0, continuations: 0, compressedRequests: 0,
     parentRequests: 0, childRequests: 0, nativeToolExecuted: false, childReplyDelivered: false,
     nativeV2Schema: false, unknownModel: false, fixtureErrors: 0,
     execToolType: "missing", stage: "setup", nativeExit: "not_started", nativeDiagnostic: "none",
@@ -173,7 +175,9 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
     history.set(id, [...input, ...output]);
     return events(id, output);
   };
-  const exchange = (body: Item): Item[] => adaptNamespace ?
+  // Explicit routes activate the production gateway's namespace codec. Its
+  // fake destination consumes those wire names directly rather than adapting twice.
+  const exchange = (body: Item): Item[] => adaptNamespace && !routingEnabled ?
     respond(namespaceRequest(body)).map(namespaceEvent) : respond(body);
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
@@ -201,7 +205,7 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
     } catch { observations.fixtureErrors++; res.writeHead(400); res.end(); }
   });
   upstream.on("upgrade", (req, socket, head) => {
-    if (transport === "http") { socket.end("HTTP/1.1 426 Upgrade Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); return; }
+    if (transport === "http") { observations.websocketUpgradeRejections++; socket.end("HTTP/1.1 426 Upgrade Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"); return; }
     wss.handleUpgrade(req, socket, head, (ws) => {
     observations.websocketConnections++;
     ws.on("error", () => undefined);
@@ -233,6 +237,10 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
     const loaded = loadConfig({ env: {}, configPath: join(temp, "inline.json"), readFile: () => JSON.stringify({
       anthropic: { baseUrl: base }, providers: { codex: { authFile: join(temp, "unused-auth.json") } },
       codexIngress: { enabled: true, subscriptionBaseUrl: `${base}/backend-api/codex`, apiBaseUrl: `${base}/v1` },
+      ...(routingEnabled ? { configVersion: 2, accessProfiles: {
+        unused: { provider: "kimi", product: "kimi-code", region: "global", billing: "subscription", account: "synthetic",
+          credential: { kind: "env", name: "SYNTHETIC_UNUSED_KIMI_KEY" } },
+      }, routes: { unused: { clients: ["codex"], primary: { profile: "unused", model: "k3", effort: "high" } } } } : {}),
     }) });
     if (!loaded.ok) throw new Error("fixture_config_failed");
     const deps = buildDeps(loaded.value.config, { log: () => undefined });
@@ -242,6 +250,7 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
     if (!listening.ok) throw new Error("fixture_proxy_listen_failed");
     const proxyAddress = proxy.address();
     if (!proxyAddress || typeof proxyAddress === "string") throw new Error();
+    const action = actionScoped ? deps.value.sharedRouting!.actions.create("codex", "synthetic-native-invocation") : undefined;
     await writeFile(join(codexDir, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "fabricated-native-test-key" }), { mode: 0o600 });
     await writeFile(join(codexDir, "models_cache.json"), JSON.stringify({
       fetched_at: new Date().toISOString(), etag: "fixture", client_version: clientVersion, models,
@@ -249,7 +258,7 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
     await writeFile(join(codexDir, "native_catalog.json"), JSON.stringify({ models }), { mode: 0o600 });
     await writeFile(join(codexDir, "sonnet.toml"), `model = "${CHILD}"\ndeveloper_instructions = "Perform the fixed native contract check."\n`, { mode: 0o600 });
     await writeFile(join(codexDir, "config.toml"), [
-      `model = "${PARENT}"`, `model_catalog_json = "${join(codexDir, "native_catalog.json")}"`, `openai_base_url = "http://127.0.0.1:${proxyAddress.port}/codex/v1"`,
+      `model = "${PARENT}"`, `model_catalog_json = "${join(codexDir, "native_catalog.json")}"`, `openai_base_url = "http://127.0.0.1:${proxyAddress.port}${action?.ingressPrefix ?? ""}/codex/v1"`,
       'approval_policy = "never"', 'sandbox_mode = "read-only"',
       '[agents.sonnet]', 'description = "Fixed Sonnet contract check"', 'config_file = "sonnet.toml"',
     ].join("\n"), { mode: 0o600 });
@@ -267,8 +276,14 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
       try { const type = JSON.parse(line).type; return ["thread.started", "item.started", "item.completed", "turn.started", "turn.completed", "turn.failed", "error"].includes(type) ? [type] : ["other"]; }
       catch { return []; }
     });
+    if (action) {
+      if (result.code === 0 && !result.failure) deps.value.sharedRouting!.actions.complete(action.id);
+      else deps.value.sharedRouting!.actions.cancel(action.id);
+      try { deps.value.sharedRouting!.actions.context(action.id, "codex"); }
+      catch (error) { observations.actionClosed = error instanceof RoutingError && error.code === "action_state_lost"; }
+    }
     const success = result.code === 0 && !result.failure && childStarted && observations.nativeToolExecuted && observations.childReplyDelivered &&
-      result.stdout.includes(marker) && (version !== "v2" ||
+      result.stdout.includes(marker) && (!actionScoped || observations.actionClosed) && (version !== "v2" ||
         (observations.nativeV2Schema && observations.followupReceived && observations.followupReplyDelivered &&
           observations.childTaskReadable && observations.childIdentityPreserved && observations.replyIdentityPreserved));
     return { schemaVersion: 1, success, ...observations };
@@ -293,16 +308,18 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
 if (process.argv[1]?.endsWith("native-codex.ts")) {
   const version = process.argv.includes("--v1") ? "v1" : "v2";
   const transport = process.argv.includes("--http") ? "http" : "websocket";
+  const explicitRoutes = process.argv.includes("--explicit-routes");
+  const actionScoped = process.argv.includes("--action-scoped");
   if (process.argv.includes("--namespace-adapter")) {
-    const control = await runNativeCodex(version, transport);
+    const control = await runNativeCodex(version, transport, false, explicitRoutes, actionScoped);
     console.log(JSON.stringify({ gate: "native_control", ...control }));
     if (!control.success) { process.exitCode = 1; } else {
-      const report = await runNativeCodex(version, transport, true);
+      const report = await runNativeCodex(version, transport, true, explicitRoutes, actionScoped);
       console.log(JSON.stringify({ gate: "namespace_adapter", ...report }));
       process.exitCode = report.success ? 0 : 1;
     }
   } else {
-    const report = await runNativeCodex(version, transport);
+    const report = await runNativeCodex(version, transport, false, explicitRoutes, actionScoped);
     console.log(JSON.stringify(report));
     process.exitCode = report.success ? 0 : 1;
   }
