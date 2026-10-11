@@ -150,6 +150,11 @@ export const buildHeaders = <P extends ProviderId>(
   return headers;
 };
 
+export const codexTransportConstants = (userAgent: string): CodexTransportConstants => ({
+  "openai-beta": "responses=experimental", originator: "codex_cli_rs", accept: "text/event-stream",
+  "content-type": "application/json", "user-agent": userAgent,
+});
+
 export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<P>): ProviderHandler => {
   const { providerId, provider, logger, auth, cache, pingIntervalMs, loginCommand } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -160,13 +165,7 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
   const responsesUrl = `${provider.baseUrl.replace(/\/$/, "")}/responses`;
   // Built once per handler instance — values are fixed for the lifetime of this provider
   // slice, so there is no reason to rebuild on every request. (avoids PF-005)
-  const transportConstants: CodexTransportConstants = {
-    "openai-beta": "responses=experimental",
-    originator: "codex_cli_rs",
-    accept: "text/event-stream",
-    "content-type": "application/json",
-    "user-agent": provider.userAgent,
-  };
+  const transportConstants = codexTransportConstants(provider.userAgent);
 
   const handleMessages = async (_req: IncomingMessage, res: ServerResponse, _rawBody: Buffer, parsedBody: unknown, canonicalModel: string): Promise<void> => {
     // parsedBody is pre-parsed by the server (JSON.parse called once at the request level).

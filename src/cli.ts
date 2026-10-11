@@ -20,6 +20,9 @@ import { MODEL_REGISTRY, formatModelsReport, buildModelRows, routableModelCount,
 import { resolveColorEnabled } from "./tty.js";
 import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 import { claudeModelRows } from "./claude-models.js";
+import { routingDiscovery } from "./routing/routing-discovery.js";
+import { runAction } from "./run-action.js";
+import { publishActionControl } from "./routing/action-control.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
 
@@ -52,6 +55,9 @@ Commands:
   init      Interactive setup — wires the selected client(s)
   models    Show effective alias table (registry × aliases)
             --json   Output model registry as JSON (no color, no TTY check)
+            --schema-version 3 --client <client> --json   Common route discovery
+  run-action --client <client> [--conversation <id>] -- <native command>
+            Scope one native invocation, including its tools and children
 
 Flags (global):
   -h, --help       Show this help message
@@ -98,14 +104,15 @@ type CliCommand =
   | { readonly kind: "version" }
   | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly port?: string }
   | { readonly kind: "doctor"; readonly client: Client }
-  | { readonly kind: "models"; readonly json: boolean; readonly client: Client }
+  | { readonly kind: "models"; readonly json: boolean; readonly client: Client; readonly schemaVersion?: 3 }
+  | { readonly kind: "run-action"; readonly client: ClientId; readonly native: string[]; readonly conversation?: string }
   | { readonly kind: "init"; readonly yes: boolean; readonly dryRun: boolean; readonly flags: InitFlags; readonly client: Client };
 
 // Flag sets per command — used for per-command validation (A3.19)
 const GLOBAL_FLAGS = new Set(["help", "version"]);
 const SERVE_FLAGS = new Set(["verbose", "quiet", "port"]);
 const DOCTOR_FLAGS = new Set(["client"]);
-const MODELS_FLAGS = new Set(["json", "client"]);
+const MODELS_FLAGS = new Set(["json", "client", "schema-version"]);
 const INIT_FLAGS = new Set(["yes", "dry-run", "port", "settings-target", "client"]);
 
 /**
@@ -115,6 +122,14 @@ const INIT_FLAGS = new Set(["yes", "dry-run", "port", "settings-target", "client
  */
 const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: false; error: { message: string } } => {
   try {
+    if (argv[0] === "run-action") {
+      const boundary = argv.indexOf("--");
+      if (boundary < 0 || !argv[boundary + 1]) throw new Error("run-action requires -- <native command>");
+      const { values } = parseArgs({ args: argv.slice(1, boundary), options: { client: { type: "string" }, conversation: { type: "string" } }, strict: true });
+      if (values.client !== "codex" && values.client !== "claude-code") throw new Error("run-action requires --client codex or claude-code");
+      return { ok: true, value: { kind: "run-action", client: values.client, native: argv.slice(boundary + 1),
+        ...(values.conversation ? { conversation: values.conversation } : {}) } };
+    }
     const parseResult = parseArgs({
       args: argv,
       options: {
@@ -131,6 +146,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
         // models flags
         json:              { type: "boolean" },
         client:            { type: "string" },
+        "schema-version":  { type: "string" },
       },
       allowPositionals: true,
       strict: true,
@@ -218,7 +234,10 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     }
 
     // command === "models"
-    return { ok: true, value: { kind: "models", json: values.json === true, client } };
+    if (values["schema-version"] !== undefined && (values["schema-version"] !== "3" || values.json !== true || values.client === undefined))
+      throw new Error("schema-version requires models --schema-version 3 --client <client> --json");
+    return { ok: true, value: { kind: "models", json: values.json === true, client,
+      ...(values["schema-version"] === "3" ? { schemaVersion: 3 as const } : {}) } };
   } catch (e) {
     // Translate parseArgs throw to Result err (A3.21)
     if (e instanceof Error) {
@@ -288,6 +307,11 @@ const serve = async (
     }
     return;
   }
+  let removeActionControl: (() => Promise<void>) | undefined;
+  if (effectiveConfig.configVersion === 2 && deps.sharedRouting) {
+    try { removeActionControl = await publishActionControl(effectiveConfig.port, deps.sharedRouting.actions.capability); }
+    catch (error) { server.close(); throw error; }
+  }
   deps.logger.log("info", "config_loaded", {
     path: configPath,
     eventType: fileFound ? "loaded" : "defaults",
@@ -317,7 +341,7 @@ const serve = async (
 
   const shutdown = (): void => {
     deps.logger.log("info", "shutting_down");
-    server.close(() => process.exit(0));
+    server.close(() => { void (removeActionControl?.() ?? Promise.resolve()).finally(() => process.exit(0)); });
     server.closeIdleConnections();
     setTimeout(() => process.exit(1), SHUTDOWN_GRACE_MS).unref();
   };
@@ -549,10 +573,16 @@ const main = async (): Promise<void> => {
       }
       // JSON branch returns before resolveColorEnabled — FORCE_COLOR cannot bleed into JSON. [7b]
       if (command.json) {
+        if (command.schemaVersion === 3) { out(JSON.stringify(routingDiscovery(configResult.value.config, command.client))); return; }
         modelsJson(configResult.value, command.client);
         return;
       }
       models(configResult.value.config, command.client);
+      return;
+    }
+    case "run-action": {
+      const loaded = loadConfig(); if (!loaded.ok) { fail(loaded.error.message); return; }
+      process.exitCode = await runAction(loaded.value.config, command.client, command.native, command.conversation);
       return;
     }
 

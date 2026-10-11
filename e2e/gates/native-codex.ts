@@ -246,9 +246,10 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
     await writeFile(join(codexDir, "models_cache.json"), JSON.stringify({
       fetched_at: new Date().toISOString(), etag: "fixture", client_version: clientVersion, models,
     }), { mode: 0o600 });
+    await writeFile(join(codexDir, "native_catalog.json"), JSON.stringify({ models }), { mode: 0o600 });
     await writeFile(join(codexDir, "sonnet.toml"), `model = "${CHILD}"\ndeveloper_instructions = "Perform the fixed native contract check."\n`, { mode: 0o600 });
     await writeFile(join(codexDir, "config.toml"), [
-      `model = "${PARENT}"`, `openai_base_url = "http://127.0.0.1:${proxyAddress.port}/codex/v1"`,
+      `model = "${PARENT}"`, `model_catalog_json = "${join(codexDir, "native_catalog.json")}"`, `openai_base_url = "http://127.0.0.1:${proxyAddress.port}/codex/v1"`,
       'approval_policy = "never"', 'sandbox_mode = "read-only"',
       '[agents.sonnet]', 'description = "Fixed Sonnet contract check"', 'config_file = "sonnet.toml"',
     ].join("\n"), { mode: 0o600 });

@@ -69,7 +69,8 @@ export const filterRawHeaders = (rawHeaders: readonly string[], strip: ReadonlyS
     const name = rawHeaders[i]!;
     const value = rawHeaders[i + 1]!;
     const lower = name.toLowerCase();
-    if (!strip.has(lower) && !connectionFields.has(lower)) {
+    // A process-local control capability is never an upstream or downstream header.
+    if (lower !== "x-subswitch-capability" && !strip.has(lower) && !connectionFields.has(lower)) {
       filtered.push(name, value);
     }
   }

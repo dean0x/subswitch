@@ -103,7 +103,7 @@ const MIN_COMPACT_CHARS = 64 * 1024;
  * (The claim was exact for the naive single-string parser this replaced, where
  * `buffer.length` genuinely was the live allocation.)
  */
-export const createSseParser = (maxEventBytes: number): Transform => {
+export const createSseParser = (maxEventBytes: number, includeComments = false): Transform => {
   const decoder = new StringDecoder("utf8");
   /** Undelivered text segments; `pending.join("")` is the naive form's `buffer`. */
   const pending: string[] = [];
@@ -132,7 +132,7 @@ export const createSseParser = (maxEventBytes: number): Transform => {
       }
       // id:, retry:, and comment lines are irrelevant to translation.
     }
-    if (dataLines.length === 0) return undefined;
+    if (dataLines.length === 0) return includeComments ? { event: "__subswitch_comment", data: raw } : undefined;
     return { event: eventName, data: dataLines.join("\n") };
   };
 
@@ -166,6 +166,7 @@ export const createSseParser = (maxEventBytes: number): Transform => {
         // of its separator from `buf`, so it runs at most buf.length / 2 times.
         while (boundary !== -1) {
           const raw = buf.slice(0, boundary);
+          if (includeComments && Buffer.byteLength(raw) > maxEventBytes) { callback(new Error("sse_event_too_large")); return; }
           buf = buf.slice(boundary).replace(LEADING_SEP_RE, "");
           const event = parseRawEvent(raw);
           if (event !== undefined) this.push(event);
@@ -183,6 +184,7 @@ export const createSseParser = (maxEventBytes: number): Transform => {
     },
     flush(callback) {
       const tail = pending.join("") + decoder.end();
+      if (includeComments && Buffer.byteLength(tail) > maxEventBytes) { callback(new Error("sse_event_too_large")); return; }
       const event = parseRawEvent(tail);
       if (event !== undefined) this.push(event);
       resetAccumulator("");
