@@ -1,5 +1,5 @@
 import { object } from "../plain-object.js";
-import { abortable } from "./profile-auth.js";
+import { abortable } from "../abortable.js";
 import type { RoutedPrepared } from "./routed-attempt.js";
 import { RoutingError, type Item, type WireProtocol } from "./routing-types.js";
 
@@ -21,6 +21,9 @@ export async function* deliverResponse(
 ): AsyncGenerator<Item> {
   const iterator = prepared.events[Symbol.asyncIterator]();
   const held: Item[] = [];
+  const executable: Item[] = [];
+  const toolBlocks = new Set<number>();
+  let executableBytes = 0;
   let heldBytes = 0,
     committed = false,
     finished = false;
@@ -51,6 +54,29 @@ export async function* deliverResponse(
       delivery.onCommit();
       committed = true;
     }
+    const type = event["type"];
+    if (
+      type === "content_block_start" &&
+      object(event["content_block"])?.["type"] === "tool_use"
+    )
+      toolBlocks.add(Number(event["index"]));
+    const completesTool =
+      type === "response.function_call_arguments.done" ||
+      type === "response.custom_tool_call_input.done" ||
+      (type === "response.output_item.done" &&
+        ["function_call", "custom_tool_call"].includes(
+          String(object(event["item"])?.["type"]),
+        )) ||
+      (type === "content_block_stop" &&
+        toolBlocks.has(Number(event["index"]))) ||
+      (type === "message_delta" && executable.length > 0);
+    if (completesTool && delivery.streaming) {
+      executableBytes += Buffer.byteLength(JSON.stringify(event));
+      if (executableBytes > 32 * 1024 * 1024)
+        throw new RoutingError("provider_state_too_large", 502);
+      executable.push(event);
+      continue;
+    }
     if (!delivery.streaming) {
       heldBytes += Buffer.byteLength(JSON.stringify(event));
       if (heldBytes > 64 * 1024 * 1024)
@@ -64,6 +90,10 @@ export async function* deliverResponse(
     ) {
       delivery.onTerminal(object(event["response"]));
       finished = true;
+      // Publishing replay/continuation state can fail after a valid provider terminal.
+      // Do not expose executable tools until publication succeeds.
+      for (const completion of executable) yield completion;
+      executable.length = 0;
     }
     if (delivery.streaming) yield event;
   }

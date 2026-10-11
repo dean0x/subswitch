@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
+import type { ScopedSocket } from "./scoped-lifecycle.js";
 import { deliverResponse } from "./response-delivery.js";
 import { writeRoutedHttp } from "./http-ingress.js";
 import { ActionIngress } from "./action-ingress.js";
@@ -11,14 +13,17 @@ import {
   scheduleRoutingTimer,
   type RoutingClock,
 } from "./clock.js";
-import { ProfileAuth, abortable } from "./profile-auth.js";
+import { ProfileAuth } from "./profile-auth.js";
+import { abortable } from "../abortable.js";
 import {
   RoutedAttempts,
   AttemptFailure,
   type RoutedPrepared,
 } from "./routed-attempt.js";
 import { routeChain } from "./routing-config.js";
-import { object } from "../plain-object.js";
+import { destinationProtocol } from "./destination-catalog.js";
+import { validateTargetCapabilities } from "./target-capabilities.js";
+import { object, ownValue } from "../plain-object.js";
 import { inputItems } from "../codex-body.js";
 import {
   allowanceScope,
@@ -71,19 +76,54 @@ export class SharedRouting {
     for (const c of this.controllers) c.abort();
   }
   match(body: Item, client: OriginatingClient): string | undefined {
+    const previous = body["previous_response_id"];
+    if (
+      typeof previous === "string" &&
+      previous.startsWith("resp_subswitch_route_")
+    ) {
+      const route = this.continuations.route(previous)!;
+      const policy = ownValue(this.config.routes, route);
+      if (!policy?.clients.includes(client))
+        throw new RoutingError("continuation_scope_mismatch", 409);
+      const model = body["model"];
+      if (
+        model !== undefined &&
+        model !== route &&
+        !routeChain(policy).some((target) => target.model === model)
+      )
+        throw new RoutingError("continuation_model_mismatch", 409);
+      return route;
+    }
     const name =
       body["model"] ??
       (typeof body["previous_response_id"] === "string"
         ? this.continuations.route(body["previous_response_id"])
         : undefined);
     return typeof name === "string" &&
-      this.config.routes?.[name]?.clients.includes(client)
+      ownValue(this.config.routes, name)?.clients.includes(client)
       ? name
       : undefined;
   }
   private readonly actionIngress = new ActionIngress(this.actions);
   stripPrefix(req: IncomingMessage): void {
     this.actionIngress.stripPrefix(req);
+  }
+  admitHttp(
+    req: IncomingMessage,
+    res: ServerResponse,
+    client: OriginatingClient,
+  ): AbortSignal | undefined {
+    return this.actionIngress.admitHttp(req, res, client);
+  }
+  admissionSignal(req: IncomingMessage): AbortSignal | undefined {
+    return this.actionIngress.signal(req);
+  }
+  scopedSocket(
+    req: IncomingMessage,
+    socket: Duplex,
+    client: OriginatingClient,
+  ): ScopedSocket | undefined {
+    return this.actionIngress.socket(req, socket, client);
   }
   context(
     req: IncomingMessage,
@@ -101,27 +141,30 @@ export class SharedRouting {
     routeName: string,
     signal: AbortSignal,
     context?: ActionContext,
+    admissionSignal?: AbortSignal,
   ): AsyncGenerator<Item> {
-    const policy = this.config.routes?.[routeName];
+    const policy = ownValue(this.config.routes, routeName);
     if (!policy) throw new RoutingError("unknown_route");
     const protocol: WireProtocol =
       client === "codex" ? "responses" : "messages";
     if (body["generate"] === false) {
       // No action, affinity, credential resolution or quota observation for a warmup.
       if (protocol === "responses") {
-        const conversation = this.conversationKey(
+        const { conversation, full, priorOwner } = this.resolveHistory(
           body,
           client,
           routeName,
+          protocol,
           context,
         );
         const id = this.continuations.put({
           conversation,
           route: routeName,
-          request: body,
+          request: full,
           output: [],
-          owner: "warmup",
+          owner: priorOwner ?? "warmup",
           protocol,
+          scope: context ? "explicit" : "single-target",
         });
         const response = {
           id,
@@ -149,12 +192,17 @@ export class SharedRouting {
     const timeout = () =>
       controller.abort(new RoutingError("request_timeout", 504));
     const cancelTotal = scheduleRoutingTimer(this.clock, timeout, 600000);
-    const combined = AbortSignal.any([signal, controller.signal]);
+    const combined = AbortSignal.any([
+      signal,
+      controller.signal,
+      ...(admissionSignal ? [admissionSignal] : []),
+    ]);
     this.controllers.add(controller);
     let releaseAction: () => void = () => undefined;
     let releaseSelection: (() => void) | undefined;
     try {
-      if (context) releaseAction = this.actions.admit(context, controller);
+      if (context && !admissionSignal)
+        releaseAction = this.actions.admit(context, controller);
       if (context) {
         const key = JSON.stringify([
           context.actionId,
@@ -174,36 +222,16 @@ export class SharedRouting {
         };
         if (previous) await abortable(previous, combined);
       }
-      const conversation = this.conversationKey(
+      const { conversation, full, priorOwner } = this.resolveHistory(
         body,
         client,
         routeName,
+        protocol,
         context,
       );
       const affinity = context
         ? this.actions.affinity(context, routeName)
         : undefined;
-      const full: Item = structuredClone(body);
-      let priorOwner: string | undefined;
-      const previous = full["previous_response_id"];
-      if (previous !== undefined && previous !== null) {
-        if (typeof previous !== "string")
-          throw new RoutingError("invalid_continuation_id");
-        const snapshot = this.continuations.get(
-          previous,
-          conversation,
-          routeName,
-        );
-        priorOwner = snapshot.owner === "warmup" ? undefined : snapshot.owner;
-        Object.assign(full, snapshot.request, body, {
-          input: [
-            ...inputItems(snapshot.request["input"]),
-            ...snapshot.output,
-            ...inputItems(body["input"]),
-          ],
-        });
-        delete full["previous_response_id"];
-      }
       if (Buffer.byteLength(JSON.stringify(full)) > 32 * 1024 * 1024)
         throw new RoutingError("reconstructed_request_too_large", 413);
       const transcript = decodePortableHistory(full, protocol);
@@ -218,7 +246,7 @@ export class SharedRouting {
         if (this.clock.monotonic() >= deadline) timeout();
         combined.throwIfAborted();
         const target = chain[index]!,
-          profile = this.config.accessProfiles?.[target.profile];
+          profile = ownValue(this.config.accessProfiles, target.profile);
         if (!profile) throw new RoutingError("unknown_profile");
         if (!this.attempts.auth.has(target.profile)) {
           if (index === 0 && !failure)
@@ -231,6 +259,32 @@ export class SharedRouting {
             allowanceScope(profile),
           );
           continue;
+        }
+        try {
+          validateTargetCapabilities(
+            profile,
+            target,
+            full,
+            protocol,
+            destinationProtocol(profile, protocol),
+            transcript.tools.length > 0,
+          );
+        } catch (error) {
+          if (
+            index > 0 &&
+            error instanceof RoutingError &&
+            error.code === "target_capability_unavailable"
+          ) {
+            this.diagnostic(
+              routeName,
+              target.profile,
+              index,
+              "incompatible_candidate",
+              allowanceScope(profile),
+            );
+            continue;
+          }
+          throw error;
         }
         const credential = await this.attempts.auth.get(
           target.profile,
@@ -334,6 +388,7 @@ export class SharedRouting {
                     output: response["output"] as Item[],
                     owner: ready.owner,
                     protocol,
+                    scope: context ? "explicit" : "single-target",
                   },
                   localId,
                 );
@@ -392,9 +447,11 @@ export class SharedRouting {
           }
           if (
             error instanceof RoutingError &&
-            ["continuity_unavailable", "unsupported_routed_content"].includes(
-              error.code,
-            ) &&
+            [
+              "continuity_unavailable",
+              "unsupported_routed_content",
+              "target_capability_unavailable",
+            ].includes(error.code) &&
             index > 0 &&
             !committed
           ) {
@@ -420,6 +477,48 @@ export class SharedRouting {
       releaseAction();
       this.controllers.delete(controller);
     }
+  }
+  private resolveHistory(
+    body: Item,
+    client: OriginatingClient,
+    route: string,
+    protocol: WireProtocol,
+    context?: ActionContext,
+  ): { conversation: string; full: Item; priorOwner?: string } {
+    const previous = body["previous_response_id"];
+    const requestedConversation = context
+      ? this.conversationKey(body, client, route, context)
+      : undefined;
+    if (previous === undefined || previous === null)
+      return {
+        conversation:
+          requestedConversation ?? this.conversationKey(body, client, route),
+        full: structuredClone(body),
+      };
+    if (typeof previous !== "string")
+      throw new RoutingError("invalid_continuation_id");
+    const snapshot = this.continuations.get(
+      previous,
+      requestedConversation,
+      route,
+      protocol,
+    );
+    const incoming = structuredClone(body);
+    const full: Item = {
+      ...snapshot.request,
+      ...incoming,
+      input: [
+        ...inputItems(snapshot.request["input"]),
+        ...snapshot.output,
+        ...inputItems(incoming["input"]),
+      ],
+    };
+    delete full["previous_response_id"];
+    return {
+      conversation: snapshot.conversation,
+      full,
+      ...(snapshot.owner === "warmup" ? {} : { priorOwner: snapshot.owner }),
+    };
   }
   private conversationKey(
     body: Item,
@@ -447,7 +546,8 @@ export class SharedRouting {
     code: string,
     scope: AllowanceScope,
   ): void {
-    const p = this.config.accessProfiles?.[profile];
+    const p = ownValue(this.config.accessProfiles, profile);
+    const policy = ownValue(this.config.routes, route);
     const windows = this.quota.observations(scope);
     const window = windows.at(-1);
     const readiness = this.quota.readiness(scope);
@@ -456,7 +556,7 @@ export class SharedRouting {
       targetProfile: profile,
       attemptOrder: order,
       ...(p ? { product: p.product } : {}),
-      model: routeChain(this.config.routes![route]!)[order]?.model ?? "",
+      model: policy ? (routeChain(policy)[order]?.model ?? "") : "",
       errorCode: code,
       sessionKey: scopeKey(scope).slice(0, 8),
       commitState: code.startsWith("committed") ? "committed" : "uncommitted",

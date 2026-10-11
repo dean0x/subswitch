@@ -7,14 +7,17 @@ import type { Logger } from "./logger.js";
 import { rejectCodexUpgrade, type OpenaiPassthrough } from "./openai-passthrough.js";
 import type { CodexNativeAuth } from "./codex-native-auth.js";
 import type { WebSocketBudget } from "./websocket-budget.js";
-import { RoutingError } from "./routing/routing-types.js";
+import { RoutingError, type ActionContext } from "./routing/routing-types.js";
 import { AttemptFailure } from "./routing/attempt-failure.js";
 import type { CodexEndpointMode } from "./codex-ingress.js";
 import { filterRawHeaders, HOP_BY_HOP, RESPONSE_STRIP } from "./raw-http-passthrough.js";
 import { json } from "./codex-body.js";
 import { namespaceEvent } from "./collaboration-compat.js";
 import { object, type ObjectValue as Item } from "./plain-object.js";
-import { claudeFailure, ReverseContractError } from "./claude-errors.js";
+import { claudeFailure, ClaudeHttpError, ReverseContractError } from "./claude-errors.js";
+import { abortable } from "./abortable.js";
+import { validatedRetryAt } from "./routing/provider-failure.js";
+import type { ScopedSocket } from "./routing/scoped-lifecycle.js";
 import { openaiWebSocketError } from "./errors.js";
 import { OPENAI_EVENTS } from "./provider-events.js";
 import { decideCodexRoute, rejectionError, type ClaudeResolution } from "./codex-route.js";
@@ -35,8 +38,11 @@ export class CodexWebSockets {
       controllers: Set<AbortController>;
       destination: (body: Item) => ClaudeResolution;
       parentRequest: (body: Item) => Item;
-      events: (body: Item, model: string, signal: AbortSignal, session?: string, req?: IncomingMessage) => AsyncGenerator<Item>;
+      events: (body: Item, model: string, signal: AbortSignal, session?: string, req?: IncomingMessage,
+        admission?: { signal: AbortSignal; context: ActionContext }) => AsyncGenerator<Item>;
+      context?: (req: IncomingMessage, body: Item) => ActionContext | undefined;
       explicitRoutes?: boolean;
+      scopedSocket?: (req: IncomingMessage, socket: Duplex) => ScopedSocket | undefined;
       correlation: (req: IncomingMessage) => string | undefined;
     },
   ) {
@@ -59,9 +65,17 @@ export class CodexWebSockets {
       rejectCodexUpgrade(req, socket, 400, "expected a WebSocket upgrade");
       return;
     }
+    let scoped: ScopedSocket | undefined;
+    try {
+      scoped = this.options.scopedSocket?.(req, socket);
+      if (scoped && path.split("?")[0] !== "/responses") throw new RoutingError("scoped_websocket_endpoint_unsupported", 400);
+    } catch (error) {
+      const failure = claudeFailure(error);
+      rejectCodexUpgrade(req, socket, failure.status, failure.message); return;
+    }
     this.options.budget.run(socket, () => {
-      if (this.options.explicitRoutes && path.split("?")[0] === "/responses") {
-        this.wss.handleUpgrade(req, socket, head, client => this.localBridge(req, client, mode, path));
+      if ((this.options.explicitRoutes || scoped) && path.split("?")[0] === "/responses") {
+        this.wss.handleUpgrade(req, socket, head, client => this.localBridge(req, client, mode, path, scoped));
         return;
       }
       socket.pause();
@@ -79,9 +93,18 @@ export class CodexWebSockets {
     });
   }
   /** Local routed sockets authenticate a native destination only if a message selects it. */
-  private localBridge(req: IncomingMessage, client: WebSocket, mode: CodexEndpointMode, path: string): void {
+  private localBridge(req: IncomingMessage, client: WebSocket, mode: CodexEndpointMode, path: string, scoped?: ScopedSocket): void {
     const active = new Map<string, AbortController>();
+    const nativeRequests = new Map<string, () => void>();
+    const releaseNative = (key: string) => {
+      const release = nativeRequests.get(key); if (!release) return;
+      for (const [alias, candidate] of nativeRequests) if (candidate === release) nativeRequests.delete(alias);
+      release();
+    };
     let parent: WebSocket | undefined, connecting: Promise<WebSocket> | undefined;
+    const parentLifetime = new AbortController();
+    const nativeSignal = scoped ? AbortSignal.any([parentLifetime.signal, scoped.signal]) : parentLifetime.signal;
+    this.options.controllers.add(parentLifetime);
     let queued = 0;
     const send = (event: Item): Promise<void> => new Promise((resolve, reject) => {
       const encoded = JSON.stringify(event);
@@ -94,32 +117,80 @@ export class CodexWebSockets {
         error instanceof AttemptFailure ? { status: error.clientStatus, code: error.clientCode, message: error.clientCode,
           ...(error.failure.retryAt !== undefined ? { retryAfter: String(Math.max(0, Math.ceil((error.failure.retryAt - Date.now()) / 1000))) } : {}),
         } : claudeFailure(error);
-      void send(openaiWebSocketError(result, streamId)).catch(() => undefined);
+      return send(openaiWebSocketError(result, streamId)).catch(() => undefined);
     };
-    const connectParent = (): Promise<WebSocket> => {
-      if (connecting) return connecting;
-      connecting = this.options.nativeAuth.headers(req, mode, path).then(nativeHeaders => new Promise<WebSocket>((resolve, reject) => {
+    const openParent = async (refreshed = false): Promise<WebSocket> => {
+      nativeSignal.throwIfAborted();
+      if (this.closed || client.readyState !== WebSocket.OPEN) throw new RoutingError("client_cancelled", 499);
+      const nativeHeaders = await abortable(
+        this.options.nativeAuth.headers(req, mode, path, refreshed), nativeSignal,
+      );
+      nativeSignal.throwIfAborted();
+      if (this.closed || client.readyState !== WebSocket.OPEN) throw new RoutingError("client_cancelled", 499);
+      return new Promise<WebSocket>((resolve, reject) => {
         const target = this.target(mode, path); target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
         const flat = filterRawHeaders(nativeHeaders, new Set([...HOP_BY_HOP, "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions", "sec-websocket-protocol"]));
         const headers: Record<string, string> = {}; for (let i = 0; i < flat.length; i += 2) headers[flat[i]!] = flat[i + 1]!;
-        const upstream = new WebSocket(target, { headers, maxPayload: this.options.config.limits.maxBufferedBodyBytes,
+        const protocols = typeof req.headers["sec-websocket-protocol"] === "string"
+          ? req.headers["sec-websocket-protocol"].split(",").map(value => value.trim()) : [];
+        const upstream = new WebSocket(target, protocols, { headers, maxPayload: this.options.config.limits.maxBufferedBodyBytes,
           finishRequest: request => { boundTcpConnect(request, this.options.config.codexIngress.connectTimeoutMs); request.end(); } });
         parent = upstream; this.upstreamSockets.add(upstream);
-        upstream.once("open", () => { if (client.readyState !== WebSocket.OPEN) upstream.terminate(); resolve(upstream); });
-        upstream.on("error", reject);
-        upstream.once("close", () => { this.upstreamSockets.delete(upstream); if (client.readyState === WebSocket.OPEN) client.close(1012, "Reconnect native stream"); });
+        let opened = false, retrying = false;
+        upstream.once("open", () => {
+          if (nativeSignal.aborted || this.closed || client.readyState !== WebSocket.OPEN) {
+            upstream.terminate(); reject(new RoutingError("client_cancelled", 499)); return;
+          }
+          opened = true; resolve(upstream);
+        });
+        upstream.on("error", error => { if (!retrying) reject(error); });
+        upstream.once("unexpected-response", (_request, response) => {
+          if (response.statusCode === 401 && !refreshed && this.options.nativeAuth.canRefresh(req, mode, path)) {
+            retrying = true;
+            response.destroy(); upstream.terminate();
+            void openParent(true).then(resolve, reject);
+            return;
+          }
+          const status = response.statusCode ?? 502;
+          const now = Date.now(), rawRetry = response.headers["retry-after"];
+          const retryAt = validatedRetryAt(typeof rawRetry === "string" ? rawRetry : null, now);
+          response.destroy(); upstream.terminate();
+          reject(new ClaudeHttpError(status, "Native OpenAI WebSocket upgrade rejected.", "openai_websocket_rejected",
+            retryAt === undefined ? undefined : String(Math.ceil((retryAt - now) / 1000))));
+        });
+        upstream.once("close", () => {
+          this.upstreamSockets.delete(upstream);
+          if (opened && !retrying && client.readyState === WebSocket.OPEN) client.close(1012, "Reconnect native stream");
+        });
         let outputQueue = Promise.resolve(), count = 0;
         upstream.on("message", data => {
           if (++count > 16) { upstream.terminate(); return; }
-          upstream.pause(); outputQueue = outputQueue.then(async () => send(namespaceEvent(json(Buffer.from(data.toString())))))
-            .catch(error => failure(error)).finally(() => { if (--count === 0 && upstream.readyState === WebSocket.OPEN) upstream.resume(); });
+          upstream.pause(); outputQueue = outputQueue.then(async () => {
+            const event = namespaceEvent(json(Buffer.from(data.toString())));
+            const incomingStream = event["stream_id"];
+            const key = typeof incomingStream === "string" && incomingStream ? incomingStream : "default";
+            const response = object(event["response"]), release = nativeRequests.get(key);
+            if (release && typeof response?.["id"] === "string") nativeRequests.set(response["id"], release);
+            await send(event);
+            if (["response.completed", "response.incomplete", "response.failed", "response.cancelled", "error"].includes(String(event["type"]))) releaseNative(key);
+          }).catch(async error => { await failure(error); if (scoped) upstream.terminate(); })
+            .finally(() => { if (--count === 0 && upstream.readyState === WebSocket.OPEN) upstream.resume(); });
         });
-      }));
+      });
+    };
+    const connectParent = (): Promise<WebSocket> => {
+      if (connecting) return connecting;
+      connecting = openParent().catch(error => { connecting = undefined; throw error; });
       return connecting;
     };
     client.on("error", () => undefined);
-    client.once("close", () => { for (const c of active.values()) c.abort(); parent?.terminate(); });
+    client.once("close", () => {
+      parentLifetime.abort(); this.options.controllers.delete(parentLifetime);
+      for (const c of active.values()) c.abort(); parent?.terminate();
+      for (const key of nativeRequests.keys()) releaseNative(key);
+    });
     client.on("message", data => {
+      if (this.closed || client.readyState !== WebSocket.OPEN || scoped?.signal.aborted) return;
       let body: Item;
       try { body = json(Buffer.from(data.toString())); } catch (error) { failure(error); return; }
       const streamId = typeof body["stream_id"] === "string" ? body["stream_id"] : undefined;
@@ -128,28 +199,55 @@ export class CodexWebSockets {
         const c = active.get(id); if (c) { c.abort(); return; }
         if (id.startsWith("resp_subswitch_")) return;
       }
-      const route = decideCodexRoute("/responses", this.options.destination(body));
+      let route: ReturnType<typeof decideCodexRoute>;
+      try { route = decideCodexRoute("/responses", this.options.destination(body)); }
+      catch (error) { failure(error, streamId); return; }
       if (route.kind === "rejected") { failure(rejectionError(route), streamId); return; }
       if (route.kind === "parent") {
         if (++queued > 16) { client.close(1009, "request_queue_limit"); return; }
+        const key = streamId || "default";
+        const generating = body["type"] !== "response.cancel";
+        if (scoped && generating) {
+          try {
+            scoped.check();
+            if (nativeRequests.has(key) || new Set(nativeRequests.values()).size >= 16) throw new RoutingError("concurrent_native_stream_id", 409);
+            nativeRequests.set(key, body["generate"] === false ? () => undefined : scoped.admit());
+          } catch (error) { queued--; failure(error, streamId); return; }
+        }
+        let forwarded = false;
         void connectParent().then(upstream => {
           const payload = JSON.stringify(this.options.parentRequest(body));
           if (upstream.bufferedAmount + Buffer.byteLength(payload) > 32 * 1024 * 1024) throw new RoutingError("websocket_send_queue_limit", 502);
-          if (upstream.readyState === WebSocket.OPEN) upstream.send(payload);
-        }).catch(error => failure(error, streamId)).finally(() => queued--);
+          if (upstream.readyState === WebSocket.OPEN) { upstream.send(payload); forwarded = true; }
+          else throw new RoutingError("native_websocket_closed", 502);
+        }).catch(error => failure(error, streamId)).finally(() => {
+          queued--; if (scoped && generating && !forwarded) releaseNative(key);
+        });
         return;
       }
       const key = streamId ?? "default";
       if (active.has(key) || new Set(active.values()).size >= 16) { failure(new RoutingError("concurrent_route_stream_id", 409), streamId); return; }
+      let release: () => void = () => undefined;
+      let admission: { signal: AbortSignal; context: ActionContext } | undefined;
+      if (scoped) {
+        try {
+          scoped.check();
+          const context = this.options.context?.(req, body);
+          if (!context) throw new RoutingError("action_identity_required", 409);
+          admission = { signal: scoped.signal, context };
+          if (body["generate"] !== false) release = scoped.admit();
+        } catch (error) { failure(error, streamId); return; }
+      }
       const controller = new AbortController(); active.set(key, controller); this.options.controllers.add(controller);
+      const signal = scoped ? AbortSignal.any([controller.signal, scoped.signal]) : controller.signal;
       void (async () => {
         try {
-          for await (const event of this.options.events(body, route.model, controller.signal, this.options.correlation(req), req)) {
+          for await (const event of this.options.events(body, route.model, signal, this.options.correlation(req), req, admission)) {
             const response = object(event["response"]); if (typeof response?.["id"] === "string") active.set(response["id"], controller);
             await send({ ...event, ...(streamId ? { stream_id: streamId } : {}) });
           }
-        } catch (error) { if (!controller.signal.aborted) failure(error, streamId); }
-        finally { for (const [id, c] of active) if (c === controller) active.delete(id); this.options.controllers.delete(controller); }
+        } catch (error) { if (!signal.aborted) await failure(error, streamId); }
+        finally { for (const [id, c] of active) if (c === controller) active.delete(id); this.options.controllers.delete(controller); release(); }
       })();
     });
     req.socket.resume();
@@ -321,7 +419,9 @@ export class CodexWebSockets {
         }
         if (target.startsWith("resp_subswitch_")) return;
       }
-      const route = decideCodexRoute("/responses", this.options.destination(body));
+      let route: ReturnType<typeof decideCodexRoute>;
+      try { route = decideCodexRoute("/responses", this.options.destination(body)); }
+      catch (error) { failure(error, streamId); return; }
       if (route.kind === "rejected") {
         failure(rejectionError(route), streamId);
         return;

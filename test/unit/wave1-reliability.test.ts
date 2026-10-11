@@ -5,7 +5,7 @@ import { getEventListeners } from "node:events";
 import { ClaudeCache } from "../../src/claude-cache.js";
 import { ReverseState } from "../../src/claude-state.js";
 import { ActionStore } from "../../src/routing/action-store.js";
-import { abortable } from "../../src/routing/profile-auth.js";
+import { abortable } from "../../src/abortable.js";
 import { QuotaStore } from "../../src/routing/quota-store.js";
 import { UsageCoordinator } from "../../src/routing/usage-coordinator.js";
 import { decodePortableHistory } from "../../src/routing/portable-history.js";

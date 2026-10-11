@@ -1,0 +1,50 @@
+{
+  "date": "2026-10-11",
+  "evidenceClass": "live-observed",
+  "product": [
+    "chatgpt-codex",
+    "claude-code"
+  ],
+  "region": "vendor-default",
+  "credentialKind": "native-oauth",
+  "protocol": [
+    "responses-http",
+    "messages-sse"
+  ],
+  "clientVersion": "0.162.1",
+  "source": "e2e/gates/native-production.ts",
+  "sourceSha256": "e839c88c5c415809183129cd97f7bd875598bbc6424510d97917e8c0da8e8db2",
+  "triggerClass": "synthetic connection-phase WebSocket 426; inference uses real subscriptions",
+  "report": {
+    "schemaVersion": 1,
+    "productionGateway": true,
+    "nativeAuthentication": "subscription",
+    "realDiscovery": true,
+    "model": "sonnet",
+    "followup": true,
+    "httpOnly": true,
+    "parentModel": "gpt-6-sol",
+    "parentVersion": "v2",
+    "firstValueReturned": true,
+    "followupValueReturned": false,
+    "nativeDiagnostics": [
+      "websocket"
+    ],
+    "success": false,
+    "nativeExit": "exit_0",
+    "claudeResponses": 2,
+    "openaiResponses": 8,
+    "toolCalls": 1,
+    "toolResults": 4,
+    "modelRequests": 11,
+    "cachedPromptObserved": false,
+    "errors": [
+      "mid_history_instructions_unimplemented",
+      "mid_history_instructions_unimplemented",
+      "mid_history_instructions_unimplemented"
+    ],
+    "nativeCredentialMatches": true,
+    "nativeAccountHeaderMatches": true,
+    "upgradeRequests": 2
+  }
+}

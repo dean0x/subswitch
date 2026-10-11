@@ -10,3 +10,7 @@ export const isPlainObject = (v: unknown): v is Record<string, unknown> =>
 
 export type ObjectValue = Record<string, unknown>;
 export const object = (value: unknown): ObjectValue | undefined => isPlainObject(value) ? value : undefined;
+
+/** Configuration labels select declarations, never inherited Object prototype members. */
+export const ownValue = <T>(record: Readonly<Record<string, T>> | undefined, key: string): T | undefined =>
+  record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined;

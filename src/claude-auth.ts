@@ -12,6 +12,7 @@ import { ok, err, type Result } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { Logger } from "./logger.js";
 import { readBoundedText } from "./provider-transport.js";
+import { coordinateNativeRefresh, nativeAuthFilePath } from "./native-auth-coordination.js";
 
 const exec = promisify(execFile);
 const authError = (message: string): ProxyError => ({ kind: "auth", message });
@@ -20,6 +21,9 @@ export interface ClaudeCredential {
   readonly authHeaders: Readonly<Record<string, string>>;
 }
 export interface ClaudeCredentialStore {
+  readonly coordinationKey?: string;
+  /** Shared-refresh callers can preserve a proven lineage without rewriting native storage. */
+  observeRefresh?(accessToken: string, refreshedFrom?: string): void;
   read(): Promise<string>;
   write(raw: string): Promise<void>;
 }
@@ -73,11 +77,13 @@ export function createClaudeCredentialStore(
   const execute = deps.exec ?? exec;
   const start =
     deps.spawn ?? ((file: string, args: string[]) => spawn(file, args, { stdio: ["pipe", "ignore", "pipe"] }));
-  if (location.kind === "file")
+  if (location.kind === "file") {
+    const storagePath = nativeAuthFilePath(location.path);
     return {
-      read: () => readFile(location.path, "utf8"),
+      coordinationKey: `file:${storagePath}`,
+      read: () => readFile(storagePath, "utf8"),
       async write(raw) {
-        const temporary = `${location.path}.subswitch-${randomUUID()}.tmp`;
+        const temporary = `${storagePath}.subswitch-${randomUUID()}.tmp`;
         try {
           const handle = await open(temporary, "wx", 0o600);
           try {
@@ -86,12 +92,13 @@ export function createClaudeCredentialStore(
           } finally {
             await handle.close();
           }
-          await rename(temporary, location.path);
+          await rename(temporary, storagePath);
         } finally {
           await unlink(temporary).catch(() => undefined);
         }
       },
     };
+  }
   const read = async () => {
     const output = (
       await execute("security", ["find-generic-password", "-s", location.service, "-w"], {
@@ -103,6 +110,7 @@ export function createClaudeCredentialStore(
     return /^7b(?:[0-9a-f]{2})+$/i.test(output) ? Buffer.from(output, "hex").toString("utf8") : output;
   };
   return {
+    coordinationKey: `keychain:${location.service}`,
     read,
     async write(raw) {
       const metadata = await execute("security", ["find-generic-password", "-s", location.service], {
@@ -159,6 +167,10 @@ interface RecordState {
   access: string;
   refresh?: string;
   expires: number;
+}
+interface RefreshedCredential {
+  credential: ClaudeCredential;
+  refreshedFrom?: string;
 }
 const parse = (raw: string): RecordState => {
   const root = object(JSON.parse(raw)),
@@ -235,15 +247,27 @@ export class ClaudeAuthManager implements ClaudeAuth {
   }
   private refreshOnce(initial: RecordState): Promise<Result<ClaudeCredential, ProxyError>> {
     if (this.refresh) return this.refresh;
-    this.refresh = this.performRefresh(initial).finally(() => {
+    const owner = createHash("sha256").update(JSON.stringify([
+      this.options.oauthTokenUrl, initial.access, initial.refresh,
+    ])).digest("hex");
+    this.refresh = coordinateNativeRefresh(
+      "claude", this.options.store.coordinationKey, owner, () => this.performRefresh(initial),
+    ).then(result => {
+      if (!result.ok) return result;
+      const access = result.value.credential.authHeaders["authorization"]!.slice("Bearer ".length);
+      this.options.store.observeRefresh?.(access, result.value.refreshedFrom);
+      this.lastAccess = access;
+      return ok(result.value.credential);
+    }).finally(() => {
       this.refresh = undefined;
     });
     return this.refresh;
   }
-  private async performRefresh(initial: RecordState): Promise<Result<ClaudeCredential, ProxyError>> {
+  private async performRefresh(initial: RecordState): Promise<Result<RefreshedCredential, ProxyError>> {
+    const adopted = (record: RecordState) => ok({ credential: credential(record) });
     try {
       let current = parse(await this.options.store.read());
-      if (current.access !== initial.access && current.expires > this.now()) return this.remember(current);
+      if (current.access !== initial.access && current.expires > this.now()) return adopted(current);
       for (let attempt = 0; attempt < 2; attempt++) {
         if (!current.refresh)
           return err(authError("Claude subscription credentials cannot be refreshed. Sign in with Claude Code."));
@@ -263,7 +287,7 @@ export class ClaudeAuthManager implements ClaudeAuth {
         const next = object(JSON.parse(raw));
         const latest = parse(await this.options.store.read());
         if (!response.ok) {
-          if (latest.access !== current.access && latest.expires > this.now()) return this.remember(latest);
+          if (latest.access !== current.access && latest.expires > this.now()) return adopted(latest);
           if (attempt === 0 && latest.refresh !== current.refresh && latest.refresh) {
             current = latest;
             continue;
@@ -279,7 +303,7 @@ export class ClaudeAuthManager implements ClaudeAuth {
           next["expires_in"] <= 0
         )
           throw new Error("invalid_refresh_response");
-        if (latest.access !== current.access && latest.expires > this.now()) return this.remember(latest);
+        if (latest.access !== current.access && latest.expires > this.now()) return adopted(latest);
         const oauth = {
           ...latest.oauth,
           accessToken: next["access_token"],
@@ -289,7 +313,7 @@ export class ClaudeAuthManager implements ClaudeAuth {
         const written = JSON.stringify({ ...latest.root, claudeAiOauth: oauth });
         await this.options.store.write(written);
         this.options.logger.log("info", CLAUDE_EVENTS.tokenRefreshed);
-        return this.remember(parse(written));
+        return ok({ credential: credential(parse(written)), refreshedFrom: current.access });
       }
       return err(authError("Claude subscription refresh did not complete."));
     } catch {

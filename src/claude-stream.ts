@@ -203,13 +203,21 @@ function* emitTerminal(
     throw new ReverseContractError(code);
   };
   if (blocks.some((block) => block.open)) fail("unterminated_claude_block");
-  const incomplete = stopReason === "max_tokens";
+  // A late refusal cannot relabel output_text deltas already delivered. The relay
+  // retains that text and synthesizes an incomplete/content_filter terminal instead.
+  // This is a wire translation, not a claim of vendor refusal equivalence.
+  const incompleteReason = stopReason === "max_tokens"
+    ? "max_output_tokens"
+    : stopReason === "refusal"
+      ? "content_filter"
+      : undefined;
+  const incomplete = incompleteReason !== undefined;
   const content = blocks.map((entry) => entry.block);
   const identities = new Map(blocks.flatMap((entry, index) => (entry.id ? [[index, entry.id] as const] : [])));
   const streamedText = new Set(blocks.filter((entry) => entry.streamed).map((entry) => entry.id));
   const response = {
     type: "message",
-    stop_reason: incomplete || stopReason === "refusal" ? "end_turn" : stopReason,
+    stop_reason: incomplete ? "end_turn" : stopReason,
     content: incomplete ? content.filter((block) => block["type"] === "text") : content,
   };
   const selectedIdentities = incomplete
@@ -244,7 +252,7 @@ function* emitTerminal(
         response: {
           ...object(event["response"]),
           status: "incomplete",
-          incomplete_details: { reason: "max_output_tokens" },
+            incomplete_details: { reason: incompleteReason },
         },
       };
     } else yield event;

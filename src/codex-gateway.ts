@@ -28,6 +28,7 @@ import { SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, openaiErrorBody, openaiFailureE
 import type { CodexEndpointMode } from "./codex-ingress.js";
 import type { ProviderAuth } from "./provider-auth.js";
 import type { SharedRouting } from "./routing/shared-routing.js";
+import type { ActionContext } from "./routing/routing-types.js";
 
 /** Reverse-enabled ingress: raw same-provider forwarding, scoped collaboration adaptation, Claude dispatch. */
 export class CodexGateway implements CodexIngressEntry {
@@ -57,7 +58,7 @@ export class CodexGateway implements CodexIngressEntry {
     this.config = config;
     this.logger = logger;
     this.sharedRouting = options.sharedRouting;
-    this.nativeAuth = new CodexNativeAuth(parentAuth);
+    this.nativeAuth = new CodexNativeAuth(parentAuth, req => this.sharedRouting?.admissionSignal(req));
     const provider = config.codexIngress.claude;
     const budget = new WebSocketBudget(config.codexIngress.maxUpstreamSockets);
     this.raw = createOpenaiPassthrough(config.codexIngress, logger, budget);
@@ -81,8 +82,10 @@ export class CodexGateway implements CodexIngressEntry {
       controllers: this.controllers,
       destination: (body) => this.destination(body),
       parentRequest: (body) => this.parentRequest(body),
-      events: (body, model, signal, session, req) => this.claudeEvents(body, model, signal, session, req),
+      events: (body, model, signal, session, req, admission) => this.claudeEvents(body, model, signal, session, req, admission),
+      context: (req, body) => this.sharedRouting?.context(req, "codex", body),
       explicitRoutes: !!Object.keys(config.routes ?? {}).length,
+      scopedSocket: (req, socket) => this.sharedRouting?.scopedSocket(req, socket, "codex"),
       correlation: (req) => this.correlation(req),
     });
     this.claude = new ClaudeHandler(
@@ -104,6 +107,8 @@ export class CodexGateway implements CodexIngressEntry {
       this.httpError(res, new ClaudeHttpError(503, "SubSwitch is shutting down.", "proxy_closing"));
       return;
     }
+    try { this.sharedRouting?.admitHttp(req, res, "codex"); }
+    catch (error) { this.httpError(res, error); drainRejectedUpload(req); return; }
     void this.handleHttp(req, res, mode, path).catch((error) => this.httpError(res, error));
   }
   private httpError(res: ServerResponse, error: unknown): void {
@@ -168,6 +173,7 @@ export class CodexGateway implements CodexIngressEntry {
   private resolveName(name: string): ClaudeResolution {
     const explicit = this.sharedRouting?.match({ model: name }, "codex");
     if (explicit) return { kind: "claude", model: explicit };
+    if (!this.config.codexIngress.claude.enabled) return { kind: "foreign" };
     const model = this.resolve(name);
     if (model) return { kind: "claude", model };
     return isClaudeModelName(name) ? { kind: "unregistered", name } : { kind: "foreign" };
@@ -194,10 +200,13 @@ export class CodexGateway implements CodexIngressEntry {
     signal: AbortSignal,
     sessionKey?: string,
     req?: IncomingMessage,
+    admission?: { signal: AbortSignal; context: ActionContext },
   ): AsyncGenerator<Item> {
+    signal.throwIfAborted();
     const explicit = this.sharedRouting?.match(body, "codex");
     if (explicit && this.sharedRouting) {
-      yield* this.sharedRouting.events({ ...body, stream: true }, "codex", explicit, signal, req ? this.sharedRouting.context(req, "codex", body) : undefined);
+      yield* this.sharedRouting.events({ ...body, stream: true }, "codex", explicit, signal,
+        admission?.context ?? (req ? this.sharedRouting.context(req, "codex", body) : undefined), admission?.signal);
       return;
     }
     const full = this.fullRequest(body, model);

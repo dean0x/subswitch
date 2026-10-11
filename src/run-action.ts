@@ -15,9 +15,13 @@ export async function runAction(
   client: OriginatingClient,
   native: string[],
   conversationId: string = randomUUID(),
+  options: {
+    readControl?: typeof readActionControl;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<number> {
   if (!native[0]) throw new RoutingError("native_command_required");
-  const remote = await readActionControl(config.port);
+  const remote = await (options.readControl ?? readActionControl)(config.port);
   let local: ReturnType<typeof createProxyServer> | undefined;
   let router: import("./routing/shared-routing.js").SharedRouting | undefined;
   let port: number, capability: string;
@@ -42,11 +46,29 @@ export async function runAction(
     return response.json() as Promise<{ id: string; ingressPrefix: string }>;
   };
   let actionId: string | undefined,
-    closed = false;
-  const finish = async (cancel: boolean) => {
-    if (!actionId || closed) return;
-    await control(`/${actionId}/${cancel ? "cancel" : "complete"}`);
-    closed = true;
+    closed = false,
+    cancellationRequested = false,
+    finishing: Promise<void> | undefined;
+  const finish = (cancel: boolean): Promise<void> => {
+    cancellationRequested ||= cancel;
+    if (!actionId || closed) return Promise.resolve();
+    if (!finishing)
+      finishing = (async () => {
+        const operation = cancellationRequested ? "cancel" : "complete";
+        await control(`/${actionId}/${operation}`);
+        // Cancellation can arrive while completion is closing admission. Cancel any
+        // remaining attempts; state loss after successful completion means none remain.
+        if (operation === "complete" && cancellationRequested) {
+          try {
+            await control(`/${actionId}/cancel`);
+          } catch (error) {
+            if (!(error instanceof RoutingError && error.status === 409))
+              throw error;
+          }
+        }
+        closed = true;
+      })();
+    return finishing;
   };
   try {
     if (remote) {
@@ -75,6 +97,10 @@ export async function runAction(
     )
       throw new RoutingError("invalid_action_control_reply", 502);
     actionId = action.id;
+    if (options.signal?.aborted) {
+      await finish(true);
+      return 130;
+    }
     const base = `http://127.0.0.1:${port}${action.ingressPrefix}`;
     const env = { ...process.env };
     const args = native.slice(1);
@@ -108,11 +134,14 @@ export async function runAction(
     };
     let force: ReturnType<typeof setTimeout> | undefined;
     const stop = () => {
+      if (cancelled) return;
       cancel();
       force = setTimeout(() => kill("SIGKILL"), 500).unref();
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
+    options.signal?.addEventListener("abort", stop, { once: true });
+    if (options.signal?.aborted) stop();
     try {
       const code = await new Promise<number>((resolve, reject) => {
         child.once("error", reject);
@@ -121,11 +150,12 @@ export async function runAction(
       // The boundary ends after the native group; clear descendants before closing admission.
       if (group) kill("SIGKILL");
       await finish(cancelled || code !== 0);
-      return code;
+      return cancelled ? 130 : code;
     } finally {
       clearTimeout(force);
       process.off("SIGINT", stop);
       process.off("SIGTERM", stop);
+      options.signal?.removeEventListener("abort", stop);
     }
   } finally {
     await finish(true).catch(() => undefined);

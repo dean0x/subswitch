@@ -6,6 +6,7 @@ import {
   VERIFIED_MODEL_EQUIVALENCES,
 } from "./destination-catalog.js";
 import type { AccessProfile, RoutePolicy } from "./routing-types.js";
+import { ownValue } from "../plain-object.js";
 
 const label = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/);
 export const AccessProfilesSchema = z
@@ -125,7 +126,7 @@ export function validateExplicitConfig(
     const seen = new Set<string>();
     for (const t of targets) {
       seen.add(JSON.stringify([t.profile, t.model, t.effort]));
-      const p = profiles[t.profile];
+      const p = ownValue(profiles, t.profile);
       if (!p) {
         errors.push(`${name}: unknown_profile`);
         continue;
@@ -141,8 +142,8 @@ export function validateExplicitConfig(
     }
     if (seen.size > 8) errors.push(`${name}: too_many_targets`);
     if (route.sameModelApi) {
-      const primary = profiles[route.primary.profile],
-        api = profiles[route.sameModelApi.profile];
+      const primary = ownValue(profiles, route.primary.profile),
+        api = ownValue(profiles, route.sameModelApi.profile);
       const key = JSON.stringify([
         primary,
         route.primary.model,

@@ -167,7 +167,8 @@
         "native-codex-live-ws-2026-10-11.json",
         "native-codex-live-http-2026-10-11.json"
       ],
-      "triggerClass": "HTTP gate injects synthetic WebSocket 426; WS gate has no injected failure"
+      "triggerClass": "HTTP gate injects synthetic WebSocket 426; WS gate has no injected failure",
+      "observationNote": "HTTP report is a prior successful observation. The latest review HTTP run failed its same-child follow-up; see native-codex-http-review-failure-2026-10-11.json. Current WebSocket review run passed."
     },
     {
       "assertion": "GPT-6 Sol supports Responses and the configured high effort",
@@ -198,6 +199,78 @@
       "report": "native-claude-openai-profiles-2026-10-11.json",
       "fixtureClass": "real-provider-with-isolated-file-fixture",
       "transportNote": "SSE bytes validated independently of subscription response MIME; no MIME assertion for Kimi"
+    },
+    {
+      "assertion": "Current native Codex tool execution, child follow-up, parent delivery and explicit action closure pass through lazy routing",
+      "urls": [
+        "https://github.com/dean0x/subswitch"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "Codex CLI0.162.1; individual reports retain their harness SHA256; current native-codex.ts SHA256 a95296e139df11e27528d8291d51dbe5141f97ab7ea8ac4dfd4eca960e945c5e",
+      "product": "native-codex-control",
+      "region": "loopback",
+      "credentialKind": "fabricated-api-key",
+      "protocol": [
+        "responses-websocket",
+        "responses-http"
+      ],
+      "evidenceClass": "native-observed",
+      "upstreamClass": "synthetic",
+      "providerCompatibilityVerified": false,
+      "reports": [
+        "native-codex-ws-explicit-synthetic-2026-10-11.json",
+        "native-codex-http-explicit-synthetic-2026-10-11.json",
+        "native-codex-ws-scoped-synthetic-2026-10-11.json",
+        "native-codex-http-scoped-synthetic-2026-10-11.json"
+      ],
+      "transportLimitation": {
+        "triggerClass": "synthetic upstream 426 before inference",
+        "lazyUpgradeRejections": 14,
+        "rawControlUpgradeRejections": 2,
+        "lazyClientRetryEvents": 4,
+        "rawControlClientRetryEvents": 0,
+        "result": "native client eventually uses HTTP; lazy accepted-socket fallback adds retry latency",
+        "sourceInspected": "openai/codex 8c0f7011674145da7e10627769fb221c74fbf7a0; codex-rs/codex-api/src/endpoint/responses_websocket.rs and codex-rs/core/src/client.rs",
+        "url": "https://github.com/openai/codex/tree/8c0f7011674145da7e10627769fb221c74fbf7a0",
+        "sourceUrls": [
+          "https://raw.githubusercontent.com/openai/codex/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/codex-api/src/endpoint/responses_websocket.rs",
+          "https://raw.githubusercontent.com/openai/codex/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/core/src/client.rs"
+        ]
+      }
+    },
+    {
+      "assertion": "Current live subscription HTTP fallback rejects unsupported mid-history instructions during same-child follow-up",
+      "urls": [
+        "https://github.com/dean0x/subswitch"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "Codex CLI0.162.1; native-production.ts SHA256 e839c88c5c415809183129cd97f7bd875598bbc6424510d97917e8c0da8e8db2",
+      "product": [
+        "chatgpt-codex",
+        "claude-code"
+      ],
+      "region": "vendor-default",
+      "credentialKind": "native-oauth",
+      "protocol": [
+        "responses-http",
+        "messages-sse"
+      ],
+      "evidenceClass": "live-observed",
+      "report": "native-codex-http-review-failure-2026-10-11.json",
+      "passed": false,
+      "triggerClass": "synthetic upstream426 before real provider inference",
+      "result": "three review runs fail same-child follow-up; safely translated native history for this instruction-bearing update remains unsupported",
+      "diagnosticReports": [
+        "native-codex-http-review-observed-failure-2026-10-11.json",
+        "native-codex-http-review-source-observed-failure-2026-10-11.json"
+      ],
+      "observedBoundary": {
+        "role": "developer",
+        "index": 12,
+        "classification": "instruction_unrecognized",
+        "matchesInitialInstruction": false,
+        "recognizedSourceMarkers": []
+      }
     }
   ],
   "historicalProbes": [
@@ -231,22 +304,22 @@
     "certified native action boundary",
     "live cross-profile reasoning portability",
     "both-client Kimi native orchestration",
-    "ordinary OpenAI/Claude API profile live gates"
+    "ordinary OpenAI/Claude API profile live gates",
+    "current Codex native HTTP same-child follow-up: unsupported new mid-history developer instructions"
   ],
   "deepSeekImplementationPermitted": false,
-  "userDeferredGates": [
-    "Kimi Code/Platform live gates"
-  ],
+  "userDeferredGates": [],
   "validation": {
     "date": "2026-10-11",
     "check": {
-      "tests": 1001,
-      "failures": 0
+      "tests": 1089,
+      "failures": 0,
+      "skipped": 0
     },
     "build": "passed",
     "sseBenchmark": "linearity passed",
     "parkedToolRecovery": "synthetic acceptance passed for Messages and Responses",
-    "KimiLive": "user-deferred",
+    "KimiLive": "required before merge; coding-plan key and region not available yet",
     "ordinaryApiProfilesLive": "no declared credentials",
     "routingQuotaBenchmark": {
       "evidenceClass": "synthetic",
@@ -256,8 +329,8 @@
         2048,
         4096
       ],
-      "fixedWorkUpdateRatio4096To512": 0.77,
-      "byteSizeAt4096Scopes": 1171552,
+      "fixedWorkUpdateRatio4096To512": 0.84,
+      "byteSizeAt4096Scopes": 1253536,
       "result": "passed"
     },
     "architectureReview": {
@@ -274,12 +347,73 @@
         "cancellation listener and wrapper setup cleanup",
         "preserve classified failures in routed WebSocket errors",
         "product-specific failure classification isolation"
-      ]
+      ],
+      "secondPass": {
+        "date": "2026-10-11",
+        "evidenceClass": "source-inspected",
+        "reviewAreas": [
+          "security and credential isolation",
+          "regression and lifecycle",
+          "reuse, complexity and protocol codecs",
+          "root integration and performance"
+        ],
+        "corrections": [
+          "detect JWT-only native account replacement and identity disappearance",
+          "coordinate same-lineage refresh across native store aliases and legacy/profile managers",
+          "preserve physical credential files, symlinks and private atomic persistence",
+          "read only explicitly declared record properties",
+          "isolate local continuations by scope, protocol, logical route, conversation and branch",
+          "expand local warmup history without inference or quota",
+          "validate known candidate capabilities before credential resolution",
+          "withhold executable completion until replay and continuation publication succeeds",
+          "index and validate terminal tool identity and reject ambiguous or duplicate completions",
+          "preserve native tool-result error flags and streamed refusal text",
+          "classify pre-commit source transport failures separately from parser/protocol failures",
+          "reject reasoning-type relabeling and foreign signatures",
+          "use quota failure revisions to reject same-millisecond stale metadata",
+          "restore lazy native WebSocket bounded auth retry, truthful errors and subprotocol forwarding",
+          "contain continuation-resolution errors within WebSocket requests",
+          "single-flight invocation completion/cancellation and signal outcome handling",
+          "apply explicit action admission, cancellation and draining to native passthrough",
+          "extract generic cancellation waiting from authentication modules",
+          "idempotent action release and delivered WebSocket error drain before finalization"
+        ],
+        "tests": [
+          "test/unit/wave1-auth-review.test.ts",
+          "test/unit/wave1-codec-review.test.ts",
+          "test/unit/wave1-quota-review.test.ts",
+          "test/integration/wave1-action-review.test.ts",
+          "test/integration/wave1-continuation-review.test.ts",
+          "test/integration/wave1-ws-review.test.ts",
+          "test/integration/wave1-native-lifecycle-review.test.ts",
+          "test/unit/action-store-review.test.ts",
+          "test/unit/native-history-observer.test.ts"
+        ],
+        "fixtureClass": "synthetic; native and live-provider observations recorded separately",
+        "refusalTranslation": "Late Claude refusal maps to a relay-synthesized Responses incomplete/content_filter terminal; this is not vendor semantic equivalence.",
+        "diagnosticObserver": {
+          "source": "e2e/gates/native-history-observer.ts",
+          "test": "test/unit/native-history-observer.test.ts",
+          "rawAndDecodedBodyCapBytes": 4194304,
+          "requestCap": 32,
+          "itemCap": 512,
+          "observationCapBytes": 65536,
+          "allowlistedOutputOnly": true,
+          "adversarialContentTest": "passed",
+          "inferenceClassification": "live provider; connection-phase426 synthetic"
+        }
+      }
     },
     "nativeRetests": {
       "codexWebSocketSimulated": "passed on 0.162.1",
-      "claudeOpenaiExplicitProfileLive": "two consecutive passes on 2.1.296",
-      "observedProtocolRejection": "one preceding live run failed closed with inconsistent_provider_tool; its precise field was not captured"
+      "claudeOpenaiExplicitProfileLive": "passed on 2.1.296 after shared authentication review; preceding protocol rejection retained",
+      "observedProtocolRejection": "one preceding live run failed closed with inconsistent_provider_tool; its precise field was not captured",
+      "codexExplicitWebSocketSimulated": "passed on 0.162.1 with unrelated explicit route",
+      "codexExplicitHttpSimulated": "passed on 0.162.1 with injected upstream 426; bounded client retry latency remains",
+      "codexActionScopedSimulated": "both transports pass on0.162.1 after final translated lifecycle correction; action_state_lost proves final closure",
+      "claudeSubscriptionLive": "passed on 2.1.296 after shared authentication review",
+      "codexProductionWebSocketLive": "passed after authentication/cancellation review; current Codex0.162.1 parent, Claude child, native tools and same-child follow-up",
+      "codexProductionHttpLive": "three review runs failed closed with mid_history_instructions_unimplemented; unrecognized new developer instructions at follow-up. Initial child read passes; safe ordered translation remains unsupported."
     }
   }
 }

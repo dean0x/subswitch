@@ -22,7 +22,5 @@
   "errors": [],
   "nativeCredentialMatches": true,
   "nativeAccountHeaderMatches": true,
-  "upgradeRequests": 2,
-  "clientVersion": "0.162.1",
-  "triggerClass": "none"
+  "upgradeRequests": 2
 }

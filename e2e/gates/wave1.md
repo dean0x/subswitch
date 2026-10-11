@@ -5,6 +5,9 @@ accepted without rewriting files. Both ingresses share the explicit route dispat
 profile authentication, quota store and continuation ownership. Legacy routes retain
 their existing provider handlers and passthrough behavior.
 
+This branch is not ready to merge: Kimi live acceptance is pending, and the current
+Codex HTTP same-child follow-up control exposes unsupported instruction history.
+
 Use `subswitch.wave1.example.json` as a starting point. Model aliases resolve at config
 load; route references and alias chains are rejected. Each target pins its effort.
 Identical targets are deduplicated, with a maximum of eight unique targets. Different
@@ -38,11 +41,34 @@ content validation and setup-failure cleanup for the invocation wrapper. Quota b
 accounting now updates one scope rather than serializing the entire store. Regression
 coverage is in the repository's flat test directories. `npm run bench:routing` compares
 fixed update work at 512, 1,024, 2,048 and 4,096 scopes; `npm run bench:sse` checks the
-existing incremental parser. The reviewed check run passes 1,001 tests. These checks do not establish live Kimi compatibility.
+existing incremental parser. The final review check passes 1,089 tests with no failures
+or skipped tests; the build and both benchmarks pass. These checks do not establish
+live Kimi compatibility.
 A preceding live explicit-profile run rejected an inconsistent tool terminal; the exact
 field was not captured. The relay stopped that response. Two subsequent native runs
 passed. This observation remains in the evidence manifest rather than being labelled
 as a clean run.
+
+The second review used separate security, regression and reuse agents, followed by
+integration review. It corrected account-file replacement detection, coordinated
+native OAuth refresh across file aliases and legacy/profile callers, and rejected
+inherited record properties while permitting explicitly configured labels. Native
+credential stores now resolve the physical file before atomic writes, preserving
+symlinks and private file permissions.
+
+Continuation handles now retain their logical route and enforce client protocol,
+conversation and branch ownership. Warmup expands local history without inference.
+Known incompatible fallback targets are checked before authentication. Completed
+tools become executable only after continuation/replay publication succeeds. Tool
+terminal matching uses indexes instead of scanning all tools for each event. Metadata
+reconciliation also uses a failure revision so an older request cannot clear a newer
+quota failure observed in the same millisecond.
+
+Refusal text streams incrementally and survives continuation. A late Claude refusal
+maps to a **relay-synthesized** Responses incomplete terminal with `content_filter`;
+this is a translation choice, not an asserted vendor semantic equivalence. Previously
+delivered text is retained; output limits and valid completed tools retain their
+terminal precedence. Incomplete tools remain withheld.
 
 ## Actions and history
 
@@ -70,6 +96,12 @@ file under `~/.cache/subswitch/actions/<port>/control.json`. The wrapper attache
 relay, preserving history across invocations; without a running relay it creates an isolated
 relay for the invocation. Restart invalidates opaque history and response handles.
 Complete portable history can start a new action. Durable resume is outside Wave 1.
+
+Scoped lifecycle admission also covers unmatched native HTTP and WebSocket requests.
+Completion rejects new admission, drains admitted requests, then closes idle sockets;
+cancellation closes active IO and stops request-bound credential waiting. Warmup and
+idle sockets do not keep an invocation active. This is separate from routing affinity
+and does not add response deadlines to bare native passthrough.
 
 Routed Responses IDs are local and expanded before upstream inference. Unknown,
 foreign, lost, oversized or incompatible continuation state fails explicitly.
@@ -116,18 +148,40 @@ on Claude Code 2.1.296. The explicit OpenAI subscription profile also passes a r
 child read and continuation. An upload-observer regression found during these probes was
 fixed and covered by the production ingress test.
 
+Current simulated Codex controls also pass with an unrelated explicit route and with
+an action-scoped invocation over both transports. Their reports identify fabricated
+upstream responses and credentials. Lazy routed/scoped WebSocket admission has a
+known fallback latency cost: with an injected upstream HTTP 426, Codex 0.162.1 retries
+the accepted downstream socket before switching to HTTP. The native gate observed
+14 rejected upgrades and four client retry events versus two rejected upgrades and
+no retry events in the unscoped, non-explicit control. All rejected upgrades precede
+inference; tool execution and parent delivery still pass. Bare native passthrough
+retains its original connection-phase fallback. This limitation is not a Kimi live pass.
+
 `npm run probe:kimi -- --product kimi-code --region global --protocol messages`
 is an opt-in basic live protocol probe. Repeat with `responses` and `--non-stream`.
 `--usage` observes only the bounded cloud envelope; it does not enable a usage driver
 or establish coding-key API stability. API accounts use `--product kimi-platform` and
 a separate `SUBSWITCH_KIMI_PLATFORM_KEY`. Reports omit prompts, responses and secrets.
-Missing credentials produce an unresolved result, not success. Current Codex production gates also pass with real OpenAI/Claude subscriptions over
-WebSocket and forced HTTP fallback, including a second native read on the same child.
-The HTTP gate injects WebSocket 426; the upstream inference is real. Basic protocol probes
+Missing credentials produce an unresolved result, not success. The latest Codex
+production WebSocket control passes with real OpenAI/Claude subscriptions, including
+a second native read on the same child. The latest forced HTTP control passes the
+first child read but rejects its follow-up with `mid_history_instructions_unimplemented`.
+The initial failure is retained in `native-codex-http-review-failure-2026-10-11.json`;
+two bounded, sanitized diagnostic runs reproduce an unrecognized new developer
+instruction after the first child answer. It does not match initial instructions or
+the pinned source's factual clock markers. Arbitrary instructions remain rejected;
+none were hoisted, dropped or downgraded to make the gate pass. This required native
+control remains a merge blocker. Older successful runs do not replace the failed
+review evidence. The HTTP gate injects WebSocket 426;
+upstream inference is real. Basic protocol probes
 do not certify tools, replay, native orchestration, quota exhaustion or model equivalence.
 
 Live Kimi Code/Platform access, tool/reasoning replay, both native clients, exact K3
 equivalence, usage contracts, ordinary API-profile live gates and full Wave 1
 acceptance remain required. DeepSeek remains blocked on those gates.
 
-Kimi live gates were explicitly deferred by the user in this implementation session.
+Kimi live gates are required before merge. The user confirmed that a coding-plan key
+is not available yet. Installing and logging into the Kimi CLI does not supply a
+supported Subswitch credential: this implementation requires a region-matched
+coding-plan key for Kimi Code; Kimi Platform uses its separate billed API key.
