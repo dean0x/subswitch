@@ -18,6 +18,8 @@ import { claudeFailure, ClaudeHttpError, ReverseContractError } from "./claude-e
 import { abortable } from "./abortable.js";
 import { validatedRetryAt } from "./routing/provider-failure.js";
 import type { ScopedSocket } from "./routing/scoped-lifecycle.js";
+import { observeNodeResponse } from "./limit-http-observer.js";
+import { recordLimitEvent } from "./limit-observation.js";
 import { openaiWebSocketError } from "./errors.js";
 import { OPENAI_EVENTS } from "./provider-events.js";
 import { decideCodexRoute, rejectionError, type ClaudeResolution } from "./codex-route.js";
@@ -145,6 +147,7 @@ export class CodexWebSockets {
         });
         upstream.on("error", error => { if (!retrying) reject(error); });
         upstream.once("unexpected-response", (_request, response) => {
+          observeNodeResponse(this.options.logger, { provider: "codex", product: mode === "subscription" ? "chatgpt-codex" : "openai-api", protocol: "responses" }, response);
           if (response.statusCode === 401 && !refreshed && this.options.nativeAuth.canRefresh(req, mode, path)) {
             retrying = true;
             response.destroy(); upstream.terminate();
@@ -167,6 +170,7 @@ export class CodexWebSockets {
           if (++count > 16) { upstream.terminate(); return; }
           upstream.pause(); outputQueue = outputQueue.then(async () => {
             const event = namespaceEvent(json(Buffer.from(data.toString())));
+            recordLimitEvent(this.options.logger, { provider: "codex", product: mode === "subscription" ? "chatgpt-codex" : "openai-api", protocol: "responses" }, event, "websocket", { truncated: (Buffer.isBuffer(data) ? data.length : data instanceof ArrayBuffer ? data.byteLength : data.reduce((sum, chunk) => sum + chunk.length, 0)) > 65536 });
             const incomingStream = event["stream_id"];
             const key = typeof incomingStream === "string" && incomingStream ? incomingStream : "default";
             const response = object(event["response"]), release = nativeRequests.get(key);
@@ -310,6 +314,7 @@ export class CodexWebSockets {
     const earlyClose = () => upstream.terminate();
     socket.once("close", earlyClose);
     upstream.once("unexpected-response", (_request, response) => {
+      observeNodeResponse(this.options.logger, { provider: "codex", product: mode === "subscription" ? "chatgpt-codex" : "openai-api", protocol: "responses" }, response);
       accepted = true; // HTTP rejection owns the socket; do not assign a second response on close/error.
       if (response.statusCode === 401 && !refreshed && this.options.nativeAuth.canRefresh(req, mode, path)) {
         socket.off("close", earlyClose);
@@ -354,11 +359,11 @@ export class CodexWebSockets {
         this.pendingUpgrades.delete(socket);
         accepted = true;
         socket.off("close", earlyClose);
-        this.bridge(req, socket, client, upstream);
+        this.bridge(req, socket, client, upstream, mode);
       });
     });
   }
-  private bridge(req: IncomingMessage, socket: Duplex, client: WebSocket, upstream: WebSocket): void {
+  private bridge(req: IncomingMessage, socket: Duplex, client: WebSocket, upstream: WebSocket, mode: CodexEndpointMode): void {
     const active = new Map<string, AbortController>();
     let forwardedOpenai = false;
     const send = (event: Item): Promise<void> =>
@@ -392,6 +397,7 @@ export class CodexWebSockets {
       responseQueue = responseQueue
         .then(async () => {
           const event = namespaceEvent(json(Buffer.from(data.toString())));
+          recordLimitEvent(this.options.logger, { provider: "codex", product: mode === "subscription" ? "chatgpt-codex" : "openai-api", protocol: "responses" }, event, "websocket", { truncated: (Buffer.isBuffer(data) ? data.length : data instanceof ArrayBuffer ? data.byteLength : data.reduce((sum, chunk) => sum + chunk.length, 0)) > 65536 });
           if (event["type"] === "response.completed") this.options.logger.log("info", OPENAI_EVENTS.responseComplete);
           await send(event);
         })

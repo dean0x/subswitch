@@ -23,6 +23,8 @@ import { claudeModelRows } from "./claude-models.js";
 import { routingDiscovery } from "./routing/routing-discovery.js";
 import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
+import { createConsoleLogger } from "./logger.js";
+import { LimitRecorder, limitDirectory, withLimitRecorder, readLimitObservations } from "./limit-recorder.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
 
@@ -56,6 +58,7 @@ Commands:
   models    Show effective alias table (registry × aliases)
             --json   Output model registry as JSON (no color, no TTY check)
             --schema-version 3 --client <client> --json   Common route discovery
+  limits    Show recorded upstream limit/error formats (--json, --port <n>)
   run-action --client <client> [--conversation <id>] -- <native command>
             Scope one native invocation, including its tools and children
 
@@ -93,6 +96,8 @@ Environment:
   NO_COLOR      Disable color output (also respected as standard)
   FORCE_COLOR   Force color output even when not a TTY
   CI            Non-interactive detection — init refuses without --yes
+  SUBSWITCH_LIMIT_RECORDING=0   Disable private limit observations (enabled by default)
+  SUBSWITCH_LIMIT_DIR           Override private observation root directory
 `;
 
 // ---------------------------------------------------------------------------
@@ -105,6 +110,7 @@ type CliCommand =
   | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly port?: string }
   | { readonly kind: "doctor"; readonly client: Client }
   | { readonly kind: "models"; readonly json: boolean; readonly client: Client; readonly schemaVersion?: 3 }
+  | { readonly kind: "limits"; readonly json: boolean; readonly port?: string }
   | { readonly kind: "run-action"; readonly client: ClientId; readonly native: string[]; readonly conversation?: string }
   | { readonly kind: "init"; readonly yes: boolean; readonly dryRun: boolean; readonly flags: InitFlags; readonly client: Client };
 
@@ -113,6 +119,7 @@ const GLOBAL_FLAGS = new Set(["help", "version"]);
 const SERVE_FLAGS = new Set(["verbose", "quiet", "port"]);
 const DOCTOR_FLAGS = new Set(["client"]);
 const MODELS_FLAGS = new Set(["json", "client", "schema-version"]);
+const LIMITS_FLAGS = new Set(["json", "port"]);
 const INIT_FLAGS = new Set(["yes", "dry-run", "port", "settings-target", "client"]);
 
 /**
@@ -164,7 +171,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     if (!client) return { ok: false, error: { message: `client must be ${CLIENT_IDS.join(", ")}, or all` } };
 
     // Unknown command
-    if (command !== "serve" && command !== "doctor" && command !== "init" && command !== "models") {
+    if (command !== "serve" && command !== "doctor" && command !== "init" && command !== "models" && command !== "limits") {
       return {
         ok: false,
         error: { message: `unknown command "${command}" — run \`subswitch --help\` for usage` },
@@ -179,6 +186,8 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
       allowedFlags = DOCTOR_FLAGS;
     } else if (command === "models") {
       allowedFlags = MODELS_FLAGS;
+    } else if (command === "limits") {
+      allowedFlags = LIMITS_FLAGS;
     } else {
       allowedFlags = INIT_FLAGS;
     }
@@ -232,6 +241,8 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     if (command === "doctor") {
       return { ok: true, value: { kind: "doctor", client } };
     }
+    if (command === "limits")
+      return { ok: true, value: { kind: "limits", json: values.json === true, ...(typeof values.port === "string" ? { port: values.port } : {}) } };
 
     // command === "models"
     if (values["schema-version"] !== undefined && (values["schema-version"] !== "3" || values.json !== true || values.client === undefined))
@@ -291,7 +302,9 @@ const serve = async (
 
   const effectiveConfig = { ...config, logLevel, port: effectivePort };
 
-  const depsResult = buildDeps(effectiveConfig);
+  const baseLogger = createConsoleLogger(logLevel);
+  const recorder = process.env["SUBSWITCH_LIMIT_RECORDING"] === "0" ? undefined : new LimitRecorder(limitDirectory(effectivePort), baseLogger);
+  const depsResult = buildDeps(effectiveConfig, recorder ? withLimitRecorder(baseLogger, recorder) : baseLogger);
   if (!depsResult.ok) {
     fail(depsResult.error);
     return;
@@ -339,9 +352,10 @@ const serve = async (
   }
   errOut(`  run \`subswitch doctor\` to verify setup\n`);
 
+  if (recorder) errOut("  limit observations: " + recorder.directory + " (view with subswitch limits --json)\n");
   const shutdown = (): void => {
     deps.logger.log("info", "shutting_down");
-    server.close(() => { void (removeActionControl?.() ?? Promise.resolve()).finally(() => process.exit(0)); });
+    server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush()]).finally(() => process.exit(0)); });
     server.closeIdleConnections();
     setTimeout(() => process.exit(1), SHUTDOWN_GRACE_MS).unref();
   };
@@ -578,6 +592,22 @@ const main = async (): Promise<void> => {
         return;
       }
       models(configResult.value.config, command.client);
+      return;
+    }
+    case "limits": {
+      const loaded = command.port === undefined ? loadConfig() : undefined;
+      const parsedPort = command.port === undefined ? { success: true, data: loaded?.ok ? loaded.value.config.port : DEFAULT_PORT } : PortSchema.safeParse(command.port);
+      if (!parsedPort.success) { fail("invalid --port: expected an integer between 1 and 65535"); return; }
+      const directory = limitDirectory(parsedPort.data!);
+      const records = await readLimitObservations(directory);
+      if (command.json) out(JSON.stringify({ schemaVersion: 1, directory, records }));
+      else {
+        out("Limit observations: " + directory);
+        if (!records.length) out("No recorded upstream failures.");
+        for (const record of records) out(record.observedAt + " " + record.context.product + " " + record.transport +
+          " status=" + (record.status ?? "unknown") + " candidate=" + record.candidate + " body=" + record.bodyState);
+        out("Use subswitch limits --json to inspect sanitized envelopes and reset/retry headers.");
+      }
       return;
     }
     case "run-action": {

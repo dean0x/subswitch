@@ -342,6 +342,9 @@ export class SharedRouting {
             conversation,
             signal: combined,
             refreshes,
+            route: routeName,
+            attempt: index,
+            scopeHash: scopeKey(scope),
             ...(priorOwner ? { priorOwner } : {}),
             ...(pinned && affinity?.selectedOwner
               ? { expectedOwner: affinity.selectedOwner }

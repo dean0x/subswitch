@@ -137,6 +137,46 @@ are unchanged. Listing does not read credentials, refresh auth or query usage. A
 availability is reported as unknown. Kimi token counting reports a local estimate in
 `x-subswitch-token-count: estimated`.
 
+## Natural limit-response recording — 2026-10-12
+
+The serve entrypoint enables a private limit/error recorder. Inspect observations
+with `subswitch limits --json` (or `--port <n>`). Records live under
+`~/.cache/subswitch/limits/<port>/`; `SUBSWITCH_LIMIT_DIR` changes the root and
+`SUBSWITCH_LIMIT_RECORDING=0` disables recording. Programmatic servers opt in with
+`withLimitRecorder`. Recordings never supply routing or quota state.
+
+Upstream HTTP, SSE and native WebSocket errors retain sanitized JSON structure,
+known public error codes and known Kimi limit-message prefixes. Retry/reset headers
+are allowlisted and value-checked. Available configured product, region, model,
+ingress/protocol, credential kind, attempt order and hashed profile/route/scope
+identify the observation. Free text, unknown string codes/field names, prompts,
+tools, credentials and opaque replay are excluded; unknown codes get fingerprints.
+Nothing is uploaded and no real quota is deliberately exhausted.
+
+Capture is capped at 64 KiB, projection at depth 5 / 128 nodes, pending writes at 32,
+and storage at four 2 MiB files per port. Directories/files are owner-only; unsafe
+symlinks/hardlinks and foreign ownership are rejected. Compressed HTTP error decoding
+is bounded and coordinated with shutdown. Capture/IO failure does not replace an
+upstream response or enable fallback. Normal output is not recorded.
+
+Native HTTP/WS bytes and immediate SSE delivery have synthetic regression coverage.
+Oversized/truncated/undecodable bodies are marked. Raw compressed WebSocket and native
+compressed SSE payloads are outside body inspection and produce a partial-observation
+warning. A rejected upgrade whose body is cancelled may retain only headers and a
+truncation marker. Existing translated error-inspection limits remain in place.
+
+SSE quota classification now carries validated `Retry-After` into the quota store,
+matching HTTP failures. An injected-clock test proves that a one-hour provider
+constraint is not bypassed by the initial cooldown. Recorder fixtures and benchmarks
+are **synthetic**. They establish no natural exhaustion/reset or complete
+provider-specific window contract.
+
+Automatic re-entry selects a recovered subscription for a subsequent eligible
+explicit action, keeping active fallback actions pinned and completed tools intact.
+Queued-job/session auto-resume after exhaustion, interrupted-stream restart and
+durable relay restart/resume remain outside Wave 1. Direct Kimi CLI traffic is
+outside the recorder; its OAuth integration and provider live gates remain pending.
+
 ## Evidence and unresolved acceptance
 
 `wave1-evidence.json` records product, region, protocol, credential kind, date, version
