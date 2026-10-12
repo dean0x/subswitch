@@ -1,5 +1,4 @@
-import { QuotaStore } from "./quota-store.js";
-import { scopeKey } from "./quota-store.js";
+import { QuotaStore, scopeKey } from "./quota-store.js";
 import type { AllowanceScope, QuotaObservation } from "./routing-types.js";
 import { abortable } from "../abortable.js";
 import { scheduleRoutingTimer } from "./clock.js";

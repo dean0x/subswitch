@@ -396,7 +396,8 @@ export async function* validatedProviderEvents(
             "refusal",
             "stop_sequence",
           ].includes(String(stopReason)) ||
-          (tools.length > 0 && stopReason !== "tool_use") ||
+          (tools.length > 0 &&
+            !["tool_use", "max_tokens", "refusal"].includes(String(stopReason))) ||
           (!tools.length && stopReason === "tool_use")
         )
           throw new RoutingError("invalid_provider_terminal", 502);

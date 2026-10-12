@@ -1077,6 +1077,115 @@ describe("reviewed refusal text and terminals", () => {
     }
   });
 
+  for (const reason of ["max_tokens", "refusal"]) {
+    for (const streaming of [true, false]) {
+      it(`preserves routed Claude ${reason} terminals with tools when stream=${streaming}`, async () => {
+        const loaded = loadConfig({
+          configPath: "/synthetic/config",
+          env: {},
+          readFile: () =>
+            JSON.stringify({
+              configVersion: 2,
+              accessProfiles: { claude: profile },
+              routes: {
+                work: {
+                  clients: ["codex"],
+                  primary: {
+                    profile: "claude", model: "claude-sonnet-5-5", effort: "high",
+                  },
+                  fallbacks: [],
+                  affinity: "native-or-explicit",
+                  transientTriggers: [],
+                },
+              },
+            }),
+        });
+        assert.ok(loaded.ok);
+        const routing = new SharedRouting(
+          loaded.value.config, noopLogger, systemClock,
+          async (_, init) => {
+            const body = JSON.parse(String(init?.body)) as Item;
+            const tool = (body["tools"] as Item[])[0]!;
+            const events = [
+              {
+                type: "message_start",
+                message: {
+                  id: "synthetic", type: "message", role: "assistant", content: [],
+                },
+              },
+              {
+                type: "content_block_start", index: 0,
+                content_block: { type: "text", text: "" },
+              },
+              {
+                type: "content_block_delta", index: 0,
+                delta: { type: "text_delta", text: "Retained text." },
+              },
+              { type: "content_block_stop", index: 0 },
+              {
+                type: "content_block_start", index: 1,
+                content_block: {
+                  type: "tool_use", id: "unfinished", name: tool["name"], input: {},
+                },
+              },
+              {
+                type: "content_block_delta", index: 1,
+                delta: { type: "input_json_delta", partial_json: "{}" },
+              },
+              { type: "content_block_stop", index: 1 },
+              {
+                type: "message_delta",
+                delta: { stop_reason: reason },
+                usage: { output_tokens: 5 },
+              },
+              { type: "message_stop" },
+            ];
+            return new Response(
+              events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+              { headers: { "content-type": "text/event-stream" } },
+            );
+          },
+          { SYNTHETIC_KEY: "synthetic" },
+        );
+        try {
+          const action = routing.actions.create("codex", "thread");
+          const received: Item[] = [];
+          for await (const event of routing.events(
+            {
+              model: "work", stream: streaming, input: "request",
+              tools: [{
+                type: "function", name: "read",
+                parameters: { type: "object", properties: {} },
+              }],
+            },
+            "codex", "work", new AbortController().signal,
+            routing.actions.context(action.id, "codex"),
+          ))
+            received.push(event);
+          assert.equal(received.at(-1)?.["type"], "response.incomplete");
+          const response = received.at(-1)!["response"] as Item;
+          assert.equal(response["status"], "incomplete");
+          assert.deepEqual(response["incomplete_details"], {
+            reason: reason === "max_tokens" ? "max_output_tokens" : "content_filter",
+          });
+          const output = response["output"] as Item[];
+          assert.ok(!output.some((item) => item["type"] === "function_call"));
+          const message = output.find((item) => item["type"] === "message")!;
+          assert.equal((message["content"] as Item[])[0]!["text"], "Retained text.");
+          assert.ok(
+            !received.some((event) =>
+              event["type"] === "response.function_call_arguments.done" ||
+              (event["type"] === "response.output_item.done" &&
+                (event["item"] as Item)["type"] === "function_call"),
+            ),
+          );
+        } finally {
+          routing.close();
+        }
+      });
+    }
+  }
+
   it("translates late Claude refusal into an explicit incomplete terminal with retained streamed text and no executable tools", async () => {
     const request = reverseRequest({
       model: "claude-sonnet-5",

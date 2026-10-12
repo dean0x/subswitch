@@ -70,6 +70,19 @@ this is a translation choice, not an asserted vendor semantic equivalence. Previ
 delivered text is retained; output limits and valid completed tools retain their
 terminal precedence. Incomplete tools remain withheld.
 
+The maintainability follow-up moved request-history reconstruction and serialized
+selection into focused routing modules. HTTP, SSE and native WebSocket diagnostics
+share a byte-bounded capture buffer, so excessive chunk fragmentation no longer drops
+otherwise bounded errors. Replay batch publication checks only affected entries
+instead of copying the entire cache, while preserving atomic budgets and eviction
+order. Recovery reservations are released even when a consumer stops before the
+provider terminal. Regression coverage also preserves pinned fallback credentials,
+cancelled selection waiters and Claude tool terminals with output-limit/refusal stops.
+The latest typecheck and full suite pass 1,131 tests with no failures or skips; the
+production build, packaged-install smoke check, and routing, limit-observation and
+replay benchmarks pass. `npm run bench:replay` checks fixed commit work as cached
+history grows. These synthetic checks do not resolve the live acceptance gates below.
+
 ## Actions and history
 
 Run one native invocation as an action:
