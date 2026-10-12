@@ -11,6 +11,8 @@ import {
   type Item,
   type WireProtocol,
 } from "./routing-types.js";
+import type { Logger } from "../logger.js";
+import { recordLimitEvent, recordLimitFailure, type LimitContext } from "../limit-observation.js";
 
 /** Validate incrementally; withhold executable tools until the provider's valid terminal. */
 export async function* validatedProviderEvents(
@@ -21,6 +23,8 @@ export async function* validatedProviderEvents(
   controller: AbortController,
   clock: RoutingClock,
   onComplete: (final: Item) => void,
+  logger?: Logger,
+  limitContext?: LimitContext,
 ): AsyncGenerator<SseEvent> {
   if (!response.body) throw new RoutingError("missing_provider_body", 502);
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
@@ -103,6 +107,10 @@ export async function* validatedProviderEvents(
       try {
         value = object(JSON.parse(event.data));
       } catch {
+        if (logger && limitContext && ["error", "response.failed"].includes(event.event ?? ""))
+          recordLimitFailure(logger, limitContext, { transport: "sse", committed: "unknown",
+            providerStartSeen: started, headers: response.headers, text: event.data,
+            truncated: Buffer.byteLength(event.data) > 65536 });
         throw new RoutingError("invalid_provider_event", 502);
       }
       const type = value?.["type"];
@@ -161,6 +169,7 @@ export async function* validatedProviderEvents(
         continue;
       }
       if (type === "error" || type === "response.failed") {
+        if (logger && limitContext) recordLimitEvent(logger, limitContext, value, "sse", { headers: response.headers, providerStartSeen: started, truncated: Buffer.byteLength(event.data) > 65536 });
         const envelope =
           type === "response.failed"
             ? { error: object(value?.["response"])?.["error"] }
@@ -179,6 +188,7 @@ export async function* validatedProviderEvents(
             status,
             { text: truncated ? "" : encoded, complete: !truncated, truncated },
             clock.now(),
+            response.headers.get("retry-after"),
           ),
         );
       }

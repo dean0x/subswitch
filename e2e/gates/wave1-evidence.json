@@ -289,6 +289,57 @@
       "subswitchCompatibilityVerified": false,
       "k3EntitlementVerified": false,
       "platformAccessVerified": false
+    },
+    {
+      "assertion": "Serve records sanitized upstream limit/error formats without changing native responses or enabling unknown failure fallback",
+      "urls": [
+        "https://github.com/dean0x/subswitch"
+      ],
+      "date": "2026-10-12",
+      "sourceVersion": "working-tree implementation; module SHA256 values recorded",
+      "sourceSha256": {
+        "src/limit-observation.ts": "dbf14713a0ab37ac60a317dbed66e4a44ea2654adc6d0fb3f0dd9a16320ed8d2",
+        "src/limit-http-observer.ts": "16edfdc1e6c9d6a0dbfb8bbb1f8de947fffdba07615862857d58921df72459a9",
+        "src/limit-websocket-observer.ts": "88a455f166f164603e22150bb2d9e83ae0ac5e250cc34075cbdaa1ae783c63b2",
+        "src/limit-recorder.ts": "71de09ce294c82fab5a1d12fc8a6008e43d87bb3ca77d4b197eb02ea88b0a4d8"
+      },
+      "product": [
+        "kimi-code",
+        "kimi-platform",
+        "chatgpt-codex",
+        "openai-api",
+        "claude-code",
+        "anthropic-api",
+        "anthropic-unknown"
+      ],
+      "region": "configured region when available",
+      "credentialKind": "configured credential kind when available; no credential material",
+      "protocol": [
+        "messages",
+        "responses",
+        "native-websocket"
+      ],
+      "evidenceClass": "source-inspected",
+      "fixtures": [
+        "test/unit/limit-observation.test.ts",
+        "test/integration/limit-recording.test.ts"
+      ],
+      "fixtureClass": "synthetic",
+      "naturalQuotaVerified": false,
+      "automaticSessionResumeImplemented": false,
+      "bounds": {
+        "bodyBytes": 65536,
+        "projectionDepth": 5,
+        "projectionNodes": 128,
+        "pendingWrites": 32,
+        "files": 4,
+        "bytesPerFile": 2097152
+      },
+      "partialCoverage": [
+        "raw compressed WebSocket payloads",
+        "native compressed SSE payloads",
+        "cancelled/truncated upstream error bodies"
+      ]
     }
   ],
   "historicalProbes": [
@@ -330,7 +381,7 @@
   "validation": {
     "date": "2026-10-11",
     "check": {
-      "tests": 1089,
+      "tests": 1116,
       "failures": 0,
       "skipped": 0
     },
@@ -347,7 +398,7 @@
         2048,
         4096
       ],
-      "fixedWorkUpdateRatio4096To512": 0.84,
+      "fixedWorkUpdateRatio4096To512": 0.56,
       "byteSizeAt4096Scopes": 1253536,
       "result": "passed"
     },
@@ -439,6 +490,23 @@
         "throughSubswitch": false,
         "wireProtocolVerified": false
       }
+    },
+    "limitRecording": {
+      "date": "2026-10-12",
+      "fixtureClass": "synthetic",
+      "tests": "targeted recorder/native-byte preservation/first-event/CLI/fallback/Retry-After scenarios passed",
+      "benchmarks": "linear SSE and native WS inspection; normal output not recorded",
+      "naturalProviderLimits": "pending actual observations",
+      "stateSource": "recordings are diagnostic only; readiness and continuation are not restored from them",
+      "targetedTests": 27,
+      "observerBenchmark": {
+        "fixtureClass": "synthetic",
+        "sseMillisecondsAt8MiB": 21.8,
+        "nativeWsMillisecondsAt8MiB": 27.0,
+        "linearity": "passed",
+        "normalOutputRecorded": false
+      },
+      "sseRetryAfterConstraint": "injected clock regression passed; one-hour constraint respected"
     }
   },
   "updatedAt": "2026-10-12"

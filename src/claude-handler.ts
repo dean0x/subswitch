@@ -13,6 +13,8 @@ import type { Logger } from "./logger.js";
 import { readBoundedText } from "./provider-transport.js";
 import { redactCredentials } from "./errors.js";
 import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
+import { recordLimitFailure } from "./limit-observation.js";
+import { observeReadableSse } from "./limit-http-observer.js";
 
 import { ClaudeHttpError } from "./claude-errors.js";
 export { ClaudeHttpError } from "./claude-errors.js";
@@ -84,6 +86,9 @@ export class ClaudeHandler {
         let message = "Claude rejected the request.",
           code = "claude_upstream_error";
         const raw = await readBoundedText(response.body, this.config.maxSseEventBytes);
+        recordLimitFailure(this.logger, { provider: "claude", product: "claude-code", protocol: "messages" },
+          { transport: "http", status: response.status, committed: false, headers: response.headers,
+            text: raw, truncated: Buffer.byteLength(raw) >= this.config.maxSseEventBytes || Buffer.byteLength(raw) > 65536 });
         try {
           const error = object(object(JSON.parse(raw))?.["error"]);
           if (typeof error?.["message"] === "string") message = error["message"];
@@ -105,6 +110,7 @@ export class ClaudeHandler {
       }
       if (!response.body) throw new ReverseContractError("missing_claude_body");
       source = Readable.fromWeb(response.body as import("node:stream/web").ReadableStream<Uint8Array>);
+      observeReadableSse(this.logger, { provider: "claude", product: "claude-code", protocol: "messages" }, source, response.headers);
       const parser = createSseParser(this.config.maxSseEventBytes);
       const resetIdle = () => {
         clearTimeout(idle);

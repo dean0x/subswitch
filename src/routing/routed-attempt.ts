@@ -36,6 +36,7 @@ import { codexTransportConstants, buildHeaders } from "../codex-handler.js";
 import { StagedCache } from "./replay-cache.js";
 import { adaptRequest } from "./request-adapter.js";
 import { deriveConversationKey } from "../conversation-key.js";
+import { recordLimitFailure, type LimitContext } from "../limit-observation.js";
 
 export interface AttemptRequest {
   profile: AccessProfile;
@@ -49,6 +50,9 @@ export interface AttemptRequest {
   expectedOwner?: string;
   signal: AbortSignal;
   refreshes: Set<string>;
+  route?: string;
+  attempt?: number;
+  scopeHash?: string;
 }
 export interface RoutedPrepared {
   events: AsyncIterable<ClientEvent>;
@@ -165,16 +169,25 @@ export class RoutedAttempts {
         responseCommitted: false,
       });
     }
-    if (!response.ok)
+    const limitContext: LimitContext = { provider: p.provider, product: p.product, protocol, profile: t.profile, model: t.model,
+      ingress, configuredCredentialKind: p.credential.kind === "native-oauth" ? "native-oauth" : p.product === "kimi-code" ? "coding-plan-key" : "api-key",
+      ...(request.scopeHash ? { scopeHash: request.scopeHash } : {}),
+      ...(p.region ? { region: p.region } : {}),
+      ...(request.route ? { route: request.route } : {}), ...(request.attempt !== undefined ? { attempt: request.attempt } : {}) };
+    if (!response.ok) {
+      const body = await readBoundedBody(response.body, 64 * 1024, combined);
+      recordLimitFailure(this.logger, limitContext, { transport: "http", status: response.status, committed: false,
+        headers: response.headers, text: body.text, truncated: body.truncated || !body.complete });
       throw new AttemptFailure(
         classifyFailure(
           p,
           response.status,
-          await readBoundedBody(response.body, 64 * 1024, combined),
+          body,
           this.clock.now(),
           response.headers.get("retry-after"),
         ),
       );
+    }
     const raw = validatedProviderEvents(
       response,
       p,
@@ -219,6 +232,8 @@ export class RoutedAttempts {
           }
         }
       },
+      this.logger,
+      limitContext,
     );
     let converted: AsyncIterable<ClientEvent>;
     if (protocol === ingress) converted = this.identity(raw, protocol);

@@ -1,5 +1,6 @@
 import { createColors } from "picocolors";
 import { resolveColorEnabled } from "./tty.js";
+import type { LimitObservation } from "./limit-observation.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -39,6 +40,9 @@ export interface LogFields {
 
 export interface Logger {
   log(level: LogLevel, event: string, fields?: LogFields): void;
+  /** Separate private diagnostic artifacts; accepts only the sanitized projection. */
+  recordLimit?(observation: LimitObservation): void;
+  trackLimitTask?(task: Promise<void>): void;
 }
 
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
