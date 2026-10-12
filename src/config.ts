@@ -7,6 +7,9 @@ import type { ProxyError } from "./errors.js";
 import type { LogLevel } from "./logger.js";
 import { isReservedAnthropicName, PROVIDER_IDS, type ProviderId, type AliasesByProvider } from "./models.js";
 import { validClaudeAlias } from "./claude-models.js";
+import { AccessProfilesSchema, RoutesSchema, validateExplicitConfig } from "./routing/routing-config.js";
+import type { AccessProfile, RoutePolicy } from "./routing/routing-types.js";
+import { ownValue } from "./plain-object.js";
 
 export const DEFAULT_PORT = 4141 as const;
 
@@ -351,12 +354,36 @@ const CodexIngressSchema = z.strictObject({
 export type CodexIngressConfig = z.infer<typeof CodexIngressSchema>;
 
 const FileConfigSchema = z.strictObject({
+  configVersion: z.literal(2).optional(),
+  accessProfiles: AccessProfilesSchema,
+  routes: RoutesSchema,
   port: z.number().int().min(1).max(65535).default(DEFAULT_PORT),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
   anthropic: AnthropicSchema,
   providers: ProvidersSchema,
   limits: LimitsSchema,
   codexIngress: CodexIngressSchema,
+}).superRefine((file, ctx) => {
+  if ((Object.keys(file.accessProfiles).length || Object.keys(file.routes).length) && file.configVersion !== 2)
+    ctx.addIssue({ code: "custom", message: "explicit profiles/routes require configVersion: 2" });
+  for (const route of Object.values(file.routes)) {
+    for (const target of [route.primary, ...(route.sameModelApi ? [route.sameModelApi] : []), ...route.fallbacks]) {
+      const profile = ownValue(file.accessProfiles, target.profile);
+      const aliases = profile?.provider === "codex" ? file.providers.codex.aliases :
+        profile?.provider === "claude" ? file.codexIngress.claude.aliases : {};
+      const alias = ownValue(aliases, target.model);
+      if (alias) {
+        if (ownValue(aliases, alias)) ctx.addIssue({ code: "custom", message: "alias chains and cycles are forbidden in explicit routes" });
+        else target.model = alias;
+      }
+    }
+  }
+  for (const name of Object.keys(file.routes)) {
+    if (Object.hasOwn(file.providers.codex.aliases, name) || Object.hasOwn(file.codexIngress.claude.aliases, name))
+      ctx.addIssue({ code: "custom", message: `${name}: conflicting legacy/explicit declaration; remove the legacy alias to migrate` });
+  }
+  for (const message of validateExplicitConfig(file.accessProfiles, file.routes, isLoopbackHost))
+    ctx.addIssue({ code: "custom", message });
 });
 
 /** Raw on-disk config shape — what FileConfigSchema.safeParse() produces. */
@@ -416,6 +443,9 @@ export type ProviderConfigs = { readonly [K in ProviderId]: ProviderConfigShape[
  *  - the parse-time `kind` discriminant does not leak into the runtime shape.
  */
 export interface Config {
+  readonly configVersion?: 2;
+  readonly accessProfiles?: Readonly<Record<string, AccessProfile>>;
+  readonly routes?: Readonly<Record<string, RoutePolicy>>;
   readonly port: number;
   readonly logLevel: LogLevel;
   readonly codexIngress: CodexIngressConfig;
@@ -758,6 +788,7 @@ const PROVIDER_RESOLVERS: {
  * Expands tilde in authFile.
  */
 export const resolveConfig = (file: FileConfig): Config => ({
+  ...(file.configVersion === 2 ? { configVersion: 2 as const, accessProfiles: file.accessProfiles, routes: file.routes } : {}),
   port: file.port,
   logLevel: file.logLevel,
   codexIngress: file.codexIngress,

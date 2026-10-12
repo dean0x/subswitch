@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 export interface NativeProcessResult {
   readonly code: number | null;
   readonly signal: NodeJS.Signals | null;
-  readonly failure?: "timeout" | "output_limit" | "spawn_error";
+  readonly failure?: "timeout" | "output_limit" | "spawn_error" | "cancelled";
   /** In-memory inspection only. Callers must emit allowlisted diagnostics. */
   readonly stdout: string;
   readonly stderr: string;
@@ -11,7 +11,7 @@ export interface NativeProcessResult {
 
 /** Own a dedicated process group so cancellation cannot target another native session. */
 export function nativeProcess(command: string, args: string[], options: {
-  cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number; maxBytes?: number;
+  cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number; maxBytes?: number; signal?: AbortSignal;
 }): Promise<NativeProcessResult> {
   return new Promise((resolve) => {
     const group = process.platform !== "win32";
@@ -31,6 +31,9 @@ export function nativeProcess(command: string, args: string[], options: {
       force = setTimeout(() => kill("SIGKILL"), 500);
     };
     const timer = setTimeout(() => stop("timeout"), options.timeoutMs ?? 45000);
+    const abort = () => stop("cancelled");
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
     const collect = (parts: Buffer[], chunk: Buffer) => {
       bytes += chunk.length;
       if (bytes > (options.maxBytes ?? 2 * 1024 * 1024)) { stop("output_limit"); return; }
@@ -44,6 +47,7 @@ export function nativeProcess(command: string, args: string[], options: {
     child.once("error", () => { failure = "spawn_error"; });
     child.once("close", (code, signal) => {
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", abort);
       if (force) clearTimeout(force);
       // Clear any descendants that outlived the CLI wrapper, only in our group.
       if (group && child.pid) kill("SIGKILL");

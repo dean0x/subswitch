@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "destination": "claude",
+  "explicitProfiles": false,
+  "success": true,
+  "nativeExit": "exit_0",
+  "messages": 4,
+  "sonnetRequests": 4,
+  "nativeAgentCall": true,
+  "nativeReadCall": true,
+  "toolResultContinuation": true,
+  "upstreamStatuses": [
+    200,
+    200,
+    200,
+    200,
+    200
+  ],
+  "translatedRequests": 0,
+  "compressedRequests": 0,
+  "nativeDiagnostic": "none",
+  "clientVersion": "2.1.296",
+  "synthetic": false,
+  "childRequests": 0,
+  "parentRequests": 0,
+  "routeErrors": []
+}

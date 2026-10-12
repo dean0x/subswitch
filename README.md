@@ -102,6 +102,10 @@ Commands:
   init      Interactive setup — wires the selected client(s)
   models    Show effective alias table (registry × aliases)
             --json   Output model registry as JSON (no color, no TTY check)
+            --schema-version 3 --client <client> --json   Common route discovery
+  limits    Show recorded upstream limit/error formats (--json, --port <n>)
+  run-action --client <client> [--conversation <id>] -- <native command>
+            Scope one native invocation, including its tools and children
 
 Flags (global):
   -h, --help       Show this help message
@@ -137,6 +141,9 @@ Environment:
   NO_COLOR      Disable color output (also respected as standard)
   FORCE_COLOR   Force color output even when not a TTY
   CI            Non-interactive detection — init refuses without --yes
+  SUBSWITCH_LIMIT_RECORDING=0   Disable private limit observations (enabled by default)
+  SUBSWITCH_LIMIT_DIR           Override private observation root directory
+
 ```
 
 **Exit codes:**
@@ -153,6 +160,40 @@ Environment:
 | unknown command or flag | always | 1 |
 
 `doctor` exits 1 whenever any preflight check fails — use it as a gate in scripts. `init` without `--yes` refuses to write anything when stdin is not a TTY (e.g. in CI) and exits 1 immediately with no filesystem side effects.
+
+### Recording real request limits
+
+`serve` automatically saves private, sanitized observations of upstream HTTP errors,
+SSE errors and native WebSocket errors. View the latest records with:
+
+```sh
+subswitch limits --json
+subswitch limits --json --port 8080
+```
+
+Records live under `~/.cache/subswitch/limits/<port>/` (four files, at most 8 MiB per
+port). They include provider/access product, available target/attempt metadata,
+status, validated retry/reset headers and the sanitized JSON structure. Known public
+error codes and known limit-message prefixes are retained. Arbitrary strings,
+unknown field names, prompts, tool contents and credentials are omitted; unknown
+string codes receive a fingerprint. No raw body archive is created.
+
+Set `SUBSWITCH_LIMIT_DIR` to choose the storage root or
+`SUBSWITCH_LIMIT_RECORDING=0` to disable recording. Files use owner-only permissions.
+Observation does not change provider responses, trigger retries or authorize paid
+fallback. Unknown formats remain unknown until their contract is verified.
+
+Body capture is capped at 64 KiB. Oversized, truncated or undecodable errors are
+marked explicitly. Compressed HTTP error bodies are decoded within that cap;
+compressed native SSE and raw compressed WebSocket messages are not inspected.
+A native WebSocket coverage gap produces `limit_observation_partial`. Recording
+covers traffic through the relay; direct native-client traffic is outside its view.
+Programmatic servers can opt in by supplying a logger from `withLimitRecorder`.
+
+Automatic subscription re-entry applies to explicit routes on a subsequent eligible
+action, using one ordinary request to check recovery. Active fallback actions remain
+pinned. It does not restart an interrupted response, rerun completed tools, retry a
+finished invocation indefinitely, or restore relay state after a restart.
 
 ### Advanced: manual setup
 
@@ -786,3 +827,9 @@ local development.
 ## License
 
 [MIT](LICENSE) © 2026 dean0x
+
+### Wave 1 explicit routes
+
+Version 2 access profiles, action-scoped failover, recovery behavior, configuration examples
+and current evidence gates are described in [the Wave 1 notes](e2e/gates/wave1.md).
+Kimi live compatibility is pending; see [the evidence manifest](e2e/gates/wave1-evidence.json).
