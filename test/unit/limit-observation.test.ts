@@ -181,6 +181,33 @@ describe("private limit observations", () => {
   });
 });
 describe("passive streaming observations", () => {
+  for (const transport of ["sse", "websocket"] as const) {
+    it(`captures bounded ${transport} errors across more than 4096 tiny chunks`, () => {
+      const { logger, records, warnings } = sink();
+      const payload = Buffer.from(JSON.stringify({
+        ...error,
+        error: { ...error.error, message: "private ü".repeat(600) },
+      }));
+      assert.ok(payload.length > 4096 && payload.length < 64 * 1024);
+      const header = Buffer.alloc(4);
+      header[0] = 129;
+      header[1] = 126;
+      header.writeUInt16BE(payload.length, 2);
+      const bytes = transport === "sse"
+        ? Buffer.concat([Buffer.from("event: error\ndata: "), payload, Buffer.from("\n\n")])
+        : Buffer.concat([header, payload]);
+      const scanner = transport === "sse"
+        ? new LimitSseObserver(logger, context)
+        : new LimitWebSocketObserver(logger, context);
+      for (let offset = 0; offset < bytes.length; offset++)
+        scanner.write(bytes.subarray(offset, offset + 1));
+      assert.equal(records.length, 1);
+      assert.equal(records[0]!.bodyState, "json");
+      assert.equal(records[0]!.status, 429);
+      assert.deepEqual(warnings, []);
+      assert.ok(!JSON.stringify(records).includes("private"));
+    });
+  }
   it("handles every single-byte CRLF boundary and skips successful assistant/tool output", () => {
     const { logger, records } = sink(),
       scanner = new LimitSseObserver(logger, context);
@@ -222,6 +249,33 @@ describe("passive streaming observations", () => {
     );
     assert.equal(records.length, 2);
     assert.equal(records[1]!.bodyState, "truncated");
+  });
+  it("recognizes data-only starts and errors regardless of JSON property order", () => {
+    for (const start of ["message_start", "response.created"]) {
+      for (const type of ["error", "response.failed"]) {
+        const { logger, records } = sink();
+        const scanner = new LimitSseObserver(logger, context);
+        const failure = {
+          sequence_number: 1,
+          type,
+          ...(type === "error"
+            ? { error: error.error }
+            : { response: { error: error.error } }),
+        };
+        const bytes = Buffer.from(
+          `data: ${JSON.stringify({ sequence_number: 0, type: start })}\r\n\r\n` +
+          'data: {"delta":"private output","type":"response.output_text.delta"}\r\n\r\n' +
+          `data: ${JSON.stringify(failure)}\r\n\r\n`,
+        );
+        for (const byte of bytes) scanner.write(Buffer.from([byte]));
+        assert.equal(records.length, 1);
+        assert.equal(records[0]!.providerStartSeen, true);
+        assert.equal(records[0]!.status, 429);
+        assert.equal(records[0]!.candidate, "limit");
+        assert.equal(records[0]!.bodyState, "json");
+        assert.ok(!JSON.stringify(records).includes("private"));
+      }
+    }
   });
   it("records unfamiliar error-event envelopes without inventing their type or coercing malformed status", () => {
     const { logger, records } = sink(),

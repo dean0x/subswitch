@@ -1,4 +1,5 @@
 import type { Logger } from "./logger.js";
+import { BoundedCapture } from "./bounded-capture.js";
 import {
   LIMIT_CAPTURE_BYTES,
   recordLimitEvent,
@@ -13,8 +14,7 @@ export class LimitWebSocketObserver {
   private collecting = false;
   private activeText = false;
   private dropped = false;
-  private parts: Buffer[] = [];
-  private bytes = 0;
+  private readonly capture = new BoundedCapture(LIMIT_CAPTURE_BYTES);
   private disabled = false;
   private warned = false;
   constructor(
@@ -73,8 +73,7 @@ export class LimitWebSocketObserver {
         const opcode = this.header[0]! & 15;
         if (opcode === 1) {
           this.activeText = true;
-          this.parts = [];
-          this.bytes = 0;
+          this.capture.reset();
           this.dropped = false;
           if (this.header[0]! & 64) {
             this.dropped = true;
@@ -90,12 +89,10 @@ export class LimitWebSocketObserver {
       }
       const count = Math.min(this.remaining, chunk.length - offset);
       if (this.collecting && !this.dropped) {
-        this.bytes += count;
-        if (this.bytes > LIMIT_CAPTURE_BYTES || this.parts.length >= 4096) {
+        if (!this.capture.append(chunk.subarray(offset, offset + count))) {
           this.dropped = true;
-          this.parts = [];
-        } else if (count)
-          this.parts.push(Buffer.from(chunk.subarray(offset, offset + count)));
+          this.capture.reset();
+        }
       }
       this.remaining -= count;
       offset += count;
@@ -109,15 +106,14 @@ export class LimitWebSocketObserver {
         recordLimitEvent(
           this.logger,
           this.context,
-          JSON.parse(Buffer.concat(this.parts).toString("utf8")),
+          JSON.parse(this.capture.bytes.toString("utf8")),
           "websocket",
         );
       } catch {
         /* Invalid native payload is forwarded unchanged. */
       }
     } else this.gap("native_websocket_capture_limit");
-    this.parts = [];
-    this.bytes = 0;
+    this.capture.reset();
     this.activeText = false;
     this.collecting = false;
   }

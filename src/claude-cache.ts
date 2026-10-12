@@ -45,18 +45,21 @@ export class ClaudeCache {
   }
   /** Routed attempts publish all staged state together, after checking the shared budget. */
   putBatch(writes: readonly CacheWrite[]): void {
-    const next = new Map(this.entries);
+    const updates = new Map<string, Entry>();
     let bytes = this.bytes;
+    let entries = this.entries.size;
     for (const write of writes) {
       const key = `${write.kind}:${write.id}`;
       const size = Buffer.byteLength(JSON.stringify(write.value)) + Buffer.byteLength(key);
-      bytes += size - (next.get(key)?.bytes ?? 0);
-      next.set(key, { kind: write.kind, value: write.value, bytes: size } as Entry);
+      const previous = updates.get(key) ?? this.entries.get(key);
+      if (!previous) entries++;
+      bytes += size - (previous?.bytes ?? 0);
+      updates.set(key, { kind: write.kind, value: write.value, bytes: size } as Entry);
     }
-    if (next.size > this.limits.maxEntries || bytes > this.limits.maxBytes)
+    if (entries > this.limits.maxEntries || bytes > this.limits.maxBytes)
       throw new Error("continuation_store_full");
-    this.entries.clear();
-    for (const [key, entry] of next) this.entries.set(key, entry);
+    // Preflight only touched entries; publication is synchronous and preserves LRU order.
+    for (const [key, entry] of updates) this.entries.set(key, entry);
     this.bytes = bytes;
   }
   get<K extends keyof Values>(kind: K, id: string): Values[K] | undefined {

@@ -2,6 +2,8 @@ import type { IncomingMessage } from "node:http";
 import type { Readable } from "node:stream";
 import type { Logger } from "./logger.js";
 import { decodeBody } from "./content-encoding.js";
+import { BoundedCapture } from "./bounded-capture.js";
+import { object } from "./plain-object.js";
 import {
   LIMIT_CAPTURE_BYTES,
   limitHeaders,
@@ -14,13 +16,13 @@ const compressedWarnings = new WeakSet<Logger>();
 
 /** Bounded passive scanner. No aggregation, reader ownership or backpressure changes. */
 export class LimitSseObserver {
-  private parts: Buffer[] = [];
+  private readonly line = new BoundedCapture(LIMIT_CAPTURE_BYTES);
   private lineBytes = 0;
   private frameBytes = 0;
   private dropped = false;
   private eventName = "";
   private data: string[] = [];
-  private committed = false;
+  private providerStartSeen = false;
   private lastLineByte = 0;
   constructor(
     private readonly logger: Logger,
@@ -37,74 +39,20 @@ export class LimitSseObserver {
       this.lineBytes += part.length;
       if (part.length) this.lastLineByte = part[part.length - 1]!;
       this.frameBytes += part.length + (newline < 0 ? 0 : 1);
-      if (this.frameBytes > LIMIT_CAPTURE_BYTES || this.parts.length >= 4096)
-        this.dropped = true;
-      if (!this.dropped && part.length) this.parts.push(Buffer.from(part));
+      if (this.frameBytes > LIMIT_CAPTURE_BYTES) this.dropped = true;
+      if (!this.dropped) this.line.append(part);
       if (newline < 0) break;
       const blank =
         this.lineBytes === 0 ||
         (this.lineBytes === 1 && this.lastLineByte === 13);
       const line = this.dropped
         ? ""
-        : Buffer.concat(this.parts).toString("utf8").replace(/\r$/, "");
-      this.parts = [];
+        : this.line.bytes.toString("utf8").replace(/\r$/, "");
+      this.line.reset();
       this.lineBytes = 0;
       this.lastLineByte = 0;
       if (blank) {
-        if (
-          this.eventName === "message_start" ||
-          this.eventName === "response.created"
-        )
-          this.committed = true;
-        if (
-          this.dropped &&
-          ["error", "response.failed"].includes(this.eventName)
-        )
-          recordLimitFailure(this.logger, this.context, {
-            transport: "sse",
-            committed: "unknown",
-            providerStartSeen: this.committed,
-            headers: this.headers,
-            truncated: true,
-          });
-        else if (!this.dropped) {
-          const data = this.data.join("\n");
-          if (
-            /^\s*\{\s*"type"\s*:\s*"(?:message_start|response\.created)"/.test(
-              data,
-            )
-          )
-            this.committed = true;
-          if (
-            ["error", "response.failed"].includes(this.eventName) ||
-            /^\s*\{\s*"type"\s*:\s*"(?:error|response\.failed)"/.test(data)
-          ) {
-            try {
-              recordLimitEvent(
-                this.logger,
-                this.context,
-                JSON.parse(data),
-                "sse",
-                {
-                  ...(this.headers ? { headers: this.headers } : {}),
-                  providerStartSeen: this.committed,
-                  ...(["error", "response.failed"].includes(this.eventName)
-                    ? { eventType: this.eventName }
-                    : {}),
-                },
-              );
-            } catch {
-              if (["error", "response.failed"].includes(this.eventName))
-                recordLimitFailure(this.logger, this.context, {
-                  transport: "sse",
-                  committed: "unknown",
-                  providerStartSeen: this.committed,
-                  headers: this.headers,
-                  text: data,
-                });
-            }
-          }
-        }
+        this.observeFrame();
         this.frameBytes = 0;
         this.dropped = false;
         this.eventName = "";
@@ -115,6 +63,48 @@ export class LimitSseObserver {
       }
       offset = end + 1;
     }
+  }
+  private observeFrame(): void {
+    const namedError =
+      this.eventName === "error" || this.eventName === "response.failed";
+    if (
+      this.eventName === "message_start" ||
+      this.eventName === "response.created"
+    )
+      this.providerStartSeen = true;
+    const failure = {
+      transport: "sse" as const,
+      committed: "unknown" as const,
+      providerStartSeen: this.providerStartSeen,
+      headers: this.headers,
+    };
+    if (this.dropped) {
+      if (namedError)
+        recordLimitFailure(this.logger, this.context, {
+          ...failure,
+          truncated: true,
+        });
+      return;
+    }
+    if (!this.data.length && !namedError) return;
+    const data = this.data.join("\n");
+    let event: unknown;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      if (namedError)
+        recordLimitFailure(this.logger, this.context, { ...failure, text: data });
+      return;
+    }
+    const type = object(event)?.["type"];
+    if (type === "message_start" || type === "response.created")
+      this.providerStartSeen = true;
+    if (namedError || type === "error" || type === "response.failed")
+      recordLimitEvent(this.logger, this.context, event, "sse", {
+        ...(this.headers ? { headers: this.headers } : {}),
+        providerStartSeen: this.providerStartSeen,
+        ...(namedError ? { eventType: this.eventName } : {}),
+      });
   }
 }
 export function observeNodeResponse(
@@ -137,7 +127,9 @@ export function observeNodeResponse(
         new Headers(limitHeaders(response.headers)),
       );
       response.pause();
-      response.on("data", (chunk) => scanner.write(Buffer.from(chunk)));
+      response.on("data", (chunk) =>
+        scanner.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+      );
     } else if (encoding && sse) {
       try {
         if (compressedWarnings.has(logger)) return;
@@ -153,7 +145,7 @@ export function observeNodeResponse(
   }
   let bytes = 0,
     finished = false;
-  const parts: Buffer[] = [];
+  const capture = new BoundedCapture(LIMIT_CAPTURE_BYTES);
   const finish = (complete: boolean) => {
     if (finished) return;
     finished = true;
@@ -161,7 +153,7 @@ export function observeNodeResponse(
     response.off("end", end);
     response.off("close", close);
     const truncated = !complete || bytes > LIMIT_CAPTURE_BYTES;
-    const raw = Buffer.concat(parts);
+    const raw = capture.bytes;
     const emit = (text?: string, encoded = false) =>
       recordLimitFailure(logger, context, {
         status,
@@ -190,8 +182,7 @@ export function observeNodeResponse(
   };
   const data = (chunk: Buffer) => {
     bytes += chunk.length;
-    if (bytes <= LIMIT_CAPTURE_BYTES) parts.push(Buffer.from(chunk));
-    else finish(false);
+    if (!capture.append(chunk)) finish(false);
   };
   const end = () => finish(true),
     close = () => finish(false);
@@ -209,5 +200,7 @@ export function observeReadableSse(
 ): void {
   if (!logger.recordLimit) return;
   const scanner = new LimitSseObserver(logger, context, headers);
-  source.on("data", (chunk) => scanner.write(Buffer.from(chunk)));
+  source.on("data", (chunk) =>
+    scanner.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+  );
 }

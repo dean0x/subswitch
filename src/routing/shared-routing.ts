@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import type { ScopedSocket } from "./scoped-lifecycle.js";
@@ -7,6 +7,8 @@ import { writeRoutedHttp } from "./http-ingress.js";
 import { ActionIngress } from "./action-ingress.js";
 import { ActionStore } from "./action-store.js";
 import { ContinuationStore } from "./continuation-store.js";
+import { RequestHistory } from "./request-history.js";
+import { SelectionQueue } from "./selection-queue.js";
 import { QuotaStore, scopeKey } from "./quota-store.js";
 import {
   systemClock,
@@ -24,7 +26,6 @@ import { routeChain } from "./routing-config.js";
 import { destinationProtocol } from "./destination-catalog.js";
 import { validateTargetCapabilities } from "./target-capabilities.js";
 import { object, ownValue } from "../plain-object.js";
-import { inputItems } from "../codex-body.js";
 import {
   allowanceScope,
   RoutingError,
@@ -40,18 +41,16 @@ import type { Logger } from "../logger.js";
 import { decodePortableHistory } from "./portable-history.js";
 import { UsageCoordinator, type UsageDriver } from "./usage-coordinator.js";
 
-const hash = (value: string) =>
-  createHash("sha256").update(value).digest("hex");
-
 /** One selection, quota and continuation owner for both originating protocols. */
 export class SharedRouting {
   readonly actions = new ActionStore();
   readonly quota: QuotaStore;
   readonly continuations = new ContinuationStore();
+  private readonly history = new RequestHistory(this.continuations);
   readonly attempts: RoutedAttempts;
   readonly usage: UsageCoordinator;
   private readonly controllers = new Set<AbortController>();
-  private readonly selections = new Map<string, Promise<void>>();
+  private readonly selections = new SelectionQueue();
   constructor(
     readonly config: Config,
     readonly logger: Logger,
@@ -150,7 +149,7 @@ export class SharedRouting {
     if (body["generate"] === false) {
       // No action, affinity, credential resolution or quota observation for a warmup.
       if (protocol === "responses") {
-        const { conversation, full, priorOwner } = this.resolveHistory(
+        const { conversation, full, priorOwner } = this.history.resolve(
           body,
           client,
           routeName,
@@ -183,8 +182,6 @@ export class SharedRouting {
       return;
     }
     const chain = routeChain(policy);
-    if (!this.attempts.auth.has(chain[0]!.profile))
-      throw new RoutingError("profile_credentials_missing", 503);
     if (chain.length > 1 && !context)
       throw new RoutingError("action_identity_required", 409);
     const controller = new AbortController(),
@@ -209,20 +206,9 @@ export class SharedRouting {
           context.agentId,
           routeName,
         ]);
-        const previous = this.selections.get(key);
-        let unlock!: () => void;
-        const gate = new Promise<void>((resolve) => {
-          unlock = resolve;
-        });
-        const current = (previous ?? Promise.resolve()).then(() => gate);
-        this.selections.set(key, current);
-        releaseSelection = () => {
-          unlock();
-          if (this.selections.get(key) === current) this.selections.delete(key);
-        };
-        if (previous) await abortable(previous, combined);
+        releaseSelection = await this.selections.acquire(key, combined);
       }
-      const { conversation, full, priorOwner } = this.resolveHistory(
+      const { conversation, full, priorOwner } = this.history.resolve(
         body,
         client,
         routeName,
@@ -248,8 +234,14 @@ export class SharedRouting {
         const target = chain[index]!,
           profile = ownValue(this.config.accessProfiles, target.profile);
         if (!profile) throw new RoutingError("unknown_profile");
+        const pinned =
+          !!affinity?.selectedTarget &&
+          index === affinity.chainIndex &&
+          affinity.selectedTarget.profile === target.profile &&
+          affinity.selectedTarget.model === target.model &&
+          affinity.selectedTarget.effort === target.effort;
         if (!this.attempts.auth.has(target.profile)) {
-          if (index === 0 && !failure)
+          if (pinned || (index === 0 && !failure))
             throw new RoutingError("profile_credentials_missing", 503);
           this.diagnostic(
             routeName,
@@ -296,12 +288,6 @@ export class SharedRouting {
           this.quota.readiness(scope) !== "available"
         )
           await abortable(this.usage.refresh(scope), combined);
-        const pinned =
-          !!affinity?.selectedTarget &&
-          index === affinity.chainIndex &&
-          affinity.selectedTarget.profile === target.profile &&
-          affinity.selectedTarget.model === target.model &&
-          affinity.selectedTarget.effort === target.effort;
         const requestedEffort =
           object(full["reasoning"])?.["effort"] ??
           object(full["output_config"])?.["effort"];
@@ -418,7 +404,6 @@ export class SharedRouting {
                 : undefined,
               reservation,
             );
-          this.quota.release(scope, reservation);
           if (combined.aborted) {
             if (affinity) affinity.phase = "interrupted";
             throw combined.reason instanceof RoutingError
@@ -469,7 +454,11 @@ export class SharedRouting {
           }
           throw error;
         } finally {
-          await prepared?.cancel();
+          try {
+            this.quota.release(scope, reservation);
+          } finally {
+            await prepared?.cancel();
+          }
         }
       }
       if (failure) throw new AttemptFailure(failure);
@@ -480,67 +469,6 @@ export class SharedRouting {
       releaseAction();
       this.controllers.delete(controller);
     }
-  }
-  private resolveHistory(
-    body: Item,
-    client: OriginatingClient,
-    route: string,
-    protocol: WireProtocol,
-    context?: ActionContext,
-  ): { conversation: string; full: Item; priorOwner?: string } {
-    const previous = body["previous_response_id"];
-    const requestedConversation = context
-      ? this.conversationKey(body, client, route, context)
-      : undefined;
-    if (previous === undefined || previous === null)
-      return {
-        conversation:
-          requestedConversation ?? this.conversationKey(body, client, route),
-        full: structuredClone(body),
-      };
-    if (typeof previous !== "string")
-      throw new RoutingError("invalid_continuation_id");
-    const snapshot = this.continuations.get(
-      previous,
-      requestedConversation,
-      route,
-      protocol,
-    );
-    const incoming = structuredClone(body);
-    const full: Item = {
-      ...snapshot.request,
-      ...incoming,
-      input: [
-        ...inputItems(snapshot.request["input"]),
-        ...snapshot.output,
-        ...inputItems(incoming["input"]),
-      ],
-    };
-    delete full["previous_response_id"];
-    return {
-      conversation: snapshot.conversation,
-      full,
-      ...(snapshot.owner === "warmup" ? {} : { priorOwner: snapshot.owner }),
-    };
-  }
-  private conversationKey(
-    body: Item,
-    client: OriginatingClient,
-    route: string,
-    context?: ActionContext,
-  ): string {
-    const firstInput = Array.isArray(body["messages"])
-      ? body["messages"][0]
-      : inputItems(body["input"])[0];
-    return hash(
-      JSON.stringify([
-        client,
-        context?.namespace ?? "single-target",
-        context?.conversationId ?? hash(JSON.stringify(firstInput) ?? ""),
-        context?.agentId ?? "root",
-        route,
-      ]),
-    );
   }
   private diagnostic(
     route: string,

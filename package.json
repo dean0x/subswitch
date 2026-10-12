@@ -43,6 +43,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test --test-timeout=30000 \"test/unit/*.test.ts\" \"test/integration/*.test.ts\"",
     "bench:routing": "node --import tsx test/tools/routing-quota.bench.ts",
+    "bench:replay": "node --import tsx test/tools/replay-cache.bench.ts",
     "bench:limits": "node --import tsx test/tools/limit-observation.bench.ts",
     "bench:sse": "node --import tsx test/tools/sse-parser.bench.ts",
     "bench:memory": "node --import tsx test/tools/memory-concurrent-uploads.bench.ts",
