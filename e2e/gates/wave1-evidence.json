@@ -271,6 +271,24 @@
         "matchesInitialInstruction": false,
         "recognizedSourceMarkers": []
       }
+    },
+    {
+      "assertion": "Installed Kimi CLI completes headless inference and native unpredictable file read with configured OAuth access",
+      "urls": [
+        "https://github.com/MoonshotAI/kimi-code"
+      ],
+      "date": "2026-10-12",
+      "sourceVersion": "@moonshot-ai/kimi-code2.1.1; installed main.mjs SHA256 2563a338c94868a34e1bfd2e5579067d5a472acf4cb0bf350a3bfe1092bbe59d",
+      "product": "kimi-code",
+      "region": "not independently verified",
+      "credentialKind": "native-oauth",
+      "protocol": "native CLI inference; wire protocol not captured",
+      "evidenceClass": "live-observed",
+      "report": "native-kimi-headless-live-2026-10-12.json",
+      "configuredModel": "kimi-for-coding",
+      "subswitchCompatibilityVerified": false,
+      "k3EntitlementVerified": false,
+      "platformAccessVerified": false
     }
   ],
   "historicalProbes": [
@@ -296,7 +314,7 @@
     }
   ],
   "unresolved": [
-    "Kimi Code credentials and K3 entitlement",
+    "Subswitch Kimi Code credential contract and K3 entitlement (native CLI OAuth access is now observed)",
     "Kimi Platform credentials and K3 entitlement",
     "k3/kimi-k3 exact equivalence",
     "coding-key cloud usage contract",
@@ -319,7 +337,7 @@
     "build": "passed",
     "sseBenchmark": "linearity passed",
     "parkedToolRecovery": "synthetic acceptance passed for Messages and Responses",
-    "KimiLive": "required before merge; coding-plan key and region not available yet",
+    "KimiLive": "native OAuth CLI access verified2026-10-12; Subswitch Code/Platform Messages/Responses and K3 gates remain pending",
     "ordinaryApiProfilesLive": "no declared credentials",
     "routingQuotaBenchmark": {
       "evidenceClass": "synthetic",
@@ -413,7 +431,15 @@
       "codexActionScopedSimulated": "both transports pass on0.162.1 after final translated lifecycle correction; action_state_lost proves final closure",
       "claudeSubscriptionLive": "passed on 2.1.296 after shared authentication review",
       "codexProductionWebSocketLive": "passed after authentication/cancellation review; current Codex0.162.1 parent, Claude child, native tools and same-child follow-up",
-      "codexProductionHttpLive": "three review runs failed closed with mid_history_instructions_unimplemented; unrecognized new developer instructions at follow-up. Initial child read passes; safe ordered translation remains unsupported."
+      "codexProductionHttpLive": "three review runs failed closed with mid_history_instructions_unimplemented; unrecognized new developer instructions at follow-up. Initial child read passes; safe ordered translation remains unsupported.",
+      "kimiHeadlessCliLive": {
+        "date": "2026-10-12",
+        "result": "passed on2.1.1: text request and native unpredictable file read",
+        "credentialKind": "configured native-oauth",
+        "throughSubswitch": false,
+        "wireProtocolVerified": false
+      }
     }
-  }
+  },
+  "updatedAt": "2026-10-12"
 }

@@ -181,7 +181,21 @@ Live Kimi Code/Platform access, tool/reasoning replay, both native clients, exac
 equivalence, usage contracts, ordinary API-profile live gates and full Wave 1
 acceptance remain required. DeepSeek remains blocked on those gates.
 
-Kimi live gates are required before merge. The user confirmed that a coding-plan key
-is not available yet. Installing and logging into the Kimi CLI does not supply a
-supported Subswitch credential: this implementation requires a region-matched
-coding-plan key for Kimi Code; Kimi Platform uses its separate billed API key.
+Kimi live gates are required before merge. On 2026-10-12, installed Kimi CLI 2.1.1
+completed a headless text request and read an unpredictable value from an isolated
+file through its native tool, then returned that value in its final answer. The
+configured default is `kimi-for-coding`, provider type `kimi`, OAuth access, endpoint
+host `api.kimi.ai`. The sanitized report is
+`native-kimi-headless-live-2026-10-12.json`. This establishes native CLI access and
+tool use. It does not establish K3 entitlement, regional endpoint equivalence, either
+Messages/Responses contract, or Subswitch destination compatibility.
+
+Use `kimi -p '<prompt>' --output-format stream-json` for headless native output.
+Version 2.1.1 rejects combining `--prompt` with `--auto`; the corrected probe used
+prompt mode alone. Working directories were isolated and native authenticated storage
+was reused without exposing credentials or copying them into probe files.
+
+Subswitch currently accepts a region-matched coding-plan key for Kimi Code and a
+separate billed API key for Kimi Platform. Native Kimi CLI OAuth is available on this
+machine, but its Subswitch profile/auth contract remains unimplemented. The CLI pass
+does not replace the required relay, continuation, fallback and recovery live gates.
