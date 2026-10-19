@@ -31,6 +31,28 @@ npm install --save "${TARBALL_ABS}" >/dev/null 2>&1
 VERSION_OUT="$(node_modules/.bin/subswitch --version)"
 echo "  subswitch version: ${VERSION_OUT}"
 
+# Read the shipped example as a consumer and validate it through metadata-only discovery.
+# This command does not read credentials, contact a provider, or start a native client.
+node <<'NODE'
+const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
+const { readFileSync } = require("node:fs");
+const { dirname, join } = require("node:path");
+const packageRoot = dirname(require.resolve("subswitch/package.json"));
+const examplePath = join(packageRoot, "subswitch.wave1.example.json");
+const example = JSON.parse(readFileSync(examplePath, "utf8"));
+assert.equal(example.configVersion, 2);
+const discovery = JSON.parse(execFileSync(process.execPath, [
+  join(packageRoot, "dist/cli.js"), "models", "--schema-version", "3", "--client", "all", "--json",
+], { encoding: "utf8", env: { ...process.env, SUBSWITCH_CONFIG: examplePath } }));
+assert.equal(discovery.schemaVersion, 3);
+const route = discovery.routes.find(route => route.id === "kimi-work");
+assert.ok(route, "the installed example must expose its documented route");
+assert.deepEqual(route.targets, [example.routes[route.id].primary, ...example.routes[route.id].fallbacks]);
+assert.equal(discovery.providers.find(provider => provider.id === "kimi").compatibility, "live-unverified");
+console.log("  packaged Wave1 example: valid config and route discovery (live-unverified)");
+NODE
+
 # Ask the OS for an available port; never assume a developer port is unused.
 SMOKE_PORT="$(node -e 'const net=require("node:net"); const s=net.createServer(); s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close();});')"
 node -e 'const fs=require("node:fs");fs.writeFileSync("subswitch.config.json",JSON.stringify({port:Number(process.argv[1]),providers:{codex:{authFile:process.cwd()+"/unused-auth.json"}}}),{mode:0o600});' "${SMOKE_PORT}"
@@ -73,8 +95,17 @@ wait_for_health
 kill "${SERVE_PID}"
 wait "${SERVE_PID}"
 SERVE_PID=""
-CODEX_HOME="${TMPDIR_INSTALL}/native-codex" XDG_CONFIG_HOME="${TMPDIR_INSTALL}/user-config" \
-  node_modules/.bin/subswitch init --client both --yes --port "${SMOKE_PORT}" >/dev/null
+# A fixture-owned inherited config catches accidental removal of init's explicit selection.
+SMOKE_INHERITED_CONFIG="${TMPDIR_INSTALL}/inherited-config.json"
+printf '{}\n' > "${SMOKE_INHERITED_CONFIG}"
+(
+  export SUBSWITCH_CONFIG="${SMOKE_INHERITED_CONFIG}"
+  SUBSWITCH_CONFIG="${TMPDIR_INSTALL}/subswitch.config.json" \
+    CODEX_HOME="${TMPDIR_INSTALL}/native-codex" XDG_CONFIG_HOME="${TMPDIR_INSTALL}/user-config" \
+    node_modules/.bin/subswitch init --client both --yes --port "${SMOKE_PORT}" >/dev/null
+)
+node -e 'const fs=require("node:fs");const assert=require("node:assert/strict");assert.equal(fs.readFileSync(process.argv[1],"utf8"),"{}\n","init changed the inherited configuration");' "${SMOKE_INHERITED_CONFIG}"
+echo "Smoke: init preserved the inherited configuration"
 node -e 'const fs=require("node:fs");const p="subswitch.config.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));c.codexIngress.claude.authFile=process.cwd()+"/unused-claude-auth.json";fs.writeFileSync(p,JSON.stringify(c),{mode:0o600});'
 SUBSWITCH_CONFIG="${TMPDIR_INSTALL}/subswitch.config.json" node_modules/.bin/subswitch models --client codex --json > reverse-models.json
 node -e 'const fs=require("node:fs");const m=JSON.parse(fs.readFileSync("reverse-models.json","utf8"));if(!m.enabled||!m.models.some(x=>x.id==="claude-sonnet-5"))process.exit(1);if(!fs.readFileSync("native-codex/config.toml","utf8").includes("openai_base_url"))process.exit(1);'
