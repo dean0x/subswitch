@@ -95,8 +95,17 @@ wait_for_health
 kill "${SERVE_PID}"
 wait "${SERVE_PID}"
 SERVE_PID=""
-CODEX_HOME="${TMPDIR_INSTALL}/native-codex" XDG_CONFIG_HOME="${TMPDIR_INSTALL}/user-config" \
-  node_modules/.bin/subswitch init --client both --yes --port "${SMOKE_PORT}" >/dev/null
+# A fixture-owned inherited config catches accidental removal of init's explicit selection.
+SMOKE_INHERITED_CONFIG="${TMPDIR_INSTALL}/inherited-config.json"
+printf '{}\n' > "${SMOKE_INHERITED_CONFIG}"
+(
+  export SUBSWITCH_CONFIG="${SMOKE_INHERITED_CONFIG}"
+  SUBSWITCH_CONFIG="${TMPDIR_INSTALL}/subswitch.config.json" \
+    CODEX_HOME="${TMPDIR_INSTALL}/native-codex" XDG_CONFIG_HOME="${TMPDIR_INSTALL}/user-config" \
+    node_modules/.bin/subswitch init --client both --yes --port "${SMOKE_PORT}" >/dev/null
+)
+node -e 'const fs=require("node:fs");const assert=require("node:assert/strict");assert.equal(fs.readFileSync(process.argv[1],"utf8"),"{}\n","init changed the inherited configuration");' "${SMOKE_INHERITED_CONFIG}"
+echo "Smoke: init preserved the inherited configuration"
 node -e 'const fs=require("node:fs");const p="subswitch.config.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));c.codexIngress.claude.authFile=process.cwd()+"/unused-claude-auth.json";fs.writeFileSync(p,JSON.stringify(c),{mode:0o600});'
 SUBSWITCH_CONFIG="${TMPDIR_INSTALL}/subswitch.config.json" node_modules/.bin/subswitch models --client codex --json > reverse-models.json
 node -e 'const fs=require("node:fs");const m=JSON.parse(fs.readFileSync("reverse-models.json","utf8"));if(!m.enabled||!m.models.some(x=>x.id==="claude-sonnet-5"))process.exit(1);if(!fs.readFileSync("native-codex/config.toml","utf8").includes("openai_base_url"))process.exit(1);'
