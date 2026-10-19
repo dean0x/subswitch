@@ -17,6 +17,7 @@ import type { ProxyError } from "../errors.js";
 import { providerEvents } from "../provider-events.js";
 import { object, ownValue } from "../plain-object.js";
 import { abortable } from "../abortable.js";
+import { supportsNativeOAuth } from "./destination-catalog.js";
 import {
   allowanceScope,
   RoutingError,
@@ -123,10 +124,10 @@ export class ProfileAuth {
     this.claudeOwners.set(storage, { owner, access: token });
   }
   private manager(id: string, p: AccessProfile): NativeAuth {
+    if (p.credential.kind !== "native-oauth" || !supportsNativeOAuth(p))
+      throw new RoutingError("credential_product_mismatch");
     let manager = this.managers.get(id);
     if (manager) return manager;
-    if (p.credential.kind !== "native-oauth")
-      throw new RoutingError("credential_product_mismatch");
     if (p.provider === "codex")
       manager = new CodexAuthManager({
         store: createFsAuthFileStore(expandHome(p.credential.authFile)),
@@ -175,7 +176,7 @@ export class ProfileAuth {
     const p = ownValue(this.profiles, id);
     if (!p) return false;
     return p.credential.kind === "native-oauth"
-      ? existsSync(expandHome(p.credential.authFile))
+      ? supportsNativeOAuth(p) && existsSync(expandHome(p.credential.authFile))
       : !!ownValue(this.env, p.credential.name);
   }
   async get(
@@ -197,6 +198,8 @@ export class ProfileAuth {
           : { authorization: `Bearer ${key}` };
       owner = digest(key);
     } else {
+      if (!supportsNativeOAuth(p))
+        throw new RoutingError("credential_product_mismatch");
       if (p.provider === "codex") {
         const store = createFsAuthFileStore(expandHome(p.credential.authFile));
         const storage = this.bindNativeStore(id, p, store.coordinationKey);

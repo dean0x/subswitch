@@ -38,6 +38,12 @@ export const KIMI_MODELS = {
   ],
   "kimi-platform": ["kimi-k3"],
 } as const;
+
+/** Native OAuth stores are implemented only for these exact provider/product pairs. */
+export const supportsNativeOAuth = (profile: AccessProfile): boolean =>
+  (profile.provider === "codex" && profile.product === "chatgpt-codex") ||
+  (profile.provider === "claude" && profile.product === "claude-code");
+
 export function modelEfforts(
   profile: AccessProfile,
   model: string,
