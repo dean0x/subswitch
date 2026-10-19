@@ -3,6 +3,7 @@ import {
   DESTINATIONS,
   defaultBase,
   modelEfforts,
+  supportsNativeOAuth,
   VERIFIED_MODEL_EQUIVALENCES,
 } from "./destination-catalog.js";
 import type { AccessProfile, RoutePolicy } from "./routing-types.js";
@@ -81,7 +82,7 @@ export function validateExplicitConfig(
       errors.push(`${id}: region_product_mismatch`);
     if (
       (p.credential.kind === "native-oauth") !==
-      ["chatgpt-codex", "claude-code"].includes(p.product)
+      supportsNativeOAuth(p)
     )
       errors.push(`${id}: credential_product_mismatch`);
     const url = new URL(p.baseUrl ?? defaultBase(p));
