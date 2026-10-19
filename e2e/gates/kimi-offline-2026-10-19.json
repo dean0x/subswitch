@@ -7,10 +7,10 @@
     "package.json": "bf2a60cb80cb695755df7127b47e8c8a8561e5f0",
     "src/routing/destination-catalog.ts": "af92833a9c66e78b004693d3455a49bc17b79c30",
     "src/routing/routing-config.ts": "de3feba3890779971870f37a8b4e14cbd674870c",
-    "src/routing/profile-auth.ts": "d75f162cbe257b544288fd4eb9980cca2333bcb8",
-    "test/unit/kimi-auth.test.ts": "c6a7933ed5e8ffbc9b7d48b91b6480a0a57dcb68",
+    "src/routing/profile-auth.ts": "84831bcff2abc77049eddb44a561ebd157c27d6c",
+    "test/unit/kimi-auth.test.ts": "2a14546324f0202f419370d36efd48c7c0b3826d",
     "test/integration/kimi-qualification.test.ts": "bae74cc8ce7f639dccd7312dfa236a6d8bebff35",
-    "e2e/gates/kimi-readiness.md": "b1c87383074fd9be844e06cb09e566569e1681f9"
+    "e2e/gates/kimi-readiness.md": "9e33b6d7c616b9748c0cd835925d9b24feb69136"
   },
   "scope": {
     "vendorInferenceCalls": 0,
@@ -25,17 +25,23 @@
   "authentication": {
     "supportedKimi": "environment coding-plan or Platform API key with explicit product/region",
     "nativeKimiOAuth": "unsupported; no credential conversion implemented",
-    "beforeFixRegression": "two unsupported OAuth profiles reached a fabricated authFile getter",
-    "afterFix": "unsupported OAuth rejected before credential path/cache access"
+    "beforeFixRegression": "Original audit: two unsupported OAuth profiles reached a fabricated authFile getter. Independent review: both fabricated Kimi OAuth products reused a pending supported refresh instead of rejecting.",
+    "afterFix": "Unsupported OAuth rejects before credential path, manager cache or pending-refresh cache access; refresh retains its rejected-promise API.",
+    "refreshReviewResolution": {
+      "finding": "KIMI-REVIEW-1",
+      "reviewedHead": "264dab7f31f62d7cc34149b3d0b26caeadd0b4c9",
+      "evidence": "Two warm pending-cache regressions fail before the entry guard and pass afterwards; two additional supported-provider regressions preserve deduplication, waiter cancellation and completed-cache cleanup.",
+      "realAuthOrNetworkUsed": false
+    }
   },
   "qualification": {
     "command": "npm run probe:kimi:offline",
-    "tests": 23,
-    "passed": 23,
+    "tests": 27,
+    "passed": 27,
     "failed": 0,
     "skipped": 0,
     "cases": {
-      "authBoundary": 6,
+      "authBoundary": 10,
       "productRegionProtocol": 8,
       "toolContinuationAfterFallback": 2,
       "recoveryWithParkedFallback": 1,
@@ -49,14 +55,21 @@
   "checks": {
     "typecheck": "passed",
     "fullSuite": {
-      "tests": 1154,
-      "passed": 1154,
+      "tests": 1158,
+      "passed": 1158,
       "failed": 0,
       "skipped": 0
     },
     "build": "passed",
     "heavySuiteLock": "/usr/bin/lockf -t 0 on workspace heavy-tests.lock",
-    "review": "two self-review passes: auth/config and fixture/path/environment/package boundaries; no external review claimed"
+    "review": "Independent read-only source review found KIMI-REVIEW-1; resolved with red/green warm-cache regressions. Author re-reviewed auth behavior and fabricated fixture/path/cache boundaries; no GitHub approval claimed.",
+    "targetedAuthAndRouting": {
+      "command": "node --import tsx --test --test-reporter=spec --test-timeout=30000 test/unit/kimi-auth.test.ts test/unit/wave1-auth-review.test.ts test/integration/kimi-qualification.test.ts",
+      "tests": 47,
+      "passed": 47,
+      "failed": 0,
+      "skipped": 0
+    }
   },
   "livePlan": {
     "document": "kimi-readiness.md",
@@ -84,5 +97,6 @@
     "ChatGPT subscription live quota envelope",
     "Platform access",
     "K3 entitlement or subscription/API equivalence"
-  ]
+  ],
+  "reviewFixBase": "264dab7f31f62d7cc34149b3d0b26caeadd0b4c9"
 }

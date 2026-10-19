@@ -30,6 +30,13 @@ before inspecting a path or consulting a cached manager. A fabricated getter
 regression failed before the correction and passes afterwards. Supported Kimi
 environment-key profiles retain their existing behavior; OAuth support was not added.
 
+Independent source review found one remaining entry point: `refresh()` could reuse
+a pending supported-provider refresh after the profile was replaced with unsupported
+Kimi OAuth. It now validates provider/product support before consulting that cache,
+while retaining the existing rejected-promise API. Two fabricated warm-cache
+regressions failed before this guard and pass with it. Supported Claude/Codex refresh
+deduplication and cancellation of an individual waiter remain covered separately.
+
 The fallback fixture uses the supported `openai-api` primary signature
 `429 insufficient_quota`. It does not validate a ChatGPT subscription's live quota
 envelope. The current classifier does not recognize `usage_limit_reached`; an
@@ -55,10 +62,11 @@ requests; no native CLI is launched. Tool execution is an explicitly implemented
 fixture file read, followed by a protocol tool result and saved disposable client
 state. It is not evidence of native-client orchestration.
 
-The 23 cases cover:
+The 27 cases cover:
 
-- Six auth cases: config rejection and runtime path isolation for both unsupported
-  Kimi OAuth products, plus explicit key/header binding for both key products.
+- Ten auth cases: config rejection, runtime path isolation, pending-refresh rejection
+  and explicit key/header binding for both Kimi products, plus supported Claude/Codex
+  refresh deduplication and cancellation of one waiter.
 - Eight Kimi Code/Platform × global/mainland-cn × Messages/Responses combinations:
   product path, region mapping, model/effort, key isolation and a valid terminal.
 - Two real-loopback primary → fake Kimi tool/result continuations, one per client

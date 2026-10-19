@@ -324,6 +324,8 @@ export class ProfileAuth {
     const p = ownValue(this.profiles, id);
     if (p?.credential.kind !== "native-oauth")
       throw new RoutingError("profile_not_refreshable", 401);
+    if (!supportsNativeOAuth(p))
+      return Promise.reject(new RoutingError("credential_product_mismatch"));
     let pending = this.refreshes.get(id);
     if (!pending) {
       pending = this.get(id, AbortSignal.timeout(10000), true).finally(() =>

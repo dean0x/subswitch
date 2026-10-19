@@ -254,7 +254,7 @@ machine, but its Subswitch profile/auth contract remains unimplemented. The CLI 
 does not replace the required relay, continuation, fallback and recovery live gates.
 
 The [2026-10-19 offline readiness audit](kimi-readiness.md) adds an executable
-23-case isolated qualification command, rejects unsupported programmatic Kimi OAuth
+27-case isolated qualification command, rejects unsupported programmatic Kimi OAuth
 before inspecting credential paths, and prepares a finite live acceptance plan.
 Its fixtures use loopback servers, fabricated keys and disposable client state.
 No new live Kimi or native-client acceptance is claimed by that audit.
