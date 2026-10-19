@@ -1,0 +1,1050 @@
+{
+  "date": "2026-10-11",
+  "evidenceClass": "live-observed",
+  "gate": "current-native-codex-http-followup",
+  "gateStatus": "failed",
+  "mergeBlocking": true,
+  "run": "expanded-source-marker-classifier",
+  "nativeClient": "codex",
+  "clientVersion": "0.162.1",
+  "clientVersionEvidence": "recorded-in-run",
+  "product": [
+    "chatgpt-codex",
+    "claude-code"
+  ],
+  "region": "vendor-default",
+  "credentialKind": "native-oauth",
+  "protocol": [
+    "responses-http",
+    "messages-sse"
+  ],
+  "triggerClass": "synthetic connection-phase WebSocket 426; inference uses real subscriptions",
+  "source": "e2e/gates/native-production.ts with opt-in in-memory structural observer",
+  "observerSource": "e2e/gates/native-history-observer.ts",
+  "sourceHash": "8c0f7011674145da7e10627769fb221c74fbf7a0",
+  "sourceHashKind": "pinned Codex source contract revision",
+  "sourceReferences": [
+    "https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/core/src/context/current_time_reminder.rs",
+    "https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/context-fragments/src/fragment.rs",
+    "https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/core/src/context/model_switch_instructions.rs",
+    "https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/prompts/src/multi_agent_instructions.rs"
+  ],
+  "reportSha256": "ff535ec8573eaac178212d1a1bd16d56c52e3cff6d58de61dc776bb8db5a8458",
+  "reasonCode": "mid_history_instructions_unimplemented",
+  "safeTreatment": "explicitly rejected; no instructions moved, dropped, or downgraded",
+  "observedBoundary": {
+    "target": "claude",
+    "index": 12,
+    "role": "developer",
+    "noticeCode": "instruction_unrecognized",
+    "matchesInitialInstruction": false,
+    "recognizedSourceMarkers": []
+  },
+  "report": {
+    "schemaVersion": 1,
+    "productionGateway": true,
+    "nativeAuthentication": "subscription",
+    "realDiscovery": true,
+    "model": "sonnet",
+    "followup": true,
+    "httpOnly": true,
+    "parentModel": "gpt-6-sol",
+    "clientVersion": "0.162.1",
+    "parentVersion": "v2",
+    "firstValueReturned": true,
+    "followupValueReturned": false,
+    "nativeDiagnostics": [
+      "websocket"
+    ],
+    "success": false,
+    "nativeExit": "exit_0",
+    "claudeResponses": 2,
+    "openaiResponses": 6,
+    "toolCalls": 1,
+    "toolResults": 3,
+    "modelRequests": 9,
+    "cachedPromptObserved": false,
+    "errors": [
+      "mid_history_instructions_unimplemented",
+      "mid_history_instructions_unimplemented"
+    ],
+    "nativeCredentialMatches": true,
+    "nativeAccountHeaderMatches": true,
+    "upgradeRequests": 2,
+    "historyObservations": [
+      {
+        "request": 0,
+        "target": "parent",
+        "items": [
+          {
+            "index": 0,
+            "type": "additional_tools",
+            "role": "developer"
+          },
+          {
+            "index": 1,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 2,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_shape_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "collaboration_mode",
+              "permissions_instructions"
+            ]
+          },
+          {
+            "index": 3,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_role",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_role"
+            ]
+          },
+          {
+            "index": 4,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_mode",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_mode"
+            ]
+          },
+          {
+            "index": 5,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 6,
+            "type": "message",
+            "role": "user"
+          }
+        ]
+      },
+      {
+        "request": 1,
+        "target": "parent",
+        "items": [
+          {
+            "index": 0,
+            "type": "additional_tools",
+            "role": "developer"
+          },
+          {
+            "index": 1,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 2,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_shape_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "collaboration_mode",
+              "permissions_instructions"
+            ]
+          },
+          {
+            "index": 3,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_role",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_role"
+            ]
+          },
+          {
+            "index": 4,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_mode",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_mode"
+            ]
+          },
+          {
+            "index": 5,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 6,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 7,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 8,
+            "type": "message",
+            "role": "assistant"
+          },
+          {
+            "index": 9,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 10,
+            "type": "function_call_output",
+            "role": "none"
+          }
+        ]
+      },
+      {
+        "request": 2,
+        "target": "claude",
+        "items": [
+          {
+            "index": 0,
+            "type": "additional_tools",
+            "role": "developer"
+          },
+          {
+            "index": 1,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 2,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_shape_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "permissions_instructions",
+              "model_switch"
+            ]
+          },
+          {
+            "index": 3,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 4,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_mode",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_mode"
+            ]
+          },
+          {
+            "index": 5,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 6,
+            "type": "agent_message",
+            "role": "none"
+          }
+        ]
+      },
+      {
+        "request": 3,
+        "target": "claude",
+        "items": [
+          {
+            "index": 0,
+            "type": "additional_tools",
+            "role": "developer"
+          },
+          {
+            "index": 1,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 2,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_shape_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "permissions_instructions",
+              "model_switch"
+            ]
+          },
+          {
+            "index": 3,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 4,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_mode",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_mode"
+            ]
+          },
+          {
+            "index": 5,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 6,
+            "type": "agent_message",
+            "role": "none"
+          },
+          {
+            "index": 7,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 8,
+            "type": "custom_tool_call",
+            "role": "none"
+          },
+          {
+            "index": 9,
+            "type": "custom_tool_call_output",
+            "role": "none"
+          }
+        ]
+      },
+      {
+        "request": 4,
+        "target": "parent",
+        "items": [
+          {
+            "index": 0,
+            "type": "additional_tools",
+            "role": "developer"
+          },
+          {
+            "index": 1,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 2,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_shape_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "collaboration_mode",
+              "permissions_instructions"
+            ]
+          },
+          {
+            "index": 3,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_role",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_role"
+            ]
+          },
+          {
+            "index": 4,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_mode",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_mode"
+            ]
+          },
+          {
+            "index": 5,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 6,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 7,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 8,
+            "type": "message",
+            "role": "assistant"
+          },
+          {
+            "index": 9,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 10,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 11,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 12,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 13,
+            "type": "agent_message",
+            "role": "none"
+          }
+        ]
+      },
+      {
+        "request": 5,
+        "target": "claude",
+        "items": [
+          {
+            "index": 0,
+            "type": "additional_tools",
+            "role": "developer"
+          },
+          {
+            "index": 1,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 2,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_shape_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "permissions_instructions",
+              "model_switch"
+            ]
+          },
+          {
+            "index": 3,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 4,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_mode",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_mode"
+            ]
+          },
+          {
+            "index": 5,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 6,
+            "type": "agent_message",
+            "role": "none"
+          },
+          {
+            "index": 7,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 8,
+            "type": "custom_tool_call",
+            "role": "none"
+          },
+          {
+            "index": 9,
+            "type": "custom_tool_call_output",
+            "role": "none"
+          },
+          {
+            "index": 10,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 11,
+            "type": "message",
+            "role": "assistant"
+          },
+          {
+            "index": 12,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 13,
+            "type": "agent_message",
+            "role": "none"
+          }
+        ]
+      },
+      {
+        "request": 6,
+        "target": "parent",
+        "items": [
+          {
+            "index": 0,
+            "type": "additional_tools",
+            "role": "developer"
+          },
+          {
+            "index": 1,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 2,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_shape_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "collaboration_mode",
+              "permissions_instructions"
+            ]
+          },
+          {
+            "index": 3,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_role",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_role"
+            ]
+          },
+          {
+            "index": 4,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_mode",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_mode"
+            ]
+          },
+          {
+            "index": 5,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 6,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 7,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 8,
+            "type": "message",
+            "role": "assistant"
+          },
+          {
+            "index": 9,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 10,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 11,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 12,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 13,
+            "type": "agent_message",
+            "role": "none"
+          },
+          {
+            "index": 14,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 15,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 16,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 17,
+            "type": "agent_message",
+            "role": "none"
+          }
+        ]
+      },
+      {
+        "request": 7,
+        "target": "claude",
+        "items": [
+          {
+            "index": 0,
+            "type": "additional_tools",
+            "role": "developer"
+          },
+          {
+            "index": 1,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 2,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_shape_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "permissions_instructions",
+              "model_switch"
+            ]
+          },
+          {
+            "index": 3,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 4,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_mode",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_mode"
+            ]
+          },
+          {
+            "index": 5,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 6,
+            "type": "agent_message",
+            "role": "none"
+          },
+          {
+            "index": 7,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 8,
+            "type": "custom_tool_call",
+            "role": "none"
+          },
+          {
+            "index": 9,
+            "type": "custom_tool_call_output",
+            "role": "none"
+          },
+          {
+            "index": 10,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 11,
+            "type": "message",
+            "role": "assistant"
+          },
+          {
+            "index": 12,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 13,
+            "type": "agent_message",
+            "role": "none"
+          },
+          {
+            "index": 14,
+            "type": "agent_message",
+            "role": "none"
+          }
+        ]
+      },
+      {
+        "request": 8,
+        "target": "parent",
+        "items": [
+          {
+            "index": 0,
+            "type": "additional_tools",
+            "role": "developer"
+          },
+          {
+            "index": 1,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 2,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_shape_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "collaboration_mode",
+              "permissions_instructions"
+            ]
+          },
+          {
+            "index": 3,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_role",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_role"
+            ]
+          },
+          {
+            "index": 4,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_mode",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_mode"
+            ]
+          },
+          {
+            "index": 5,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 6,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 7,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 8,
+            "type": "message",
+            "role": "assistant"
+          },
+          {
+            "index": 9,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 10,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 11,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 12,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 13,
+            "type": "agent_message",
+            "role": "none"
+          },
+          {
+            "index": 14,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 15,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 16,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 17,
+            "type": "agent_message",
+            "role": "none"
+          },
+          {
+            "index": 18,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 19,
+            "type": "message",
+            "role": "assistant"
+          },
+          {
+            "index": 20,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 21,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 22,
+            "type": "agent_message",
+            "role": "none"
+          }
+        ]
+      },
+      {
+        "request": 9,
+        "target": "parent",
+        "items": [
+          {
+            "index": 0,
+            "type": "additional_tools",
+            "role": "developer"
+          },
+          {
+            "index": 1,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": []
+          },
+          {
+            "index": 2,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "instruction_shape_unrecognized",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "collaboration_mode",
+              "permissions_instructions"
+            ]
+          },
+          {
+            "index": 3,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_role",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_role"
+            ]
+          },
+          {
+            "index": 4,
+            "type": "message",
+            "role": "developer",
+            "noticeCode": "multi_agent_mode",
+            "matchesInitialInstruction": false,
+            "containedNotices": [
+              "multi_agent_mode"
+            ]
+          },
+          {
+            "index": 5,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 6,
+            "type": "message",
+            "role": "user"
+          },
+          {
+            "index": 7,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 8,
+            "type": "message",
+            "role": "assistant"
+          },
+          {
+            "index": 9,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 10,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 11,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 12,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 13,
+            "type": "agent_message",
+            "role": "none"
+          },
+          {
+            "index": 14,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 15,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 16,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 17,
+            "type": "agent_message",
+            "role": "none"
+          },
+          {
+            "index": 18,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 19,
+            "type": "message",
+            "role": "assistant"
+          },
+          {
+            "index": 20,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 21,
+            "type": "function_call_output",
+            "role": "none"
+          },
+          {
+            "index": 22,
+            "type": "agent_message",
+            "role": "none"
+          },
+          {
+            "index": 23,
+            "type": "reasoning",
+            "role": "none"
+          },
+          {
+            "index": 24,
+            "type": "function_call",
+            "role": "none"
+          },
+          {
+            "index": 25,
+            "type": "function_call_output",
+            "role": "none"
+          }
+        ]
+      }
+    ]
+  }
+}

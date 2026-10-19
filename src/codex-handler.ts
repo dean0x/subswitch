@@ -16,6 +16,8 @@ import { estimateTokens, translateRequest } from "./codex-request.js";
 import { deriveConversationKey } from "./conversation-key.js";
 import { aggregateFrames, createAnthropicSseTranslator, createSseParser } from "./codex-response.js";
 import { AnthropicRequestSchema } from "./anthropic-wire-types.js";
+import { recordLimitFailure } from "./limit-observation.js";
+import { observeReadableSse } from "./limit-http-observer.js";
 
 const ERROR_BODY_PEEK_BYTES = 2048;
 
@@ -150,6 +152,11 @@ export const buildHeaders = <P extends ProviderId>(
   return headers;
 };
 
+export const codexTransportConstants = (userAgent: string): CodexTransportConstants => ({
+  "openai-beta": "responses=experimental", originator: "codex_cli_rs", accept: "text/event-stream",
+  "content-type": "application/json", "user-agent": userAgent,
+});
+
 export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<P>): ProviderHandler => {
   const { providerId, provider, logger, auth, cache, pingIntervalMs, loginCommand } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -160,13 +167,7 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
   const responsesUrl = `${provider.baseUrl.replace(/\/$/, "")}/responses`;
   // Built once per handler instance — values are fixed for the lifetime of this provider
   // slice, so there is no reason to rebuild on every request. (avoids PF-005)
-  const transportConstants: CodexTransportConstants = {
-    "openai-beta": "responses=experimental",
-    originator: "codex_cli_rs",
-    accept: "text/event-stream",
-    "content-type": "application/json",
-    "user-agent": provider.userAgent,
-  };
+  const transportConstants = codexTransportConstants(provider.userAgent);
 
   const handleMessages = async (_req: IncomingMessage, res: ServerResponse, _rawBody: Buffer, parsedBody: unknown, canonicalModel: string): Promise<void> => {
     // parsedBody is pre-parsed by the server (JSON.parse called once at the request level).
@@ -311,6 +312,9 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
       if (!upstream.ok) {
         const mapped = upstreamStatusToAnthropicError(upstream.status);
         const detail = await readBoundedText(upstream.body, ERROR_BODY_PEEK_BYTES);
+        recordLimitFailure(logger, { provider: "codex", product: "chatgpt-codex", protocol: "responses" },
+          { transport: "http", status: upstream.status, committed: false, headers: upstream.headers,
+            text: detail, truncated: Buffer.byteLength(detail) >= ERROR_BODY_PEEK_BYTES });
         logger.log("warn", events.upstreamError, { model, status: upstream.status });
         const retryAfter = upstream.headers.get("retry-after");
         // Only 401s get a remediation hint — no other status code changes behaviour.
@@ -345,6 +349,7 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
         ...(wantStream ? { pingIntervalMs } : {}),
       });
       const bodyStream = Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>);
+      observeReadableSse(logger, { provider: "codex", product: "chatgpt-codex", protocol: "responses" }, bodyStream, upstream.headers);
       bodyStream.on("data", resetIdle);
       resetIdle();
 

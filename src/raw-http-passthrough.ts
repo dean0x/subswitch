@@ -5,6 +5,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
 import { drainRejectedUpload } from "./provider-transport.js";
 import type { Logger } from "./logger.js";
+import { observeNodeResponse } from "./limit-http-observer.js";
+import type { LimitContext } from "./limit-observation.js";
 
 /**
  * Hop-by-hop headers per RFC 7230 §6.1 — stripped in BOTH the request and response
@@ -69,7 +71,8 @@ export const filterRawHeaders = (rawHeaders: readonly string[], strip: ReadonlyS
     const name = rawHeaders[i]!;
     const value = rawHeaders[i + 1]!;
     const lower = name.toLowerCase();
-    if (!strip.has(lower) && !connectionFields.has(lower)) {
+    // A process-local control capability is never an upstream or downstream header.
+    if (lower !== "x-subswitch-capability" && !strip.has(lower) && !connectionFields.has(lower)) {
       filtered.push(name, value);
     }
   }
@@ -122,6 +125,7 @@ export interface PassthroughOptions {
    * matching the base URL protocol.
    */
   readonly agent?: http.Agent;
+  readonly limitContext?: LimitContext;
 }
 
 /**
@@ -213,6 +217,7 @@ export const createRawHttpForwarder = (options: PassthroughOptions): RawHttpForw
       // Terminal outcome 1 (upstream response headers).
       (upstreamRes) => {
         if (!settle()) { upstreamRes.destroy(); return; }
+        if (options.limitContext) observeNodeResponse(options.logger, options.limitContext, upstreamRes);
         // Retry only a complete body, once. An upload stream cannot be replayed safely.
         if (upstreamRes.statusCode === 401 && hooks?.onUnauthorized && consumed.kind === "complete") {
           upstreamRes.destroy(); upstream.destroy();

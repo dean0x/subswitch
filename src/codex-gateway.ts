@@ -27,6 +27,8 @@ import { createFrameWriter, drainRejectedUpload } from "./provider-transport.js"
 import { SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, openaiErrorBody, openaiFailureEvent } from "./errors.js";
 import type { CodexEndpointMode } from "./codex-ingress.js";
 import type { ProviderAuth } from "./provider-auth.js";
+import type { SharedRouting } from "./routing/shared-routing.js";
+import type { ActionContext } from "./routing/routing-types.js";
 
 /** Reverse-enabled ingress: raw same-provider forwarding, scoped collaboration adaptation, Claude dispatch. */
 export class CodexGateway implements CodexIngressEntry {
@@ -42,6 +44,7 @@ export class CodexGateway implements CodexIngressEntry {
   private readonly config: Config;
   private readonly logger: Logger;
   private readonly nativeAuth: CodexNativeAuth;
+  private readonly sharedRouting: SharedRouting | undefined;
   constructor(options: {
     config: Config;
     logger: Logger;
@@ -49,11 +52,13 @@ export class CodexGateway implements CodexIngressEntry {
     resolveClaude: (model: string) => string | undefined;
     parentAuth?: ProviderAuth<"codex">;
     fetchImpl?: typeof fetch;
+    sharedRouting?: SharedRouting;
   }) {
     const { config, logger, claudeAuth, fetchImpl, parentAuth } = options;
     this.config = config;
     this.logger = logger;
-    this.nativeAuth = new CodexNativeAuth(parentAuth);
+    this.sharedRouting = options.sharedRouting;
+    this.nativeAuth = new CodexNativeAuth(parentAuth, req => this.sharedRouting?.admissionSignal(req));
     const provider = config.codexIngress.claude;
     const budget = new WebSocketBudget(config.codexIngress.maxUpstreamSockets);
     this.raw = createOpenaiPassthrough(config.codexIngress, logger, budget);
@@ -77,7 +82,10 @@ export class CodexGateway implements CodexIngressEntry {
       controllers: this.controllers,
       destination: (body) => this.destination(body),
       parentRequest: (body) => this.parentRequest(body),
-      events: (body, model, signal, session) => this.claudeEvents(body, model, signal, session),
+      events: (body, model, signal, session, req, admission) => this.claudeEvents(body, model, signal, session, req, admission),
+      context: (req, body) => this.sharedRouting?.context(req, "codex", body),
+      explicitRoutes: !!Object.keys(config.routes ?? {}).length,
+      scopedSocket: (req, socket) => this.sharedRouting?.scopedSocket(req, socket, "codex"),
       correlation: (req) => this.correlation(req),
     });
     this.claude = new ClaudeHandler(
@@ -99,6 +107,8 @@ export class CodexGateway implements CodexIngressEntry {
       this.httpError(res, new ClaudeHttpError(503, "SubSwitch is shutting down.", "proxy_closing"));
       return;
     }
+    try { this.sharedRouting?.admitHttp(req, res, "codex"); }
+    catch (error) { this.httpError(res, error); drainRejectedUpload(req); return; }
     void this.handleHttp(req, res, mode, path).catch((error) => this.httpError(res, error));
   }
   private httpError(res: ServerResponse, error: unknown): void {
@@ -161,11 +171,16 @@ export class CodexGateway implements CodexIngressEntry {
     return full;
   }
   private resolveName(name: string): ClaudeResolution {
+    const explicit = this.sharedRouting?.match({ model: name }, "codex");
+    if (explicit) return { kind: "claude", model: explicit };
+    if (!this.config.codexIngress.claude.enabled) return { kind: "foreign" };
     const model = this.resolve(name);
     if (model) return { kind: "claude", model };
     return isClaudeModelName(name) ? { kind: "unregistered", name } : { kind: "foreign" };
   }
   private destination(body: Item): ClaudeResolution {
+    const explicit = this.sharedRouting?.match(body, "codex");
+    if (explicit) return { kind: "claude", model: explicit };
     if (typeof body["model"] === "string") return this.resolveName(body["model"]);
     if (typeof body["previous_response_id"] === "string") {
       const snapshot = this.cache.get("snapshot", body["previous_response_id"]);
@@ -184,7 +199,16 @@ export class CodexGateway implements CodexIngressEntry {
     model: string,
     signal: AbortSignal,
     sessionKey?: string,
+    req?: IncomingMessage,
+    admission?: { signal: AbortSignal; context: ActionContext },
   ): AsyncGenerator<Item> {
+    signal.throwIfAborted();
+    const explicit = this.sharedRouting?.match(body, "codex");
+    if (explicit && this.sharedRouting) {
+      yield* this.sharedRouting.events({ ...body, stream: true }, "codex", explicit, signal,
+        admission?.context ?? (req ? this.sharedRouting.context(req, "codex", body) : undefined), admission?.signal);
+      return;
+    }
     const full = this.fullRequest(body, model);
     if (body["generate"] === false) {
       const id = `resp_subswitch_${randomUUID()}`;
@@ -221,7 +245,7 @@ export class CodexGateway implements CodexIngressEntry {
     mode: CodexEndpointMode,
     path: string,
   ): Promise<void> {
-    if (!this.config.codexIngress.claude.enabled) {
+    if (!this.config.codexIngress.claude.enabled && !Object.keys(this.config.routes ?? {}).length) {
       this.raw.http(req, res, mode, path, undefined, await this.nativeAuth.headers(req, mode, path));
       return;
     }
@@ -275,6 +299,11 @@ export class CodexGateway implements CodexIngressEntry {
       return;
     }
     const route = decideCodexRoute(pathname ?? "", this.destination(body));
+    const explicit = this.sharedRouting?.match(body, "codex");
+    if (explicit && this.sharedRouting) {
+      if (pathname === "/responses/compact") throw new ReverseContractError("translated_compaction_unavailable");
+      await this.sharedRouting.http(req, res, body, "codex", explicit); return;
+    }
     switch (route.kind) {
       case "parent": {
         const nativeHeaders = await this.nativeAuth.headers(req, mode, path);
@@ -367,6 +396,7 @@ export class CodexGateway implements CodexIngressEntry {
     }
   }
   upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, mode: CodexEndpointMode, path: string): void {
+    this.sharedRouting?.stripPrefix(req);
     this.webSockets.upgrade(req, socket, head, mode, path);
   }
 }

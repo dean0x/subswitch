@@ -42,6 +42,9 @@
     "doctor": "tsx src/cli.ts doctor",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test --test-timeout=30000 \"test/unit/*.test.ts\" \"test/integration/*.test.ts\"",
+    "bench:routing": "node --import tsx test/tools/routing-quota.bench.ts",
+    "bench:replay": "node --import tsx test/tools/replay-cache.bench.ts",
+    "bench:limits": "node --import tsx test/tools/limit-observation.bench.ts",
     "bench:sse": "node --import tsx test/tools/sse-parser.bench.ts",
     "bench:memory": "node --import tsx test/tools/memory-concurrent-uploads.bench.ts",
     "probe:compat": "tsx e2e/gates/run.ts",
@@ -52,7 +55,9 @@
     "prepack": "npm run build",
     "prepublishOnly": "npm run check",
     "probe:native-reverse": "tsx e2e/gates/native-reverse.ts",
-    "probe:native-production": "tsx e2e/gates/native-production.ts"
+    "probe:native-production": "tsx e2e/gates/native-production.ts",
+    "probe:kimi": "tsx e2e/gates/kimi-probe.ts",
+    "probe:kimi:offline": "node --import tsx --test --test-timeout=30000 test/unit/kimi-auth.test.ts test/integration/kimi-qualification.test.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
