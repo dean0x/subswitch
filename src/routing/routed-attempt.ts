@@ -35,6 +35,7 @@ import { systemClock, type RoutingClock } from "./clock.js";
 import { codexTransportConstants, buildHeaders } from "../codex-handler.js";
 import { StagedCache } from "./replay-cache.js";
 import { adaptRequest } from "./request-adapter.js";
+import { rememberThinking } from "./signed-thinking.js";
 import { deriveConversationKey } from "../conversation-key.js";
 import { recordLimitFailure, type LimitContext } from "../limit-observation.js";
 
@@ -53,6 +54,7 @@ export interface AttemptRequest {
   route?: string;
   attempt?: number;
   scopeHash?: string;
+  allowNativeThinkingReplay?: boolean;
 }
 export interface RoutedPrepared {
   events: AsyncIterable<ClientEvent>;
@@ -98,191 +100,199 @@ export class RoutedAttempts {
     const transcript =
       request.transcript ?? decodePortableHistory(request.body, ingress);
     const stage = new StagedCache(this.replay);
-    const replayKey = createHmac("sha256", this.key)
-      .update(owner + conversation)
-      .digest();
-    const state = new ReverseState(replayKey, undefined, stage);
-    const { outbound, reverse } = adaptRequest({
-      ...request,
-      ingress,
-      protocol,
-      transcript,
-      stage,
-      state,
-      owner,
-      sessionId,
-    });
-    const controller = new AbortController(),
-      combined = AbortSignal.any([signal, controller.signal]);
-    const encodedRequest = JSON.stringify(outbound);
-    let response: Response;
+    const abandon = () => stage.discard();
+    signal.addEventListener("abort", abandon, { once: true });
+    const finish = () => signal.removeEventListener("abort", abandon);
     try {
-      while (true) {
-        combined.throwIfAborted();
-        this.auth.validate(credential);
-        let headers: Record<string, string> = {
-          ...credential.authHeaders,
-          "content-type": "application/json",
-          accept: "text/event-stream",
-        };
-        if (protocol === "messages")
-          headers["anthropic-version"] = "2023-06-01";
-        if (p.product === "claude-code")
-          headers["anthropic-beta"] = "claude-code-20250219,oauth-2025-04-20";
-        if (p.product === "chatgpt-codex") {
-          if (credential.provider !== "codex")
-            throw new RoutingError("credential_binding_mismatch", 503);
-          headers = buildHeaders(
-            { provider: "codex", authHeaders: credential.authHeaders },
-            sessionId,
-            codexTransportConstants(this.codexUserAgent),
-          );
-        }
-        response = await this.fetchImpl(destinationUrl(p, protocol), {
-          method: "POST",
-          headers,
-          body: encodedRequest,
-          redirect: "error",
-          signal: combined,
-        });
-        if (
-          response.status !== 401 ||
-          p.credential.kind !== "native-oauth" ||
-          request.refreshes.has(t.profile)
-        )
-          break;
-        request.refreshes.add(t.profile);
-        await readBoundedBody(response.body, 64 * 1024, combined);
-        const refreshed = await this.auth.refresh(t.profile, combined);
-        if (refreshed.generation !== credential.generation)
-          throw new RoutingError("credential_owner_changed", 409);
-        credential = refreshed;
-      }
-    } catch (error) {
-      if (error instanceof RoutingError) throw error;
-      if (combined.aborted) throw new RoutingError("request_cancelled", 499);
-      throw new AttemptFailure({
-        kind: "transport",
-        evidence: "unknown",
-        windows: [],
-        bodyTruncated: false,
-        responseCommitted: false,
+      signal.throwIfAborted();
+      const replayKey = createHmac("sha256", this.key)
+        .update(owner + conversation)
+        .digest();
+      const state = new ReverseState(replayKey, undefined, stage);
+      const { outbound, reverse } = adaptRequest({
+        ...request,
+        ingress,
+        protocol,
+        transcript,
+        stage,
+        state,
+        owner,
+        sessionId,
       });
-    }
-    const limitContext: LimitContext = { provider: p.provider, product: p.product, protocol, profile: t.profile, model: t.model,
-      ingress, configuredCredentialKind: p.credential.kind === "native-oauth" ? "native-oauth" : p.product === "kimi-code" ? "coding-plan-key" : "api-key",
-      ...(request.scopeHash ? { scopeHash: request.scopeHash } : {}),
-      ...(p.region ? { region: p.region } : {}),
-      ...(request.route ? { route: request.route } : {}), ...(request.attempt !== undefined ? { attempt: request.attempt } : {}) };
-    if (!response.ok) {
-      const body = await readBoundedBody(response.body, 64 * 1024, combined);
-      recordLimitFailure(this.logger, limitContext, { transport: "http", status: response.status, committed: false,
-        headers: response.headers, text: body.text, truncated: body.truncated || !body.complete });
-      throw new AttemptFailure(
-        classifyFailure(
-          p,
-          response.status,
-          body,
-          this.clock.now(),
-          response.headers.get("retry-after"),
-        ),
-      );
-    }
-    const raw = validatedProviderEvents(
-      response,
-      p,
-      protocol,
-      combined,
-      controller,
-      this.clock,
-      (final) => {
-        if (Array.isArray(final["content"]))
-          for (const value of final["content"]) {
-            const item = object(value),
-              signature = item?.["signature"] ?? item?.["data"];
-            if (typeof signature === "string")
-              stage.put(
-                "snapshot",
-                `signature:${owner}:${conversation}:${signature}`,
-                { request: {}, input: [item!] },
-              );
+      const controller = new AbortController(),
+        combined = AbortSignal.any([signal, controller.signal]);
+      const encodedRequest = JSON.stringify(outbound);
+      let response: Response;
+      try {
+        while (true) {
+          combined.throwIfAborted();
+          this.auth.validate(credential);
+          let headers: Record<string, string> = {
+            ...credential.authHeaders,
+            "content-type": "application/json",
+            accept: "text/event-stream",
+          };
+          if (protocol === "messages")
+            headers["anthropic-version"] = "2023-06-01";
+          if (p.product === "claude-code")
+            headers["anthropic-beta"] = "claude-code-20250219,oauth-2025-04-20";
+          if (p.product === "chatgpt-codex") {
+            if (credential.provider !== "codex")
+              throw new RoutingError("credential_binding_mismatch", 503);
+            headers = buildHeaders(
+              { provider: "codex", authHeaders: credential.authHeaders },
+              sessionId,
+              codexTransportConstants(this.codexUserAgent),
+            );
           }
-        if (Array.isArray(final["output"])) {
-          const output = final["output"] as Item[],
-            reasoning = output.filter((i) => i["type"] === "reasoning");
-          for (const item of output) {
-            if (
-              item["type"] === "function_call" &&
-              typeof item["call_id"] === "string"
-            )
-              stage.put(
-                "snapshot",
-                `reasoning:${owner}:${conversation}:${item["call_id"]}`,
-                { request: {}, input: reasoning },
-              );
-            if (
-              item["type"] === "reasoning" &&
-              typeof item["encrypted_content"] === "string"
-            )
-              stage.put(
-                "snapshot",
-                `opaque:${owner}:${conversation}:${item["encrypted_content"]}`,
-                { request: {}, input: [item] },
-              );
-          }
+          response = await this.fetchImpl(destinationUrl(p, protocol), {
+            method: "POST",
+            headers,
+            body: encodedRequest,
+            redirect: "error",
+            signal: combined,
+          });
+          if (
+            response.status !== 401 ||
+            p.credential.kind !== "native-oauth" ||
+            request.refreshes.has(t.profile)
+          )
+            break;
+          request.refreshes.add(t.profile);
+          await readBoundedBody(response.body, 64 * 1024, combined);
+          const refreshed = await this.auth.refresh(t.profile, combined);
+          if (refreshed.generation !== credential.generation)
+            throw new RoutingError("credential_owner_changed", 409);
+          credential = refreshed;
         }
-      },
-      this.logger,
-      limitContext,
-    );
-    let converted: AsyncIterable<ClientEvent>;
-    if (protocol === ingress) converted = this.identity(raw, protocol);
-    else if (ingress === "responses") {
-      if (!reverse) throw new RoutingError("adapter_missing", 500);
-      converted = this.identity(
-        translateClaudeStream(raw, {
-          id: `resp_subswitch_${randomUUID()}`,
-          model: t.model,
-          request: reverse,
-          state,
-          maxBytes: 64 * 1024 * 1024,
-        }),
-        "responses",
+      } catch (error) {
+        if (error instanceof RoutingError) throw error;
+        if (combined.aborted) throw new RoutingError("request_cancelled", 499);
+        throw new AttemptFailure({
+          kind: "transport",
+          evidence: "unknown",
+          windows: [],
+          bodyTruncated: false,
+          responseCommitted: false,
+        });
+      }
+      const limitContext: LimitContext = { provider: p.provider, product: p.product, protocol, profile: t.profile, model: t.model,
+        ingress, configuredCredentialKind: p.credential.kind === "native-oauth" ? "native-oauth" : p.product === "kimi-code" ? "coding-plan-key" : "api-key",
+        ...(request.scopeHash ? { scopeHash: request.scopeHash } : {}),
+        ...(p.region ? { region: p.region } : {}),
+        ...(request.route ? { route: request.route } : {}), ...(request.attempt !== undefined ? { attempt: request.attempt } : {}) };
+      if (!response.ok) {
+        const body = await readBoundedBody(response.body, 64 * 1024, combined);
+        recordLimitFailure(this.logger, limitContext, { transport: "http", status: response.status, committed: false,
+          headers: response.headers, text: body.text, truncated: body.truncated || !body.complete });
+        throw new AttemptFailure(
+          classifyFailure(
+            p,
+            response.status,
+            body,
+            this.clock.now(),
+            response.headers.get("retry-after"),
+          ),
+        );
+      }
+      const raw = validatedProviderEvents(
+        response,
+        p,
+        protocol,
+        combined,
+        controller,
+        this.clock,
+        (final) => {
+          if (Array.isArray(final["content"]))
+            for (const value of final["content"]) {
+              const item = object(value);
+              if (item) rememberThinking(stage, owner, conversation, item);
+            }
+          if (Array.isArray(final["output"])) {
+            const output = final["output"] as Item[],
+              reasoning = output.filter((i) => i["type"] === "reasoning");
+            for (const item of output) {
+              if (
+                item["type"] === "function_call" &&
+                typeof item["call_id"] === "string"
+              )
+                stage.put(
+                  "snapshot",
+                  `reasoning:${owner}:${conversation}:${item["call_id"]}`,
+                  { request: {}, input: reasoning },
+                );
+              if (
+                item["type"] === "reasoning" &&
+                typeof item["encrypted_content"] === "string"
+              )
+                stage.put(
+                  "snapshot",
+                  `opaque:${owner}:${conversation}:${item["encrypted_content"]}`,
+                  { request: {}, input: [item] },
+                );
+            }
+          }
+        },
+        this.logger,
+        limitContext,
       );
-    } else {
-      converted = this.forward(raw, t.model, (id, items) =>
-        stage.put("snapshot", `reasoning:${owner}:${conversation}:${id}`, {
-          request: {},
-          input: items as Item[],
-        }),
-      );
-    }
-    const iterator = converted[Symbol.asyncIterator]();
-    return {
-      events: { [Symbol.asyncIterator]: () => iterator },
-      owner,
-      protocol: ingress,
-      commit: () => stage.commit(),
-      cancel: async () => {
-        controller.abort();
-        // Returning the generator clears idle timers and pipeline listeners even when
-        // cancellation arrives while downstream is parked at a delivered event.
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const closing = Promise.allSettled([
-          iterator.return?.(),
-          response.body && !response.body.locked
-            ? response.body.cancel()
-            : undefined,
-        ]);
-        await Promise.race([
-          closing,
-          new Promise<void>((resolve) => {
-            timer = setTimeout(resolve, 100);
+      let converted: AsyncIterable<ClientEvent>;
+      if (protocol === ingress) converted = this.identity(raw, protocol);
+      else if (ingress === "responses") {
+        if (!reverse) throw new RoutingError("adapter_missing", 500);
+        converted = this.identity(
+          translateClaudeStream(raw, {
+            id: `resp_subswitch_${randomUUID()}`,
+            model: t.model,
+            request: reverse,
+            state,
+            maxBytes: 64 * 1024 * 1024,
           }),
-        ]);
-        clearTimeout(timer);
-      },
-    };
+          "responses",
+        );
+      } else {
+        converted = this.forward(raw, t.model, (id, items) =>
+          stage.put("snapshot", `reasoning:${owner}:${conversation}:${id}`, {
+            request: {},
+            input: items as Item[],
+          }),
+        );
+      }
+      const iterator = converted[Symbol.asyncIterator]();
+      return {
+        events: { [Symbol.asyncIterator]: () => iterator },
+        owner,
+        protocol: ingress,
+        commit: () => {
+          try { stage.commit(); } finally { finish(); }
+        },
+        cancel: async () => {
+          finish();
+          stage.discard();
+          controller.abort();
+          // Returning the generator clears idle timers and pipeline listeners even when
+          // cancellation arrives while downstream is parked at a delivered event.
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const closing = Promise.allSettled([
+            iterator.return?.(),
+            response.body && !response.body.locked
+              ? response.body.cancel()
+              : undefined,
+          ]);
+          await Promise.race([
+            closing,
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, 100);
+            }),
+          ]);
+          clearTimeout(timer);
+        },
+      };
+    } catch (error) {
+      finish();
+      stage.discard();
+      throw error;
+    }
   }
   private async *identity(
     raw: AsyncIterable<Item | SseEvent>,

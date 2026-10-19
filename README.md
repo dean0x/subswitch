@@ -329,6 +329,15 @@ broader content/tool support in [#48](https://github.com/dean0x/subswitch/issues
 These are not included in the parity release. Missing reverse continuation state
 produces an explicit error; keep the proxy running during active translated sessions.
 
+A single-target explicit Claude route can accept complete native Messages history
+created before proxy startup or replayed after a restart. Signed thinking and
+redacted-thinking blocks reach the configured Claude upstream unchanged for validation.
+An in-flight cold import reserves its signatures; overlapping imports of those
+signatures fail until that attempt completes or releases its reservation.
+This does not restore translated continuation handles or import signed history into
+fallback routes or another provider. Later system-role messages remain a separate
+unsupported case on explicit Messages routes.
+
 ## Effort control
 
 The optional `effort` frontmatter field works on the Codex leg too. Claude Code
