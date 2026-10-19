@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "kind": "future-model-overrides-offline",
+  "date": "2026-10-19",
+  "base": "de137dedbd72d660657517251fe8a1051dd43465",
+  "baseBranch": "main",
+  "publishedBaseline": {
+    "version": "0.6.0",
+    "npmGitHead": "de137dedbd72d660657517251fe8a1051dd43465",
+    "npmIntegrity": "sha512-Y1G3DqlT7PodXMEuWBSfOGSn5P+2ARyYhmezJkCt9a99rbAJDafRSmWtvB3fzn242V5OKMCso3Y7nYGaEP569A==",
+    "verification": "npm view subswitch version dist.integrity --json; npm view subswitch@0.6.0 gitHead --json"
+  },
+  "scope": "Existing providers.codex.aliases overrides only; no registry additions, new schema or global unknown-model acceptance.",
+  "confirmed": [
+    "loadConfig/buildDeps already accept an unregistered alias target. A local startup validation error was not reproduced on current main.",
+    "A qualified family spelling such as codex:sol ignores its configured sol override and selects the built-in family winner.",
+    "A configured full future target ID and its qualified spelling are unresolved, so the production HTTP handler falls through to Anthropic.",
+    "doctor increments its failure count for every configured target absent from the built-in registry."
+  ],
+  "reproduction": {
+    "command": "node --import tsx --test --test-timeout=30000 test/unit/future-model-overrides.test.ts",
+    "beforeResult": "Initial 10 cases: 5 passed, 5 failed. Qualified sol selected gpt-6.1-sol; qualified worker and bare/qualified future IDs were unresolved; doctor exited 1. The two bare aliases already loaded and selected correctly.",
+    "fixtureModel": "gpt-fixture-next-sol",
+    "reasonForFixture": "Uses an ID absent from every current built-in catalog rather than a now-registered Sol 6.1 ID."
+  },
+  "resolution": [
+    "Populate qualified alias lookups from the effective explicit declarations, preserving exact registry pins.",
+    "Recognize only explicitly declared unknown targets in bare and qualified forms; actual aliases, family defaults and existing qualified names retain precedence.",
+    "Keep one-hop resolution and reserved-name/config validation; no wildcard model or provider acceptance.",
+    "doctor retains an unregistered-target warning without counting that deliberate override as failure. Other auth/probe/agent errors still fail.",
+    "Provider support and account access remain authoritative; a fake upstream rejection is returned without retry or Anthropic fallback."
+  ],
+  "checks": [
+    {
+      "command": "node --import tsx --test --test-timeout=30000 test/unit/future-model-overrides.test.ts test/integration/future-model-overrides.test.ts",
+      "exitCode": 0,
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "coverage": [
+        "six requested spellings across config/buildDeps selection",
+        "injected doctor warning and genuine unknown-agent failure",
+        "canonical pins, family/qualified-name collision protection and one-hop aliases",
+        "malformed/reserved aliases and unsupported configured providers remain invalid",
+        "production HTTP stream=false/true, fabricated credential selection and local unmatched-model rejection",
+        "provider rejection remains authoritative"
+      ]
+    },
+    {
+      "command": "node --import tsx --test --test-reporter=dot --test-timeout=30000 test/unit/future-model-overrides.test.ts test/unit/routing-table.test.ts test/unit/models.test.ts test/unit/doctor.test.ts test/unit/agent-scan.test.ts",
+      "exitCode": 0,
+      "note": "Focused baseline/model/doctor suites passed before the final collision guard; the final full check covers all later changes."
+    },
+    {
+      "command": "/usr/bin/lockf -t 0 /Users/dean/Sandbox/.devflow/locks/heavy-tests.lock npm run check",
+      "exitCode": 0,
+      "tests": 973,
+      "passed": 973,
+      "failed": 0,
+      "skipped": 0,
+      "durationMs": 11057.049459,
+      "scope": "Typecheck and full unit/integration suite under the acquired shared nonblocking heavy-test lock."
+    },
+    {
+      "command": "npm run build",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    }
+  ],
+  "validatedSourceSha256": {
+    "src/models.ts": "969d675522339432d6ad48e9f785c0328390457ca7bfe856cf0ad2e0753676db",
+    "src/doctor.ts": "5978c4e2f04a30997f4fbf245fa0e1aab44e50d26b53ffc343cac86b546a6f29",
+    "README.md": "ec22f5b40628d745ec13f84ea84272e149cde72680c375cedb7e1f75b89986f1",
+    "test/unit/future-model-overrides.test.ts": "e1e71c0aa548ac09ff23afe7403dfbd85f94d0610ac168ab19394249f4841e7f",
+    "test/integration/future-model-overrides.test.ts": "2c3391d5f20ebf6e7683782089086350d863b3564665beebdb89b859efd25000"
+  },
+  "selfReview": {
+    "status": "complete; independent review pending with coordinator",
+    "findingsResolved": [
+      "Target-only expansion cannot shadow existing family, exact registry or qualified alias/registry names. Regression included."
+    ],
+    "surfaceAssessment": "Configuration schema, registry data, model JSON format, credentials/endpoints, dependencies, effort validation and release version are unchanged. Intentional behavior changes are explicit declared-model request selection and doctor warning severity."
+  },
+  "separateUnresolvedScopes": [
+    {
+      "scope": "PR81 configVersion=2 explicit route targets",
+      "head": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+      "source": [
+        "src/routing/routing-config.ts:139",
+        "src/routing/destination-catalog.ts:51"
+      ],
+      "status": "Static source still requires built-in modelEfforts metadata and emits invalid_target_model for unknown explicit target IDs. This independent released-path fix does not relax that validator. A separate capability-declaration design/review is needed."
+    },
+    {
+      "scope": "Original user-specific startup error",
+      "status": "No exact error/config was supplied; current published/main legacy alias loading succeeds. These reproduced doctor/selection defects do not establish that specific error source."
+    },
+    {
+      "scope": "Live provider availability and native-client behavior",
+      "status": "Unverified; no actual provider calls or existing clients/auth/history accessed."
+    }
+  ],
+  "isolation": {
+    "realProviderCalls": 0,
+    "realClientAuthOrHistoryTouched": false,
+    "sharedProxyOrOHFChanged": false,
+    "otherCheckoutWrites": false,
+    "fixtures": "Every configured API/subscription/refresh endpoint uses a fixture origin. Native auth/config paths are owned temporary paths; only fabricated Codex OAuth material is written/read. Unexpected upstream paths reject locally. Doctor I/O is fully injected."
+  }
+}
