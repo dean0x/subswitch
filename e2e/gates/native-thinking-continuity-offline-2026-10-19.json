@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "native-thinking-continuity-offline",
   "date": "2026-10-19",
-  "base": "0183d6de0edfc6229cbd54c932f76e2d136c5ffa",
+  "base": "7e6962c177b679bb2cbd55d8334df071bee262ad",
   "scope": "Single-target explicit native Claude Messages full-history replay; no live provider inference or real client/profile/history/auth access.",
   "confirmedMechanism": "An otherwise valid full native signed history is refused by the explicit-route local signature cache before upstream contact on a cold instance. Released ordinary Claude passthrough bypasses the adapter; the reported released-user incident remains unproven.",
   "red": {
@@ -11,36 +11,29 @@
   },
   "checks": [
     {
-      "command": "node --import tsx --test --test-name-pattern='isolates every|imports an|replays the|retains rejection|does not adopt|reserves cold|releases concurrent|releases partially|releases imports' --test-timeout=30000 test/integration/native-thinking-continuity.test.ts",
+      "command": "node --import tsx --test --test-timeout=30000 test/integration/native-thinking-continuity.test.ts",
       "exitCode": 0,
-      "passed": 12,
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
       "coverage": [
-        "before-startup import and same-process follow-up",
-        "fresh-instance restart",
-        "exact signed/redacted blocks and tool history",
-        "recorded tamper and known foreign owner rejection",
-        "deferred overlapping different owners and conversations reject before second dispatch",
-        "ownership stays exclusive after successful publication",
-        "release after rejection, missing terminal, aborted fetch, partial adaptation and streaming-consumer cancellation",
-        "all fixture endpoints local, all native auth paths isolated and nonexistent",
-        "fetch URL allowlist rejects unexpected vendor/local paths and redirects before implementation",
-        "isolated buildDeps constructs and closes without listeners"
+        "all twelve injected-fetch continuity/isolation cases",
+        "production HTTP stream=false and stream=true startup/follow-up/fresh-instance restart",
+        "exact signed/redacted thinking and tool history preservation",
+        "fixture-only upstream key and incoming authorization isolation",
+        "one upstream request per turn; no retries or fallback",
+        "unmatched-model production passthrough reaches the owned local rejection fixture"
       ]
     },
     {
-      "command": "node --import tsx --test --test-reporter=dot --test-timeout=30000 test/unit/claude-cache.test.ts test/unit/native-thinking-replay.test.ts test/unit/wave1-codec-review.test.ts test/unit/wave1-reliability.test.ts test/unit/codex-request.test.ts test/unit/reverse-adapter.test.ts test/unit/claude-stream.test.ts",
+      "command": "/usr/bin/lockf -t 0 /Users/dean/Sandbox/.devflow/locks/heavy-tests.lock npm run check",
       "exitCode": 0,
-      "coverage": [
-        "native-only import authorization and exact field checks",
-        "publication revalidates reservation ownership before any scoped writes",
-        "rollback does not delete a replacement foreign claim",
-        "shared entry/byte budget bounds pending imports and failed batch publication releases claims",
-        "existing cache, codec, reliability, translation and stream regressions"
-      ]
-    },
-    {
-      "command": "npm run typecheck",
-      "exitCode": 0
+      "tests": 1177,
+      "passed": 1177,
+      "failed": 0,
+      "skipped": 0,
+      "durationMs": 25082.890542,
+      "scope": "Typecheck and full unit/integration suite; shared nonblocking heavy-test lock acquired."
     },
     {
       "command": "npm run build",
@@ -53,20 +46,12 @@
   ],
   "blocked": [
     {
-      "gate": "Production HTTP ephemeral fake origin/proxy, stream=false and stream=true",
-      "reason": "Native sandbox denies listen(127.0.0.1, port=0): EPERM. Tests retained, not skipped or bypassed."
+      "gate": "Real disposable native Claude client and provider signature validation",
+      "reason": "Outside this fake-only assignment; no real client, profile, history, credential or live-provider access."
     },
     {
-      "gate": "Full npm test under shared nonblocking heavy-test lock",
-      "reason": "Not attempted after confirmed listener denial; the suite requires those listeners. Must remain incomplete."
-    },
-    {
-      "gate": "Native disposable Claude session and real provider validation",
-      "reason": "Outside this bounded offline assignment; no real clients or state touched."
-    },
-    {
-      "gate": "Commit, push and dependent draft PR",
-      "reason": "Native sandbox denies git add: Unable to create .git/index.lock: Operation not permitted. No retry through another session or alternate Git metadata."
+      "gate": "Original released-user startup/restart incident",
+      "reason": "The fix covers explicit singleton Claude Messages cold history. Released ordinary Claude passthrough bypasses this adapter; the original incident remains unproven."
     }
   ],
   "selfReview": [
@@ -77,7 +62,7 @@
     "New signal listener and cleanup cover preparation errors, upstream rejection, cancellation before headers and cancellation while streaming is parked. Provider timeout/stream errors reach dispatcher finally cleanup.",
     "All configured fixture endpoints share an owned origin; legacy fallthrough rejects locally. Env-only profiles and owned absent auth paths prevent native credential reads in this fixture. Injected fetch blocks unexpected URLs and redirect following.",
     "Signed blocks, signatures and tool history remain unchanged; no auth selection, fallback policy, translated continuation persistence, later-system normalization or real-state change.",
-    "HTTP stream-mode and route-miss assertions are retained but unexecuted. In-memory checks do not establish native or live-provider acceptance."
+    "Both HTTP stream modes and route-miss assertions now pass. Offline checks do not establish native or live-provider acceptance."
   ],
   "separateFollowups": [
     "Later system-role Messages normalization",
@@ -86,38 +71,43 @@
     "Kimi testing"
   ],
   "peerReview": {
-    "report": "/Users/dean/Sandbox/subswitch-kimi/peer-review-continuity.json",
-    "originalRecommendation": "request_changes",
-    "findings": [
+    "decision": "approve_source_review",
+    "newFindings": [],
+    "approvedFullPatchSha256": "de379c1f5128118b0227d744db1f45da4135dd71b4efc6bf2584988f0172185d",
+    "reviewedSourceHashes": {
+      "README.md": "2456d18239b6125b0b9e5760f9b13f05978e6932d90f124f2f128ea5a0ba58f4",
+      "src/claude-cache.ts": "42f12a297ec743b5faf1f04315c2789beab4201aec12d8c92fd756ab57a350a8",
+      "src/routing/replay-cache.ts": "545b91913daa38a51655f371a61375604679710033052ec597d7faa75155ebe1",
+      "src/routing/signed-thinking.ts": "df0661d6669d8c4cc2c11488c242f253bc29b976c9d59d044700d917f2ea3268",
+      "src/routing/request-adapter.ts": "4fb8297c883f8b538f06574e00eeb17d3f9664937863b5f430e00b7f7751a0f6",
+      "src/routing/routed-attempt.ts": "f6a32f887c323366eb043c80b25cb977d22c6fdd82d8d1404e45178efe5ee56d",
+      "src/routing/shared-routing.ts": "aad684e2b523d0fea7464f14cd73af28670e5e09a924535843bb4c14a520836f",
+      "test/integration/native-thinking-continuity.test.ts": "a854aba6e26cd395e81cc95e670cd1b73fafb22380e3fe9b4a74a474f5aa457e",
+      "test/unit/native-thinking-replay.test.ts": "dd7c8d435231bc52ec5f9ed10f2e9e783a81689a88dc1ccb6cfb8c384bbd6988"
+    },
+    "resolvedFindings": [
       {
         "id": "CONT-01",
-        "status": "implemented; awaiting independent fix-diff review",
-        "resolution": "Cold imports now reserve a provenance entry in the existing bounded shared cache before dispatch. Provenance stores owner and conversation. Other overlapping imports reject before upstream contact. Staged commit revalidates exclusive reservation identity synchronously with atomic batch publication. Preparation failures, signal abort, consumer cancellation and failed publication release only their own pending entries; successful commits replace pending entries with permanent scoped provenance.",
-        "files": [
-          "src/claude-cache.ts",
-          "src/routing/replay-cache.ts",
-          "src/routing/signed-thinking.ts",
-          "src/routing/routed-attempt.ts",
-          "test/integration/native-thinking-continuity.test.ts",
-          "test/unit/native-thinking-replay.test.ts"
-        ],
-        "behavior": "An overlapping cold import of an already pending signature is rejected, including the same scope, until the first attempt commits or releases. After successful commit only exact replay in the recorded owner/conversation is accepted."
+        "status": "Resolved in independent static review and executed offline regressions.",
+        "resolution": "Bounded exclusive signature reservations before dispatch, owner/conversation provenance, synchronous ownership revalidation and atomic publication; conditional cleanup after failure/cancellation."
       },
       {
         "id": "CONT-02",
-        "status": "implemented; in-memory isolation checks pass; HTTP behavior remains blocked",
-        "resolution": "Every configured legacy/API/subscription/refresh endpoint and both routed profiles use the fixture origin. Native auth/config paths point to absent files/directories inside an owned temporary directory. All profiles use fabricated env credentials. A fail-closed exact-URL/redirect allowlist wraps routed fetch. HTTP origins reject every path except the expected native Messages path, and both stream-mode gates now deliberately exercise route-miss passthrough against that local rejection path.",
-        "files": [
-          "test/integration/native-thinking-continuity.test.ts"
-        ],
-        "runtimeLimit": "No listener or HTTP gate was rerun. The local route-miss HTTP assertions remain unexecuted."
+        "status": "Resolved in independent static review; both HTTP stream-mode and regression-path isolation gates now pass.",
+        "resolution": "Every fixture endpoint uses the owned loopback origin, native paths are absent inside the owned temporary root, profiles use fabricated env credentials, routed fetch is allowlisted, and unexpected legacy paths reject locally."
       }
     ],
-    "next": "Independent read-only review of the fix diff; no claim of peer approval."
+    "postReviewSourceChanges": [],
+    "postReviewEvidenceChanges": "Updated this evidence after conflict-free rebase and successful runtime qualification; all nine source/test/README hashes still exactly match the independently approved files."
   },
-  "transientCheckFailure": {
-    "command": "npm run typecheck",
-    "cause": "New deferred helper initially used Promise.withResolvers outside the configured TypeScript library target.",
-    "resolution": "Replaced with an ES-target-compatible Promise helper; subsequent typecheck passed."
-  }
+  "originalBase": "0183d6de0edfc6229cbd54c932f76e2d136c5ffa",
+  "dependency": {
+    "branch": "codex/wave1-kimi-failover",
+    "pr": 81,
+    "head": "7e6962c177b679bb2cbd55d8334df071bee262ad"
+  },
+  "validatedSourceCommit": "a1e2471710609ca3522026bb22317c4960460096",
+  "realProviderCalls": 0,
+  "realClientOrAuthStateTouched": false,
+  "sourceChangesAfterRebase": []
 }
