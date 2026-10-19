@@ -31,6 +31,28 @@ npm install --save "${TARBALL_ABS}" >/dev/null 2>&1
 VERSION_OUT="$(node_modules/.bin/subswitch --version)"
 echo "  subswitch version: ${VERSION_OUT}"
 
+# Read the shipped example as a consumer and validate it through metadata-only discovery.
+# This command does not read credentials, contact a provider, or start a native client.
+node <<'NODE'
+const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
+const { readFileSync } = require("node:fs");
+const { dirname, join } = require("node:path");
+const packageRoot = dirname(require.resolve("subswitch/package.json"));
+const examplePath = join(packageRoot, "subswitch.wave1.example.json");
+const example = JSON.parse(readFileSync(examplePath, "utf8"));
+assert.equal(example.configVersion, 2);
+const discovery = JSON.parse(execFileSync(process.execPath, [
+  join(packageRoot, "dist/cli.js"), "models", "--schema-version", "3", "--client", "all", "--json",
+], { encoding: "utf8", env: { ...process.env, SUBSWITCH_CONFIG: examplePath } }));
+assert.equal(discovery.schemaVersion, 3);
+const route = discovery.routes.find(route => route.id === "kimi-work");
+assert.ok(route, "the installed example must expose its documented route");
+assert.deepEqual(route.targets, [example.routes[route.id].primary, ...example.routes[route.id].fallbacks]);
+assert.equal(discovery.providers.find(provider => provider.id === "kimi").compatibility, "live-unverified");
+console.log("  packaged Wave1 example: valid config and route discovery (live-unverified)");
+NODE
+
 # Ask the OS for an available port; never assume a developer port is unused.
 SMOKE_PORT="$(node -e 'const net=require("node:net"); const s=net.createServer(); s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close();});')"
 node -e 'const fs=require("node:fs");fs.writeFileSync("subswitch.config.json",JSON.stringify({port:Number(process.argv[1]),providers:{codex:{authFile:process.cwd()+"/unused-auth.json"}}}),{mode:0o600});' "${SMOKE_PORT}"
