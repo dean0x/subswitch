@@ -261,11 +261,10 @@ export const runDoctor = async (
 
   // Dangling alias warnings: targets that are not in the registry.
   // The router still routes them (forward-compat), but the target won't appear in
-  // model rows and is invisible to tools that enumerate the registry. Warn so the
-  // user can detect a typo before it silently misroutes to an unknown model id.
+  // model rows and is invisible to tools that enumerate the registry. This is an
+  // explicit forward-compatible declaration, so warn without failing the check.
   for (const { alias, target } of danglingAliases) {
-    failures++;
-    io.write(row("alias warning:", failStr(`"${alias}" → "${target}" — target not in registry (typo? or future model)`)));
+    io.write(row("alias warning:", pc.yellow(`"${alias}" → "${target}" — target not in registry (explicit override; upstream support is not verified)`)));
   }
 
   // N-provider auth check.
