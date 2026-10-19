@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-thinking-continuity-offline",
+  "date": "2026-10-19",
+  "base": "0183d6de0edfc6229cbd54c932f76e2d136c5ffa",
+  "scope": "Single-target explicit native Claude Messages full-history replay; no live provider inference or real client/profile/history/auth access.",
+  "confirmedMechanism": "An otherwise valid full native signed history is refused by the explicit-route local signature cache before upstream contact on a cold instance. Released ordinary Claude passthrough bypasses the adapter; the reported released-user incident remains unproven.",
+  "red": {
+    "command": "node --import tsx --test --test-timeout=30000 test/integration/native-thinking-continuity.test.ts",
+    "baseResult": "Original three regressions all failed with foreign_opaque_state at request-adapter.ts:98 before fetch."
+  },
+  "checks": [
+    {
+      "command": "node --import tsx --test --test-name-pattern='isolates every|imports an|replays the|retains rejection|does not adopt|reserves cold|releases concurrent|releases partially|releases imports' --test-timeout=30000 test/integration/native-thinking-continuity.test.ts",
+      "exitCode": 0,
+      "passed": 12,
+      "coverage": [
+        "before-startup import and same-process follow-up",
+        "fresh-instance restart",
+        "exact signed/redacted blocks and tool history",
+        "recorded tamper and known foreign owner rejection",
+        "deferred overlapping different owners and conversations reject before second dispatch",
+        "ownership stays exclusive after successful publication",
+        "release after rejection, missing terminal, aborted fetch, partial adaptation and streaming-consumer cancellation",
+        "all fixture endpoints local, all native auth paths isolated and nonexistent",
+        "fetch URL allowlist rejects unexpected vendor/local paths and redirects before implementation",
+        "isolated buildDeps constructs and closes without listeners"
+      ]
+    },
+    {
+      "command": "node --import tsx --test --test-reporter=dot --test-timeout=30000 test/unit/claude-cache.test.ts test/unit/native-thinking-replay.test.ts test/unit/wave1-codec-review.test.ts test/unit/wave1-reliability.test.ts test/unit/codex-request.test.ts test/unit/reverse-adapter.test.ts test/unit/claude-stream.test.ts",
+      "exitCode": 0,
+      "coverage": [
+        "native-only import authorization and exact field checks",
+        "publication revalidates reservation ownership before any scoped writes",
+        "rollback does not delete a replacement foreign claim",
+        "shared entry/byte budget bounds pending imports and failed batch publication releases claims",
+        "existing cache, codec, reliability, translation and stream regressions"
+      ]
+    },
+    {
+      "command": "npm run typecheck",
+      "exitCode": 0
+    },
+    {
+      "command": "npm run build",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    }
+  ],
+  "blocked": [
+    {
+      "gate": "Production HTTP ephemeral fake origin/proxy, stream=false and stream=true",
+      "reason": "Native sandbox denies listen(127.0.0.1, port=0): EPERM. Tests retained, not skipped or bypassed."
+    },
+    {
+      "gate": "Full npm test under shared nonblocking heavy-test lock",
+      "reason": "Not attempted after confirmed listener denial; the suite requires those listeners. Must remain incomplete."
+    },
+    {
+      "gate": "Native disposable Claude session and real provider validation",
+      "reason": "Outside this bounded offline assignment; no real clients or state touched."
+    },
+    {
+      "gate": "Commit, push and dependent draft PR",
+      "reason": "Native sandbox denies git add: Unable to create .git/index.lock: Operation not permitted. No retry through another session or alternate Git metadata."
+    }
+  ],
+  "selfReview": [
+    "Singleton dispatch authorization and same-native-Claude-Messages adapter guards remain; no prior-owner switches or cross-provider imports.",
+    "Exact scoped signed-field checks remain. Bounded provenance now records owner/conversation and reserves cold signatures before dispatch.",
+    "Reservation acquisition and publication are synchronous. Commit checks every held reservation before atomic shared publication. Failed/cancelled imports publish no scoped blocks; conditional rollback never removes another claim.",
+    "Reservations consume the existing shared byte/entry limits, with no unbounded side store. Failed capacity checks and failed publication leave no adopted history.",
+    "New signal listener and cleanup cover preparation errors, upstream rejection, cancellation before headers and cancellation while streaming is parked. Provider timeout/stream errors reach dispatcher finally cleanup.",
+    "All configured fixture endpoints share an owned origin; legacy fallthrough rejects locally. Env-only profiles and owned absent auth paths prevent native credential reads in this fixture. Injected fetch blocks unexpected URLs and redirect following.",
+    "Signed blocks, signatures and tool history remain unchanged; no auth selection, fallback policy, translated continuation persistence, later-system normalization or real-state change.",
+    "HTTP stream-mode and route-miss assertions are retained but unexecuted. In-memory checks do not establish native or live-provider acceptance."
+  ],
+  "separateFollowups": [
+    "Later system-role Messages normalization",
+    "Durable translated/native Responses continuation handles",
+    "Verification of the original released-user incident",
+    "Kimi testing"
+  ],
+  "peerReview": {
+    "report": "/Users/dean/Sandbox/subswitch-kimi/peer-review-continuity.json",
+    "originalRecommendation": "request_changes",
+    "findings": [
+      {
+        "id": "CONT-01",
+        "status": "implemented; awaiting independent fix-diff review",
+        "resolution": "Cold imports now reserve a provenance entry in the existing bounded shared cache before dispatch. Provenance stores owner and conversation. Other overlapping imports reject before upstream contact. Staged commit revalidates exclusive reservation identity synchronously with atomic batch publication. Preparation failures, signal abort, consumer cancellation and failed publication release only their own pending entries; successful commits replace pending entries with permanent scoped provenance.",
+        "files": [
+          "src/claude-cache.ts",
+          "src/routing/replay-cache.ts",
+          "src/routing/signed-thinking.ts",
+          "src/routing/routed-attempt.ts",
+          "test/integration/native-thinking-continuity.test.ts",
+          "test/unit/native-thinking-replay.test.ts"
+        ],
+        "behavior": "An overlapping cold import of an already pending signature is rejected, including the same scope, until the first attempt commits or releases. After successful commit only exact replay in the recorded owner/conversation is accepted."
+      },
+      {
+        "id": "CONT-02",
+        "status": "implemented; in-memory isolation checks pass; HTTP behavior remains blocked",
+        "resolution": "Every configured legacy/API/subscription/refresh endpoint and both routed profiles use the fixture origin. Native auth/config paths point to absent files/directories inside an owned temporary directory. All profiles use fabricated env credentials. A fail-closed exact-URL/redirect allowlist wraps routed fetch. HTTP origins reject every path except the expected native Messages path, and both stream-mode gates now deliberately exercise route-miss passthrough against that local rejection path.",
+        "files": [
+          "test/integration/native-thinking-continuity.test.ts"
+        ],
+        "runtimeLimit": "No listener or HTTP gate was rerun. The local route-miss HTTP assertions remain unexecuted."
+      }
+    ],
+    "next": "Independent read-only review of the fix diff; no claim of peer approval."
+  },
+  "transientCheckFailure": {
+    "command": "npm run typecheck",
+    "cause": "New deferred helper initially used Promise.withResolvers outside the configured TypeScript library target.",
+    "resolution": "Replaced with an ES-target-compatible Promise helper; subsequent typecheck passed."
+  }
+}

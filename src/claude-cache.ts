@@ -72,6 +72,12 @@ export class ClaudeCache {
     // Only put<K> writes this namespaced key, and the discriminant is checked above.
     return entry.value as Values[K];
   }
+  delete(kind: keyof Values, id: string): void {
+    const key = `${kind}:${id}`, entry = this.entries.get(key);
+    if (!entry) return;
+    this.bytes -= entry.bytes;
+    this.entries.delete(key);
+  }
   get byteSize(): number {
     return this.bytes;
   }
