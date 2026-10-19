@@ -599,8 +599,8 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
 };
 
 // ---------------------------------------------------------------------------
-// 3) Aggregator: fold our own Anthropic SSE frames into a complete message
-//    for clients that did not request streaming.
+// 3) Aggregator: fold translated or validated native Anthropic SSE frames into
+//    a complete message for clients that did not request streaming.
 // ---------------------------------------------------------------------------
 
 export type AggregateOutcome =
@@ -616,7 +616,7 @@ interface PendingBlock {
 export const aggregateFrames = (frames: readonly string[], providerId: ProviderId): Result<AggregateOutcome, ProxyError> => {
   let message: Record<string, unknown> | undefined;
   const blocks = new Map<number, PendingBlock>();
-  const content: Record<string, unknown>[] = [];
+  const content = new Map<number, Record<string, unknown>>();
   let stopReason: string | null = null;
   let usage: Record<string, unknown> = { input_tokens: 0, output_tokens: 0 };
 
@@ -635,7 +635,8 @@ export const aggregateFrames = (frames: readonly string[], providerId: ProviderI
         break;
       case "content_block_start": {
         const index = data["index"] as number;
-        blocks.set(index, { block: { ...(data["content_block"] as Record<string, unknown>) }, text: "", partialJson: "" });
+        const block = { ...(data["content_block"] as Record<string, unknown>) };
+        blocks.set(index, { block, text: typeof block["text"] === "string" ? block["text"] : "", partialJson: "" });
         break;
       }
       case "content_block_delta": {
@@ -644,6 +645,10 @@ export const aggregateFrames = (frames: readonly string[], providerId: ProviderI
         const delta = data["delta"] as Record<string, unknown>;
         if (delta["type"] === "text_delta") pending.text += delta["text"] as string;
         if (delta["type"] === "input_json_delta") pending.partialJson += delta["partial_json"] as string;
+        if (delta["type"] === "thinking_delta" || delta["type"] === "signature_delta") {
+          const field = delta["type"] === "thinking_delta" ? "thinking" : "signature";
+          pending.block[field] = String(pending.block[field] ?? "") + String(delta[field]);
+        }
         break;
       }
       case "content_block_stop": {
@@ -652,23 +657,25 @@ export const aggregateFrames = (frames: readonly string[], providerId: ProviderI
         if (pending === undefined) break;
         blocks.delete(index);
         if (pending.block["type"] === "text") {
-          content.push({ type: "text", text: pending.text });
+          content.set(index, { ...pending.block, text: pending.text });
         } else if (pending.block["type"] === "tool_use") {
           let input: unknown = {};
           try {
-            input = pending.partialJson.trim() === "" ? {} : JSON.parse(pending.partialJson);
+            input = pending.partialJson.trim() === "" ? (pending.block["input"] ?? {}) : JSON.parse(pending.partialJson);
           } catch {
             // partialJson has non-whitespace content but is unparseable JSON — the JSON
             // was likely truncated before the upstream closed the stream. Substituting {}
             // would silently corrupt the tool arguments (e.g. a write_file call with no
             // path). Return an error so the client receives 502 rather than acting on
             // invented empty arguments. Note: partialJson === "" and whitespace-only both
-            // fall through to the {} default above; this catch is only hit when there is
+            // retain the start-frame input (normally {}); this catch is only hit when there is
             // actual non-whitespace content to parse but it is malformed JSON.
             return err({ kind: "upstream", message: `${providerId} stream ended with unparseable tool_use arguments` });
           }
-          content.push({ type: "tool_use", id: pending.block["id"], name: pending.block["name"], input });
-        }
+          content.set(index, { ...pending.block, input });
+        } else if (pending.block["type"] === "thinking" || pending.block["type"] === "redacted_thinking") {
+          content.set(index, pending.block);
+        } else return err({ kind: "upstream", message: `${providerId} stream contained unsupported content` });
         break;
       }
       case "message_delta": {
@@ -698,13 +705,17 @@ export const aggregateFrames = (frames: readonly string[], providerId: ProviderI
   // for blocks that received at least one delta; blocks that received zero deltas are
   // intentionally left open (no synthesised stop) so they don't produce spurious empty
   // content entries.  We honour that contract here: error only on unclosed blocks that
-  // have actual content, and silently discard unclosed blocks with no content.
-  const unclosedWithContent = [...blocks.values()].filter((p) => p.text !== "" || p.partialJson !== "");
+  // have actual content, and silently discard empty translated text/tool blocks.
+  // Native thinking/redacted blocks must always close, even for an empty thought.
+  const unclosedWithContent = [...blocks.values()].filter((p) => p.text !== "" || p.partialJson !== "" ||
+    ["thinking", "redacted_thinking"].includes(String(p.block["type"])));
   if (unclosedWithContent.length > 0) {
     return err({ kind: "upstream", message: `${providerId} stream ended with ${unclosedWithContent.length} unclosed content block(s)` });
   }
   return ok({
     kind: "message",
-    message: { ...message, content, stop_reason: stopReason, stop_sequence: null, usage },
+    // Native provider validation can defer tool stops until its terminal. Index
+    // order preserves the original content order even when stops arrive later.
+    message: { ...message, content: [...content].sort(([a], [b]) => a - b).map(([, block]) => block), stop_reason: stopReason, stop_sequence: null, usage },
   });
 };
