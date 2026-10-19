@@ -331,6 +331,8 @@ export class SharedRouting {
             route: routeName,
             attempt: index,
             scopeHash: scopeKey(scope),
+            // Import only native same-provider full history, never a fallback candidate.
+            allowNativeThinkingReplay: chain.length === 1 && index === 0,
             ...(priorOwner ? { priorOwner } : {}),
             ...(pinned && affinity?.selectedOwner
               ? { expectedOwner: affinity.selectedOwner }
