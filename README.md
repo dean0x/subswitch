@@ -341,12 +341,15 @@ to run on the raw file first and why a refusal to start is the better failure.
 The routable set is the **built-in model registry** — `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`,
 `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Routing follows
 the registry so a new model becomes available on upgrade with no config edit, and
-everything outside it passes through to Anthropic. The registry itself is not
+unconfigured names outside it pass through to Anthropic. The registry itself is not
 configurable; to reach a Codex model before subswitch registers it, point a
 `providers.codex.aliases` entry at its id (`"sol-next": "gpt-future-sol"`, replacing
 the illustrative target with a real model ID available to your account). The alias
-routes to Codex, but `doctor` counts it as a failure (`target not in registry`)
-until a subswitch release registers that id. Run
+routes to Codex, as do its declared full target ID and qualified spellings such as
+`codex:sol-next` and `codex:gpt-future-sol`. A family override such as
+`"sol": "gpt-future-sol"` also applies to `codex:sol`. Exact registered IDs remain
+pinned. `doctor` warns that the target is unregistered without failing that check;
+the provider still determines model availability and account access. Run
 `subswitch models --json` for the machine-readable registry.
 
 **Family aliases** (`astra`, `sol`, `terra`, `luna`) let you write a model name that

@@ -81,9 +81,9 @@ export interface RoutingTable {
   readonly byId: ReadonlyMap<string, ProviderId>;
   /** Per-family resolution (unique claimant or ambiguous). */
   readonly byFamily: ReadonlyMap<string, FamilyResolution>;
-  /** Qualified lookups: "codex:gpt-5.6-sol" and "codex:sol" both resolve here. */
+  /** Qualified registry IDs, family defaults, configured aliases and declared targets. */
   readonly byQualified: ReadonlyMap<string, ResolvedModel>;
-  /** Alias lookups: built with Object.hasOwn guard (prototype-pollution safe). */
+  /** Configured aliases and otherwise-unclaimed declared targets (own-property guarded). */
   readonly byAlias: ReadonlyMap<string, ResolvedModel>;
 }
 
@@ -585,8 +585,9 @@ export const buildRoutingTable = (
   const byAlias = new Map<string, ResolvedModel>();
   const rejectedAliases: { readonly alias: string; readonly target: string }[] = [];
   const danglingAliases: { readonly alias: string; readonly target: string; readonly provider: ProviderId }[] = [];
+  const declarations = collectAliasDeclarations(aliasesByProvider);
 
-  for (const { alias, target, provider, reserved } of collectAliasDeclarations(aliasesByProvider)) {
+  for (const { alias, target, provider, reserved } of declarations) {
     // PF-007: a reserved key would route main-thread traffic to Codex; a reserved target
     // becomes routable via the alias map, which decideRoute's exact-membership check
     // would then match.
@@ -614,6 +615,23 @@ export const buildRoutingTable = (
     }
   }
 
+  // Qualifying an alias must preserve its explicit override, including a family
+  // override such as sol. Exact registry IDs remain pinned in either spelling.
+  for (const { alias, provider, reserved } of declarations) {
+    if (!reserved && !byId.has(alias))
+      byQualified.set(`${provider}:${alias}`, byAlias.get(alias)!);
+  }
+  // An explicit declaration authorizes this target ID, not every unknown model.
+  // Keep registry pins, actual aliases (including qualified ones) and family
+  // defaults ahead of target-only names. Aliases still resolve exactly one hop.
+  for (const { alias, target, provider } of danglingAliases) {
+    const model = byAlias.get(alias)!;
+    if (!byAlias.has(target) && !byFamily.has(target) && !byQualified.has(target))
+      byAlias.set(target, model);
+    const qualified = `${provider}:${target}`;
+    if (!byQualified.has(qualified)) byQualified.set(qualified, model);
+  }
+
   const table: RoutingTable = {
     byId,
     byFamily,
@@ -637,7 +655,7 @@ export const buildRoutingTable = (
  * Resolution order — exactly five rules, in this order:
  *
  * 1. Exact id in byId → resolved. Canonical ids ALWAYS win; no alias can hijack one.
- * 2. Alias in byAlias → resolved (one hop; Map built with Object.hasOwn — pollution safe).
+ * 2. Configured alias or otherwise-unclaimed declared target → resolved (one hop).
  * 3. Qualified "provider:id" → resolved only when the prefix is in PROVIDER_IDS.
  *    An unrecognised prefix returns unknown_qualifier, not unresolved, so callers can
  *    distinguish "typo in a model name" from "typo in a provider name".
