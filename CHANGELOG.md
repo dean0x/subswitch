@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.1] - 2026-10-19
+
+### Fixed
+
+- Configured Codex aliases now apply consistently to bare and provider-qualified
+  names, including overrides such as `sol` and `codex:sol`.
+- Future model IDs declared as alias targets can be requested directly, both as
+  the full ID and as `codex:<model-id>`. Registered IDs and existing alias names
+  retain their precedence; unrelated unknown IDs remain unresolved.
+- `doctor` reports unregistered configured targets as warnings without failing
+  the check solely for that reason. Unknown agent model names still fail.
+
+Configured model IDs must be available to the upstream account. Forwarding an
+override does not verify availability or add model capability metadata.
+
 ## [0.6.0] - 2026-10-08
 
 ### Added
