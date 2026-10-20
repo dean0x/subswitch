@@ -204,7 +204,10 @@ class KimiSubscriptionFixture implements ProviderAuth<"kimi"> {
           const value = await abortable(reader.read(), signal);
           signal.throwIfAborted();
           if (value.done) { cleanup(); controller.close(); } else controller.enqueue(value.value);
-        } catch { cleanup(); cancel(); controller.error(failure("cancelled", 499)); }
+        } catch {
+          cleanup(); cancel();
+          controller.error(signal.aborted ? failure("cancelled", 499) : failure("transport_failed", 502));
+        }
       },
       async cancel() { cleanup(); await abortable(reader.cancel(), signal).catch(() => {}); },
     }), { status: response.status, headers: contentType ? { "content-type": contentType } : {} });

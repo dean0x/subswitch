@@ -142,3 +142,13 @@ test("phase deadline stops later admission before storage or transport", async (
   await assert.rejects(native.request("messages", fixtureBody("messages"), signal()), /phase_deadline/);
   assert.equal(f.stats.reads, 0); assert.deepEqual(native.budget(), { attempts: 0, tokens: 0, refreshes: 0 });
 });
+test("upstream stream failure remains a transport error and never exposes its raw error", async () => {
+  const f = fixtureStore();
+  const native = createKimiSubscription(fixtureOptions(f.store, async () => new Response(new ReadableStream({
+    start(controller) { controller.error(new Error("fabricated-access-token")); },
+  }))));
+  await assert.rejects((await native.request("messages", fixtureBody("messages"), signal())).text(), error => {
+    assert.ok(error instanceof RoutingError); assert.equal(error.status, 502); assert.match(error.message, /transport_failed/);
+    assert.doesNotMatch(error.message, /fabricated-access-token/); return true;
+  });
+});
