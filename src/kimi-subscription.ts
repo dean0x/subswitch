@@ -59,6 +59,14 @@ function bounded(value: number | undefined, maximum: number): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > maximum) throw failure("invalid_fixture_limit");
   return value;
 }
+/** Attach rejection/cancellation handlers before any supplied operation runs. */
+function runAbortable<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return abortable(Promise.resolve().then(() => {
+    signal.throwIfAborted();
+    return operation();
+  }), signal);
+}
 
 /** Default gate runs before reading transport, storage, endpoint or identity options. */
 export function createKimiSubscription(options?: KimiSubscriptionFixtureOptions): KimiSubscriptionFixture {
@@ -107,27 +115,27 @@ class KimiSubscriptionFixture implements ProviderAuth<"kimi"> {
   async credentials(caller: AbortSignal, force = false): Promise<KimiFixtureCredential> {
     const wait = this.signal(caller);
     try {
-      const initial = await abortable(this.options.store.read(wait), wait);
+      const initial = await runAbortable(() => this.options.store.read(wait), wait);
       this.owner(initial);
       let selected = initial;
       if (force || material(initial.tokens).expires <= this.now() + 120_000) {
         // The shared operation has its own deadline. Cancelling one waiter does not
         // cancel another caller's refresh or let an abandoned refresh run forever.
         const operation = this.signal();
-        selected = await abortable(this.options.store.withLock(async () => {
+        selected = await runAbortable(() => this.options.store.withLock(async () => {
           operation.throwIfAborted();
-          const current = await abortable(this.options.store.read(operation), operation);
+          const current = await runAbortable(() => this.options.store.read(operation), operation);
           this.owner(current);
           const token = material(current.tokens);
           if (token.expires > this.now() + 120_000 && (!force || current.revision !== initial.revision)) return current;
           if (this.counts.refreshes >= this.maxima.refreshes) throw failure("refresh_budget");
           this.counts.refreshes++;
-          const response = await abortable(this.options.transport(`${this.origin}/fixture/oauth/token`, {
+          const response = await runAbortable(() => this.options.transport(`${this.origin}/fixture/oauth/token`, {
             method: "POST", redirect: "error", signal: operation,
             headers: { ...this.identity, "content-type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: token.refresh, client_id: this.options.clientId }),
           }), operation);
-          if (!response.ok) { await abortable(Promise.resolve(response.body?.cancel()), operation); throw failure("refresh_failed"); }
+          if (!response.ok) { await runAbortable(() => Promise.resolve(response.body?.cancel()), operation); throw failure("refresh_failed"); }
           const body = await readBoundedBody(response.body, 16 * 1024, operation);
           if (!body.complete || body.truncated) throw failure("invalid_refresh_response");
           const data = JSON.parse(body.text) as Record<string, unknown>;
@@ -138,8 +146,8 @@ class KimiSubscriptionFixture implements ProviderAuth<"kimi"> {
             ...(typeof data["scope"] === "string" ? { scope: data["scope"] } : {}) };
           material(tokens);
           operation.throwIfAborted();
-          if (!await abortable(this.options.store.compareAndSwap(current.revision, tokens, operation), operation)) throw failure("owner_changed", 409);
-          const published = await abortable(this.options.store.read(operation), operation);
+          if (!await runAbortable(() => this.options.store.compareAndSwap(current.revision, tokens, operation), operation)) throw failure("owner_changed", 409);
+          const published = await runAbortable(() => this.options.store.read(operation), operation);
           this.owner(published);
           return published;
         }, operation), wait);
@@ -160,11 +168,16 @@ class KimiSubscriptionFixture implements ProviderAuth<"kimi"> {
   async request(protocol: WireProtocol, body: Item, caller: AbortSignal, expectedGeneration?: string): Promise<Response> {
     const signal = this.signal(caller);
     try {
+      signal.throwIfAborted();
       if (protocol !== "messages" && protocol !== "responses") throw failure("protocol");
-      const cap = body[protocol === "messages" ? "max_tokens" : "max_output_tokens"];
-      if (!Number.isSafeInteger(cap) || (cap as number) < 1 || (cap as number) > 256 || body["model"] !== "kimi-for-coding" || body["stream"] !== true) throw failure("request_boundary");
-      this.checkInferenceBudget(cap as number); // Do not spend auth work on an already exhausted request.
       const encoded = JSON.stringify(body); // Snapshot caller history/tools once; never rewrite or execute.
+      if (typeof encoded !== "string") throw failure("request_boundary");
+      const snapshot: unknown = JSON.parse(encoded);
+      if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) throw failure("request_boundary");
+      const request = snapshot as Item;
+      const cap = request[protocol === "messages" ? "max_tokens" : "max_output_tokens"];
+      if (!Number.isSafeInteger(cap) || (cap as number) < 1 || (cap as number) > 256 || request["model"] !== "kimi-for-coding" || request["stream"] !== true) throw failure("request_boundary");
+      this.checkInferenceBudget(cap as number); // Do not spend auth work on an already exhausted request.
       let credential = await this.credentials(signal);
       const generation = expectedGeneration ?? credential.generation;
       for (let attempt = 0; ; attempt++) {
@@ -172,16 +185,16 @@ class KimiSubscriptionFixture implements ProviderAuth<"kimi"> {
         if (credential.generation !== generation) throw failure("owner_changed", 409);
         this.checkInferenceBudget(cap as number);
         this.counts.attempts++; this.counts.tokens += cap as number;
-        const response = await abortable(this.options.transport(`${this.origin}/fixture/v1/${protocol}`, {
+        const response = await runAbortable(() => this.options.transport(`${this.origin}/fixture/v1/${protocol}`, {
           method: "POST", redirect: "error", signal,
           headers: { ...this.identity, ...credential.authHeaders, "content-type": "application/json", accept: "text/event-stream" }, body: encoded,
         }), signal);
         if (response.status === 401 && attempt === 0) {
-          await abortable(Promise.resolve(response.body?.cancel()), signal);
+          await runAbortable(() => Promise.resolve(response.body?.cancel()), signal);
           credential = await this.credentials(signal, true);
           continue;
         }
-        if (!response.ok) { await abortable(Promise.resolve(response.body?.cancel()), signal); throw failure("upstream_failed", response.status >= 400 ? response.status : 502); }
+        if (!response.ok) { await runAbortable(() => Promise.resolve(response.body?.cancel()), signal); throw failure("upstream_failed", response.status >= 400 ? response.status : 502); }
         return this.stream(response, signal);
       }
     } catch (error) {
@@ -201,7 +214,7 @@ class KimiSubscriptionFixture implements ProviderAuth<"kimi"> {
       async pull(controller) {
         try {
           signal.throwIfAborted();
-          const value = await abortable(reader.read(), signal);
+          const value = await runAbortable(() => reader.read(), signal);
           signal.throwIfAborted();
           if (value.done) { cleanup(); controller.close(); } else controller.enqueue(value.value);
         } catch {
@@ -209,7 +222,12 @@ class KimiSubscriptionFixture implements ProviderAuth<"kimi"> {
           controller.error(signal.aborted ? failure("cancelled", 499) : failure("transport_failed", 502));
         }
       },
-      async cancel() { cleanup(); await abortable(reader.cancel(), signal).catch(() => {}); },
+      async cancel() {
+        cleanup();
+        // Cleanup must start even after abort; observe its rejection before waiting.
+        const pending = reader.cancel().catch(() => {});
+        try { await abortable(pending, signal); } catch { /* Cancellation is best effort. */ }
+      },
     }), { status: response.status, headers: contentType ? { "content-type": contentType } : {} });
   }
 }

@@ -152,3 +152,61 @@ test("upstream stream failure remains a transport error and never exposes its ra
     assert.doesNotMatch(error.message, /fabricated-access-token/); return true;
   });
 });
+test("pre-aborted credentials and requests reject without starting store or transport work", async () => {
+  const f = fixtureStore();
+  const native = createKimiSubscription(fixtureOptions(f.store, async () => assert.fail("transport called")));
+  const caller = AbortSignal.abort();
+  await assert.rejects(native.credentials(caller), /cancelled/);
+  for (const protocol of ["messages", "responses"] as const) {
+    await assert.rejects(native.request(protocol, fixtureBody(protocol), caller), /cancelled/);
+  }
+  // Let Node report any orphan rejection after the caught request errors.
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(f.stats.reads, 0);
+  assert.equal(f.stats.writes, 0);
+  assert.deepEqual(native.budget(), { attempts: 0, tokens: 0, refreshes: 0 });
+});
+test("cancellation from a supplied operation still observes that operation's rejection", async () => {
+  const f = fixtureStore(); const caller = new AbortController(); let reads = 0;
+  const native = createKimiSubscription(fixtureOptions({ ...f.store, async read(wait) {
+    reads++; caller.abort(); wait.throwIfAborted(); return f.store.read(wait);
+  } }, async () => assert.fail("transport called")));
+  await assert.rejects(native.credentials(caller.signal), /cancelled/);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(reads, 1);
+  assert.deepEqual(native.budget(), { attempts: 0, tokens: 0, refreshes: 0 });
+});
+test("serialized request boundaries reject toJSON cap, model and stream changes before authentication", async () => {
+  for (const protocol of ["messages", "responses"] as const) {
+    const f = fixtureStore();
+    const native = createKimiSubscription(fixtureOptions(f.store, async () => assert.fail("transport called")));
+    const cap = protocol === "messages" ? "max_tokens" : "max_output_tokens";
+    for (const snapshot of [{ ...fixtureBody(protocol), [cap]: 4096 },
+      { ...fixtureBody(protocol), model: "other-model" }, { ...fixtureBody(protocol), stream: false },
+      null, [], undefined, 17]) {
+      await assert.rejects(native.request(protocol, { ...fixtureBody(protocol), [cap]: 1,
+        toJSON: () => snapshot }, signal()), /request_boundary/);
+    }
+    assert.equal(f.stats.reads, 0);
+    assert.deepEqual(native.budget(), { attempts: 0, tokens: 0, refreshes: 0 });
+  }
+});
+test("request accounting uses the single serialized snapshot for toJSON and changing accessors", async () => {
+  for (const protocol of ["messages", "responses"] as const) {
+    const f = fixtureStore(); const cap = protocol === "messages" ? "max_tokens" : "max_output_tokens";
+    let serialized = 0, accesses = 0; const sent: string[] = [];
+    const native = createKimiSubscription(fixtureOptions(f.store, async (_url, init) => {
+      sent.push(init!.body as string); return new Response("ready");
+    }));
+    const snapshot = fixtureBody(protocol);
+    await (await native.request(protocol, { ...fixtureBody(protocol), [cap]: 1,
+      toJSON() { serialized++; return snapshot; } }, signal())).text();
+    const accessorBody = { ...fixtureBody(protocol) };
+    Object.defineProperty(accessorBody, cap, { enumerable: true, get() { return ++accesses === 1 ? 1 : 4096; } });
+    await (await native.request(protocol, accessorBody, signal())).text();
+    assert.equal(serialized, 1); assert.equal(accesses, 1);
+    assert.equal(sent[0], JSON.stringify(snapshot));
+    assert.equal(JSON.parse(sent[1]!)[cap], 1);
+    assert.deepEqual(native.budget(), { attempts: 2, tokens: 257, refreshes: 0 });
+  }
+});
