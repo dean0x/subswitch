@@ -101,3 +101,24 @@ test("region and endpoint mismatches fail before dispatch", async () => {
   await assert.rejects(new KimiAuthManager({ store: store(initial()), region: "mainland-cn", transport }).credentials(AbortSignal.timeout(1000)), /region_mismatch/);
   assert.equal(calls, 0);
 });
+
+test("explicit regions select matching official auth hosts without ambient overrides", async () => {
+  for (const region of ["global", "mainland-cn"] as const) {
+    const urls: string[] = [];
+    const manager = new KimiAuthManager({ store: store({ ...initial(), region }), region, transport: async url => {
+      urls.push(String(url));
+      return new Response(JSON.stringify({ access_token: "fabricated-region-access", expires_in: 3600 }), { status: 200 });
+    } });
+    await manager.credentials(AbortSignal.timeout(1000));
+    assert.deepEqual(urls, [`https://auth.kimi.${region === "global" ? "ai" : "com"}/api/oauth/token`]);
+    const authOrigin = `https://auth.kimi.${region === "global" ? "ai" : "com"}`;
+    const loginUrls: string[] = [];
+    await loginKimi({ store: store(), region, signal: AbortSignal.timeout(1000), sleep: async () => {}, onVerification: info => assert.equal(info.uri, authOrigin + "/approve"), transport: async url => {
+      loginUrls.push(String(url));
+      return new Response(JSON.stringify(String(url).endsWith("device_authorization")
+        ? { device_code: "fabricated-device", user_code: "FABRICATED", verification_uri_complete: authOrigin + "/approve", expires_in: 60, interval: 1 }
+        : { access_token: "fabricated-login", refresh_token: "fabricated-refresh", expires_in: 3600 }), { status: 200 });
+    } });
+    assert.deepEqual(loginUrls, [authOrigin + "/api/oauth/device_authorization", authOrigin + "/api/oauth/token"]);
+  }
+});

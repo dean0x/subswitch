@@ -66,6 +66,8 @@ export class ProfileAuth {
   private readonly kimiManagers = new Map<string, { binding: string; manager: KimiAuthManager }>();
   private readonly kimiOwners = new Map<string, string>();
   private readonly kimiDevices = new Map<string, string>();
+  private kimiSequence = 0;
+  private readonly kimiPublished = new Map<string, number>();
   private readonly claudeOwners = new Map<
     string,
     { owner: string; access: string }
@@ -183,6 +185,7 @@ export class ProfileAuth {
     if (p.product !== "kimi-code" || !p.region || (p.baseUrl && p.baseUrl.replace(/\/$/, "") !== defaultBase(p))) throw new RoutingError("kimi_oauth_endpoint_mismatch");
     const store = createKimiAuthStore(p.credential.authFile);
     const storage = this.bindNativeStore(id, p, store.coordinationKey);
+    const sequence = ++this.kimiSequence;
     const binding = this.binding(id, p);
     let cached = this.kimiManagers.get(id);
     if (!cached || cached.binding !== binding) {
@@ -191,16 +194,19 @@ export class ProfileAuth {
     }
     let credential;
     try { credential = await cached.manager.credentials(signal, refresh); }
-    catch (error) { this.invalidateNativeStore(storage); this.kimiOwners.delete(storage); throw error; }
+    catch (error) {
+      if (!signal.aborted && (this.kimiPublished.get(storage) ?? 0) <= sequence) this.invalidateNativeStore(storage);
+      throw error;
+    }
     if (this.binding(id, ownValue(this.profiles, id)!) !== binding) throw new RoutingError("credential_binding_mismatch", 409);
     const previous = this.kimiOwners.get(storage);
+    if ((this.kimiPublished.get(storage) ?? 0) > sequence && previous !== credential.generation)
+      throw new RoutingError("credential_owner_changed", 409);
     if (previous && previous !== credential.generation) {
       this.invalidateNativeStore(storage);
-      const groups = new Set<string>();
-      for (const [alias, key] of this.nativeStores) if (key === storage) groups.add(this.allowanceGroup(ownValue(this.profiles, alias)!));
-      for (const group of groups) this.allowanceEpochs.set(group, (this.allowanceEpochs.get(group) ?? 0) + 1);
     }
     this.kimiOwners.set(storage, credential.generation);
+    this.kimiPublished.set(storage, Math.max(sequence, this.kimiPublished.get(storage) ?? 0));
     this.kimiDevices.set(id, credential.deviceId);
     return { headers: credential.authHeaders, owner: credential.generation };
   }
@@ -359,9 +365,11 @@ export class ProfileAuth {
     this.validate(credential);
     const profile = ownValue(this.profiles, credential.profile)!;
     const nativeAccount = credential.authHeaders["chatgpt-account-id"];
+    const kimiOwner = profile.provider === "kimi" && profile.credential.kind === "native-oauth"
+      ? this.kimiOwners.get(this.nativeStores.get(credential.profile)!) : undefined;
     return {
       ...allowanceScope(profile),
-      account: nativeAccount
+      account: kimiOwner ? `login-${digest(kimiOwner)}` : nativeAccount
         ? `native-${digest(nativeAccount)}`
         : `${profile.account}:${this.allowanceEpochs.get(this.allowanceGroup(profile)) ?? 0}`,
     };
@@ -372,12 +380,15 @@ export class ProfileAuth {
       throw new RoutingError("profile_not_refreshable", 401);
     if (!supportsNativeOAuth(p))
       return Promise.reject(new RoutingError("credential_product_mismatch"));
+    signal.throwIfAborted();
     const refreshKey = p.provider === "kimi" ? digest([id, p]) : id;
     let pending = this.refreshes.get(refreshKey);
     if (!pending) {
-      pending = this.get(id, AbortSignal.timeout(10000), true).finally(() =>
+      pending = Promise.resolve().then(() => this.get(id, AbortSignal.timeout(10000), true)).finally(() =>
         this.refreshes.delete(refreshKey),
       );
+      // Observe rejection even if caller cancellation wins before abortable attaches.
+      void pending.catch(() => {});
       this.refreshes.set(refreshKey, pending);
     }
     return abortable(pending, signal);

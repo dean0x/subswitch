@@ -106,6 +106,8 @@ Commands:
   limits    Show recorded upstream limit/error formats (--json, --port <n>)
   run-action --client <client> [--conversation <id>] -- <native command>
             Scope one native invocation, including its tools and children
+  kimi-login --auth-file <absolute new path> --region <global|mainland-cn>
+            Explicit device login into a separate private Subswitch store
 
 Flags (global):
   -h, --help       Show this help message

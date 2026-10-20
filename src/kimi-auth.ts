@@ -12,7 +12,8 @@ import { RoutingError } from "./routing/routing-types.js";
 import type { ProviderCredential } from "./provider-auth.js";
 import type { KimiAuthRecord, KimiAuthStore } from "./kimi-auth-store.js";
 
-export const KIMI_OAUTH_ORIGIN = "https://auth.kimi.com";
+/** Explicit region mapping from official region.ts (retained pin3079e9515f05f097a3f34afdc8ebe2b9b377bf0d). */
+export const KIMI_OAUTH_ORIGINS = { global: "https://auth.kimi.ai", "mainland-cn": "https://auth.kimi.com" } as const;
 const CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098";
 type Region = KimiAuthRecord["region"];
 type Data = Record<string, unknown>;
@@ -47,7 +48,8 @@ async function locked<T>(options: Options, operation: () => Promise<T>, signal: 
   return result.value;
 }
 function origin(options: Options): string {
-  if (!options.fixtureOrigin) return KIMI_OAUTH_ORIGIN;
+  if (options.region !== "global" && options.region !== "mainland-cn") throw fail("region_mismatch");
+  if (!options.fixtureOrigin) return KIMI_OAUTH_ORIGINS[options.region];
   const url = new URL(options.fixtureOrigin);
   if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.pathname !== "/" || url.search || url.hash || url.username || url.password) throw fail("fixture_endpoint");
   return url.origin;
@@ -148,7 +150,7 @@ export async function loginKimi(options: Options & {
     const d = auth.data, expires = d["expires_in"], interval = d["interval"] ?? 5;
     if (auth.status !== 200 || !token(d["device_code"]) || !token(d["user_code"]) || typeof expires !== "number" || !Number.isSafeInteger(expires) || expires < 1 || expires > 1800 || typeof interval !== "number" || !Number.isSafeInteger(interval) || interval < 1 || interval > 60 || typeof d["verification_uri_complete"] !== "string") throw fail("invalid_device_response");
     const uri = new URL(d["verification_uri_complete"]);
-    const allowed = options.fixtureOrigin ? new URL(options.fixtureOrigin).origin : KIMI_OAUTH_ORIGIN;
+    const allowed = origin(options);
     if (uri.origin !== allowed || uri.username || uri.password || /[\u0000-\u0020\u007f-\u009f]/.test(d["verification_uri_complete"])) throw fail("verification_uri");
     const deadline = Math.min(now() + expires * 1000, now() + 300000);
     options.onVerification({ uri: uri.href, userCode: d["user_code"] });

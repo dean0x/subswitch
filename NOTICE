@@ -6,6 +6,8 @@ packages/node-sdk/src/kimi-code-model-provider.ts.
 Subswitch owns this adaptation and its update/compatibility review.
 No upstream application identity or service authorization is inherited.
 Shared public flow metadata does not establish Subswitch service acceptance.
+Explicit regional auth-host mapping also follows packages/oauth/src/region.ts at
+3079e9515f05f097a3f34afdc8ebe2b9b377bf0d from the same MIT-licensed project.
 
 MIT License
 
