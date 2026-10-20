@@ -1,5 +1,10 @@
 # Kimi readiness audit and bounded acceptance plan — 2026-10-19
 
+> Historical key-bound plan and initial audit below. The managed OAuth
+> implementation supersedes the unsupported-OAuth/registration assumption.
+> See [current managed OAuth boundaries](kimi-managed-oauth.md).
+> The key-bound runner remains inactive. No live readiness is claimed.
+
 This lane works in the independent `subswitch-kimi` clone on
 `codex/wave1-kimi-failover`, starting at
 `0183d6de0edfc6229cbd54c932f76e2d136c5ffa` (PR #81). All qualification performed

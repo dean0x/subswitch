@@ -37,6 +37,7 @@ import { StagedCache } from "./replay-cache.js";
 import { adaptRequest } from "./request-adapter.js";
 import { deriveConversationKey } from "../conversation-key.js";
 import { recordLimitFailure, type LimitContext } from "../limit-observation.js";
+import { abortable } from "../abortable.js";
 
 export interface AttemptRequest {
   profile: AccessProfile;
@@ -75,6 +76,8 @@ export class RoutedAttempts {
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly clock: RoutingClock = systemClock,
     private readonly codexUserAgent = "subswitch",
+    /** Qualification budget hook: invoked before EVERY physical inference dispatch, including401. */
+    private readonly beforeDispatch?: (dispatch: { profile: string; protocol: WireProtocol; requestedOutputTokens: unknown }) => void,
   ) {}
   async prepare(request: AttemptRequest): Promise<RoutedPrepared> {
     const {
@@ -113,14 +116,18 @@ export class RoutedAttempts {
       sessionId,
     });
     const controller = new AbortController(),
-      combined = AbortSignal.any([signal, controller.signal]);
+      combined = AbortSignal.any([signal, controller.signal, ...(p.provider === "kimi" && p.credential.kind === "native-oauth" ? [AbortSignal.timeout(30000)] : [])]);
     const encodedRequest = JSON.stringify(outbound);
+    const serializedCap: unknown = this.beforeDispatch
+      ? JSON.parse(encodedRequest)[protocol === "messages" ? "max_tokens" : "max_output_tokens"]
+      : undefined;
     let response: Response;
     try {
       while (true) {
         combined.throwIfAborted();
         this.auth.validate(credential);
         let headers: Record<string, string> = {
+          ...this.auth.identity(credential),
           ...credential.authHeaders,
           "content-type": "application/json",
           accept: "text/event-stream",
@@ -138,13 +145,17 @@ export class RoutedAttempts {
             codexTransportConstants(this.codexUserAgent),
           );
         }
-        response = await this.fetchImpl(destinationUrl(p, protocol), {
+        this.beforeDispatch?.({ profile: t.profile, protocol, requestedOutputTokens: serializedCap });
+        response = await abortable(Promise.resolve().then(() => {
+          combined.throwIfAborted();
+          return this.fetchImpl(destinationUrl(p, protocol), {
           method: "POST",
           headers,
           body: encodedRequest,
           redirect: "error",
           signal: combined,
-        });
+          });
+        }), combined);
         if (
           response.status !== 401 ||
           p.credential.kind !== "native-oauth" ||

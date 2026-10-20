@@ -113,7 +113,7 @@ describe("Wave 1 configuration and failures (synthetic)", () => {
       { ...code, region: undefined },
       {
         ...code,
-        credential: { kind: "native-oauth", authFile: "/synthetic/auth.json" },
+        credential: { kind: "native-oauth", authFile: "relative-auth.json" },
       },
       { ...code, baseUrl: "http://example.invalid" },
       { ...code, baseUrl: "https://example.invalid" },

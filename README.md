@@ -833,3 +833,6 @@ local development.
 Version 2 access profiles, action-scoped failover, recovery behavior, configuration examples
 and current evidence gates are described in [the Wave 1 notes](e2e/gates/wave1.md).
 Kimi live compatibility is pending; see [the evidence manifest](e2e/gates/wave1-evidence.json).
+
+Kimi Code has an explicit, isolated [managed OAuth compatibility path](e2e/gates/kimi-managed-oauth.md).
+It is qualified offline; truthful Subswitch service identity acceptance remains unmeasured.

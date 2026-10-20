@@ -1,10 +1,11 @@
 Subswitch Kimi subscription compatibility slice
 
 Adapted from MoonshotAI/kimi-code, commit 67325c1b25e46b2fc66043bceab059221b719fa9.
-Sources: packages/oauth/src/types.ts, identity.ts, oauth-manager.ts;
+Sources: packages/oauth/src/types.ts, constants.ts, identity.ts, oauth.ts, oauth-manager.ts;
 packages/node-sdk/src/kimi-code-model-provider.ts.
 Subswitch owns this adaptation and its update/compatibility review.
-No upstream OAuth registration, client identity or service authorization is inherited.
+No upstream application identity or service authorization is inherited.
+Shared public flow metadata does not establish Subswitch service acceptance.
 
 MIT License
 

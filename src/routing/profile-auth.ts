@@ -17,7 +17,9 @@ import type { ProxyError } from "../errors.js";
 import { providerEvents } from "../provider-events.js";
 import { object, ownValue } from "../plain-object.js";
 import { abortable } from "../abortable.js";
-import { supportsNativeOAuth } from "./destination-catalog.js";
+import { KimiAuthManager, kimiIdentityHeaders } from "../kimi-auth.js";
+import { createKimiAuthStore } from "../kimi-auth-store.js";
+import { defaultBase, supportsNativeOAuth } from "./destination-catalog.js";
 import {
   allowanceScope,
   RoutingError,
@@ -61,6 +63,9 @@ export class ProfileAuth {
   private readonly refreshes = new Map<string, Promise<BoundCredential>>();
   private readonly fileAccounts = new Map<string, string>();
   private readonly nativeStores = new Map<string, string>();
+  private readonly kimiManagers = new Map<string, { binding: string; manager: KimiAuthManager }>();
+  private readonly kimiOwners = new Map<string, string>();
+  private readonly kimiDevices = new Map<string, string>();
   private readonly claudeOwners = new Map<
     string,
     { owner: string; access: string }
@@ -70,6 +75,7 @@ export class ProfileAuth {
     private readonly profiles: Readonly<Record<string, AccessProfile>>,
     private readonly logger: Logger,
     private readonly env: NodeJS.ProcessEnv = process.env,
+    private readonly kimiFactory?: (profile: AccessProfile) => KimiAuthManager,
   ) {}
   private binding(id: string, p: AccessProfile): string {
     return digest([id, p]);
@@ -124,7 +130,7 @@ export class ProfileAuth {
     this.claudeOwners.set(storage, { owner, access: token });
   }
   private manager(id: string, p: AccessProfile): NativeAuth {
-    if (p.credential.kind !== "native-oauth" || !supportsNativeOAuth(p))
+    if (p.credential.kind !== "native-oauth" || !supportsNativeOAuth(p) || p.provider === "kimi")
       throw new RoutingError("credential_product_mismatch");
     let manager = this.managers.get(id);
     if (manager) return manager;
@@ -172,6 +178,32 @@ export class ProfileAuth {
     this.managers.set(id, manager);
     return manager;
   }
+  private async kimiCredential(id: string, p: AccessProfile, signal: AbortSignal, refresh: boolean) {
+    if (p.credential.kind !== "native-oauth") throw new RoutingError("credential_product_mismatch");
+    if (p.product !== "kimi-code" || !p.region || (p.baseUrl && p.baseUrl.replace(/\/$/, "") !== defaultBase(p))) throw new RoutingError("kimi_oauth_endpoint_mismatch");
+    const store = createKimiAuthStore(p.credential.authFile);
+    const storage = this.bindNativeStore(id, p, store.coordinationKey);
+    const binding = this.binding(id, p);
+    let cached = this.kimiManagers.get(id);
+    if (!cached || cached.binding !== binding) {
+      cached = { binding, manager: this.kimiFactory?.(p) ?? new KimiAuthManager({ store, region: p.region! }) };
+      this.kimiManagers.set(id, cached);
+    }
+    let credential;
+    try { credential = await cached.manager.credentials(signal, refresh); }
+    catch (error) { this.invalidateNativeStore(storage); this.kimiOwners.delete(storage); throw error; }
+    if (this.binding(id, ownValue(this.profiles, id)!) !== binding) throw new RoutingError("credential_binding_mismatch", 409);
+    const previous = this.kimiOwners.get(storage);
+    if (previous && previous !== credential.generation) {
+      this.invalidateNativeStore(storage);
+      const groups = new Set<string>();
+      for (const [alias, key] of this.nativeStores) if (key === storage) groups.add(this.allowanceGroup(ownValue(this.profiles, alias)!));
+      for (const group of groups) this.allowanceEpochs.set(group, (this.allowanceEpochs.get(group) ?? 0) + 1);
+    }
+    this.kimiOwners.set(storage, credential.generation);
+    this.kimiDevices.set(id, credential.deviceId);
+    return { headers: credential.authHeaders, owner: credential.generation };
+  }
   has(id: string): boolean {
     const p = ownValue(this.profiles, id);
     if (!p) return false;
@@ -186,6 +218,7 @@ export class ProfileAuth {
   ): Promise<BoundCredential> {
     const p = ownValue(this.profiles, id);
     if (!p) throw new RoutingError("unknown_profile");
+    signal.throwIfAborted();
     let headers: Readonly<Record<string, string>>, owner: string;
     if (p.credential.kind === "env") {
       const key = ownValue(this.env, p.credential.name);
@@ -200,49 +233,53 @@ export class ProfileAuth {
     } else {
       if (!supportsNativeOAuth(p))
         throw new RoutingError("credential_product_mismatch");
-      if (p.provider === "codex") {
-        const store = createFsAuthFileStore(expandHome(p.credential.authFile));
-        const storage = this.bindNativeStore(id, p, store.coordinationKey);
-        const read = await abortable(
-          store.read(),
+      if (p.provider === "kimi") {
+        ({ headers, owner } = await this.kimiCredential(id, p, signal, refresh));
+      } else {
+        if (p.provider === "codex") {
+          const store = createFsAuthFileStore(expandHome(p.credential.authFile));
+          const storage = this.bindNativeStore(id, p, store.coordinationKey);
+          const read = await abortable(
+            store.read(),
+            AbortSignal.any([signal, AbortSignal.timeout(10000)]),
+          );
+          const account = read.ok ? readCodexAccountIdentity(read.value) : read;
+          if (!account.ok) {
+            // Losing a provable identity must invalidate previously bound credentials,
+            // rather than leave the manager's cached account available for authentication.
+            this.invalidateNativeStore(storage);
+            this.fileAccounts.delete(storage);
+            throw new RoutingError("profile_auth_unavailable", 503);
+          }
+          if (
+            this.fileAccounts.has(storage) &&
+            this.fileAccounts.get(storage) !== account.value
+          )
+            this.invalidateNativeStore(storage);
+          this.fileAccounts.set(storage, account.value);
+        }
+        const manager = this.manager(id, p);
+        const result = await abortable(
+          refresh ? manager.forceRefresh() : manager.getCredentials(),
           AbortSignal.any([signal, AbortSignal.timeout(10000)]),
         );
-        const account = read.ok ? readCodexAccountIdentity(read.value) : read;
-        if (!account.ok) {
-          // Losing a provable identity must invalidate previously bound credentials,
-          // rather than leave the manager's cached account available for authentication.
-          this.invalidateNativeStore(storage);
-          this.fileAccounts.delete(storage);
-          throw new RoutingError("profile_auth_unavailable", 503);
-        }
-        if (
-          this.fileAccounts.has(storage) &&
-          this.fileAccounts.get(storage) !== account.value
-        )
-          this.invalidateNativeStore(storage);
-        this.fileAccounts.set(storage, account.value);
+        signal.throwIfAborted();
+        if (!result.ok) throw new RoutingError("profile_auth_unavailable", 503);
+        if (result.value.provider !== p.provider)
+          throw new RoutingError("credential_binding_mismatch", 503);
+        headers = result.value.authHeaders;
+        // Native account identifiers, when supplied, survive refresh. Profile scope remains
+        // conservative for Claude, whose native auth contract exposes no account header.
+        if (p.provider === "claude") {
+          const observed = this.claudeOwners.get(this.nativeStores.get(id) ?? id);
+          if (
+            !observed ||
+            headers["authorization"] !== `Bearer ${observed.access}`
+          )
+            throw new RoutingError("credential_owner_changed", 409);
+          owner = observed.owner;
+        } else owner = headers["chatgpt-account-id"] ?? p.account;
       }
-      const manager = this.manager(id, p);
-      const result = await abortable(
-        refresh ? manager.forceRefresh() : manager.getCredentials(),
-        AbortSignal.any([signal, AbortSignal.timeout(10000)]),
-      );
-      signal.throwIfAborted();
-      if (!result.ok) throw new RoutingError("profile_auth_unavailable", 503);
-      if (result.value.provider !== p.provider)
-        throw new RoutingError("credential_binding_mismatch", 503);
-      headers = result.value.authHeaders;
-      // Native account identifiers, when supplied, survive refresh. Profile scope remains
-      // conservative for Claude, whose native auth contract exposes no account header.
-      if (p.provider === "claude") {
-        const observed = this.claudeOwners.get(this.nativeStores.get(id) ?? id);
-        if (
-          !observed ||
-          headers["authorization"] !== `Bearer ${observed.access}`
-        )
-          throw new RoutingError("credential_owner_changed", 409);
-        owner = observed.owner;
-      } else owner = headers["chatgpt-account-id"] ?? p.account;
     }
     const generation = digest([this.binding(id, p), owner]);
     const previous = this.generations.get(id);
@@ -297,7 +334,7 @@ export class ProfileAuth {
           ? undefined
           : p.provider === "codex"
             ? this.fileAccounts.get(storage)
-            : this.claudeOwners.get(storage)?.owner;
+            : p.provider === "kimi" ? this.kimiOwners.get(storage) : this.claudeOwners.get(storage)?.owner;
       if (
         owner === undefined ||
         credential.generation !==
@@ -305,6 +342,15 @@ export class ProfileAuth {
       )
         throw new RoutingError("credential_binding_mismatch", 503);
     }
+  }
+  /** Identity is transport metadata; authHeaders remains the secret-only boundary. */
+  identity(credential: BoundCredential): Readonly<Record<string, string>> {
+    this.validate(credential);
+    const profile = ownValue(this.profiles, credential.profile)!;
+    if (profile.provider !== "kimi" || profile.credential.kind !== "native-oauth") return {};
+    const device = this.kimiDevices.get(credential.profile);
+    if (!device) throw new RoutingError("credential_binding_mismatch", 503);
+    return kimiIdentityHeaders(device);
   }
   private allowanceGroup(p: AccessProfile): string {
     return JSON.stringify([p.provider, p.product, p.region, p.account]);
@@ -326,12 +372,13 @@ export class ProfileAuth {
       throw new RoutingError("profile_not_refreshable", 401);
     if (!supportsNativeOAuth(p))
       return Promise.reject(new RoutingError("credential_product_mismatch"));
-    let pending = this.refreshes.get(id);
+    const refreshKey = p.provider === "kimi" ? digest([id, p]) : id;
+    let pending = this.refreshes.get(refreshKey);
     if (!pending) {
       pending = this.get(id, AbortSignal.timeout(10000), true).finally(() =>
-        this.refreshes.delete(id),
+        this.refreshes.delete(refreshKey),
       );
-      this.refreshes.set(id, pending);
+      this.refreshes.set(refreshKey, pending);
     }
     return abortable(pending, signal);
   }

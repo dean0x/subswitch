@@ -42,7 +42,8 @@ export const KIMI_MODELS = {
 /** Native OAuth stores are implemented only for these exact provider/product pairs. */
 export const supportsNativeOAuth = (profile: AccessProfile): boolean =>
   (profile.provider === "codex" && profile.product === "chatgpt-codex") ||
-  (profile.provider === "claude" && profile.product === "claude-code");
+  (profile.provider === "claude" && profile.product === "claude-code") ||
+  (profile.provider === "kimi" && profile.product === "kimi-code");
 
 export function modelEfforts(
   profile: AccessProfile,
@@ -90,7 +91,7 @@ export function destinationUrl(
         : profile.product === "kimi-platform"
           ? "/anthropic/v1/messages"
           : "/v1/messages";
-  return base + path;
+  return base + path + (profile.product === "kimi-code" && profile.credential.kind === "native-oauth" && protocol === "messages" ? "?beta=true" : "");
 }
 /** Intentionally empty until exact product/region/capability live gates pass (#74). */
 export const VERIFIED_MODEL_EQUIVALENCES: readonly string[] = [];
