@@ -25,6 +25,9 @@ import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
 import { createConsoleLogger } from "./logger.js";
 import { LimitRecorder, limitDirectory, withLimitRecorder, readLimitObservations } from "./limit-recorder.js";
+import { loginKimi } from "./kimi-auth.js";
+import { createKimiAuthStore } from "./kimi-auth-store.js";
+import { inspectKimiProfiles } from "./kimi-doctor.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
 
@@ -61,6 +64,8 @@ Commands:
   limits    Show recorded upstream limit/error formats (--json, --port <n>)
   run-action --client <client> [--conversation <id>] -- <native command>
             Scope one native invocation, including its tools and children
+  kimi-login --auth-file <absolute new path> --region <global|mainland-cn>
+            Explicit device login into a separate private Subswitch store
 
 Flags (global):
   -h, --help       Show this help message
@@ -107,6 +112,7 @@ Environment:
 type CliCommand =
   | { readonly kind: "help" }
   | { readonly kind: "version" }
+  | { readonly kind: "kimi-login"; readonly authFile: string; readonly region: "global" | "mainland-cn" }
   | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly port?: string }
   | { readonly kind: "doctor"; readonly client: Client }
   | { readonly kind: "models"; readonly json: boolean; readonly client: Client; readonly schemaVersion?: 3 }
@@ -129,6 +135,11 @@ const INIT_FLAGS = new Set(["yes", "dry-run", "port", "settings-target", "client
  */
 const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: false; error: { message: string } } => {
   try {
+    if (argv[0] === "kimi-login") {
+      const { values, positionals } = parseArgs({ args: argv.slice(1), options: { "auth-file": { type: "string" }, region: { type: "string" } }, strict: true, allowPositionals: true });
+      if (positionals.length || !values["auth-file"] || (values.region !== "global" && values.region !== "mainland-cn")) throw new Error("kimi-login requires --auth-file <absolute new path> --region global|mainland-cn");
+      return { ok: true, value: { kind: "kimi-login", authFile: values["auth-file"], region: values.region } };
+    }
     if (argv[0] === "run-action") {
       const boundary = argv.indexOf("--");
       if (boundary < 0 || !argv[boundary + 1]) throw new Error("run-action requires -- <native command>");
@@ -393,6 +404,7 @@ const doctor = async (result: LoadConfigResult, client: Client): Promise<void> =
     const { runCodexDoctor } = await import("./codex-doctor.js");
     process.exitCode = Math.max(Number(process.exitCode ?? 0), await runCodexDoctor(result.config, out, { color }));
   }
+  process.exitCode = Math.max(Number(process.exitCode ?? 0), await inspectKimiProfiles(result.config.accessProfiles ?? {}, out));
 };
 
 // ---------------------------------------------------------------------------
@@ -554,6 +566,17 @@ const main = async (): Promise<void> => {
     case "version":
       out(SUBSWITCH_VERSION);
       return;
+    case "kimi-login": {
+      const controller = new AbortController();
+      const cancel = () => controller.abort();
+      process.once("SIGINT", cancel);
+      try {
+        await loginKimi({ store: createKimiAuthStore(command.authFile), region: command.region, signal: controller.signal,
+          onVerification: ({ uri, userCode }) => { out(`Approve Subswitch device login: ${uri}`); out(`Device code: ${userCode}`); } });
+        out("Kimi OAuth stored. Subswitch service identity acceptance remains unverified.");
+      } finally { process.removeListener("SIGINT", cancel); }
+      return;
+    }
 
     case "init":
       await runInit(command);

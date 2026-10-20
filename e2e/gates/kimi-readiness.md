@@ -1,5 +1,10 @@
 # Kimi readiness audit and bounded acceptance plan — 2026-10-19
 
+> Historical key-bound plan and initial audit below. The managed OAuth
+> implementation supersedes the unsupported-OAuth/registration assumption.
+> See [current managed OAuth boundaries](kimi-managed-oauth.md).
+> The key-bound runner remains inactive. No live readiness is claimed.
+
 This lane works in the independent `subswitch-kimi` clone on
 `codex/wave1-kimi-failover`, starting at
 `0183d6de0edfc6229cbd54c932f76e2d136c5ffa` (PR #81). All qualification performed
@@ -198,3 +203,40 @@ Never include key values, OAuth tokens, nonce content, private prompts or histor
 
 A passing report certifies only the tested product, region, alias, protocol,
 transport and client version. Keep unexecuted and unrelated gates pending.
+
+
+## Subscription compatibility slice — offline only (2026-10-20)
+
+`src/kimi-subscription.ts` adapts the model-only managed-auth boundary from
+MoonshotAI/kimi-code commit `67325c1b25e46b2fc66043bceab059221b719fa9`.
+The source notice is in `NOTICE`, included in the package. Subswitch owns updates:
+review changes to upstream token fields, identity, refresh locking and provider
+callbacks before changing this pin. No private monorepo package is imported.
+
+This slice is available only through explicitly injected loopback fixtures. The
+default factory rejects before reading storage or transport. Production profile
+validation still rejects Kimi native OAuth; the CLI/doctor does not advertise it.
+Fixtures use the true Subswitch product/version/platform, a fabricated registration
+and an explicitly supplied store. They neither discover native state nor spawn an
+agent. The store interface requires serialized locking and conditional publication;
+these tests exercise independent manager instances over a shared in-memory store,
+not OS file locks or compatibility with an actual native credential directory.
+
+Caller history/tools are serialized unchanged. The caller executes tools and
+submits their IDs/results. Refreshes are bounded separately; each model dispatch,
+including one possible 401 retry, consumes the fixture's attempt/token ceiling.
+Request and phase deadlines cover the response body; no other retries, device-code
+polling, native tools, metadata or ancillary network operations are implemented.
+These per-instance fixture counters are not a crash-persistent live allowance.
+
+Unit controls and two loopback protocol cases qualify the adapted auth/request
+boundary and existing stream validator. They do not establish relay selection,
+production affinity/recovery, native OAuth codec compatibility, account attestation
+or cross-process filesystem locking. Those remain integration gates.
+
+Before production enablement, establish the legitimate Subswitch registration,
+exact product/region/model/protocol endpoints, account/generation attestation and
+native-store coordination. Add the production ProfileAuth/doctor wiring only after
+that contract is resolved and independently reviewed. No native login, stored
+credential read, provider call or new live budget is authorized by these fixtures.
+The original 18-call/4,608-output-token plan remains unused and unchanged.
