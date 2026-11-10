@@ -18,7 +18,7 @@ import type { ProviderAuth } from "./provider-auth.js";
 import { ReasoningCache } from "./reasoning-cache.js";
 import { createCodexHandler } from "./codex-handler.js";
 import { ModelPeekSchema } from "./anthropic-wire-types.js";
-import { drainRejectedUpload } from "./provider-transport.js";
+import { drainRejectedUpload, respondJson } from "./provider-transport.js";
 import {
   buildRoutingTable,
   resolveModel as resolveModelFromTable,
@@ -36,8 +36,12 @@ import { CodexGateway } from "./codex-gateway.js";
 import { hasNativeDecoders } from "./content-encoding.js";
 import { claudeResolver } from "./claude-models.js";
 import { codexIngressHealth } from "./codex-health.js";
+import { SharedRouting } from "./routing/shared-routing.js";
+import { RoutingError } from "./routing/routing-types.js";
+import { object as routingObject } from "./plain-object.js";
 
 export interface ServerDeps {
+  readonly sharedRouting?: SharedRouting;
   readonly config: Config;
   readonly logger: Logger;
   /** Privileged default leg — handles everything that is not POST /v1/messages*. */
@@ -98,7 +102,8 @@ const createCodexProvider = (config: Config, logger: Logger, auth: ProviderAuth<
  * The `serve` command exits non-zero on err; diagnostic commands (`doctor`, `models`)
  * do not call `buildDeps` and are unaffected.
  */
-export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel)): Result<ServerDeps, string> => {
+export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel),
+  routingOptions: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Result<ServerDeps, string> => {
 
   if (config.codexIngress.enabled && config.codexIngress.claude.enabled && !hasNativeDecoders())
     return err("Codex → Claude routing requires native zstd support. Use Node 22.15 or newer; forward routing remains available.");
@@ -164,11 +169,13 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
   const resolveClaude = claudeResolver(config.codexIngress.claude.aliases);
   if (resolveClaude.rejectedAliases.length) return err(`Invalid Claude aliases: ${resolveClaude.rejectedAliases.join(", ")}`);
   const codexAuth = createCodexAuth(config, logger);
+  const sharedRouting = new SharedRouting(config, logger, undefined, routingOptions.fetchImpl, routingOptions.env);
 
   return ok({
     config,
     logger,
-    forwardOpenai: config.codexIngress.enabled ? new CodexGateway({ config, logger, parentAuth: codexAuth, resolveClaude,
+    sharedRouting,
+    forwardOpenai: config.codexIngress.enabled ? new CodexGateway({ config, logger, parentAuth: codexAuth, resolveClaude, sharedRouting,
       claudeAuth: new ClaudeAuthManager({ store: createClaudeCredentialStore(config.codexIngress.claude),
         oauthTokenUrl: config.codexIngress.claude.oauthTokenUrl, logger }),
     }) : undefined,
@@ -371,12 +378,13 @@ class SubswitchServer extends http.Server {
 export const createProxyServer = (deps: ServerDeps): Server => {
   const { config, logger } = deps;
 
-  const server = new SubswitchServer(() => { deps.forwardOpenai?.close(); deps.forwardAnthropic.close?.(); }, (req, res) => {
+  const server = new SubswitchServer(() => { deps.sharedRouting?.close(); deps.forwardOpenai?.close(); deps.forwardAnthropic.close?.(); }, (req, res) => {
     const startedAt = Date.now();
+    deps.sharedRouting?.stripPrefix(req);
     const path = req.url ?? "/";
     const pathname = path.split("?")[0] ?? path;
     const ingress = codexIngressRoute(path);
-    const logPath = ingress.kind === "other" ? pathname : "/codex";
+    const logPath = pathname.startsWith("/__subswitch/actions") ? "/__subswitch/actions" : ingress.kind === "other" ? pathname : "/codex";
     let model: string | undefined;
     let route = "anthropic";
     let bodyMode: "buffered" | "streamed" | undefined;
@@ -440,6 +448,10 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       }
 
       // Reserve the whole Codex namespace before the Claude-facing fallback.
+      deps.sharedRouting?.admitHttp(req, res, ingress.kind === "codex" ? "codex" : "claude-code");
+      if (pathname.startsWith("/__subswitch/actions") && deps.sharedRouting) {
+        await deps.sharedRouting.control(req, res); route = "action_control"; return;
+      }
       if (ingress.kind !== "other") {
         route = ingress.kind === "codex" ? `codex_ingress:${ingress.mode}:passthrough` : "codex_ingress:unknown";
         if (ingress.kind === "reserved" || !deps.forwardOpenai) {
@@ -524,6 +536,18 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       }
 
       // Resolve the model name once before routing (ADR-005: resolution strictly before dispatch).
+      const routedBody = routingObject(parsedBody);
+      const explicit = model && deps.sharedRouting?.match({ model }, "claude-code");
+      if (explicit && deps.sharedRouting) {
+        route = `explicit:${explicit}`;
+        if (ingest.value.kind === "over_window") {
+          respondJson(res, 413, toAnthropicErrorBody("request_too_large", "routed_request_too_large")); drainRejectedUpload(req); return;
+        }
+        if (pathname === "/v1/messages/count_tokens") {
+          respondJson(res, 200, JSON.stringify({ input_tokens: Math.ceil(ingest.value.body.length / 4) }), { "x-subswitch-token-count": "estimated" }); return;
+        }
+        if (pathname === "/v1/messages" && routedBody) { await deps.sharedRouting.http(req, res, routedBody, "claude-code", explicit); return; }
+      }
       // deps.resolve was built once at startup by buildDeps — structural guarantee.
       const resolution = model !== undefined ? deps.resolve(model) : { kind: "unresolved" as const };
       const decision = decideRoute(req.method ?? "POST", path, resolution);
@@ -625,8 +649,8 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       route = "internal_error";
       logger.log("error", "request_failed", { path: logPath, errorCode: cause instanceof Error ? cause.name : "unknown" });
       if (!res.headersSent) {
-        res.writeHead(500, synthesizedHeaders());
-        const message = "subswitch internal error — this is a proxy fault, not an upstream failure";
+        res.writeHead(cause instanceof RoutingError ? cause.status : 500, synthesizedHeaders());
+        const message = cause instanceof RoutingError ? cause.code : "subswitch internal error — this is a proxy fault, not an upstream failure";
         res.end(ingress.kind === "other" ? toAnthropicErrorBody("api_error", message) : openaiErrorBody(message));
       } else if (!res.writableEnded) {
         res.destroy();
@@ -645,6 +669,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
   applyInboundPolicy(server, logger);
 
   server.on("upgrade", (req, socket, head) => {
+    deps.sharedRouting?.stripPrefix(req);
     socket.on("error", () => socket.destroy());
     const gate = hostGateVerdict(req.headers);
     const ingress = codexIngressRoute(req.url ?? "/");

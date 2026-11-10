@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "destination": "openai",
+  "explicitProfiles": true,
+  "success": true,
+  "nativeExit": "exit_0",
+  "messages": 4,
+  "sonnetRequests": 2,
+  "nativeAgentCall": true,
+  "nativeReadCall": true,
+  "toolResultContinuation": true,
+  "upstreamStatuses": [
+    200,
+    200,
+    200
+  ],
+  "translatedRequests": 2,
+  "compressedRequests": 0,
+  "nativeDiagnostic": "model",
+  "clientVersion": "2.1.296",
+  "synthetic": false,
+  "childRequests": 0,
+  "parentRequests": 0,
+  "routeErrors": []
+}

@@ -1,3 +1,4 @@
+import { RoutingError } from "./routing/routing-types.js";
 /** Every translation failure has an explicit client status; new codes must choose one. */
 export const CLAUDE_ERROR_STATUS = {
   namespace_collision: 400,
@@ -114,6 +115,7 @@ const STATE_MESSAGES: Partial<Record<ClaudeErrorCode, string>> = {
 };
 
 export const claudeFailure = (error: unknown) => {
+  if (error instanceof RoutingError) return { status: error.status, message: error.code, code: error.code, retryAfter: undefined };
   if (error instanceof ClaudeHttpError)
     return { status: error.status, message: error.message, code: error.code, retryAfter: error.retryAfter };
   if (error instanceof Error && "code" in error && error.code === "ETIMEDOUT")

@@ -1,4 +1,4 @@
-import type { ProviderId } from "./models.js";
+import type { DestinationProviderId as ProviderId } from "./routing/routing-types.js";
 import type { ProxyError } from "./errors.js";
 import type { Result } from "./result.js";
 

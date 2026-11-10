@@ -1,0 +1,20 @@
+{
+  "configVersion": 2,
+  "codexIngress": { "enabled": true },
+  "accessProfiles": {
+    "kimi-code": { "provider": "kimi", "product": "kimi-code", "region": "global", "billing": "subscription", "account": "personal-code", "credential": { "kind": "env", "name": "SUBSWITCH_KIMI_CODE_KEY" } },
+    "kimi-api": { "provider": "kimi", "product": "kimi-platform", "region": "global", "billing": "api", "account": "personal-platform", "credential": { "kind": "env", "name": "SUBSWITCH_KIMI_PLATFORM_KEY" } },
+    "openai-subscription": { "provider": "codex", "product": "chatgpt-codex", "billing": "subscription", "account": "personal-openai", "credential": { "kind": "native-oauth", "authFile": "~/.codex/auth.json" } }
+  },
+  "routes": {
+    "kimi-work": {
+      "clients": ["claude-code", "codex"],
+      "primary": { "profile": "kimi-code", "model": "k3", "effort": "high" },
+      "fallbacks": [
+        { "profile": "kimi-api", "model": "kimi-k3", "effort": "high" },
+        { "profile": "openai-subscription", "model": "gpt-6-sol", "effort": "high" }
+      ],
+      "affinity": "native-or-explicit"
+    }
+  }
+}

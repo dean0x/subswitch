@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "productionGateway": true,
+  "nativeAuthentication": "subscription",
+  "realDiscovery": true,
+  "model": "sonnet",
+  "followup": true,
+  "httpOnly": true,
+  "parentModel": "gpt-6-sol",
+  "parentVersion": "v2",
+  "firstValueReturned": true,
+  "followupValueReturned": true,
+  "nativeDiagnostics": [
+    "websocket"
+  ],
+  "success": true,
+  "nativeExit": "exit_0",
+  "claudeResponses": 4,
+  "openaiResponses": 5,
+  "toolCalls": 2,
+  "toolResults": 3,
+  "modelRequests": 8,
+  "cachedPromptObserved": true,
+  "errors": [],
+  "nativeCredentialMatches": true,
+  "nativeAccountHeaderMatches": true,
+  "upgradeRequests": 2,
+  "clientVersion": "0.162.1",
+  "triggerClass": "synthetic-ws-426"
+}
