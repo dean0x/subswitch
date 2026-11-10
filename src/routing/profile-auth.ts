@@ -17,8 +17,10 @@ import type { ProxyError } from "../errors.js";
 import { providerEvents } from "../provider-events.js";
 import { object, ownValue } from "../plain-object.js";
 import { abortable } from "../abortable.js";
-import { KimiAuthManager, kimiIdentityHeaders } from "../kimi-auth.js";
+import { KimiAuthManager, kimiIdentityHeaders, type KimiCredential } from "../kimi-auth.js";
 import { createKimiAuthStore } from "../kimi-auth-store.js";
+import { KimiNativeAuthManager } from "../kimi-native-auth.js";
+import { nativeFingerprint } from "../kimi-native-store.js";
 import { defaultBase, supportsNativeOAuth } from "./destination-catalog.js";
 import {
   allowanceScope,
@@ -56,14 +58,16 @@ const boundedRefreshFetch: typeof fetch = (url, init) =>
     ]),
   });
 
-/** Managers are profile-local; ordinary OAuth refresh does not change the account generation. */
+/** Managed/native refresh preserves proven lineage and shares source coordination. */
 export class ProfileAuth {
   private readonly managers = new Map<string, NativeAuth>();
   private readonly generations = new Map<string, string>();
   private readonly refreshes = new Map<string, Promise<BoundCredential>>();
   private readonly fileAccounts = new Map<string, string>();
   private readonly nativeStores = new Map<string, string>();
-  private readonly kimiManagers = new Map<string, { binding: string; manager: KimiAuthManager }>();
+  private readonly kimiManagers = new Map<string, { binding: string; storage: string; manager: { credentials(signal: AbortSignal, force?: boolean, failedGeneration?: string): Promise<KimiCredential> } }>();
+  private readonly kimiNativeManagers = new Map<string, KimiNativeAuthManager>();
+  private readonly kimiNativeCredentials = new WeakMap<BoundCredential, string>();
   private readonly kimiOwners = new Map<string, string>();
   private readonly kimiDevices = new Map<string, string>();
   private kimiSequence = 0;
@@ -180,20 +184,30 @@ export class ProfileAuth {
     this.managers.set(id, manager);
     return manager;
   }
-  private async kimiCredential(id: string, p: AccessProfile, signal: AbortSignal, refresh: boolean) {
+  private async kimiCredential(id: string, p: AccessProfile, signal: AbortSignal, refresh: boolean, failedGeneration?: string) {
     if (p.credential.kind !== "native-oauth") throw new RoutingError("credential_product_mismatch");
     if (p.product !== "kimi-code" || !p.region || (p.baseUrl && p.baseUrl.replace(/\/$/, "") !== defaultBase(p))) throw new RoutingError("kimi_oauth_endpoint_mismatch");
-    const store = createKimiAuthStore(p.credential.authFile);
-    const storage = this.bindNativeStore(id, p, store.coordinationKey);
-    const sequence = ++this.kimiSequence;
     const binding = this.binding(id, p);
     let cached = this.kimiManagers.get(id);
     if (!cached || cached.binding !== binding) {
-      cached = { binding, manager: this.kimiFactory?.(p) ?? new KimiAuthManager({ store, region: p.region! }) };
+      if (p.credential.source === "kimi-code") {
+        const source = JSON.stringify([p.region, p.credential.authFile]);
+        let manager = this.kimiNativeManagers.get(source);
+        if (!manager) {
+          manager = new KimiNativeAuthManager(p.credential.authFile, p.region);
+          this.kimiNativeManagers.set(source, manager);
+        }
+        cached = { binding, manager, storage: manager.coordinationKey };
+      } else {
+        const store = createKimiAuthStore(p.credential.authFile);
+        cached = { binding, storage: store.coordinationKey, manager: this.kimiFactory?.(p) ?? new KimiAuthManager({ store, region: p.region }) };
+      }
       this.kimiManagers.set(id, cached);
     }
+    const storage = this.bindNativeStore(id, p, cached.storage);
+    const sequence = ++this.kimiSequence;
     let credential;
-    try { credential = await cached.manager.credentials(signal, refresh); }
+    try { credential = await cached.manager.credentials(signal, refresh, failedGeneration); }
     catch (error) {
       if (!signal.aborted && (this.kimiPublished.get(storage) ?? 0) <= sequence) this.invalidateNativeStore(storage);
       throw error;
@@ -221,6 +235,7 @@ export class ProfileAuth {
     id: string,
     signal: AbortSignal,
     refresh = false,
+    failedGeneration?: string,
   ): Promise<BoundCredential> {
     const p = ownValue(this.profiles, id);
     if (!p) throw new RoutingError("unknown_profile");
@@ -240,7 +255,7 @@ export class ProfileAuth {
       if (!supportsNativeOAuth(p))
         throw new RoutingError("credential_product_mismatch");
       if (p.provider === "kimi") {
-        ({ headers, owner } = await this.kimiCredential(id, p, signal, refresh));
+        ({ headers, owner } = await this.kimiCredential(id, p, signal, refresh, failedGeneration));
       } else {
         if (p.provider === "codex") {
           const store = createFsAuthFileStore(expandHome(p.credential.authFile));
@@ -301,13 +316,16 @@ export class ProfileAuth {
       );
     }
     this.generations.set(id, generation);
-    return {
+    const credential: BoundCredential = {
       provider: p.provider,
       profile: id,
       generation,
       binding: this.binding(id, p),
       authHeaders: headers,
     };
+    if (p.provider === "kimi" && p.credential.kind === "native-oauth" && p.credential.source === "kimi-code")
+      this.kimiNativeCredentials.set(credential, nativeFingerprint(headers["authorization"]!.slice("Bearer ".length)));
+    return credential;
   }
   validate(credential: BoundCredential): void {
     if (
@@ -365,26 +383,36 @@ export class ProfileAuth {
     this.validate(credential);
     const profile = ownValue(this.profiles, credential.profile)!;
     const nativeAccount = credential.authHeaders["chatgpt-account-id"];
+    const nativeKimi = profile.provider === "kimi" && profile.credential.kind === "native-oauth" && profile.credential.source === "kimi-code";
     const kimiOwner = profile.provider === "kimi" && profile.credential.kind === "native-oauth"
       ? this.kimiOwners.get(this.nativeStores.get(credential.profile)!) : undefined;
     return {
       ...allowanceScope(profile),
-      account: kimiOwner ? `login-${digest(kimiOwner)}` : nativeAccount
+      // Native files expose no provable login/account lineage. Keep a stable
+      // source scope across rotations/relogins; never mint allowance per token.
+      account: nativeKimi ? `source-${digest(this.nativeStores.get(credential.profile))}` : kimiOwner ? `login-${digest(kimiOwner)}` : nativeAccount
         ? `native-${digest(nativeAccount)}`
         : `${profile.account}:${this.allowanceEpochs.get(this.allowanceGroup(profile)) ?? 0}`,
     };
   }
-  refresh(id: string, signal: AbortSignal): Promise<BoundCredential> {
+  refresh(id: string, signal: AbortSignal, failed?: BoundCredential): Promise<BoundCredential> {
     const p = ownValue(this.profiles, id);
     if (p?.credential.kind !== "native-oauth")
       throw new RoutingError("profile_not_refreshable", 401);
     if (!supportsNativeOAuth(p))
       return Promise.reject(new RoutingError("credential_product_mismatch"));
     signal.throwIfAborted();
-    const refreshKey = p.provider === "kimi" ? digest([id, p]) : id;
+    const nativeKimi = p.provider === "kimi" && p.credential.source === "kimi-code";
+    // A late 401 may refer to an already invalidated generation. Require an
+    // exact credential issued by this instance, without validating it as current.
+    const failedGeneration = nativeKimi && failed?.profile === id && failed.binding === this.binding(id, p)
+      ? this.kimiNativeCredentials.get(failed) : undefined;
+    if (nativeKimi && !failedGeneration)
+      return Promise.reject(new RoutingError("kimi_native_refresh_required", 401));
+    const refreshKey = p.provider === "kimi" ? digest([id, p, failedGeneration]) : id;
     let pending = this.refreshes.get(refreshKey);
     if (!pending) {
-      pending = Promise.resolve().then(() => this.get(id, AbortSignal.timeout(10000), true)).finally(() =>
+      pending = Promise.resolve().then(() => this.get(id, AbortSignal.timeout(nativeKimi ? 25000 : 10000), true, failedGeneration)).finally(() =>
         this.refreshes.delete(refreshKey),
       );
       // Observe rejection even if caller cancellation wins before abortable attaches.

@@ -25,7 +25,7 @@ import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
 import { createConsoleLogger } from "./logger.js";
 import { LimitRecorder, limitDirectory, withLimitRecorder, readLimitObservations } from "./limit-recorder.js";
-import { loginKimi } from "./kimi-auth.js";
+import { kimiOAuthDiagnostic, loginKimi } from "./kimi-auth.js";
 import { createKimiAuthStore } from "./kimi-auth-store.js";
 import { inspectKimiProfiles } from "./kimi-doctor.js";
 
@@ -650,4 +650,6 @@ const main = async (): Promise<void> => {
 // on stderr rather than a raw Node stack trace.
 void main().catch((cause: unknown) => {
   fail(cause instanceof Error ? cause.message : String(cause));
+  const diagnostic = kimiOAuthDiagnostic(cause);
+  if (diagnostic) errOut(`subswitch: kimi_oauth_diagnostic ${JSON.stringify(diagnostic)}`);
 });

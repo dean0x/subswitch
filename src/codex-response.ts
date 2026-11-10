@@ -22,6 +22,29 @@ export interface SseEvent {
   readonly data: string;
 }
 
+// Provenance lives outside wire fields and does not change the record shape.
+// Only this parser can register its synthetic no-data records; a provider event
+// named __subswitch_comment cannot acquire this identity through SSE/JSON.
+const parserComments = new WeakSet<SseEvent>();
+export const isParserComment = (event: SseEvent): boolean => parserComments.has(event);
+
+/** Shared record grammar/provenance; callers own framing and allocation accounting. */
+export function parseSseRecord(raw: string, includeComments: boolean): SseEvent | undefined {
+  let eventName: string | undefined;
+  const dataLines: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+    else if (line.startsWith("event:")) eventName = line.slice(6).replace(/^ /, "");
+  }
+  if (dataLines.length === 0) {
+    if (!includeComments) return undefined;
+    const comment = { event: "__subswitch_comment", data: raw };
+    parserComments.add(comment);
+    return comment;
+  }
+  return { event: eventName, data: dataLines.join("\n") };
+}
+
 /**
  * The SSE separator. Longest match is `\r\n\r\n` — four characters. That 4 is the only
  * input to the carry width below, so the two must never drift apart.
@@ -121,21 +144,6 @@ export const createSseParser = (maxEventBytes: number, includeComments = false):
     compactAt = MIN_COMPACT_CHARS;
   };
 
-  const parseRawEvent = (raw: string): SseEvent | undefined => {
-    let eventName: string | undefined;
-    const dataLines: string[] = [];
-    for (const line of raw.split(/\r?\n/)) {
-      if (line.startsWith("data:")) {
-        dataLines.push(line.slice(5).replace(/^ /, ""));
-      } else if (line.startsWith("event:")) {
-        eventName = line.slice(6).replace(/^ /, "");
-      }
-      // id:, retry:, and comment lines are irrelevant to translation.
-    }
-    if (dataLines.length === 0) return includeComments ? { event: "__subswitch_comment", data: raw } : undefined;
-    return { event: eventName, data: dataLines.join("\n") };
-  };
-
   return new Transform({
     readableObjectMode: true,
     transform(chunk: Buffer, _encoding, callback) {
@@ -168,7 +176,7 @@ export const createSseParser = (maxEventBytes: number, includeComments = false):
           const raw = buf.slice(0, boundary);
           if (includeComments && Buffer.byteLength(raw) > maxEventBytes) { callback(new Error("sse_event_too_large")); return; }
           buf = buf.slice(boundary).replace(LEADING_SEP_RE, "");
-          const event = parseRawEvent(raw);
+          const event = parseSseRecord(raw, includeComments);
           if (event !== undefined) this.push(event);
           // After consuming an event the accumulator is trimmed; search from 0.
           boundary = buf.search(SEP_RE);
@@ -185,7 +193,7 @@ export const createSseParser = (maxEventBytes: number, includeComments = false):
     flush(callback) {
       const tail = pending.join("") + decoder.end();
       if (includeComments && Buffer.byteLength(tail) > maxEventBytes) { callback(new Error("sse_event_too_large")); return; }
-      const event = parseRawEvent(tail);
+      const event = parseSseRecord(tail, includeComments);
       if (event !== undefined) this.push(event);
       resetAccumulator("");
       callback();

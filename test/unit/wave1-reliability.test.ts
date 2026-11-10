@@ -14,6 +14,7 @@ import { classifyFailure } from "../../src/routing/provider-failure.js";
 import { validatedProviderEvents } from "../../src/routing/provider-stream.js";
 import {
   allowanceScope,
+  MidConversationSystemError,
   type AccessProfile,
   type ClassifiedFailure,
 } from "../../src/routing/routing-types.js";
@@ -295,7 +296,8 @@ describe("routing reliability and isolation", () => {
     assert.equal(body.messages.length, 2);
     assert.throws(
       () => adapt({ ...body, messages: [...body.messages].reverse() }),
-      /continuity_unavailable/,
+      (error: unknown) =>
+        error instanceof MidConversationSystemError && error.status === 400,
     );
   });
 

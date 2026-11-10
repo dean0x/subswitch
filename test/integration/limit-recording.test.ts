@@ -564,6 +564,7 @@ describe("explicit route observations and inspection", () => {
         },
       );
       assert.equal(result.code, 0);
+      assert.equal(result.failure, undefined);
       const report = JSON.parse(result.stdout);
       assert.equal(report.schemaVersion, 1);
       assert.equal(report.records.length, records.length);

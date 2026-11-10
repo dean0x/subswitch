@@ -5,7 +5,7 @@ export type WireProtocol = "messages" | "responses";
 export type BillingMode = "subscription" | "api";
 export type CredentialReference =
   | { kind: "env"; name: string }
-  | { kind: "native-oauth"; authFile: string };
+  | { kind: "native-oauth"; authFile: string; source?: "kimi-code" | undefined };
 export interface AccessProfile {
   provider: DestinationProviderId;
   product:
@@ -100,6 +100,12 @@ export class RoutingError extends Error {
     readonly status = 400,
   ) {
     super(code);
+  }
+}
+/** Local Messages instruction placement refusal; the caller owns any reconstruction. */
+export class MidConversationSystemError extends RoutingError {
+  constructor() {
+    super("unsupported_mid_conversation_system", 400);
   }
 }
 export const allowanceScope = (profile: AccessProfile): AllowanceScope => ({

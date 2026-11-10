@@ -9,7 +9,7 @@ import {
 interface Action {
   context: ActionContext;
   phase: ActionAffinity["phase"];
-  requests: Set<AbortController>;
+  requests: Map<AbortSignal, { controller: AbortController; agentId?: string }>;
   transports: Set<() => void>;
   affinities: Map<string, ActionAffinity>;
 }
@@ -48,7 +48,7 @@ export class ActionStore {
         agentId: "root",
       },
       phase: "active",
-      requests: new Set(),
+      requests: new Map(),
       transports: new Set(),
       affinities: new Map(),
     });
@@ -61,6 +61,34 @@ export class ActionStore {
     if (action.phase !== "active")
       throw new RoutingError("action_admission_closed", 409);
     return { ...action.context };
+  }
+  /** A request receipt survives completion, but never cancellation or release. */
+  validateContext(
+    context: Readonly<ActionContext>,
+    client: OriginatingClient,
+    admissionSignal?: AbortSignal,
+  ): void {
+    const action = this.actions.get(context.actionId);
+    if (!action || action.context.client !== client)
+      throw new RoutingError("action_state_lost", 409);
+    const admission = admissionSignal
+      ? action.requests.get(admissionSignal)
+      : undefined;
+    if (admissionSignal) {
+      if (!admission || admissionSignal.aborted ||
+        (action.phase !== "active" && action.phase !== "closing"))
+        throw new RoutingError("action_state_lost", 409);
+    } else if (action.phase !== "active")
+      throw new RoutingError("action_admission_closed", 409);
+    const active = action.context;
+    if (context.client !== client || active.namespace !== context.namespace ||
+      active.conversationId !== context.conversationId || active.parentActionId !== context.parentActionId ||
+      !(context.agentId === active.agentId || /^[a-f0-9]{64}$/.test(context.agentId)) ||
+      (admission?.agentId !== undefined && admission.agentId !== context.agentId))
+      throw new RoutingError("action_state_lost", 409);
+    // HTTP admission precedes the body containing thread identity. Bind that
+    // identity at the first validated dispatch; this receipt cannot switch agents.
+    if (admission) admission.agentId = context.agentId;
   }
   affinity(context: ActionContext, route: string): ActionAffinity {
     const a = this.actions.get(context.actionId);
@@ -100,9 +128,9 @@ export class ActionStore {
     const action = this.actions.get(context.actionId)!;
     if (action.requests.size >= 16)
       throw new RoutingError("action_request_limit", 503);
-    action.requests.add(controller);
+    action.requests.set(controller.signal, { controller });
     return () => {
-      if (!action.requests.delete(controller)) return;
+      if (!action.requests.delete(controller.signal)) return;
       this.finalize(context.actionId, action);
     };
   }
@@ -127,8 +155,8 @@ export class ActionStore {
     const a = this.actions.get(id);
     if (!a) throw new RoutingError("action_state_lost", 409);
     a.phase = "cancelled";
-    for (const c of a.requests)
-      c.abort(new RoutingError("action_cancelled", 499));
+    for (const { controller } of a.requests.values())
+      controller.abort(new RoutingError("action_cancelled", 499));
     for (const close of a.transports) close();
     this.finalize(id, a);
   }

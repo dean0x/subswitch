@@ -13,6 +13,7 @@ import type { Logger } from "../logger.js";
 import type { RoutingClock } from "./clock.js";
 import { AttemptFailure } from "./attempt-failure.js";
 import {
+  MidConversationSystemError,
   RoutingError,
   type ActionContext,
   type Item,
@@ -128,6 +129,9 @@ export function writeRoutingError(
       : classified
         ? classified.clientStatus
         : 502;
+  // Only this typed local refusal negotiates capability; provider prose and other
+  // continuity errors never do. After commitment, retain the ordinary SSE error.
+  const midSystem = error instanceof MidConversationSystemError;
   logger.log("warn", "route_request_failed", { status, errorCode: code });
   if (res.headersSent)
     res.end(
@@ -141,16 +145,18 @@ export function writeRoutingError(
       status,
       protocol === "messages"
         ? toAnthropicErrorBody(
-            failure?.kind === "quota" || failure?.kind === "rate_limit"
-              ? "rate_limit_error"
-              : failure?.kind === "permission"
-                ? "permission_error"
-                : failure?.kind === "auth"
-                  ? "authentication_error"
-                  : failure?.kind === "invalid_request"
-                    ? "invalid_request_error"
-                    : "api_error",
-            code,
+            midSystem
+              ? "invalid_request_error"
+              : failure?.kind === "quota" || failure?.kind === "rate_limit"
+                ? "rate_limit_error"
+                : failure?.kind === "permission"
+                  ? "permission_error"
+                  : failure?.kind === "auth"
+                    ? "authentication_error"
+                    : failure?.kind === "invalid_request"
+                      ? "invalid_request_error"
+                      : "api_error",
+            midSystem ? "capability_rejected: mid_conv_system" : code,
           )
         : openaiErrorBody(code, code),
       failure?.retryAt

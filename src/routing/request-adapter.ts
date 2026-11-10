@@ -7,11 +7,14 @@ import { ReverseState } from "../claude-state.js";
 import { ReasoningCache } from "../reasoning-cache.js";
 import { object } from "../plain-object.js";
 import { validateTargetCapabilities } from "./target-capabilities.js";
+import type { DestinationSelection } from "./destination-catalog.js";
+import { renderKimiResponsesRequest, type KimiResponsesRequest } from "./kimi-responses-request.js";
 import {
   renderResponsesHistory,
   type PortableTranscript,
 } from "./portable-history.js";
 import {
+  MidConversationSystemError,
   RoutingError,
   type AccessProfile,
   type Item,
@@ -32,12 +35,14 @@ interface RequestAdaptation {
   conversation: string;
   sessionId: string;
   priorOwner?: string | undefined;
+  selection?: Readonly<DestinationSelection>;
 }
 
 /** Product parameters and ingress codecs; no auth, network, output, or route selection. */
 export function adaptRequest(request: RequestAdaptation): {
   outbound: Item;
   reverse?: ReturnType<typeof reverseRequest> | undefined;
+  orderedRender?: KimiResponsesRequest | undefined;
 } {
   const {
     profile: p,
@@ -52,6 +57,8 @@ export function adaptRequest(request: RequestAdaptation): {
     sessionId,
     priorOwner,
   } = request;
+  if (request.selection && request.selection.protocol !== protocol)
+    throw new RoutingError("destination_selection_mismatch", 409);
   validateTargetCapabilities(
     p,
     t,
@@ -62,12 +69,10 @@ export function adaptRequest(request: RequestAdaptation): {
   );
   let body: Item = {
     ...(p.provider === "kimi" && ingress === "responses"
-      ? renderResponsesHistory(transcript)
+      ? renderResponsesHistory(transcript, protocol === "responses")
       : request.body),
     model: t.model,
   };
-  if (protocol === "messages" && ingress === "messages")
-    body = normalizeMessagesInstructions(body);
   if (ingress === "messages" && Array.isArray(body["messages"])) {
     for (const message of body["messages"]) {
       const m = object(message);
@@ -105,6 +110,9 @@ export function adaptRequest(request: RequestAdaptation): {
   // portability is disabled pending exact provider evidence.
   if (switched && (transcript.hasOpaqueReasoning || transcript.hasThinking))
     throw new RoutingError("continuity_unavailable", 409);
+  // Validate original opaque history before offering caller-owned instruction reconstruction.
+  if (protocol === "messages" && ingress === "messages")
+    body = normalizeMessagesInstructions(body);
   if (
     protocol === "responses" &&
     ingress === "responses" &&
@@ -126,6 +134,7 @@ export function adaptRequest(request: RequestAdaptation): {
   }
   let outbound: Item = body;
   let reverse: ReturnType<typeof reverseRequest> | undefined;
+  let orderedRender: KimiResponsesRequest | undefined;
   if (protocol === "messages" && ingress === "responses") {
     reverse = reverseRequest(
       { ...body, reasoning: { effort: t.effort } },
@@ -136,43 +145,51 @@ export function adaptRequest(request: RequestAdaptation): {
     );
     outbound = reverse.body;
   } else if (protocol === "responses" && ingress === "messages") {
-    const parsed = AnthropicRequestSchema.safeParse(body);
-    if (!parsed.success) throw new RoutingError("invalid_routed_messages");
-    // Unknown/multimodal content is refused before a legacy translator could drop it.
-    class ScopedReasoning extends ReasoningCache {
-      constructor() {
-        super(1, 1);
+    if (request.selection?.codec) {
+      // Original opaque and ownership guards above must run before this renderer.
+      const rendered = renderKimiResponsesRequest(body);
+      if (!rendered.ok) throw new RoutingError(`kimi_ordered_request_${rendered.error}`, 422);
+      outbound = rendered.value.body;
+      orderedRender = rendered.value;
+    } else {
+      const parsed = AnthropicRequestSchema.safeParse(body);
+      if (!parsed.success) throw new RoutingError("invalid_routed_messages");
+      // Unknown/multimodal content is refused before a legacy translator could drop it.
+      class ScopedReasoning extends ReasoningCache {
+        constructor() {
+          super(1, 1);
+        }
+        override get(id: string): readonly unknown[] | undefined {
+          return stage.get("snapshot", `reasoning:${owner}:${conversation}:${id}`)
+            ?.input;
+        }
       }
-      override get(id: string): readonly unknown[] | undefined {
-        return stage.get("snapshot", `reasoning:${owner}:${conversation}:${id}`)
-          ?.input;
+      const translated = translateRequest(
+        parsed.data,
+        new ScopedReasoning(),
+        conversation,
+      );
+      if (
+        !translated.ok ||
+        translated.value.warnings.some((w) => w !== "unsupported_effort_dropped")
+      )
+        throw new RoutingError("continuity_unavailable", 409);
+      outbound = translated.value.body;
+      if (p.product === "openai-api" && body["max_tokens"] !== undefined)
+        outbound = { ...outbound, max_output_tokens: body["max_tokens"] };
+      if (transcript?.toolErrors.size && Array.isArray(outbound["input"])) {
+        outbound["input"] = outbound["input"].map((value) => {
+          const entry = object(value);
+          return entry &&
+            entry["type"] === "function_call_output" &&
+            transcript!.toolErrors.has(String(entry["call_id"]))
+            ? {
+                ...entry,
+                output: `[Tool execution failed]\n${String(entry["output"])}`,
+              }
+            : value;
+        });
       }
-    }
-    const translated = translateRequest(
-      parsed.data,
-      new ScopedReasoning(),
-      conversation,
-    );
-    if (
-      !translated.ok ||
-      translated.value.warnings.some((w) => w !== "unsupported_effort_dropped")
-    )
-      throw new RoutingError("continuity_unavailable", 409);
-    outbound = translated.value.body;
-    if (p.product === "openai-api" && body["max_tokens"] !== undefined)
-      outbound = { ...outbound, max_output_tokens: body["max_tokens"] };
-    if (transcript?.toolErrors.size && Array.isArray(outbound["input"])) {
-      outbound["input"] = outbound["input"].map((value) => {
-        const entry = object(value);
-        return entry &&
-          entry["type"] === "function_call_output" &&
-          transcript!.toolErrors.has(String(entry["call_id"]))
-          ? {
-              ...entry,
-              output: `[Tool execution failed]\n${String(entry["output"])}`,
-            }
-          : value;
-      });
     }
   }
   outbound = { ...outbound, model: t.model, stream: true };
@@ -185,18 +202,24 @@ export function adaptRequest(request: RequestAdaptation): {
     outbound["store"] = false;
     outbound["reasoning"] = { effort: t.effort };
     if (p.product === "chatgpt-codex") outbound["prompt_cache_key"] = sessionId;
-    if (p.provider === "kimi") delete outbound["include"];
+    if (p.provider === "kimi") {
+      delete outbound["include"];
+      if (orderedRender) outbound["include"] = ["reasoning.encrypted_content"];
+    }
   } else {
     outbound["output_config"] = {
       ...object(outbound["output_config"]),
       effort: t.effort,
     };
     if (p.provider === "kimi") {
+      // The configured target effort owns thinking. A caller's disabled mode
+      // can reject K3.1 or silently route older models to non-thinking K2.8.
+      outbound["thinking"] = { type: "enabled" };
       delete outbound["cache_control"];
       delete outbound["temperature"];
     }
   }
-  return { outbound, reverse };
+  return { outbound, reverse, orderedRender };
 }
 
 /** Claude's native child harness uses leading system-role messages. Messages APIs use `system`. */
@@ -216,7 +239,7 @@ function normalizeMessagesInstructions(body: Item): Item {
       continue;
     }
     // Later instruction changes cannot be reordered into the initial preamble.
-    if (history.length) throw new RoutingError("continuity_unavailable", 409);
+    if (history.length) throw new MidConversationSystemError();
     hasSystemMessages = true;
     system.push(
       ...(typeof message["content"] === "string"

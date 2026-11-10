@@ -1,7 +1,7 @@
 /**
  * Integration tests for the CLI entry point.
  *
- * Each test spawns `tsx src/cli.ts` in a fresh temp directory and checks exit
+ * Each test spawns `node --import tsx src/cli.ts` and checks exit
  * code + stdout/stderr. Tests are bounded with a 10 s timeout. [F9/F26]
  *
  * Important constraints:
@@ -22,8 +22,9 @@ const __dirname = dirname(__filename);
 // Resolve repo root from test/integration/ (two levels up)
 const repoRoot = resolve(__dirname, "../..");
 
-// tsx binary installed in the project's node_modules
-const tsxBin = join(repoRoot, "node_modules", ".bin", "tsx");
+// Use the same loader as the test runner; the tsx CLI's IPC socket needlessly
+// depends on the length and availability of the caller's temporary directory.
+const tsxLoader = import.meta.resolve("tsx");
 const cliEntry = join(repoRoot, "src", "cli.ts");
 
 interface SpawnResult {
@@ -80,7 +81,7 @@ const runCli = async (
   if (cached !== undefined) return cached;
 
   const promise = new Promise<SpawnResult>((resolve, reject) => {
-    const proc = spawn(tsxBin, [cliEntry, ...args], {
+    const proc = spawn(process.execPath, ["--import", tsxLoader, cliEntry, ...args], {
       cwd,
       // NO_COLOR defaults to "1" (colour off) but caller-supplied env wins,
       // including an explicit NO_COLOR: undefined (i.e. unsetting it).
@@ -120,7 +121,7 @@ const runCli = async (
 describe("CLI --help", () => {
   it("exits 0 and prints usage to stdout", async () => {
     const result = await runCli(["--help"]);
-    assert.equal(result.exitCode, 0);
+    assert.equal(result.exitCode, 0, result.stderr);
     assert.ok(result.stdout.includes("Usage:"), "stdout should contain 'Usage:'");
     assert.ok(result.stdout.includes("subswitch"), "stdout should mention subswitch");
   });
