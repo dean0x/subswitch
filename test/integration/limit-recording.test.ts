@@ -513,7 +513,7 @@ describe("explicit route observations and inspection", () => {
     }
   });
   it("reads records through the CLI without authentication or valid routing configuration", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "subswitch-limit-cli-"));
+    const dir = await mkdtemp(join(tmpdir(), "subswitch-limit-cli-private-"));
     try {
       const records: LimitObservation[] = [];
       const recorder = new LimitRecorder(join(dir, "12345"), { log() {} });
@@ -566,8 +566,10 @@ describe("explicit route observations and inspection", () => {
       assert.equal(result.code, 0);
       const report = JSON.parse(result.stdout);
       assert.equal(report.schemaVersion, 1);
+      assert.equal(report.directory, join(dir, "12345"));
+      assert.ok(report.records.length > 0);
       assert.equal(report.records.length, records.length);
-      assert.ok(!result.stdout.includes("private"));
+      assert.ok(!JSON.stringify(report.records).includes("private"));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
