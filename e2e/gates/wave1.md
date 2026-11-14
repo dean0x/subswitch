@@ -5,8 +5,12 @@ accepted without rewriting files. Both ingresses share the explicit route dispat
 profile authentication, quota store and continuation ownership. Legacy routes retain
 their existing provider handlers and passthrough behavior.
 
-This branch is not ready to merge: Kimi live acceptance is pending, and the current
-Codex HTTP same-child follow-up control exposes unsupported instruction history.
+Claude Code is the primary originating client for new provider delivery. The root
+[AGENTS.md](../../AGENTS.md) and [CLAUDE.md](../../CLAUDE.md) define Codex-client
+maintenance mode; OpenAI/Codex remains an active destination for Claude Code.
+Relevant Claude Code Kimi fallback/recovery live evidence remains incomplete.
+The retained Codex HTTP history failure below is a known maintenance limitation,
+not a new-provider parity requirement for Claude Code.
 
 Use `subswitch.wave1.example.json` as a starting point. Model aliases resolve at config
 load; route references and alias chains are rejected. Each target pins its effort.
@@ -20,8 +24,9 @@ product/region/model/capability equivalence has live evidence. The example lists
 access as an explicit fallback and does not assert equivalence. Mutable coding aliases
 receive no inferred equivalence. OpenAI and Claude API profiles use `openai-api` and
 `anthropic-api`, API billing, and an explicitly named environment credential. API
-requests carry no subscription identity headers or preamble. Kimi OAuth inference is
-not enabled.
+requests carry no subscription identity headers or preamble. Kimi Code subscription
+OAuth is implemented separately; see [managed OAuth boundaries](kimi-managed-oauth.md)
+for its supported configuration and limited observed acceptance.
 
 ## Code structure and reliability review
 
@@ -224,17 +229,25 @@ The initial failure is retained in `native-codex-http-review-failure-2026-10-11.
 two bounded, sanitized diagnostic runs reproduce an unrecognized new developer
 instruction after the first child answer. It does not match initial instructions or
 the pinned source's factual clock markers. Arbitrary instructions remain rejected;
-none were hoisted, dropped or downgraded to make the gate pass. This required native
-control remains a merge blocker. Older successful runs do not replace the failed
-review evidence. The HTTP gate injects WebSocket 426;
+none were hoisted, dropped or downgraded to make the gate pass. This failed native
+control remains a documented Codex-client limitation. Under the root maintenance
+policy it does not block a Claude Code-only feature. Older successful runs do not
+replace the failed review evidence. The HTTP gate injects WebSocket 426;
 upstream inference is real. Basic protocol probes
 do not certify tools, replay, native orchestration, quota exhaustion or model equivalence.
 
-Live Kimi Code/Platform access, tool/reasoning replay, both native clients, exact K3
-equivalence, usage contracts, ordinary API-profile live gates and full Wave 1
-acceptance remain required. DeepSeek remains blocked on those gates.
+For the supported Claude Code Kimi route, retain the live tool/continuation evidence
+and qualify the configured existing-model fallback and subsequent-action recovery
+claims. Synthetic quota injection must remain distinct from real provider behavior.
+Codex-client Kimi parity is not required. This client policy does not waive the
+broader Wave 1 product/access gates: live Kimi Code/Platform access, tool/reasoning
+replay, exact K3 equivalence, usage contracts and ordinary API-profile live gates
+remain pending where required by those declared features. Do not claim full Wave 1
+acceptance or general authentication/model acceptance from the bounded manual run.
+DeepSeek remains blocked on the relevant Wave 1 exit criteria.
 
-Kimi live gates are required before merge. On 2026-10-12, installed Kimi CLI 2.1.1
+Live evidence is required for the specific supported Claude Code route claims.
+The following earlier CLI observation is historical. On 2026-10-12, installed Kimi CLI 2.1.1
 completed a headless text request and read an unpredictable value from an isolated
 file through its native tool, then returned that value in its final answer. The
 configured default is `kimi-for-coding`, provider type `kimi`, OAuth access, endpoint
@@ -248,10 +261,13 @@ Version 2.1.1 rejects combining `--prompt` with `--auto`; the corrected probe us
 prompt mode alone. Working directories were isolated and native authenticated storage
 was reused without exposing credentials or copying them into probe files.
 
-Subswitch currently accepts a region-matched coding-plan key for Kimi Code and a
-separate billed API key for Kimi Platform. Native Kimi CLI OAuth is available on this
-machine, but its Subswitch profile/auth contract remains unimplemented. The CLI pass
-does not replace the required relay, continuation, fallback and recovery live gates.
+The earlier key-only assessment is superseded by the implemented
+[Kimi Code subscription OAuth path](kimi-managed-oauth.md). The bounded manual
+Claude Code Agent/Read flow establishes two through-Subswitch Kimi HTTP200 sends,
+owned continuation and the exact parent answer. Its separate strict complete-child
+report fixture remains FAIL_SPENT, with an unresolved report-note/full-text mismatch.
+Neither the earlier CLI pass nor this manual demonstration establishes the configured
+existing-model fallback/recovery flow, general identity acceptance or live refresh.
 
 The [2026-10-19 offline readiness audit](kimi-readiness.md) adds an executable
 27-case isolated qualification command, rejects unsupported programmatic Kimi OAuth
