@@ -31,10 +31,10 @@ function controlledRefresh(t: TestContext, provider: "claude" | "codex") {
 }
 
 describe("Kimi authentication support boundary", () => {
-  for (const product of ["kimi-code", "kimi-platform"] as const) {
+  for (const product of ["kimi-platform"] as const) {
     const profile: AccessProfile = {
       provider: "kimi", product, region: "global",
-      billing: product === "kimi-code" ? "subscription" : "api",
+      billing: "api",
       account: "synthetic", credential: { kind: "env", name: "SYNTHETIC_KEY" },
     };
 

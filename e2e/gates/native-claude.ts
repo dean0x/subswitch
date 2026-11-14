@@ -140,6 +140,8 @@ export async function runNativeClaude(destination: "claude" | "openai" = "claude
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${proxyAddress.port}`,
     });
     const version = await nativeProcess("claude", ["--version"], { cwd: work, env, timeoutMs: 10000 });
+    if (version.failure || version.code !== 0) return { schemaVersion: 1, destination, explicitProfiles, success: false,
+      nativeExit: version.failure ?? `exit_${version.code}`, nativeCleanupError: version.cleanupError ?? null, ...observations };
     observations.clientVersion = version.stdout.match(/(\d+\.\d+\.\d+)/)?.[1] ?? "unknown";
     const result = await nativeProcess("claude", [
       "--print", "--setting-sources", "", "--settings", '{"disableAllHooks":true}',
@@ -162,7 +164,7 @@ export async function runNativeClaude(destination: "claude" | "openai" = "claude
       observations.nativeAgentCall && observations.nativeReadCall && observations.toolResultContinuation &&
       (!synthetic || observations.childRequests >= 2) &&
       (destination !== "openai" || observations.translatedRequests >= 2),
-    nativeExit: result.failure ?? `exit_${result.code}`, ...observations };
+    nativeExit: result.failure ?? `exit_${result.code}`, nativeCleanupError: result.cleanupError ?? null, ...observations };
   } finally {
     for (const request of outgoing) request.destroy();
     proxy?.closeAllConnections();

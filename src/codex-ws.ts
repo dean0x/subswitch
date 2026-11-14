@@ -215,7 +215,7 @@ export class CodexWebSockets {
           try {
             scoped.check();
             if (nativeRequests.has(key) || new Set(nativeRequests.values()).size >= 16) throw new RoutingError("concurrent_native_stream_id", 409);
-            nativeRequests.set(key, body["generate"] === false ? () => undefined : scoped.admit());
+            nativeRequests.set(key, body["generate"] === false ? () => undefined : scoped.admit().release);
           } catch (error) { queued--; failure(error, streamId); return; }
         }
         let forwarded = false;
@@ -239,7 +239,11 @@ export class CodexWebSockets {
           const context = this.options.context?.(req, body);
           if (!context) throw new RoutingError("action_identity_required", 409);
           admission = { signal: scoped.signal, context };
-          if (body["generate"] !== false) release = scoped.admit();
+          if (body["generate"] !== false) {
+            const receipt = scoped.admit();
+            release = receipt.release;
+            admission.signal = receipt.signal;
+          }
         } catch (error) { failure(error, streamId); return; }
       }
       const controller = new AbortController(); active.set(key, controller); this.options.controllers.add(controller);

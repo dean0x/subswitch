@@ -9,7 +9,7 @@ import { loadConfig } from "../../src/config.js";
 import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
 import { RoutingError } from "../../src/routing/routing-types.js";
 import { object } from "./probe.js";
-import { nativeProcess, isolatedNativeEnv } from "./native-process.js";
+import { nativeProcess, isolatedNativeEnv, type NativeCleanupError } from "./native-process.js";
 import { BRIDGE_NAMESPACE, namespaceRequest, namespaceEvent } from "./namespace-adapter.js";
 
 const PARENT = "gpt-6-astra";
@@ -86,6 +86,7 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
     parentRequests: 0, childRequests: 0, nativeToolExecuted: false, childReplyDelivered: false,
     nativeV2Schema: false, unknownModel: false, fixtureErrors: 0,
     execToolType: "missing", stage: "setup", nativeExit: "not_started", nativeDiagnostic: "none",
+    nativeCleanupError: null as NativeCleanupError | null,
     nativeEventTypes: [] as string[], nativeStderrBytes: 0, nativeStdoutBytes: 0, multiplexed: false,
     followupReceived: false, followupReplyDelivered: false,
     childTaskReadable: false, childIdentityPreserved: false, replyIdentityPreserved: false,
@@ -226,8 +227,13 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
     await mkdir(work, { mode: 0o700 });
     const env = isolatedNativeEnv({ CODEX_HOME: codexDir, OPENAI_API_KEY: "fabricated-native-test-key" });
     const versionResult = await nativeProcess("codex", ["--version"], { cwd: work, env, timeoutMs: 10000 });
+    observations.nativeCleanupError = versionResult.cleanupError ?? null;
+    if (versionResult.failure) {
+      observations.nativeExit = versionResult.failure;
+      return { schemaVersion: 1, success: false, ...observations };
+    }
     const clientVersion = versionResult.stdout.match(/codex-cli (\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?)/)?.[1];
-    if (versionResult.failure || versionResult.code !== 0 || !clientVersion) throw new Error("native_version_unavailable");
+    if (versionResult.code !== 0 || !clientVersion) throw new Error("native_version_unavailable");
     observations.clientVersion = clientVersion;
     const bound = await listenServer(upstream, 0, "127.0.0.1");
     if (!bound.ok) throw new Error("fixture_listen_failed");
@@ -268,6 +274,7 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
       cwd: work, env,
     });
     observations.nativeExit = result.failure ?? `exit_${result.code}`;
+    observations.nativeCleanupError = result.cleanupError ?? null;
     observations.nativeStdoutBytes = result.stdout.length;
     observations.nativeStderrBytes = result.stderr.length;
     observations.nativeDiagnostic = ["unsupported call", "failed to parse", "not found", "not allowed", "sandbox", "model", "permission", "fork_turns", "agent_type"]

@@ -8,7 +8,8 @@
   },
   "files": [
     "dist",
-    "subswitch.config.example.json"
+    "subswitch.config.example.json",
+    "NOTICE"
   ],
   "keywords": [
     "claude",
@@ -41,6 +42,7 @@
     "serve": "tsx src/cli.ts serve",
     "doctor": "tsx src/cli.ts doctor",
     "typecheck": "tsc --noEmit",
+    "pretest": "npm run build",
     "test": "node --import tsx --test --test-timeout=30000 \"test/unit/*.test.ts\" \"test/integration/*.test.ts\"",
     "bench:routing": "node --import tsx test/tools/routing-quota.bench.ts",
     "bench:replay": "node --import tsx test/tools/replay-cache.bench.ts",

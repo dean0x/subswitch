@@ -8,6 +8,8 @@ import {
 } from "./destination-catalog.js";
 import type { AccessProfile, RoutePolicy } from "./routing-types.js";
 import { ownValue } from "../plain-object.js";
+import { isAbsolute } from "node:path";
+import { validateKimiNativePath } from "../kimi-native-auth.js";
 
 const label = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/);
 export const AccessProfilesSchema = z
@@ -34,6 +36,7 @@ export const AccessProfilesSchema = z
         z.strictObject({
           kind: z.literal("native-oauth"),
           authFile: z.string().min(1),
+          source: z.literal("kimi-code").optional(),
         }),
       ]),
       baseUrl: z.url().optional(),
@@ -81,12 +84,21 @@ export function validateExplicitConfig(
     if (p.provider === "kimi" ? !p.region : p.region !== undefined)
       errors.push(`${id}: region_product_mismatch`);
     if (
-      (p.credential.kind === "native-oauth") !==
-      supportsNativeOAuth(p)
+      p.credential.kind === "native-oauth"
+        ? !supportsNativeOAuth(p)
+        : supportsNativeOAuth(p) && p.provider !== "kimi"
     )
       errors.push(`${id}: credential_product_mismatch`);
     const url = new URL(p.baseUrl ?? defaultBase(p));
     const expected = new URL(defaultBase(p));
+    if (p.provider === "kimi" && p.credential.kind === "native-oauth") {
+      if (!isAbsolute(p.credential.authFile)) errors.push(`${id}: kimi_oauth_absolute_store_required`);
+      if (p.credential.source === "kimi-code") {
+        try { validateKimiNativePath(p.credential.authFile, p.region!); }
+        catch { errors.push(`${id}: kimi_native_region_store_mismatch`); }
+      }
+      if (url.href !== expected.href && url.href !== expected.href + "/") errors.push(`${id}: kimi_oauth_endpoint_mismatch`);
+    }
     const knownHosts =
       p.provider === "kimi"
         ? ["api.kimi.ai", "api.kimi.com", "api.moonshot.ai", "api.moonshot.cn"]
