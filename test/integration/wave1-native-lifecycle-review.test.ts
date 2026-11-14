@@ -29,8 +29,25 @@ const credential: Result<ProviderCredential<"codex">, ProxyError> = {
     },
   },
 };
+const FIXTURE_DEADLINE_MS = 3000;
+async function withinFixtureDeadline<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("native lifecycle fixture timed out")),
+          FIXTURE_DEADLINE_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 async function until(condition: () => boolean): Promise<void> {
-  const deadline = Date.now() + 3000;
+  const deadline = Date.now() + FIXTURE_DEADLINE_MS;
   while (!condition()) {
     assert.ok(Date.now() < deadline, "native lifecycle fixture timed out");
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -92,12 +109,12 @@ async function fixture(
     readFile: () =>
       JSON.stringify({
         configVersion: 2,
-        anthropic: { baseUrl: upstream, connectTimeoutMs: 20 },
+        // Lifecycle checks use normal connect budgets; passthrough tests cover short connect deadlines.
+        anthropic: { baseUrl: upstream },
         codexIngress: {
           enabled: true,
           apiBaseUrl: upstream,
           subscriptionBaseUrl: upstream,
-          connectTimeoutMs: 20,
           ...(options.legacyClaude
             ? { claude: { enabled: true, baseUrl: upstream } }
             : {}),
@@ -410,15 +427,25 @@ describe("Wave 1 native action lifecycle", () => {
         },
       });
       try {
-        const action = await rig.action(client),
-          response = await post(rig, action.ingressPrefix, client),
+        const action = await withinFixtureDeadline(rig.action(client)),
+          response = await withinFixtureDeadline(
+            post(rig, action.ingressPrefix, client),
+          ),
           reader = response.body!.getReader();
+        assert.equal(response.status, 200);
+        assert.equal(rig.httpCalls, 1);
         assert.equal(
-          Buffer.from((await reader.read()).value!).toString(),
+          Buffer.from(
+            (await withinFixtureDeadline(reader.read())).value!,
+          ).toString(),
           "first",
         );
-        assert.equal((await rig.control(`/${action.id}/cancel`)).status, 200);
-        await assert.rejects(reader.read());
+        assert.equal(
+          (await withinFixtureDeadline(rig.control(`/${action.id}/cancel`)))
+            .status,
+          200,
+        );
+        await withinFixtureDeadline(assert.rejects(reader.read()));
         await until(() => upstreamClosed);
       } finally {
         await rig.close();
