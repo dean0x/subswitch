@@ -4,6 +4,8 @@
 > implementation supersedes the unsupported-OAuth/registration assumption.
 > See [current managed OAuth boundaries](kimi-managed-oauth.md).
 > The key-bound runner remains inactive. No live readiness is claimed.
+> New provider qualification follows the root Claude Code-first policy. The Codex
+> phase below is historical and is not required for new Claude Code Kimi support.
 
 This lane works in the independent `subswitch-kimi` clone on
 `codex/wave1-kimi-failover`, starting at
