@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { createSseParser, type SseEvent } from "../codex-response.js";
+import { createSseParser, isValidNativeSignedBlock, type SseEvent } from "../codex-response.js";
 import { object } from "../plain-object.js";
 import { classifyFailure } from "./provider-failure.js";
 import { AttemptFailure } from "./attempt-failure.js";
@@ -232,6 +232,8 @@ export async function* validatedProviderEvents(
           )
         )
           throw new RoutingError("invalid_provider_block", 502);
+        if ((block["type"] === "thinking" || block["type"] === "redacted_thinking") && !isValidNativeSignedBlock(block, "start"))
+          throw new RoutingError("invalid_provider_block", 502);
         stateBytes += Buffer.byteLength(JSON.stringify(block));
         blocks.set(index, {
           type: String(block["type"]),
@@ -262,20 +264,18 @@ export async function* validatedProviderEvents(
           stateBytes += Buffer.byteLength(String(delta[field]));
         if (delta["type"] === "input_json_delta")
           block.arguments += String(delta["partial_json"] ?? "");
-        if (delta["type"] === "signature_delta")
-          block.content["signature"] =
-            String(block.content["signature"] ?? "") +
-            String(delta["signature"] ?? "");
-        if (delta["type"] === "thinking_delta") {
-          block.content["thinking"] =
-            String(block.content["thinking"] ?? "") + String(delta["thinking"]);
-          stateBytes += Buffer.byteLength(String(delta["thinking"]));
+        if (field === "signature" || field === "thinking") {
+          const previous = block.content[field];
+          block.content[field] = (typeof previous === "string" ? previous : "") + (delta[field] as string);
+          if (field === "thinking") stateBytes += Buffer.byteLength(delta[field] as string);
         }
       }
       if (type === "content_block_stop") {
         const block = blocks.get(Number(value?.["index"]));
         if (!block || block.closed)
           throw new RoutingError("invalid_provider_block_stop", 502);
+        if ((block.type === "thinking" || block.type === "redacted_thinking") && !isValidNativeSignedBlock(block.content, "complete"))
+          throw new RoutingError("invalid_provider_block", 502);
         block.closed = true;
         if (block.type === "tool_use") {
           try {
