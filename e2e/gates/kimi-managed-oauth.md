@@ -21,6 +21,24 @@ subswitch kimi-login --auth-file /absolute/private/subswitch-kimi/auth.json --re
 ```
 
 The command displays the provider's approval URL/code without opening a browser.
+The browser approval URL is supplied by the successful, schema-valid device
+response. It need not share the OAuth API origin. This follows the official
+[OAuth response handling](https://github.com/MoonshotAI/kimi-code/blob/990580dfe828e49f820e5d78e10fbdec4038c372/packages/oauth/src/oauth.ts#L119-L157)
+and [CLI approval flow](https://github.com/MoonshotAI/kimi-code/blob/990580dfe828e49f820e5d78e10fbdec4038c372/apps/kimi-code/src/cli/sub/login-flow.ts#L40-L64).
+
+Subswitch trusts the pinned OAuth API to choose the approval destination. This
+replaces the earlier browser/API same-origin restriction; it does not add a
+guessed browser hostname allowlist. Any absolute HTTPS approval destination,
+including a different host or port, can be displayed after those response checks.
+HTTP and other schemes, userinfo, raw spaces/control characters, backslashes and
+repaired URL shorthand are rejected. Subswitch does not open or fetch the URL,
+or send its credentials to it. The human chooses whether to open it for approval.
+Device authorization, polling and refresh stay on the exact region-specific
+HTTPS OAuth endpoints with redirects disabled. Error diagnostics contain only
+fixed stage/reason values and numeric/null HTTP status, never the approval URL,
+body, headers or codes. The approval URL/code appear only in the explicit
+user-facing login notice.
+
 Choose a new store in a private directory. Login refuses existing files, and never
 reads/imports native Kimi state. The directory requires mode 0700 and files 0600,
 owned by the current user. Symlinks, insecure permissions and concurrent

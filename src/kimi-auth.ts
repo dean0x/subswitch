@@ -19,6 +19,24 @@ type Region = KimiAuthRecord["region"];
 type Data = Record<string, unknown>;
 class OAuthFailure extends RoutingError {}
 const fail = (code: string, status = 503) => new OAuthFailure(`kimi_oauth_${code}`, status);
+export interface KimiOAuthDiagnostic {
+  readonly stage: "verification_uri";
+  readonly reason: "invalid_uri" | "insecure_scheme" | "unsafe_uri" | "embedded_credentials" | "prohibited_characters";
+  readonly httpStatus: number | null;
+}
+// Only locally classified failures can publish diagnostics. Never serialize the
+// response, URI, parser error, or arbitrary properties attached to an Error.
+const diagnostics = new WeakMap<OAuthFailure, KimiOAuthDiagnostic>();
+export function kimiOAuthDiagnostic(error: unknown): KimiOAuthDiagnostic | undefined {
+  return error instanceof OAuthFailure ? diagnostics.get(error) : undefined;
+}
+function verificationFailure(reason: KimiOAuthDiagnostic["reason"], status: number): OAuthFailure {
+  // A malformed URL previously escaped to login_failed; preserve that contract.
+  const error = fail(reason === "invalid_uri" ? "login_failed" : "verification_uri");
+  diagnostics.set(error, Object.freeze({ stage: "verification_uri", reason,
+    httpStatus: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null }));
+  return error;
+}
 const token = (value: unknown): value is string => typeof value === "string" && /^[!-~]{1,8192}$/.test(value);
 const run = <T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> => {
   signal.throwIfAborted();
@@ -149,9 +167,20 @@ export async function loginKimi(options: Options & {
     const auth = await post(options, "/api/oauth/device_authorization", {}, deviceId, signal);
     const d = auth.data, expires = d["expires_in"], interval = d["interval"] ?? 5;
     if (auth.status !== 200 || !token(d["device_code"]) || !token(d["user_code"]) || typeof expires !== "number" || !Number.isSafeInteger(expires) || expires < 1 || expires > 1800 || typeof interval !== "number" || !Number.isSafeInteger(interval) || interval < 1 || interval > 60 || typeof d["verification_uri_complete"] !== "string") throw fail("invalid_device_response");
-    const uri = new URL(d["verification_uri_complete"]);
-    const allowed = origin(options);
-    if (uri.origin !== allowed || uri.username || uri.password || /[\u0000-\u0020\u007f-\u009f]/.test(d["verification_uri_complete"])) throw fail("verification_uri");
+    let uri: URL;
+    try { uri = new URL(d["verification_uri_complete"]); }
+    catch { throw verificationFailure("invalid_uri", auth.status); }
+    // The official device flow supplies the browser URL independently of the API
+    // origin (kimi-code@990580df, packages/oauth/src/oauth.ts:119-157). Trust that
+    // value only after the pinned, non-redirecting API response passes schema
+    // checks. Display it for human approval; never fetch it or send tokens there.
+    if (uri.protocol !== "https:") throw verificationFailure("insecure_scheme", auth.status);
+    if (uri.username || uri.password) throw verificationFailure("embedded_credentials", auth.status);
+    if (/[\u0000-\u0020\u007f-\u009f]/.test(d["verification_uri_complete"])) throw verificationFailure("prohibited_characters", auth.status);
+    // WHATWG URL parsing repairs shorthand/slashes/backslashes and empty userinfo.
+    // Require an explicit authority and reject those ambiguous source forms.
+    const authority = /^https:\/\/([^/?#]+)(?:[/?#]|$)/i.exec(d["verification_uri_complete"]);
+    if (!authority || authority[1]!.includes("@") || d["verification_uri_complete"].includes("\\")) throw verificationFailure("unsafe_uri", auth.status);
     const deadline = Math.min(now() + expires * 1000, now() + 300000);
     options.onVerification({ uri: uri.href, userCode: d["user_code"] });
     let delay = interval * 1000;

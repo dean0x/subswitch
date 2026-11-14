@@ -31,6 +31,8 @@ export const DESTINATIONS: readonly ProviderDefinition[] = [
 /** Documentation establishes candidates, not live compatibility or equivalence. */
 export const KIMI_MODELS = {
   "kimi-code": [
+    "k3.1-pro",
+    "k3.1-pro-highspeed",
     "k3",
     "k3-256k",
     "kimi-for-coding",
@@ -61,6 +63,10 @@ export function modelEfforts(
     profile.product === "kimi-code"
       ? KIMI_MODELS["kimi-code"]
       : KIMI_MODELS["kimi-platform"];
+  // K2.7 Highspeed has fixed thinking, not adjustable effort. A route requires
+  // an explicit effort; reject it until fixed-thinking targets are supported.
+  // Source: https://www.kimi.com/code/docs/en/kimi-code/models.html (2026-10-28).
+  if (model === "kimi-for-coding-highspeed") return [];
   return models.includes(model) ? ["low", "high", "max"] : undefined;
 }
 export function defaultBase(profile: AccessProfile): string {

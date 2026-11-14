@@ -192,6 +192,9 @@ export function adaptRequest(request: RequestAdaptation): {
       effort: t.effort,
     };
     if (p.provider === "kimi") {
+      // The configured target effort owns thinking. A caller's disabled mode
+      // can reject K3.1 or silently route older models to non-thinking K2.8.
+      outbound["thinking"] = { type: "enabled" };
       delete outbound["cache_control"];
       delete outbound["temperature"];
     }
