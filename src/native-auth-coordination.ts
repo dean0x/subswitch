@@ -27,7 +27,7 @@ const flights = new Map<string, RefreshFlight>();
  * Callers retain their own cancellation/deadline; one waiter cannot cancel another.
  */
 export function coordinateNativeRefresh<T>(
-  provider: "codex" | "claude",
+  provider: "codex" | "claude" | "kimi",
   storage: string | undefined,
   owner: string,
   operation: () => Promise<T>,

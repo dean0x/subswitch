@@ -154,6 +154,121 @@ function config() {
   return result.value.config;
 }
 const env = { CODE_KEY: "synthetic-code", API_KEY: "synthetic-api" };
+describe("Messages mid-conversation system capability refusal (synthetic)", () => {
+  it("rejects before dispatch with a fixed envelope and accepts caller-owned compatible history", async () => {
+    const calls: Item[] = [], logs: unknown[] = [];
+    const deps = buildDeps(config(), { log: (_level, event, fields) => { logs.push({ event, fields }); } }, {
+      env,
+      fetchImpl: async (_url, init) => {
+        calls.push(JSON.parse(String(init?.body)));
+        return sse(message());
+      },
+    });
+    if (!deps.ok) throw new Error(deps.error);
+    const server = createProxyServer(deps.value);
+    await listenServer(server, 0, "127.0.0.1");
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const endpoint = () => {
+      const action = deps.value.sharedRouting!.actions.create("claude-code", "capability-fixture");
+      return `http://127.0.0.1:${address.port}${action.ingressPrefix}/v1/messages`;
+    };
+    const secret = "fabricated-caller-prose-and-tool-secret";
+    const tools = [{ name: "Read", description: secret, input_schema: { type: "object" } }];
+    try {
+      for (const stream of [false, true]) for (const caller of ["claude-cli/2.1.312", "unknown-client"]) {
+        const response = await fetch(endpoint(), {
+          method: "POST", headers: { "content-type": "application/json", "user-agent": caller },
+          body: JSON.stringify({ model: "work", stream, system: secret, tools,
+            messages: [{ role: "user", content: secret }, { role: "system", content: secret }] }),
+        });
+        assert.equal(response.status, 400);
+        assert.match(response.headers.get("content-type") ?? "", /application\/json/);
+        assert.deepEqual(await response.json(), {
+          type: "error", error: { type: "invalid_request_error", message: "capability_rejected: mid_conv_system" },
+        });
+        assert.equal(calls.length, 0, "neither primary nor fallback may receive the rejected body");
+      }
+      assert.doesNotMatch(JSON.stringify(logs), new RegExp(secret));
+      assert.ok(JSON.stringify(logs).includes("unsupported_mid_conversation_system"));
+      const compatible = { model: "work", stream: false, system: secret, tools,
+        messages: [{ role: "user", content: secret }] };
+      const response = await fetch(endpoint(), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(compatible) });
+      assert.equal(response.status, 200);
+      await response.json();
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]!.system, compatible.system);
+      assert.deepEqual(calls[0]!.messages, compatible.messages);
+      assert.deepEqual(calls[0]!.tools, compatible.tools);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it("keeps mixed unowned thinking and later system history at409 without primary or fallback dispatch", async () => {
+    let calls = 0;
+    const deps = buildDeps(config(), noopLogger, {
+      env, fetchImpl: async () => { calls++; return sse(message()); },
+    });
+    if (!deps.ok) throw new Error(deps.error);
+    const server = createProxyServer(deps.value);
+    await listenServer(server, 0, "127.0.0.1");
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    try {
+      for (const stream of [false, true]) for (const block of [
+        { type: "thinking", thinking: "fabricated", signature: "fabricated" },
+        { type: "redacted_thinking", data: "fabricated" },
+      ]) {
+        const action = deps.value.sharedRouting!.actions.create("claude-code", "mixed-capability-fixture");
+        const response = await fetch(`http://127.0.0.1:${address.port}${action.ingressPrefix}/v1/messages`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "work", stream, messages: [
+            { role: "assistant", content: [block] }, { role: "user", content: "continue" },
+            { role: "system", content: "Later instruction" },
+          ] }),
+        });
+        assert.equal(response.status, 409);
+        assert.deepEqual(await response.json(), {
+          type: "error", error: { type: "api_error", message: "foreign_opaque_state" },
+        });
+        assert.equal(calls, 0, "mixed invalid history must not reach either provider");
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it("does not turn provider400 wording into local capability negotiation", async () => {
+    let calls = 0;
+    const deps = buildDeps(config(), noopLogger, {
+      env, fetchImpl: async () => {
+        calls++;
+        return new Response(JSON.stringify({ error: { type: "invalid_request_error", message: "capability_rejected: mid_conv_system" } }), { status: 400 });
+      },
+    });
+    if (!deps.ok) throw new Error(deps.error);
+    const server = createProxyServer(deps.value);
+    await listenServer(server, 0, "127.0.0.1");
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    try {
+      const action = deps.value.sharedRouting!.actions.create("claude-code", "provider-error-fixture");
+      const response = await fetch(`http://127.0.0.1:${address.port}${action.ingressPrefix}/v1/messages`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "work", messages: [{ role: "user", content: "fabricated" }] }),
+      });
+      assert.equal(response.status, 400);
+      assert.doesNotMatch(await response.text(), /capability_rejected/);
+      assert.equal(calls, 1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+});
 describe("Wave 1 production ingress (synthetic)", () => {
   it("routes HTTP for both clients, strips the action prefix and isolates outbound credentials", async () => {
     const calls: { url: string; headers: Headers; body: Item }[] = [];

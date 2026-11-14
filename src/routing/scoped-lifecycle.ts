@@ -28,7 +28,7 @@ export class ScopedSocket {
     this.signal.throwIfAborted();
     this.store.context(this.context.actionId, this.context.client);
   }
-  admit(): () => void {
+  admit(): { signal: AbortSignal; release: () => void } {
     this.check();
     const controller = new AbortController();
     const cancel = () => this.controller.abort(controller.signal.reason);
@@ -43,7 +43,7 @@ export class ScopedSocket {
       release();
     };
     this.admissions.add(finish);
-    return finish;
+    return { signal: controller.signal, release: finish };
   }
 }
 

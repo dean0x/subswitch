@@ -544,6 +544,53 @@ describe("Wave 1 native action lifecycle", () => {
     }
   });
 
+  for (const transport of ["http", "ws"] as const)
+    for (const moment of ["auth", "usage"] as const)
+      for (const operation of ["complete", "cancel"] as const)
+        it(`${operation} during ${moment} preserves the admitted translated ${transport} lifetime`, async () => {
+          const rig = await fixture({ routed: true });
+          let unblock!: () => void, entered!: () => void;
+          const gate = new Promise<void>(resolve => { unblock = resolve; }),
+            started = new Promise<void>(resolve => { entered = resolve; });
+          if (moment === "auth") {
+            const get = rig.routing.attempts.auth.get.bind(rig.routing.attempts.auth);
+            rig.routing.attempts.auth.get = async (...args) => {
+              const credential = await get(...args); entered(); await gate; return credential;
+            };
+          } else rig.routing.usage.refresh = async () => { entered(); await gate; return false; };
+          try {
+            const action = await rig.action(), body = { model: "work", input: "synthetic", stream: false,
+              client_metadata: { thread_id: "owned-child" } };
+            const ws = transport === "ws" ? await rig.connect(action.ingressPrefix) : undefined;
+            const closed = ws ? once(ws.socket, "close") : undefined;
+            const httpResult = ws ? undefined : fetch(`${rig.base}${action.ingressPrefix}/codex/v1/responses`, {
+              method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+            }).then(async response => ({ status: response.status, body: await response.text(), error: undefined }))
+              .catch(error => ({ status: undefined, body: undefined, error }));
+            ws?.socket.send(JSON.stringify({ type: "response.create", stream_id: "owned", ...body }));
+            await started;
+            assert.equal((await rig.control(`/${action.id}/${operation}`)).status, 200);
+            if (operation === "complete") {
+              const late = await post(rig, action.ingressPrefix); assert.equal(late.status, 409); await late.body?.cancel();
+              if (ws) {
+                ws.socket.send(JSON.stringify({ type: "response.create", stream_id: "late", ...body }));
+                await until(() => ws.events.some(e => e["type"] === "error" && e["stream_id"] === "late"));
+              }
+            }
+            unblock();
+            if (ws) {
+              await closed;
+              assert.equal(ws.events.filter(e => e["type"] === "response.completed").length, operation === "complete" ? 1 : 0);
+            } else {
+              const result = (await httpResult)!;
+              if (operation === "complete") { assert.equal(result.status, 200); assert.equal(JSON.parse(result.body!).status, "completed"); }
+              else assert.ok(result.error);
+            }
+            assert.equal(rig.routedCalls, operation === "complete" ? 1 : 0);
+            assert.equal(rig.authCalls, 0); assert.equal(rig.httpCalls, 0); assert.equal(rig.wsCalls, 0);
+          } finally { unblock(); await rig.close(); }
+        });
+
   it("closes an idle scoped WebSocket on completion without native auth or inference", async () => {
     const rig = await fixture();
     try {
@@ -930,6 +977,25 @@ describe("Wave 1 native action lifecycle", () => {
     } finally {
       await rig.close();
     }
+  });
+
+  it("cancels one translated WS request without cancelling its sibling admission", async () => {
+    const rig = await fixture({ routed: true, routedPaused: true });
+    try {
+      const action = await rig.action(), { socket, events } = await rig.connect(action.ingressPrefix);
+      for (const stream_id of ["one", "two"]) socket.send(JSON.stringify({ type: "response.create", model: "work",
+        stream_id, client_metadata: { thread_id: stream_id }, input: "synthetic" }));
+      await until(() => events.filter(e => e["type"] === "response.created").length === 2);
+      socket.send(JSON.stringify({ type: "response.cancel", stream_id: "one" }));
+      assert.equal((await rig.control(`/${action.id}/complete`)).status, 200);
+      const closed = once(socket, "close"), second = rig.routedStreams[1]!;
+      second.controller.enqueue(Buffer.from(`data: ${JSON.stringify({ ...completed,
+        response: { ...completed.response, id: second.id } })}\n\n`));
+      second.controller.close();
+      await closed;
+      assert.deepEqual(events.filter(e => e["type"] === "response.completed").map(e => e["stream_id"]), ["two"]);
+      assert.equal(rig.routedCalls, 2); assert.equal(rig.authCalls, 0); assert.equal(rig.wsCalls, 0);
+    } finally { await rig.close(); }
   });
 
   it("counts each explicit routed WS request once across sixteen active branches", async () => {

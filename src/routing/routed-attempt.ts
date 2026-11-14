@@ -11,11 +11,13 @@ import { ClaudeCache } from "../claude-cache.js";
 import { ReverseState } from "../claude-state.js";
 import { object } from "../plain-object.js";
 import { readBoundedBody } from "../provider-transport.js";
-import { destinationProtocol, destinationUrl } from "./destination-catalog.js";
-import { classifyFailure } from "./provider-failure.js";
+import { resolveDestination, destinationUrl, type DestinationSelection } from "./destination-catalog.js";
+import { KimiResponsesBridgeError, renderValidatedKimiResponses } from "./kimi-responses-bridge.js";
+import { classifyFailure, logProviderFailure, providerErrorHints } from "./provider-failure.js";
 import { validatedProviderEvents } from "./provider-stream.js";
 import { AttemptFailure } from "./attempt-failure.js";
 export { AttemptFailure } from "./attempt-failure.js";
+import type { ActionStore } from "./action-store.js";
 import { ownerKey } from "./continuation-store.js";
 import { ProfileAuth, type BoundCredential } from "./profile-auth.js";
 import {
@@ -25,6 +27,8 @@ import {
   type WireProtocol,
   type ClientEvent,
   type RouteTarget,
+  type ActionContext,
+  type OriginatingClient,
 } from "./routing-types.js";
 import type { Logger } from "../logger.js";
 import {
@@ -33,10 +37,16 @@ import {
 } from "./portable-history.js";
 import { systemClock, type RoutingClock } from "./clock.js";
 import { codexTransportConstants, buildHeaders } from "../codex-handler.js";
-import { StagedCache } from "./replay-cache.js";
+import { StagedCache, type OrderedReplayDiagnostics } from "./replay-cache.js";
 import { adaptRequest } from "./request-adapter.js";
 import { deriveConversationKey } from "../conversation-key.js";
 import { recordLimitFailure, type LimitContext } from "../limit-observation.js";
+import { abortable } from "../abortable.js";
+import { identifyProviderEvents } from "./provider-identity.js";
+import { KimiExecPending, type KimiExecReservation } from "./kimi-exec-pending.js";
+import { KimiExecStream } from "./kimi-exec-stream.js";
+import { prepareKimiExecTransaction, type KimiExecTransaction } from "./kimi-exec-transaction.js";
+import { holdOrderedJson, orderedJsonBytes, prepareOrderedReplay, type OrderedLeases, type ObserveOrderedReplay } from "./kimi-ordered-replay.js";
 
 export interface AttemptRequest {
   profile: AccessProfile;
@@ -53,11 +63,26 @@ export interface AttemptRequest {
   route?: string;
   attempt?: number;
   scopeHash?: string;
+  /** Internal existing ActionStore context; never derived from caller history. */
+  action?: Readonly<ActionContext>;
+  /** Original owning-store request receipt; selected Kimi still requires an active action. */
+  admissionSignal?: AbortSignal;
+  /** Resolved internally by SharedRouting; checked against the real action again here. */
+  selection?: Readonly<DestinationSelection>;
 }
 export interface RoutedPrepared {
   events: AsyncIterable<ClientEvent>;
   owner: string;
   protocol: WireProtocol;
+  /** Selected strict Kimi codec: all Messages frames validate before publication. */
+  atomicMessages?: true;
+  atomicPending?: KimiExecPending;
+  /** Internal fabricated opt-in; no production prepare() constructs this context. */
+  orderedResponsesSuffix?: {
+    readonly pending: KimiExecPending;
+    /** Stage validated associations only after final delivery preflights. Must be synchronous. */
+    beforePublication(): undefined;
+  };
   commit(): void;
   cancel(): Promise<void>;
 }
@@ -75,7 +100,21 @@ export class RoutedAttempts {
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly clock: RoutingClock = systemClock,
     private readonly codexUserAgent = "subswitch",
+    /** Qualification budget hook: invoked before EVERY physical inference dispatch, including401. */
+    private readonly beforeDispatch?: (dispatch: { profile: string; protocol: WireProtocol; requestedOutputTokens: unknown }) => void,
+    /** Internal fabricated integration only. SharedRouting and real entrypoints omit this. */
+    private readonly createKimiExecPending?: () => KimiExecPending,
+    /** The existing owning store, never a request callback or a second registry. */
+    private readonly actions?: ActionStore,
+    /** Private disposable qualification only; real entrypoints omit this observer. */
+    private readonly observeKimiOrderedReplay?: ObserveOrderedReplay,
+    /** Private value-free comparison only; real entrypoints omit this observer too. */
+    private readonly orderedReplayDiagnostics?: OrderedReplayDiagnostics,
   ) {}
+  validateAction(context: Readonly<ActionContext> | undefined, client: OriginatingClient, admissionSignal?: AbortSignal): void {
+    if (!context || !this.actions) throw new RoutingError("action_identity_required", 409);
+    this.actions.validateContext(context, client, admissionSignal);
+  }
   async prepare(request: AttemptRequest): Promise<RoutedPrepared> {
     const {
       profile: p,
@@ -83,12 +122,22 @@ export class RoutedAttempts {
       protocol: ingress,
       signal,
       conversation,
+      route,
     } = request;
-    let credential =
-      request.credential ?? (await this.auth.get(t.profile, signal));
+    const action = request.action ? Object.freeze({ ...request.action }) : undefined;
+    const admissionSignal = request.admissionSignal;
+    const client = ingress === "messages" ? "claude-code" : "codex";
+    const selection = resolveDestination(p, ingress, request.body, !!action && client === "claude-code");
+    const validateAction = () => this.validateAction(action, client, selection.codec ? undefined : admissionSignal);
+    if (action) validateAction();
+    if (request.selection && (request.selection.protocol !== selection.protocol || request.selection.codec !== selection.codec))
+      throw new RoutingError("destination_selection_mismatch", 409);
+    const { protocol, codec } = selection;
+    if (codec && !route) throw new RoutingError("action_identity_required", 409);
+    let credential = request.credential ?? (await this.auth.get(t.profile, signal));
+    if (action) validateAction();
     this.auth.validate(credential);
-    const protocol = destinationProtocol(p, ingress);
-    const owner = ownerKey(p, t, protocol, credential.generation);
+    const owner = ownerKey(p, t, protocol, credential.generation, codec);
     const sessionId = deriveConversationKey({
       model: owner,
       messages: [{ role: "user", content: conversation }],
@@ -97,30 +146,99 @@ export class RoutedAttempts {
       throw new RoutingError("credential_owner_changed", 409);
     const transcript =
       request.transcript ?? decodePortableHistory(request.body, ingress);
-    const stage = new StagedCache(this.replay);
+    const stage = new StagedCache(this.replay, this.orderedReplayDiagnostics);
     const replayKey = createHmac("sha256", this.key)
       .update(owner + conversation)
       .digest();
     const state = new ReverseState(replayKey, undefined, stage);
-    const { outbound, reverse } = adaptRequest({
+    const orderedPending = codec ? new KimiExecPending() : undefined;
+    const orderedLeases: OrderedLeases = [];
+    let ordered: ReturnType<typeof prepareOrderedReplay> | undefined;
+    let outbound: Item = {}, reverse: ReturnType<typeof adaptRequest>["reverse"];
+    // Keep the selected preparation itself inside disposal, including pre-dispatch refusal.
+    try {
+    if (orderedPending) {
+      stage.attachPending(orderedPending);
+      holdOrderedJson(request.body, orderedPending, orderedLeases); // retained original controls/history
+      holdOrderedJson(request.body, orderedPending, orderedLeases); // renderer's owned full-request clone
+      // The closed renderer can expand a string-content message into three
+      // wrappers. Reserve its bounded expansion before constructing that copy,
+      // including fixed body framing. Later exact outbound/canonical copies are
+      // charged separately; this reservation is never transferred or reset.
+      orderedLeases.push(orderedPending.reserve(3 * orderedJsonBytes(request.body) + 256));
+    }
+    const adapted = adaptRequest({
       ...request,
       ingress,
       protocol,
+      selection,
       transcript,
       stage,
       state,
       owner,
       sessionId,
     });
+    outbound = adapted.outbound; reverse = adapted.reverse;
+    if (orderedPending) {
+      if (!adapted.orderedRender) throw new RoutingError("invalid_codec_publication", 500);
+      ordered = prepareOrderedReplay({ context: action!, route: route!, profile: t.profile,
+        owner, generation: credential.generation, source: request.body, rendered: adapted.orderedRender,
+        outbound, stage, pending: orderedPending, leases: orderedLeases,
+        observeIdentity: this.observeKimiOrderedReplay });
+      outbound = { ...outbound, input: ordered.input };
+      holdOrderedJson(outbound, orderedPending, orderedLeases);
+    }
+    } catch (error) {
+      ordered = undefined; outbound = {}; stage.dispose();
+      for (const lease of orderedLeases) lease.release();
+      throw error;
+    }
+    let exec: KimiExecStream | undefined, transaction: KimiExecTransaction | undefined;
+    let completion: { final: Item; calls: readonly Item[] } | undefined;
+    let completionLease: KimiExecReservation | undefined;
+    let publicationReady = false, disposed = false, orderedReady = false;
+    const clearCompletion = () => {
+      completion = undefined;
+      completionLease?.release(); completionLease = undefined;
+    };
+    const dispose = () => {
+      if (!exec && !codec) return;
+      disposed = true;
+      clearCompletion();
+      ordered = undefined; outbound = {};
+      stage.dispose();
+      for (const lease of orderedLeases) lease.release();
+      orderedLeases.length = 0;
+    };
+    try {
+    // All original capability/history/opaque/credential guards above run first.
+    const pending = codec ? undefined : this.createKimiExecPending?.();
+    // The validated inventory includes late inline tools. Only proven absence
+    // bypasses codec-only limits; unknown/potential exec still fails closed.
+    const mapped = pending && transcript.hasResponsesExecDeclaration !== false && prepareKimiExecTransaction({ profile: p, target: t, body: outbound,
+      ingress, protocol, stage, owner, conversation, credentialGeneration: credential.generation,
+      attempt: randomUUID(), pending });
+    if (mapped) {
+      stage.attachPending(pending!);
+      outbound = mapped.outbound;
+      transaction = mapped.transaction;
+      exec = new KimiExecStream(pending);
+    }
     const controller = new AbortController(),
-      combined = AbortSignal.any([signal, controller.signal]);
+      combined = AbortSignal.any([signal, controller.signal, ...(admissionSignal ? [admissionSignal] : []), ...(p.provider === "kimi" && p.credential.kind === "native-oauth" ? [AbortSignal.timeout(30000)] : [])]);
+    if (orderedPending) orderedLeases.push(orderedPending.reserve(2 * orderedJsonBytes(outbound) + 3));
     const encodedRequest = JSON.stringify(outbound);
+    const serializedCap: unknown = this.beforeDispatch
+      ? JSON.parse(encodedRequest)[protocol === "messages" ? "max_tokens" : "max_output_tokens"]
+      : undefined;
     let response: Response;
     try {
       while (true) {
         combined.throwIfAborted();
         this.auth.validate(credential);
+        if (action) validateAction();
         let headers: Record<string, string> = {
+          ...this.auth.identity(credential),
           ...credential.authHeaders,
           "content-type": "application/json",
           accept: "text/event-stream",
@@ -138,13 +256,19 @@ export class RoutedAttempts {
             codexTransportConstants(this.codexUserAgent),
           );
         }
-        response = await this.fetchImpl(destinationUrl(p, protocol), {
+        this.beforeDispatch?.({ profile: t.profile, protocol, requestedOutputTokens: serializedCap });
+        response = await abortable(Promise.resolve().then(() => {
+          combined.throwIfAborted();
+          if (action) validateAction();
+          if (codec) this.auth.validate(credential);
+          return this.fetchImpl(destinationUrl(p, protocol), {
           method: "POST",
           headers,
           body: encodedRequest,
           redirect: "error",
           signal: combined,
-        });
+          });
+        }), combined);
         if (
           response.status !== 401 ||
           p.credential.kind !== "native-oauth" ||
@@ -153,7 +277,11 @@ export class RoutedAttempts {
           break;
         request.refreshes.add(t.profile);
         await readBoundedBody(response.body, 64 * 1024, combined);
-        const refreshed = await this.auth.refresh(t.profile, combined);
+        if (action) {
+          combined.throwIfAborted();
+          validateAction();
+        }
+        const refreshed = await this.auth.refresh(t.profile, combined, credential);
         if (refreshed.generation !== credential.generation)
           throw new RoutingError("credential_owner_changed", 409);
         credential = refreshed;
@@ -178,24 +306,18 @@ export class RoutedAttempts {
       const body = await readBoundedBody(response.body, 64 * 1024, combined);
       recordLimitFailure(this.logger, limitContext, { transport: "http", status: response.status, committed: false,
         headers: response.headers, text: body.text, truncated: body.truncated || !body.complete });
-      throw new AttemptFailure(
-        classifyFailure(
-          p,
-          response.status,
-          body,
-          this.clock.now(),
-          response.headers.get("retry-after"),
-        ),
+      const failure = classifyFailure(
+        p,
+        response.status,
+        body,
+        this.clock.now(),
+        response.headers.get("retry-after"),
       );
+      logProviderFailure(this.logger, "http_response", failure.kind, response.status,
+        p.product === "kimi-code" && response.status === 400 ? providerErrorHints(body) : undefined);
+      throw new AttemptFailure(failure);
     }
-    const raw = validatedProviderEvents(
-      response,
-      p,
-      protocol,
-      combined,
-      controller,
-      this.clock,
-      (final) => {
+    const stageSnapshots = (final: Item) => {
         if (Array.isArray(final["content"]))
           for (const value of final["content"]) {
             const item = object(value),
@@ -212,7 +334,8 @@ export class RoutedAttempts {
             reasoning = output.filter((i) => i["type"] === "reasoning");
           for (const item of output) {
             if (
-              item["type"] === "function_call" &&
+              (item["type"] === "function_call" ||
+                exec && item["type"] === "custom_tool_call" && item["name"] === "exec") &&
               typeof item["call_id"] === "string"
             )
               stage.put(
@@ -231,15 +354,31 @@ export class RoutedAttempts {
               );
           }
         }
+      };
+    const raw = validatedProviderEvents(
+      response, p, protocol, combined, controller, this.clock,
+      (final, calls) => {
+        if (!exec) { stageSnapshots(final); return; }
+        if (disposed || completion || !calls) throw new RoutingError("invalid_codec_publication", 500);
+        // The validator clears its calls array at EOF. Own an array copy and a
+        // separate reservation before retaining either observed representation.
+        const observed = { final, calls: [...calls] };
+        const lease = exec.pending.retain(observed);
+        completion = observed; completionLease = lease;
       },
       this.logger,
       limitContext,
+      exec,
     );
     let converted: AsyncIterable<ClientEvent>;
-    if (protocol === ingress) converted = this.identity(raw, protocol);
+    if (codec) {
+      converted = this.orderedMessages(response, p, t.model, combined, controller, limitContext, () => { orderedReady = true; },
+        orderedPending!, orderedLeases, object(request.body["thinking"])?.["display"] === "omitted",
+        (rawOutput, assistant) => ordered!.stageOutput(rawOutput, assistant));
+    } else if (protocol === ingress) converted = identifyProviderEvents(raw, protocol, exec?.pending);
     else if (ingress === "responses") {
       if (!reverse) throw new RoutingError("adapter_missing", 500);
-      converted = this.identity(
+      converted = identifyProviderEvents(
         translateClaudeStream(raw, {
           id: `resp_subswitch_${randomUUID()}`,
           model: t.model,
@@ -262,8 +401,40 @@ export class RoutedAttempts {
       events: { [Symbol.asyncIterator]: () => iterator },
       owner,
       protocol: ingress,
-      commit: () => stage.commit(),
+      ...(codec ? { atomicMessages: true as const } : {}),
+      ...(orderedPending ? { atomicPending: orderedPending } : {}),
+      ...(exec ? { orderedResponsesSuffix: {
+        pending: exec.pending,
+        beforePublication: (): undefined => {
+          if (disposed || publicationReady || !completion || !transaction)
+            throw new RoutingError("invalid_codec_publication", 500);
+          try {
+            stageSnapshots(completion.final);
+            transaction.stageValidatedCalls(completion.calls);
+            publicationReady = true;
+          } finally { clearCompletion(); }
+          return undefined;
+        },
+      } } : {}),
+      commit: () => {
+        if (action && !codec) {
+          combined.throwIfAborted();
+          validateAction();
+        }
+        if (codec) {
+          if (!orderedReady || disposed) throw new RoutingError("invalid_codec_publication", 500);
+          combined.throwIfAborted();
+          this.auth.validate(credential);
+          validateAction();
+          if (ownerKey(p, t, protocol, credential.generation, codec) !== owner)
+            throw new RoutingError("credential_owner_changed", 409);
+          combined.throwIfAborted();
+        }
+        if (exec && (!publicationReady || disposed)) throw new RoutingError("invalid_codec_publication", 500);
+        stage.commit();
+      },
       cancel: async () => {
+        try {
         controller.abort();
         // Returning the generator clears idle timers and pipeline listeners even when
         // cancellation arrives while downstream is parked at a delivered event.
@@ -281,20 +452,36 @@ export class RoutedAttempts {
           }),
         ]);
         clearTimeout(timer);
+        } finally { dispose(); }
       },
     };
+    } catch (error) { dispose(); throw error; }
   }
-  private async *identity(
-    raw: AsyncIterable<Item | SseEvent>,
-    protocol: WireProtocol,
+  private async *orderedMessages(
+    response: Response, profile: AccessProfile, model: string, signal: AbortSignal, controller: AbortController,
+    limitContext: LimitContext,
+    onValidated: () => void,
+    pending: KimiExecPending, leases: OrderedLeases, omittedDisplay: boolean,
+    onOutput: (rawOutput: readonly Item[], assistant: Item) => void,
   ): AsyncGenerator<ClientEvent> {
-    for await (const value of raw) {
-      const payload =
-        "data" in value
-          ? object(JSON.parse(String(value.data)))
-          : (value as Item);
-      if (!payload) throw new RoutingError("invalid_provider_event", 502);
-      yield { protocol, payload };
+    try {
+      const frames = await renderValidatedKimiResponses(response, profile, signal, controller, this.clock, undefined,
+        { logger: this.logger, limitContext }, { pending, leases, omittedDisplay, onOutput });
+      for (const frame of frames) {
+        signal.throwIfAborted();
+        const data = frame.split("\n").find(line => line.startsWith("data: "))!;
+        leases.push(pending.reserve(Buffer.byteLength(frame) + 1));
+        const payload = JSON.parse(data.slice(6)) as Item;
+        if (payload["type"] === "message_start" && object(payload["message"])?.["model"] !== model)
+          throw new RoutingError("provider_model_mismatch", 502);
+        yield { protocol: "messages", payload };
+      }
+      signal.throwIfAborted();
+      onValidated();
+    } catch (error) {
+      if (error instanceof KimiResponsesBridgeError)
+        throw new RoutingError(`kimi_ordered_response_${error.code}`, 502);
+      throw error;
     }
   }
   private async *forward(

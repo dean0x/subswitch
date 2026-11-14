@@ -1,8 +1,8 @@
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { createSseParser, isValidNativeSignedBlock, type SseEvent } from "../codex-response.js";
+import { createSseParser, isParserComment, isValidNativeSignedBlock, type SseEvent } from "../codex-response.js";
 import { object } from "../plain-object.js";
-import { classifyFailure } from "./provider-failure.js";
+import { classifyFailure, logProviderFailure } from "./provider-failure.js";
 import { AttemptFailure } from "./attempt-failure.js";
 import { scheduleRoutingTimer, type RoutingClock } from "./clock.js";
 import {
@@ -13,8 +13,15 @@ import {
 } from "./routing-types.js";
 import type { Logger } from "../logger.js";
 import { recordLimitEvent, recordLimitFailure, type LimitContext } from "../limit-observation.js";
+import type { KimiExecStream } from "./kimi-exec-stream.js";
+import { kimiExecTransport } from "./kimi-exec-transport.js";
+import { kimiOrderedTransport } from "./kimi-ordered-transport.js";
+import type { KimiExecPending, KimiExecReservation } from "./kimi-exec-pending.js";
 
-/** Validate incrementally; withhold executable tools until the provider's valid terminal. */
+/**
+ * Validate incrementally; withhold executable tools until the provider's valid terminal.
+ * exec is internal fabricated integration only; no production caller supplies it.
+ */
 export async function* validatedProviderEvents(
   response: Response,
   p: AccessProfile,
@@ -22,10 +29,19 @@ export async function* validatedProviderEvents(
   signal: AbortSignal,
   controller: AbortController,
   clock: RoutingClock,
-  onComplete: (final: Item) => void,
+  onComplete: (final: Item, calls?: readonly Item[]) => void,
   logger?: Logger,
   limitContext?: LimitContext,
+  exec?: KimiExecStream,
+  // Disabled strict codecs inspect ORIGINAL order, before legacy tool holding.
+  // Opting in also requires clean EOF and defers completion until then.
+  observeOriginal?: (event: SseEvent, value: Item) => void,
+  orderedPending?: KimiExecPending,
 ): AsyncGenerator<SseEvent> {
+  if (exec && observeOriginal) throw new RoutingError("unsupported_routed_content");
+  if (exec && (p.provider !== "kimi" || p.product !== "kimi-code" || p.region !== "global" ||
+    p.billing !== "subscription" || p.credential.kind !== "native-oauth" || protocol !== "responses"))
+    throw new RoutingError("unsupported_routed_content");
   if (!response.body) throw new RoutingError("missing_provider_body", 502);
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   // The existing Codex subscription transport validates SSE bytes, independently
@@ -43,10 +59,10 @@ export async function* validatedProviderEvents(
           : "provider_content_type_unverified",
       502,
     );
-  const source = Readable.fromWeb(
+  const source = exec || orderedPending ? undefined : Readable.fromWeb(
     response.body as import("node:stream/web").ReadableStream<Uint8Array>,
   );
-  const parser = createSseParser(4 * 1024 * 1024, true);
+  const parser = exec || orderedPending ? undefined : createSseParser(4 * 1024 * 1024, true);
   let sourceFailure: unknown;
   let parserFailed = false;
   // Pipeline propagates a source error through the parser. Preserve which surface
@@ -57,26 +73,36 @@ export async function* validatedProviderEvents(
   const onParserError = () => {
     parserFailed = true;
   };
-  source.on("error", onSourceError);
-  parser.on("error", onParserError);
+  source?.on("error", onSourceError);
+  parser?.on("error", onParserError);
   let cancelIdle: (() => void) | undefined;
   const reset = () => {
     cancelIdle?.();
     cancelIdle = scheduleRoutingTimer(clock, () => controller.abort(), 300000);
   };
-  source.on("data", reset);
+  source?.on("data", reset);
   reset();
-  const running = pipeline(source, parser, { signal }).catch((e) =>
+  // Codec transport pulls single records with shared accounting. Default routes
+  // retain their existing parser/pipeline and permissive StringDecoder behavior.
+  const running = source && parser ? pipeline(source, parser, { signal }).catch((e) =>
     parser.destroy(e as Error),
-  );
+  ) : Promise.resolve();
+  const events: AsyncIterable<SseEvent> = exec
+    ? kimiExecTransport(response.body, exec.pending, signal, reset, onSourceError)
+    : orderedPending ? kimiOrderedTransport(response.body, orderedPending, signal, reset, onSourceError)
+    : parser! as AsyncIterable<SseEvent>;
   let started = false,
     terminal = false,
     prefixBytes = 0,
     prefixEvents = 0;
   let responseId: string | undefined;
+  let strictFinal: Item | undefined;
+  let doneSentinel = false;
   const pendingTools: SseEvent[] = [];
   let pendingBytes = 0;
+  const orderedLeases: KimiExecReservation[] = [];
   const holdTool = (event: SseEvent) => {
+    if (orderedPending) orderedLeases.push(orderedPending.reserve(2 * Buffer.byteLength(event.data) + 64));
     pendingBytes += Buffer.byteLength(event.data);
     if (pendingBytes + stateBytes > 32 * 1024 * 1024)
       throw new RoutingError("provider_state_too_large", 502);
@@ -88,10 +114,19 @@ export async function* validatedProviderEvents(
   >();
   let stateBytes = 0;
   let stopReason: unknown;
+  let execTerminal: Extract<ReturnType<KimiExecStream["accept"]>, { kind: "terminal" }> | undefined;
   try {
-    for await (const event of parser as AsyncIterable<SseEvent>) {
+    for await (const event of events) {
+      let value: Item | undefined;
+      let parsedLease: KimiExecReservation | undefined;
+      let rawLease: KimiExecReservation | undefined;
+      try {
       signal.throwIfAborted();
       if (event.event === "__subswitch_comment") {
+        // Strict-only: the wire event name is provider-controlled. Genuine
+        // parser no-data records carry out-of-band provenance, never JSON flags.
+        if (observeOriginal && !isParserComment(event))
+          throw new RoutingError("invalid_provider_event", 502);
         if (
           !started &&
           (++prefixEvents > 16 ||
@@ -100,19 +135,33 @@ export async function* validatedProviderEvents(
           throw new RoutingError("provider_prefix_limit", 502);
         continue;
       }
-      if (terminal)
+      if (terminal) {
+        if (observeOriginal && event.data === "[DONE]" && !doneSentinel) {
+          doneSentinel = true;
+          continue;
+        }
         throw new RoutingError("provider_event_after_terminal", 502);
-      if (event.data === "[DONE]") continue;
-      let value: Item | undefined;
+      }
+      if (event.data === "[DONE]") {
+        if (observeOriginal) throw new RoutingError("invalid_provider_terminal", 502);
+        continue;
+      }
       try {
+        if (orderedPending) {
+          const bytes = Buffer.byteLength(event.data);
+          rawLease = orderedPending.reserve(2 * bytes + 64);
+          parsedLease = orderedPending.reserve(bytes + 1);
+        }
         value = object(JSON.parse(event.data));
       } catch {
+        if (orderedPending && (!rawLease || !parsedLease)) throw new RoutingError("provider_state_too_large", 502);
         if (logger && limitContext && ["error", "response.failed"].includes(event.event ?? ""))
           recordLimitFailure(logger, limitContext, { transport: "sse", committed: "unknown",
             providerStartSeen: started, headers: response.headers, text: event.data,
             truncated: Buffer.byteLength(event.data) > 65536 });
         throw new RoutingError("invalid_provider_event", 502);
       }
+      if (exec && value) parsedLease = exec.pending.retain(value);
       const type = value?.["type"];
       if (typeof type !== "string")
         throw new RoutingError("invalid_provider_event", 502);
@@ -160,6 +209,7 @@ export async function* validatedProviderEvents(
       )
         throw new RoutingError("unsupported_provider_event", 502);
       if (type === "ping") {
+        if (orderedPending) observeOriginal?.(event, value!);
         if (
           !started &&
           (++prefixEvents > 16 ||
@@ -182,15 +232,15 @@ export async function* validatedProviderEvents(
         // Never guess a status for product-specific inference errors.
         const encoded = JSON.stringify(envelope),
           truncated = Buffer.byteLength(encoded) > 65536;
-        throw new AttemptFailure(
-          classifyFailure(
-            p,
-            status,
-            { text: truncated ? "" : encoded, complete: !truncated, truncated },
-            clock.now(),
-            response.headers.get("retry-after"),
-          ),
+        const failure = classifyFailure(
+          p,
+          status,
+          { text: truncated ? "" : encoded, complete: !truncated, truncated },
+          clock.now(),
+          response.headers.get("retry-after"),
         );
+        logProviderFailure(logger, "sse_error", failure.kind, response.status);
+        throw new AttemptFailure(failure);
       }
       if ((protocol === "responses") !== type.startsWith("response."))
         throw new RoutingError("provider_protocol_mismatch", 502);
@@ -216,6 +266,16 @@ export async function* validatedProviderEvents(
         started = true;
         responseId = opening["id"] as string;
       }
+      // Intercept ORIGINAL provider order before legacy completion-only holding.
+      // The disabled strict subset also requires clean EOF: a second terminal or
+      // conflicting trailing item cannot be hidden by stopping at the first one.
+      if (exec) {
+        const step = exec.accept(event, value!, responseId!);
+        if (step.kind === "terminal") execTerminal = step;
+        else if (step.kind === "prefix") yield event;
+        continue;
+      }
+      observeOriginal?.(event, value!);
       const item = object(value?.["item"]);
       if (type === "content_block_start") {
         const block = object(value?.["content_block"]),
@@ -373,7 +433,11 @@ export async function* validatedProviderEvents(
           }
         }
         validatePendingTools(pendingTools, final["output"] as Item[]);
-        onComplete(final);
+        if (observeOriginal) {
+          if (orderedPending) orderedLeases.push(orderedPending.reserve(Buffer.byteLength(event.data) + 1));
+          strictFinal = final;
+        }
+        else onComplete(final);
         for (const pending of pendingTools) yield pending;
         terminal = true;
       } else if (type === "message_stop") {
@@ -408,9 +472,27 @@ export async function* validatedProviderEvents(
       if (stateBytes + pendingBytes > 32 * 1024 * 1024)
         throw new RoutingError("provider_state_too_large", 502);
       yield event;
-      if (terminal) break;
+      if (terminal && !observeOriginal) break;
+      } finally {
+        value = undefined;
+        parsedLease?.release();
+        rawLease?.release();
+      }
+    }
+    if (execTerminal) {
+      signal.throwIfAborted();
+      onComplete(execTerminal.final, execTerminal.calls);
+      for (const event of execTerminal.events) {
+        signal.throwIfAborted();
+        yield event;
+      }
+      terminal = true;
     }
     if (!terminal) throw new RoutingError("missing_provider_terminal", 502);
+    if (observeOriginal) {
+      signal.throwIfAborted();
+      if (strictFinal) onComplete(strictFinal);
+    }
   } catch (error) {
     if (signal.aborted)
       throw new RoutingError("provider_stream_timeout_or_cancelled", 504);
@@ -429,12 +511,16 @@ export async function* validatedProviderEvents(
     throw error;
   } finally {
     cancelIdle?.();
-    source.destroy();
-    parser.destroy();
+    source?.destroy();
+    parser?.destroy();
     await running;
-    source.off("data", reset);
-    source.off("error", onSourceError);
-    parser.off("error", onParserError);
+    source?.off("data", reset);
+    source?.off("error", onSourceError);
+    parser?.off("error", onParserError);
+    execTerminal = undefined;
+    exec?.dispose();
+    pendingTools.length = 0; strictFinal = undefined;
+    for (const lease of orderedLeases) lease.release();
   }
 }
 

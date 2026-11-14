@@ -1,6 +1,7 @@
 /** Synthetic upstreams and credentials; review gates use the production HTTP/WS wiring. */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { WebSocket } from "ws";
 import { loadConfig } from "../../src/config.js";
 import {
@@ -269,6 +270,15 @@ describe("reviewed local continuation isolation", () => {
           router.events(body, "codex", "work", new AbortController().signal, {
             ...context,
             agentId: "child",
+          }),
+        ),
+        /action_state_lost/,
+      );
+      await assert.rejects(
+        collect(
+          router.events(body, "codex", "work", new AbortController().signal, {
+            ...context,
+            agentId: createHash("sha256").update("child").digest("hex"),
           }),
         ),
         /continuation_scope_mismatch/,

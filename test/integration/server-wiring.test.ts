@@ -15,7 +15,7 @@ import type { AddressInfo } from "node:net";
 import { loadConfig, type Config } from "../../src/config.js";
 import { buildDeps, createProxyServer } from "../../src/server.js";
 import { SERVER_TUNING } from "../../src/inbound-policy.js";
-import type { Logger, LogLevel } from "../../src/logger.js";
+import type { Logger, LogLevel, LogFields } from "../../src/logger.js";
 import { startFakeUpstream } from "./fake-upstreams.js";
 
 /** Run `fn` with stderr captured, returning every line it wrote. */
@@ -982,7 +982,7 @@ const isOneCompleteResponse = (text: string): boolean => {
 
 interface ReusedConnectionFixture {
   /** Every record the injected logger saw, so `client_error` can be asserted on the reused connection. */
-  readonly records: ReadonlyArray<{ level: LogLevel; event: string; status: number | undefined }>;
+  readonly records: ReadonlyArray<{ level: LogLevel; event: string; status: LogFields["status"] }>;
   readonly client: RawClient;
   /** Length of the first (successful) response — everything after it is the second reply. */
   readonly firstResponseLength: number;
@@ -1006,7 +1006,7 @@ const startWithCompletedRequest = async (
   const configResult = loadConfig({ configPath: configName, readFile: () => JSON.stringify({ logLevel: "error" }) });
   assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
 
-  const records: Array<{ level: LogLevel; event: string; status: number | undefined }> = [];
+  const records: Array<ReusedConnectionFixture["records"][number]> = [];
   const capturingLogger: Logger = {
     log(level, event, fields) { records.push({ level, event, status: fields?.status }); },
   };
