@@ -1,0 +1,201 @@
+{
+  "issues": [
+    {
+      "number": 82,
+      "title": "Persist Codex rate-limit headers to a local state file so status lines can show weekly usage",
+      "url": "https://github.com/dean0x/subswitch/issues/82"
+    },
+    {
+      "number": 80,
+      "title": "[Deferred] Investigate Muse Spark and supported subscription access after GLM",
+      "url": "https://github.com/dean0x/subswitch/issues/80"
+    },
+    {
+      "number": 79,
+      "title": "[Wave 3] Add GLM/Z.ai coding-plan and API access with failover and recovery",
+      "url": "https://github.com/dean0x/subswitch/issues/79"
+    },
+    {
+      "number": 78,
+      "title": "[Wave 2] Add DeepSeek using shared access, failover, and recovery contracts",
+      "url": "https://github.com/dean0x/subswitch/issues/78"
+    },
+    {
+      "number": 77,
+      "title": "[Wave 1] Track quota windows and automatically restore subscription preference",
+      "url": "https://github.com/dean0x/subswitch/issues/77"
+    },
+    {
+      "number": 76,
+      "title": "[Wave 1] Add ordered model and subscription-to-API failover",
+      "url": "https://github.com/dean0x/subswitch/issues/76"
+    },
+    {
+      "number": 75,
+      "title": "[Wave 1] Preserve actions and conversation history across fallback and recovery",
+      "url": "https://github.com/dean0x/subswitch/issues/75"
+    },
+    {
+      "number": 74,
+      "title": "[Wave 1] Validate Kimi access, protocol, quota, and recovery contracts",
+      "url": "https://github.com/dean0x/subswitch/issues/74"
+    },
+    {
+      "number": 73,
+      "title": "Roadmap: multi-provider fallback and automatic subscription recovery",
+      "url": "https://github.com/dean0x/subswitch/issues/73"
+    },
+    {
+      "number": 61,
+      "title": "[tech-debt] Harden the recorder's isDirectExecution guard against symlinked invocation",
+      "url": "https://github.com/dean0x/subswitch/issues/61"
+    },
+    {
+      "number": 60,
+      "title": "[tech-debt] Add a deterministic import-safety assertion for the recorder module",
+      "url": "https://github.com/dean0x/subswitch/issues/60"
+    },
+    {
+      "number": 59,
+      "title": "[tech-debt] Make the recorder's bounds table injectable via a factory options object",
+      "url": "https://github.com/dean0x/subswitch/issues/59"
+    },
+    {
+      "number": 58,
+      "title": "[tech-debt] Give the recorder's upstream request a phase-aware timeout (ADR-010)",
+      "url": "https://github.com/dean0x/subswitch/issues/58"
+    },
+    {
+      "number": 57,
+      "title": "[tech-debt] Bound the recorder's request-body buffer (ADR-012-shaped degrade path)",
+      "url": "https://github.com/dean0x/subswitch/issues/57"
+    },
+    {
+      "number": 56,
+      "title": "[tech-debt] Reconcile the two reverse-leg reasoning-effort vocabularies",
+      "url": "https://github.com/dean0x/subswitch/issues/56"
+    },
+    {
+      "number": 52,
+      "title": "Generalize provider support across Claude Code and Codex integrations",
+      "url": "https://github.com/dean0x/subswitch/issues/52"
+    },
+    {
+      "number": 51,
+      "title": "Make JSON model discovery consistent and aware of configured clients",
+      "url": "https://github.com/dean0x/subswitch/issues/51"
+    },
+    {
+      "number": 48,
+      "title": "Expand and validate content and hosted-tool parity across both translators",
+      "url": "https://github.com/dean0x/subswitch/issues/48"
+    },
+    {
+      "number": 47,
+      "title": "Add explicit subscription/API access profiles to translating provider paths",
+      "url": "https://github.com/dean0x/subswitch/issues/47"
+    },
+    {
+      "number": 46,
+      "title": "Add conflict-safe setup undo for Claude Code and Codex integrations",
+      "url": "https://github.com/dean0x/subswitch/issues/46"
+    },
+    {
+      "number": 45,
+      "title": "Support durable conversation state and compaction in both routing directions",
+      "url": "https://github.com/dean0x/subswitch/issues/45"
+    },
+    {
+      "number": 41,
+      "title": "[tech-debt] Design test concurrency strategy for wall-clock-sensitive integration tests",
+      "url": "https://github.com/dean0x/subswitch/issues/41"
+    },
+    {
+      "number": 40,
+      "title": "[tech-debt] Move setNoDelay from per-response to per-connection on the Anthropic leg",
+      "url": "https://github.com/dean0x/subswitch/issues/40"
+    },
+    {
+      "number": 39,
+      "title": "[tech-debt] Replace full JSON.parse with a model-field prefix scan on the hot path",
+      "url": "https://github.com/dean0x/subswitch/issues/39"
+    },
+    {
+      "number": 38,
+      "title": "[tech-debt] Bound idle upstream socket retention on the Anthropic agent pool",
+      "url": "https://github.com/dean0x/subswitch/issues/38"
+    },
+    {
+      "number": 37,
+      "title": "[tech-debt] Reshape Route union to encode routing decisions rather than routing diagnoses",
+      "url": "https://github.com/dean0x/subswitch/issues/37"
+    },
+    {
+      "number": 36,
+      "title": "[tech-debt] Re-verify and update RELEASE-FLOW.md runbook (stale since v0.2.0)",
+      "url": "https://github.com/dean0x/subswitch/issues/36"
+    },
+    {
+      "number": 35,
+      "title": "[tech-debt] Eliminate triple-copy body buffering (~2.0\u00d7 memory amplification)",
+      "url": "https://github.com/dean0x/subswitch/issues/35"
+    },
+    {
+      "number": 34,
+      "title": "[tech-debt] Split the 168-line passthrough forwarder closure (post-coverage)",
+      "url": "https://github.com/dean0x/subswitch/issues/34"
+    },
+    {
+      "number": 20,
+      "title": "BLOCKED: Add Origin/Sec-Fetch-Site check on /v1/messages to prevent cross-origin quota abuse",
+      "url": "https://github.com/dean0x/subswitch/issues/20"
+    },
+    {
+      "number": 19,
+      "title": "Docs and ledger hygiene: move inline rationale and add CLAUDE.md framework declaration",
+      "url": "https://github.com/dean0x/subswitch/issues/19"
+    },
+    {
+      "number": 18,
+      "title": "Introduce ESLint toolchain to enforce zero-warnings policy",
+      "url": "https://github.com/dean0x/subswitch/issues/18"
+    },
+    {
+      "number": 17,
+      "title": "Replace per-chunk idle-timer allocation with a restarted single timer",
+      "url": "https://github.com/dean0x/subswitch/issues/17"
+    },
+    {
+      "number": 16,
+      "title": "Fix out-of-diff module issues: reasoning-cache and anthropic-passthrough",
+      "url": "https://github.com/dean0x/subswitch/issues/16"
+    },
+    {
+      "number": 15,
+      "title": "SSE parser performance measurement follow-up",
+      "url": "https://github.com/dean0x/subswitch/issues/15"
+    },
+    {
+      "number": 14,
+      "title": "Extract provider-neutral SSE frame/parser into a shared module",
+      "url": "https://github.com/dean0x/subswitch/issues/14"
+    },
+    {
+      "number": 13,
+      "title": "Split models.ts and clean up routing core",
+      "url": "https://github.com/dean0x/subswitch/issues/13"
+    },
+    {
+      "number": 12,
+      "title": "Decompose oversized functions: runDoctor, handleMessages, transform",
+      "url": "https://github.com/dean0x/subswitch/issues/12"
+    },
+    {
+      "number": 10,
+      "title": "Kimi provider leg: validate current access and implement Wave 1",
+      "url": "https://github.com/dean0x/subswitch/issues/10"
+    }
+  ],
+  "observedAtUTC": "2026-11-14T22:10:12.281690+00:00",
+  "scope": "Complete open Subswitch issue metadata snapshot; issue presence does not authorize work."
+}

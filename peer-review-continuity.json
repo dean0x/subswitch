@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-19",
+  "reviewerThread": "01a13162-e803-7230-904c-b91d38edc9c7",
+  "reviewerCheckout": "/Users/dean/Sandbox/subswitch-kimi",
+  "reviewerHead": "264dab7f31f62d7cc34149b3d0b26caeadd0b4c9",
+  "targetCheckoutReadOnly": "/Users/dean/Sandbox/subswitch-continuity",
+  "targetBaseHead": "0183d6de0edfc6229cbd54c932f76e2d136c5ffa",
+  "patch": "/Users/dean/Sandbox/subswitch-continuity/continuity-review.patch",
+  "patchSha256": "c2bfdbeaef3f6f5fc575e2b5a96de78253f9b2ea5aa78a45bda11568130b3601",
+  "reviewedFileSha256": {
+    "README.md": "033fc118957b7731486c719460c8860896a4e3f6d1af5450d80ecc843cf345d9",
+    "src/routing/request-adapter.ts": "4fb8297c883f8b538f06574e00eeb17d3f9664937863b5f430e00b7f7751a0f6",
+    "src/routing/routed-attempt.ts": "6f6d15aca1375327aec63a26d644ffcf9a15d8a3e71bb6621563ed4347151390",
+    "src/routing/shared-routing.ts": "aad684e2b523d0fea7464f14cd73af28670e5e09a924535843bb4c14a520836f",
+    "src/routing/signed-thinking.ts": "af366727a411b749d1c008197785d344a13d2a4cf6271a653683199d97cb2619",
+    "test/integration/native-thinking-continuity.test.ts": "97423670a05ceba72d1f9207cee5501547d9f82f50347c8d122b9f63332c147a",
+    "test/unit/native-thinking-replay.test.ts": "a212d14181306d690cf00db1c538d22d08b6ab5c0f69fbf05b3afede8d2a73aa",
+    "e2e/gates/native-thinking-continuity-offline-2026-10-19.json": "7971c6deb128a60092846a8b155b8c389ff206d6b64ef6aa25fd6e18684d48fd"
+  },
+  "scope": "Independent static source/diff review only; no patch application, target edits, tests, HTTP/listeners, native clients, credential reads, shared proxy operations, staging, commits or pushes.",
+  "recommendation": "request_changes",
+  "findings": [
+    {
+      "id": "CONT-01",
+      "priority": "P2",
+      "title": "Revalidate native signature ownership when publishing concurrent cold imports",
+      "file": "src/routing/request-adapter.ts",
+      "lineStart": 98,
+      "lineEnd": 102,
+      "supportingLocations": [
+        {
+          "file": "src/routing/replay-cache.ts",
+          "lineStart": 14,
+          "lineEnd": 33
+        },
+        {
+          "file": "src/routing/shared-routing.ts",
+          "lineStart": 203,
+          "lineEnd": 210
+        },
+        {
+          "file": "src/routing/signed-thinking.ts",
+          "lineStart": 25,
+          "lineEnd": 44
+        }
+      ],
+      "finding": "The cold-import ownership check only sees the shared cache at adaptation time. Imported provenance remains attempt-local until terminal commit. Two overlapping singleton requests, under different profiles/routes or conversations, can therefore both accept the same previously unseen signature. After the first commits, the second still publishes its scoped record without rechecking the now-known foreign binding: putBatch checks capacity, and the shared provenance value contains no owner to compare. Both scoped records then pass exact replay. The selection queue does not prevent this: it only runs with explicit context and is keyed per action/agent/route.",
+      "impact": "The advertised known-owner/conversation rejection is bypassable during concurrent cold imports. This is a local routing-isolation finding; it does not claim that a live provider would accept a foreign signature or that any real credential crossed a boundary.",
+      "staticReproduction": [
+        "Prepare request A for a cold signature in owner/conversation A and pause its upstream before terminal.",
+        "Prepare overlapping request B containing the same signature in owner/conversation B while the shared cache is still cold.",
+        "Complete A successfully, publishing A and provenance.",
+        "Complete B successfully. Its staged commit has no foreign-owner revalidation, so it also publishes B.",
+        "Exact later replay in B now finds B scoped state instead of rejecting the known foreign signature."
+      ],
+      "requestedChange": "Make cold-signature adoption atomic across in-flight attempts. Store enough provenance to compare the owning scope, and reserve/serialize imports or reject conflicting publication with rollback for failed/cancelled attempts. If known foreign history must never reach a second upstream, enforce the reservation before dispatch as well as at publication. Add a deterministic deferred-upstream regression covering concurrent distinct owners/conversations, success ordering, and release after rejection/cancellation.",
+      "verification": "Static control-flow proof only; deliberately not executed under the read-only assignment.",
+      "confidence": "high for the local concurrency gap; live provider acceptance is unverified"
+    },
+    {
+      "id": "CONT-02",
+      "priority": "P2",
+      "title": "Remove live upstream and native credential defaults from the offline HTTP fixture",
+      "file": "test/integration/native-thinking-continuity.test.ts",
+      "lineStart": 176,
+      "lineEnd": 183,
+      "supportingLocations": [
+        {
+          "file": "test/integration/native-thinking-continuity.test.ts",
+          "lineStart": 36,
+          "lineEnd": 59
+        },
+        {
+          "file": "src/config.ts",
+          "lineStart": 117,
+          "lineEnd": 120
+        },
+        {
+          "file": "src/config.ts",
+          "lineStart": 194,
+          "lineEnd": 202
+        },
+        {
+          "file": "src/server.ts",
+          "lineStart": 538,
+          "lineEnd": 569
+        }
+      ],
+      "finding": "The fixture replaces only accessProfiles.native.baseUrl with loopback. loadConfig otherwise keeps the production Anthropic/Codex endpoints and default native auth paths, while buildDeps receives no restricted fetch implementation. In particular, if the behavior under test regresses so model work is no longer matched as an explicit route, the production HTTP handler falls through to Anthropic passthrough at the default live endpoint. A route regression can thus make this purportedly offline test contact a vendor rather than just fail locally. The fabricated env map only scopes ProfileAuth; it does not make the entire production dependency graph offline.",
+      "impact": "Offline/no-vendor-contact isolation is not guaranteed on regression paths. No external request or native credential read was observed or executed by this reviewer.",
+      "requestedChange": "Configure every reachable legacy/API/subscription/refresh endpoint to fixture-owned loopback origins and all native auth paths to fixture-owned nonexistent files. Add a fetch/network allowlist for the routed path and assertions that unexpected routing reaches only a local rejection fixture. Preserve the existing stream=true/false checks. Do not execute the denied HTTP gate through another session.",
+      "verification": "Static configuration and server fallthrough inspection only; no network/test execution.",
+      "confidence": "high"
+    }
+  ],
+  "positiveObservations": [
+    "Dispatcher opt-in is restricted to an effective one-target route; the adapter independently requires Claude provider, Messages ingress/egress and no known prior-owner switch.",
+    "Exact thinking/redacted fields are preserved rather than stripped or normalized; existing exact scoped replay checks remain.",
+    "Imported state is staged, and ordinary upstream rejection or missing terminal does not invoke shared-cache publication.",
+    "Existing cache byte/entry bounds still apply; new markers add entries but do not create an unbounded side store.",
+    "New source tests cover sequential cold import, same-process follow-up, fresh instances, signed-field tampering, sequential foreign-owner replay and rollback after rejection/missing terminal.",
+    "HTTP fixtures assert unchanged history, configured upstream key, absence of incoming Authorization forwarding, and one upstream request per turn for both response modes; those assertions have not been run successfully."
+  ],
+  "verificationGates": {
+    "performedByReviewer": [
+      "Read saved patch and current source",
+      "Read author evidence/status as claims",
+      "Inspect current target Git status and base read-only",
+      "Inspect cache/dispatcher/provider terminal and production HTTP fallthrough source"
+    ],
+    "authorReportedNotIndependentlyRerun": [
+      "Five injected-fetch integration cases passed",
+      "Focused unit/reliability/codec tests passed",
+      "Typecheck, build and diff whitespace check passed"
+    ],
+    "unverified": [
+      {
+        "gate": "HTTP stream=false and stream=true production fixture",
+        "reason": "Author reports native listen denial; reviewer did not run or reroute it."
+      },
+      {
+        "gate": "Full npm check under shared nonblocking heavy-test lock",
+        "reason": "Incomplete in author evidence; reviewer did not execute any tests."
+      },
+      {
+        "gate": "Real native disposable client and provider signature validation",
+        "reason": "Outside offline authorization; no native CLI, real auth or history accessed."
+      },
+      {
+        "gate": "Original released-user continuity incident",
+        "reason": "Patch addresses explicit-route cold signature handling. Released ordinary Claude passthrough bypasses this adapter; original incident is not proven fixed."
+      },
+      {
+        "gate": "Commit/push/dependent PR/CI",
+        "reason": "Author reports Git metadata denial; no staging, committing, pushing or permission rerouting attempted."
+      }
+    ]
+  },
+  "separateUnresolvedScopes": [
+    "Later system-role Messages entries",
+    "Durable translated/native Responses continuation handles",
+    "Recorded Codex HTTP instruction-history/native follow-up gate",
+    "Live Kimi acceptance; this review makes no new Kimi claim"
+  ],
+  "nextAction": "Coordinator to return the two source findings to the continuity author. Preserve denied-operation boundaries. After authorized fixes, review the fix diff; HTTP/full-suite/native/released-incident gates remain explicitly pending until their own primary evidence exists."
+}

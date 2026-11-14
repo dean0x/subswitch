@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 1,
+  "reviewDate": "2026-10-19",
+  "reviewerThread": "01a13162-e803-7230-904c-b91d38edc9c7",
+  "reviewerCheckout": "/Users/dean/Sandbox/subswitch-kimi",
+  "reviewerBranch": "codex/http-followup-continuity",
+  "targetCheckoutReadOnly": "/Users/dean/Sandbox/subswitch-continuity",
+  "baseSHA": "de137dedbd72d660657517251fe8a1051dd43465",
+  "targetSHA": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+  "commitParentVerified": true,
+  "reviewType": "Independent full source/diff review of all six committed changed files and relevant resolver/config/router/handler/doctor/agent-scan surroundings. No execution.",
+  "recommendation": "approve_source_review",
+  "findings": [],
+  "changedFilesReviewed": [
+    "README.md",
+    "e2e/gates/future-model-overrides-offline-2026-10-19.json",
+    "src/doctor.ts",
+    "src/models.ts",
+    "test/integration/future-model-overrides.test.ts",
+    "test/unit/future-model-overrides.test.ts"
+  ],
+  "committedFileSha256": {
+    "README.md": "ec22f5b40628d745ec13f84ea84272e149cde72680c375cedb7e1f75b89986f1",
+    "e2e/gates/future-model-overrides-offline-2026-10-19.json": "df381ee7640c7a8dd38a3c6df6cb72b7a9b0c1521a78a2f2589624ea08452db4",
+    "src/doctor.ts": "5978c4e2f04a30997f4fbf245fa0e1aab44e50d26b53ffc343cac86b546a6f29",
+    "src/models.ts": "969d675522339432d6ad48e9f785c0328390457ca7bfe856cf0ad2e0753676db",
+    "test/integration/future-model-overrides.test.ts": "2c3391d5f20ebf6e7683782089086350d863b3564665beebdb89b859efd25000",
+    "test/unit/future-model-overrides.test.ts": "e1e71c0aa548ac09ff23afe7403dfbd85f94d0610ac168ab19394249f4841e7f"
+  },
+  "committedFileGitBlobs": {
+    "README.md": "2d17d978535ec12129fa898a1d6bca9ee55b7bb2",
+    "e2e/gates/future-model-overrides-offline-2026-10-19.json": "bea68ba553fe061f92547cabe9d713ab434630e4",
+    "src/doctor.ts": "80e3dbf90366dcd5b447bcd6fa2257428d1e05ad",
+    "src/models.ts": "dcee22d2ae103a09c426b1ffa2e5fba0fb8b2f47",
+    "test/integration/future-model-overrides.test.ts": "c698452aeeaf4458b660baef9ac6b7d07288ee88",
+    "test/unit/future-model-overrides.test.ts": "883038e332c87be85bd66e7794ea4c367a8ecaad"
+  },
+  "diffSha256": "0fd6cd0873c0933100ee9c8c8741b8e028b096818cacb5b0c35fb3aa47ad9a39",
+  "allFiveEvidenceSourceHashesMatchCommit": true,
+  "coverage": [
+    {
+      "topic": "Explicit future target selection and qualified aliases",
+      "locations": [
+        "src/models.ts:588",
+        "src/models.ts:618",
+        "src/models.ts:627",
+        "src/models.ts:668"
+      ],
+      "assessment": "Declarations are collected once through the existing own-property and reserved-name guards. Qualified configured aliases use their explicit one-hop destination, so a family override applies to codex:sol. Only declared dangling targets gain otherwise-unclaimed bare/qualified entries; there is no wildcard unknown-model routing."
+    },
+    {
+      "topic": "Registry pins, existing namespace claims and one-hop rules",
+      "locations": [
+        "src/models.ts:522",
+        "src/models.ts:554",
+        "src/models.ts:599",
+        "src/models.ts:620",
+        "src/models.ts:629",
+        "src/models.ts:669"
+      ],
+      "assessment": "Exact registry resolution still precedes aliases. The new qualified-alias population skips canonical alias keys, and target-only expansion does not replace existing actual aliases, family entries or qualified names. Alias values stay literal one-hop IDs and are not recursively chased. Existing explicit byAlias precedence is unchanged; this review does not claim a redesign of arbitrary pre-existing alias-key policies."
+    },
+    {
+      "topic": "Config validation and provider identity",
+      "locations": [
+        "src/config.ts:166",
+        "src/config.ts:178",
+        "src/models.ts:275",
+        "src/models.ts:457",
+        "src/models.ts:470"
+      ],
+      "assessment": "Both alias sides retain bounded nonempty string validation and reserved Anthropic-name rejection. The provider discriminator/schema and closed provider tuple are unchanged. No new credential kinds, endpoints, native-auth reads, dependency, package/version or environment behavior is introduced by production code."
+    },
+    {
+      "topic": "Doctor warning severity and agent failures",
+      "locations": [
+        "src/doctor.ts:253",
+        "src/doctor.ts:262",
+        "src/doctor.ts:287",
+        "src/doctor.ts:356",
+        "src/doctor.ts:426",
+        "src/agent-scan.ts:194"
+      ],
+      "assessment": "Only the dangling-target warning stops incrementing failures and changes to yellow unverified-support text. Configured auth errors, TLS/proxy failures and agent finding severities retain their existing failure accounting. Plain undeclared unknown agent names still fail; unknown qualifiers and unconfigured-provider informational treatment remain unchanged."
+    },
+    {
+      "topic": "Runtime provider dispatch and error authority",
+      "locations": [
+        "src/server.ts:139",
+        "src/server.ts:184",
+        "src/server.ts:549",
+        "src/codex-handler.ts:182",
+        "src/codex-handler.ts:251",
+        "src/codex-handler.ts:311",
+        "src/router.ts:31"
+      ],
+      "assessment": "The server uses the resolved destination ID for Codex dispatch and canonical substitution before translation/session derivation. A selected provider error returns from its handler rather than falling through to Anthropic. The patch adds no retries/fallback; the pre-existing bounded native-auth 401 refresh remains separate. Undeclared unresolved/unknown-qualified traffic retains its existing Anthropic forwarding behavior."
+    },
+    {
+      "topic": "New unit regression design",
+      "locations": [
+        "test/unit/future-model-overrides.test.ts:55",
+        "test/unit/future-model-overrides.test.ts:68",
+        "test/unit/future-model-overrides.test.ts:87",
+        "test/unit/future-model-overrides.test.ts:102",
+        "test/unit/future-model-overrides.test.ts:114"
+      ],
+      "assessment": "The source asserts six alias/full/qualified spellings, injected doctor warning vs genuine unknown-agent failure, canonical keys, one-hop aliases, namespace/family collisions and malformed/reserved/provider validation. The fabricated future ID is absent from the built-in registry."
+    },
+    {
+      "topic": "HTTP regression design and fixture isolation",
+      "locations": [
+        "test/integration/future-model-overrides.test.ts:15",
+        "test/integration/future-model-overrides.test.ts:34",
+        "test/integration/future-model-overrides.test.ts:53",
+        "test/integration/future-model-overrides.test.ts:88",
+        "test/integration/future-model-overrides.test.ts:117",
+        "test/integration/fake-upstreams.ts:26"
+      ],
+      "assessment": "Both stream modes exercise the production HTTP wiring, check exact selected future model and fabricated upstream credential, require one call per spelling, and route unmatched cases to a local rejection fixture. The unavailable-model case requires one authoritative provider error. All configured legacy/API/subscription/refresh endpoints share loopback; auth/config files are fixture-owned, with fabricated Codex OAuth only. Cleanup closes proxy/upstream and removes the owned directory. Doctor I/O is entirely injected."
+    },
+    {
+      "topic": "Docs and evidence scope",
+      "locations": [
+        "README.md:341",
+        "e2e/gates/future-model-overrides-offline-2026-10-19.json:13",
+        "e2e/gates/future-model-overrides-offline-2026-10-19.json:87"
+      ],
+      "assessment": "README describes explicit overrides and unverified upstream availability. Registry data and machine-readable registry format remain unchanged. The evidence distinguishes a legacy alias selection/doctor fix from unproven original startup symptoms, v2 route restrictions and live/native availability."
+    }
+  ],
+  "authorReportedChecksNotIndependentlyRerun": [
+    {
+      "command": "node --import tsx --test --test-timeout=30000 test/unit/future-model-overrides.test.ts test/integration/future-model-overrides.test.ts",
+      "exitCode": 0,
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "coverage": [
+        "six requested spellings across config/buildDeps selection",
+        "injected doctor warning and genuine unknown-agent failure",
+        "canonical pins, family/qualified-name collision protection and one-hop aliases",
+        "malformed/reserved aliases and unsupported configured providers remain invalid",
+        "production HTTP stream=false/true, fabricated credential selection and local unmatched-model rejection",
+        "provider rejection remains authoritative"
+      ]
+    },
+    {
+      "command": "node --import tsx --test --test-reporter=dot --test-timeout=30000 test/unit/future-model-overrides.test.ts test/unit/routing-table.test.ts test/unit/models.test.ts test/unit/doctor.test.ts test/unit/agent-scan.test.ts",
+      "exitCode": 0,
+      "note": "Focused baseline/model/doctor suites passed before the final collision guard; the final full check covers all later changes."
+    },
+    {
+      "command": "/usr/bin/lockf -t 0 /Users/dean/Sandbox/.devflow/locks/heavy-tests.lock npm run check",
+      "exitCode": 0,
+      "tests": 973,
+      "passed": 973,
+      "failed": 0,
+      "skipped": 0,
+      "durationMs": 11057.049459,
+      "scope": "Typecheck and full unit/integration suite under the acquired shared nonblocking heavy-test lock."
+    },
+    {
+      "command": "npm run build",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    }
+  ],
+  "redGreenEvidenceAssessment": "The committed synthetic record reports five initial failures among ten unit cases, covering qualified family/alias/full-target lookups and doctor status. Bare alias loading already passed. Final author evidence reports 14 targeted cases, 973 full-suite cases under the shared nonblocking lock, typecheck/build and diff whitespace success. Source identity and regression assertions were verified here; these runtime results were not rerun by this reviewer.",
+  "separateUnresolvedScopes": [
+    {
+      "scope": "PR81 v2 explicit-route catalog/capability restriction",
+      "verifiedSourceHead": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+      "locations": [
+        "src/routing/routing-config.ts:139",
+        "src/routing/destination-catalog.ts:51"
+      ],
+      "status": "Still separate and unresolved: modelEfforts returns undefined for an unregistered Codex target, causing invalid_target_model. The released-path alias patch does not add a v2 capability declaration or relax that validator."
+    },
+    {
+      "scope": "Original user-specific startup report",
+      "status": "Unreproduced. The precise original error/config is unavailable; a reproduced doctor or selection defect is not proof of that startup cause."
+    },
+    {
+      "scope": "Native clients and actual provider model access",
+      "status": "Unverified. No native client/profile/auth/history or provider inference was used by this independent review."
+    }
+  ],
+  "limits": [
+    "No tests, builds, listeners, deterministic repros or package installs were executed; no new source finding warranted a repro.",
+    "Author-reported full-suite/build checks and mutable CI/PR/registry state were not independently refreshed by this source review. Coordinator owns exact-head CI/delivery/release checks.",
+    "This approves the exact reviewed source delta, not live availability, the v2 catalog restriction, native acceptance, a merge or a release."
+  ],
+  "boundaries": {
+    "authorCheckoutModified": false,
+    "reviewerImplementationModified": false,
+    "sourceBranchesChanged": false,
+    "testsOrListenersExecuted": false,
+    "gitMutations": false,
+    "nativeAuthClientOrHistoryAccess": false,
+    "realProviderCalls": 0,
+    "sharedProxyOrOHFControl": false,
+    "goalPermissionOrModelChanges": false,
+    "deniedOperationsRetried": false
+  },
+  "nextAction": "Coordinator may use this exact-head source approval for PR86 delivery gates. Independently verify current PR head/CI and retain separate v2 capability, original startup, native/live and release follow-ups. Reviewer stops this bounded assignment."
+}

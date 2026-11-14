@@ -1,0 +1,29 @@
+{
+  "authComparison": {
+    "OpenClawAndHermes": "Inspected built-ins use keys",
+    "Pi": "Native subscription OAuth evidenced in pinned primary code",
+    "omp": "Full flow unverified; identity concerns retained",
+    "selectedPath": "Model-only managed OAuth with truthful Subswitch identity. Separate-registration assumption withdrawn; actual identity acceptance unmeasured."
+  },
+  "manualMilestone": {
+    "comparisonSHA256": "b2c75e3dafb2494ddeb0466359385215647d4af881d5c8090522a0ef6c15eaaf",
+    "facts": [
+      "Genuine native Claude Agent1/Read1/successful result1 with generated-agent linkage",
+      "Two physical Kimi HTTP200 sends, owned continuation, native CLI0 and exact parent answer"
+    ],
+    "limitation": "Bounded greeting/route demonstration, not general OAuth identity/refresh/provider/production acceptance.",
+    "status": "EVIDENCED_WITH_LIMITS"
+  },
+  "preservation": "No raw reports/notes/prompts/thinking/native bodies/headers/tokens/codes copied. Original private evidence and denial boundaries untouched.",
+  "schemaVersion": 1,
+  "separateStrictReport": {
+    "actualReportOrNoteOrigin": "UNKNOWN_NOT_RETAINED",
+    "diagnosisSHA256": "8bd4673ab1be9125859dd7b9ae2363b1602b5c6af484c03cbb4dfa901fd7ffb1",
+    "interpretation": "Retain failed strict test and predicates separately from original manual task. No universal production defect or automatic universal release gate inferred. No note stripping, text/thinking forwarding, changed CLI flags or SPENT retry.",
+    "reportExact": false,
+    "reportNotesGuard": 4096,
+    "requirements": "Exact full completed typed report; independently matched generated-agent identity on emitted Read and successful result; genuine Agent/Read parent/call/count/order; original native terminal/error/privacy gates.",
+    "resolutionSHA256": "95feff465a64cc94cd3072efc781c691d2abbeb530d10e0c6304da8990dd9ad2",
+    "status": "FAIL_SPENT"
+  }
+}

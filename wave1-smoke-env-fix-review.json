@@ -1,0 +1,186 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-10-19T15:26:40.078392+00:00",
+  "reviewerThread": "01a13162-e803-7230-904c-b91d38edc9c7",
+  "assignment": "/Users/dean/Sandbox/.codex-orchestrator/wave1-smoke-env-fix-review-assignment.json",
+  "assignmentSha256": "f95e4d06c41c66e27ad14f5a28723265a4e3234f7d31f44e62abb9a5c32b83d7",
+  "ownClone": "/Users/dean/Sandbox/subswitch-kimi",
+  "authorCloneReadOnly": "/Users/dean/Sandbox/subswitch-review",
+  "ownBranchUnchanged": "codex/native-messages-aggregation",
+  "ownHeadUnchanged": "6528f3f602307cfdfba277b2047a18825c1407fb",
+  "pr": 87,
+  "url": "https://github.com/dean0x/subswitch/pull/87",
+  "baseSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+  "previousApprovedHead": "84cf8bed6db669968228c109497031f04d685164",
+  "targetSHA": "f62b2a5de393a0794d9f9aa286fbaba99b60912a",
+  "recommendation": "approve_source_review",
+  "findings": [],
+  "approvalScope": "Exact f62b2a5de393a0794d9f9aa286fbaba99b60912a source: reviewed the one-file 84cf..f62 SMOKE-ENV-01 fix and complete current shell plus original two-file package delta/context. This extends source approval to current head; it is not approval to merge/release, rebase the stack or waive native/live gates.",
+  "resolvedFindings": [
+    {
+      "id": "SMOKE-ENV-01",
+      "status": "resolved",
+      "location": "scripts/smoke-tarball.sh:98-110",
+      "assessment": "init explicitly receives the owned primary config, replacing the inherited external selection. The permanent owned inherited decoy is scoped to a subshell and asserted byte-for-byte unchanged. Every later config-consuming command retains its own explicit temporary config path.",
+      "introducedByOriginalPackageDelta": false
+    }
+  ],
+  "reviewedSource": [
+    {
+      "file": "scripts/smoke-tarball.sh",
+      "sha256": "2df844570ed14de198a702b064a8b06958f801c2234d49f9f338c0cbcef113da",
+      "assessment": "Reviewed full current 118-line shell file and exact 13-line fix delta. Quoted paths and argv preserve spaces/metacharacters. Subshell export supplies a controlled inherited decoy; command-only SUBSWITCH_CONFIG overrides it, while CODEX_HOME and XDG_CONFIG_HOME point inside the owned install directory. Failed init/subshell or decoy assertions propagate under set -euo pipefail. New regression begins only after first owned server was killed/waited and SERVE_PID cleared; it creates no additional process listener or deletion path. Existing trap removes only owned mktemp directory and kills only captured serve PID. Existing ephemeral-port reservation/release, health checks and serve lifecycle are unchanged."
+    },
+    {
+      "file": "package.json",
+      "sha256": "4d6427e0ddff060fd56e72a91f600b2525a9b8cc9e747b008e2ffd3075ef6b1b",
+      "assessment": "Full current manifest reviewed; only original package files allowlist addition. No version/dependency/script/bin/export/engine change."
+    },
+    {
+      "file": "subswitch.wave1.example.json",
+      "sha256": "98cb220de6e07717033cb8b63a4184f56948e37672042d3652ca686370e554c8",
+      "assessment": "Sample remains byte-identical to base; illustrative env names/native auth path but no credential values or real machine/session data. Used exclusively through metadata-only discovery in the added block."
+    }
+  ],
+  "pathPrecedenceAndSideEffects": {
+    "initDispatch": "src/cli.ts:485-505 sends --client both to runCodexInit with process.env and the temporary working directory.",
+    "configSelection": "src/codex-init.ts:30-35 prefers SUBSWITCH_CONFIG; fixed command chooses ${TMPDIR_INSTALL}/subswitch.config.json. CODEX_HOME directs native config/auth lookups to fixture-owned native-codex; XDG_CONFIG_HOME is fixture-owned fallback. setup project/.claude writes also stay inside temporary cwd.",
+    "writes": "src/codex-init.ts:85-89 reads selected config and owned native config; lines147-198 plan only selected config/project/owned native writes; lines252-258 apply plans. No source behavior changed.",
+    "metadataOnly": "Installed require.resolve and process.execPath/execFileSync argv avoid shell evaluation. SUBSWITCH_CONFIG selects installed example. src/config.ts:882-950 bypasses implicit global/project merge for explicit paths; src/cli.ts:582-595 returns from schema3 discovery without buildDeps/doctor. routingDiscovery is pure metadata and never resolves auth or dispatches inference.",
+    "environmentLimit": "Approval addresses inherited SUBSWITCH_CONFIG and the reviewed fixture commands; it is not a claim of hermetic behavior against arbitrary shell/Node/npm preload or executable-path overrides.",
+    "logs": "Inspected all three owned-sentinel logs: only owned temporary paths, health responses, package metadata and fabricated decoy contents. No real credential/config content exposed. Original-red external sentinel was intentionally fixture-owned."
+  },
+  "verifiedEvidence": {
+    "deliveryReport": {
+      "path": "/Users/dean/Sandbox/.codex-orchestrator/wave1-package-delivery.json",
+      "sha256": "39caee4f18d118c620e99a7ace6267c8e10a1f1b957c52ca33515c6248d2a5a8"
+    },
+    "priorIndependentReview": {
+      "path": "/Users/dean/Sandbox/subswitch-continuity/wave1-package-independent-review.json",
+      "sha256": "77e72256b7d64d9d35c1239c4bf8dcd2282824d7bd6b7fb1b65cf076d708ddae"
+    },
+    "priorDelivery": {
+      "path": "/Users/dean/Sandbox/.codex-orchestrator/wave1-package-delivery-before-env-fix.json",
+      "sha256": "002c276c6bdae0286c58a3686eb0667d5c8afa27f9c35bab6165581ec74b50e7"
+    },
+    "sourceHashes": {
+      "package.json": {
+        "expected": "4d6427e0ddff060fd56e72a91f600b2525a9b8cc9e747b008e2ffd3075ef6b1b",
+        "committed": "4d6427e0ddff060fd56e72a91f600b2525a9b8cc9e747b008e2ffd3075ef6b1b",
+        "working": "4d6427e0ddff060fd56e72a91f600b2525a9b8cc9e747b008e2ffd3075ef6b1b"
+      },
+      "scripts/smoke-tarball.sh": {
+        "expected": "2df844570ed14de198a702b064a8b06958f801c2234d49f9f338c0cbcef113da",
+        "committed": "2df844570ed14de198a702b064a8b06958f801c2234d49f9f338c0cbcef113da",
+        "working": "2df844570ed14de198a702b064a8b06958f801c2234d49f9f338c0cbcef113da"
+      },
+      "subswitch.wave1.example.json": {
+        "expected": "98cb220de6e07717033cb8b63a4184f56948e37672042d3652ca686370e554c8",
+        "committed": "98cb220de6e07717033cb8b63a4184f56948e37672042d3652ca686370e554c8",
+        "working": "98cb220de6e07717033cb8b63a4184f56948e37672042d3652ca686370e554c8"
+      }
+    },
+    "evidenceHashes": {
+      "wave1-package-red-inventory.json": "3a30eb190886b2e789184d9c07266cb0192aba946a4ca76513e69910187fe069",
+      "wave1-package-green-inventory.json": "c4b65e6ce83333948d4264ab3d23257021b90896188767046b5d1a5e5ec2dcce",
+      "wave1-package-red-smoke.log": "a73438528f2f01adb71fbd394155ac61630840c27b4448cdbd29c3feaf988fdc",
+      "wave1-package-green-smoke.log": "9d12a17f8eb1fbf8cf5586069308b5e7ab060a0a3ec073e571861c59e5c8fc5d",
+      "wave1-smoke-env-red.json": "a3a9bf4eb8b071dc56ae3007ae5bdc18e31251d81669a01b8df675c76961cfdb",
+      "wave1-smoke-env-red.log": "46838f9dcdbf31629476599f31df2e86ebeddab088897975bf6769b2b6d4b38b",
+      "wave1-smoke-env-regression-red.json": "8fcb0dc1adbf40e58800650631d1b4d2f081ca54b2eaabdfd22e8b8acc21fd36",
+      "wave1-smoke-env-regression-red.log": "1e41d6893606065d31c590dba97ff7047d98874988bc3faa95ad3a15a6ea21df",
+      "wave1-smoke-env-green.json": "7ca41889a403905e29d814cd43b65480881575a1b94ab798cb3b45bff63c48d4",
+      "wave1-smoke-env-green.log": "445a86eb862c2dde34a55d97f5dae01ce882d72e3987aca661087070c1b9bc4d"
+    },
+    "originalFailure": {
+      "head": "84cf8bed6db669968228c109497031f04d685164",
+      "scriptExit": 0,
+      "sentinelUnchanged": false,
+      "assertionExit": 1,
+      "meaning": "Original smoke silently mutates an owned external inherited sentinel; matching original baseline finding."
+    },
+    "permanentRegressionRed": {
+      "privateProbe": "/Users/dean/Sandbox/subswitch-review/.git/wave1-smoke-env-regression-red.sh",
+      "sha256": "4da34bb82913eabbc9c56348cbff3e5e5125122b3855fdb25c4734e31d74a2e7",
+      "exactDifference": "--- head-source\n+++ private-red-probe\n@@ -100,7 +100,6 @@\n printf '{}\\n' > \"${SMOKE_INHERITED_CONFIG}\"\n (\n   export SUBSWITCH_CONFIG=\"${SMOKE_INHERITED_CONFIG}\"\n-  SUBSWITCH_CONFIG=\"${TMPDIR_INSTALL}/subswitch.config.json\" \\\n     CODEX_HOME=\"${TMPDIR_INSTALL}/native-codex\" XDG_CONFIG_HOME=\"${TMPDIR_INSTALL}/user-config\" \\\n     node_modules/.bin/subswitch init --client both --yes --port \"${SMOKE_PORT}\" >/dev/null\n )\n",
+      "scriptExit": 1,
+      "assertionObserved": true,
+      "externalSentinelUnchanged": true,
+      "meaning": "Private probe differs from committed fixed shell only by removal of explicit init SUBSWITCH_CONFIG assignment. Its .git location still derives the same author REPO_ROOT. Saved log fails the exact inherited-decoy assertion after init changed only that owned internal decoy; no weakening of assertions."
+    },
+    "correctedGreen": {
+      "scriptExit": 0,
+      "externalBeforeSha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "externalAfterSha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "emptyDecoyHashIndependentlyComputed": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+      "permanentDecoyAssertionPassed": true,
+      "installedMetadataPassed": true,
+      "bothHealthStartupsAndShutdownsObserved": true,
+      "limit": "Author execution evidence inspected and hashes verified; runtime test was not rerun by this reviewer. Temporary sentinels/artifacts were already cleaned."
+    },
+    "inventory": {
+      "redFiles": 94,
+      "greenFiles": 95,
+      "added": [
+        "subswitch.wave1.example.json"
+      ],
+      "removed": [],
+      "changedCommonEntries": [
+        "package.json size2433->2469"
+      ],
+      "sampleSourceHashMatches": true,
+      "limit": "Saved inventory comparison independently parsed across all entries. Deleted author tarballs were not reopened."
+    }
+  },
+  "contextSourceHashes": {
+    "src/codex-init.ts": "744049ab2900baa8bb4774ee9dfb9782944e9bb8c7a009692e13e2b9395c846a",
+    "src/config.ts": "ee44fd247d54a171bc3d29c3d56fd3f0e7e145454e907e969c2e390d6da715cd",
+    "src/cli.ts": "fb115b59ef7ae400450ae6be307ee72e8f2eb368c8e734b2d08d15ccfc7d0797",
+    "src/init.ts": "683da874d934271a2966577d6cabfe9fa2763a47048c57a530c358ecaccae692",
+    "src/routing/routing-discovery.ts": "6c2a8cde1e5df1c9c719e99c82e4f7f4df7e2e50a897653b7635a021a95cdb4b",
+    "src/routing/destination-catalog.ts": "0c7c6777e28ced040a108fdf0070a47b934f9325c99b910b2d0c5cee2051aca9",
+    "src/limit-recorder.ts": "71de09ce294c82fab5a1d12fc8a6008e43d87bb3ca77d4b197eb02ea88b0a4d8"
+  },
+  "checks": [
+    {
+      "command": "git diff --check 7e6962c177b679bb2cbd55d8334df071bee262ad f62b2a5de393a0794d9f9aa286fbaba99b60912a",
+      "exitCode": 0
+    },
+    {
+      "command": "git show f62b2a5de393a0794d9f9aa286fbaba99b60912a:scripts/smoke-tarball.sh | bash -n",
+      "exitCode": 0
+    },
+    {
+      "check": "Commit ancestry and changed paths",
+      "result": "Head parent84cf; previous parentPR81 7e; fixdelta only scripts/smoke-tarball.sh, fullPR only package.json and smoke script."
+    },
+    {
+      "check": "Hash verification",
+      "result": "3 committed and working source hashes, all10 recorded evidence hashes, prior independent review and previous report hashes match."
+    },
+    {
+      "check": "Meaningful red-probe equivalence",
+      "result": "Exact textual diff is only removal of explicit init config override; saved assertion fails with changed fabricated decoy."
+    }
+  ],
+  "boundaries": {
+    "sourceOrBranchEdits": false,
+    "authorCloneWrites": false,
+    "runtimeTestsRerun": false,
+    "buildInstallPackSmokeRerun": false,
+    "nativeClientsOrAuthHistoryAccess": false,
+    "providerInference": 0,
+    "sharedProxyOrClaudeOHFControls": false,
+    "mergeRelease": false,
+    "goalsModelsPermissionsChanged": false,
+    "deniedReroute": false
+  },
+  "limits": [
+    "Coordinator must independently verify current GitHub head/base/CI/threads and merge order; this review makes no mutable GitHub readiness claim.",
+    "No broad green suite rerun; only source/evidence review and nonexecuting shell syntax check.",
+    "Existing OS port probe closes its reservation before startup; no stronger cross-process port ownership guarantee added by this patch.",
+    "Native HTTP/Kimi qualification and original released incident remain separate.",
+    "PR88 was not self-reviewed or approved as part of this assignment."
+  ],
+  "nextAction": "Coordinator may record exact-head source approval and SMOKE-ENV-01 resolution, then apply its separate CI/base/thread/merge gates. Worker stops this bounded read-only review."
+}

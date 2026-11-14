@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-19",
+  "thread": "01a13162-e803-7230-904c-b91d38edc9c7",
+  "task": "Native Codex HTTP same-child follow-up instruction-history boundary",
+  "status": "No supported exact-order correction established; bounded investigation complete",
+  "checkout": "/Users/dean/Sandbox/subswitch-kimi",
+  "branch": "codex/http-followup-continuity",
+  "head": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+  "base": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+  "dependency": {
+    "pr": "https://github.com/dean0x/subswitch/pull/85",
+    "branch": "codex/proxy-restart-continuity",
+    "verifiedHead": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+    "includesDeliveredKimiHead": "7e6962c177b679bb2cbd55d8334df071bee262ad"
+  },
+  "deliveredBranchesUnchanged": true,
+  "implementationChanged": false,
+  "commit": null,
+  "push": false,
+  "pr": null,
+  "whyNoImplementationPR": "The only established target representation cannot accept the recorded instruction position without moving it, changing its authority, deleting it or inventing history. The assignment explicitly forbids those semantic changes. No production patch was guessed.",
+  "recordedEvidence": {
+    "path": "e2e/gates/native-codex-http-review-source-observed-failure-2026-10-11.json",
+    "clientVersion": "0.162.1",
+    "nativeGateStatus": "failed; not rerun",
+    "shape": "Initial developer instructions; user/agent task; reasoning; completed custom tool call/output; reasoning; assistant message at11; new developer message at12; next agent message at13.",
+    "newInstruction": {
+      "matchesInitialInstruction": false,
+      "recognizedSourceMarkers": [],
+      "retainedContent": false
+    },
+    "contentLimit": "The observation preserves structure only. It does not identify the original new instruction text or establish a safe source-specific exception. No existing native history/auth was accessed to recover it."
+  },
+  "primaryDocumentation": [
+    {
+      "topic": "Official OpenAI app-server lifecycle",
+      "url": "https://learn.chatgpt.com/docs/app-server",
+      "retrieved": "2026-10-19",
+      "finding": "Threads retain turns. turn/start supplies user input or standalone tool output; thread/inject_items appends raw model-visible Responses items. The RPC documentation does not establish an equivalent Anthropic translation for arbitrary ordered developer messages.",
+      "sections": [
+        "Core primitives",
+        "Turns",
+        "Inject items into a thread"
+      ]
+    },
+    {
+      "topic": "Official OpenAI HTTP Responses usage through app-server",
+      "url": "https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations",
+      "retrieved": "2026-10-19",
+      "finding": "This documented sign-in route sends required history in the HTTP input array, uses developer messages or instructions, and omits previous_response_id over HTTP. This supports retaining a native Responses conversation rather than importing Claude replay handles.",
+      "scopeLimit": "The document describes its sign-in/API configuration; it does not certify every installed native client or subscription endpoint."
+    },
+    {
+      "topic": "Target Claude mid-conversation system instruction contract",
+      "url": "https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages",
+      "retrieved": "2026-10-19",
+      "finding": "Sonnet5.5 supports mid-conversation system content; Sonnet5 does not. Content must follow a user turn (or an assistant server-tool-result turn), then end history or precede an assistant. The recorded assistant/developer/agent-user slot does not satisfy those placement rules.",
+      "sections": [
+        "Availability",
+        "How it works",
+        "Placement after tool results"
+      ],
+      "scopeLimit": "Claude API documentation does not establish native Claude Code OAuth endpoint support. No live entitlement or transport contract was probed."
+    }
+  ],
+  "analysis": {
+    "currentGuard": {
+      "file": "src/claude-adapter.ts",
+      "lineStart": 135,
+      "lineEnd": 151,
+      "behavior": "Rejects new mid-history developer/system content with mid_history_instructions_unimplemented; recognized turn_aborted handling is a separate existing exception."
+    },
+    "handlerOrder": {
+      "file": "src/claude-handler.ts",
+      "lineStart": 79,
+      "lineEnd": 84,
+      "behavior": "reverseRequest runs before authorizedFetch, so this boundary is reached before credential resolution or provider dispatch."
+    },
+    "whyGenericFixesAreUnsupported": [
+      "Hoisting the new instruction into top-level system moves its scope ahead of completed history.",
+      "Encoding it as user text changes instruction authority.",
+      "Dropping it, treating it as an identical replay, or guessing its source conflicts with the observed new/unrecognized structural classification.",
+      "Mapping it in place to Claude system does not meet the documented placement rules for the recorded slot.",
+      "Moving it after the next agent/user message or adding synthetic conversation turns changes the required ordered history.",
+      "A model upgrade alone does not change the invalid placement, and no runtime configuration/model change was authorized or made."
+    ],
+    "serverToolException": "The recorded boundary does not establish an assistant server-tool-result turn. The completed local custom-tool pair is earlier in the sequence; the fabricated exact-shape reproduction ends that turn in ordinary assistant text."
+  },
+  "reproduction": {
+    "evidenceClass": "synthetic",
+    "probe": ".git/http-followup-boundary.test.ts",
+    "command": "node --import tsx --test --test-reporter=spec --test-timeout=30000 .git/http-followup-boundary.test.ts test/unit/claude-stream.test.ts",
+    "passed": 6,
+    "failed": 0,
+    "skipped": 0,
+    "result": {
+      "evidenceClass": "synthetic",
+      "sameHandler": true,
+      "initialTool": true,
+      "toolResultOnce": true,
+      "opaqueReplayPreserved": true,
+      "blockedDeveloperIndex": 12,
+      "newInstructionBeforeAgentMessage": true,
+      "originalInputUnchanged": true,
+      "postBoundaryAuthCalls": 0,
+      "postBoundaryUpstreamCalls": 0,
+      "nativeClients": 0,
+      "vendorCalls": 0
+    },
+    "coverage": [
+      "Single production ClaudeHandler instance and persistent ReverseState simulate one native child across calls.",
+      "Fabricated SSE returns a signed-thinking/custom-tool response; the fixture reads its own disposable file once and returns exactly one corresponding custom tool result.",
+      "A subsequent fabricated completion preserves the first signed thinking block and tool/result replay.",
+      "A new developer or system message at index12 before the next agent message rejects without input mutation, credential lookup or a third upstream attempt.",
+      "Tampered completed tool replay rejects state_history_mismatch before dispatch.",
+      "Existing fake-only Claude streaming regression suite also passes."
+    ],
+    "limits": "Injected byte/SSE transport only. No HTTP listener, actual native/app-server process, live provider, native auth store or existing client state was used. Synthetic transport does not satisfy the native HTTP acceptance gate.",
+    "cleanup": "Fixture-owned temporary directory removed through test cleanup; fake credentials are constants in the private probe.",
+    "log": "/tmp/subswitch-http-followup-reproduction.log",
+    "logSha256": "435c15438d61f35c65b6449157e1ba76836f1996921fefae9165d6a85fe38a4a",
+    "typecheckBuildFullSuite": "Not rerun because no tracked implementation or package/config files changed; dependency check results are not recertified by this investigation."
+  },
+  "supportedAlternatives": [
+    {
+      "option": "For new child invocations, keep instruction-bearing histories on an untranslated native Responses destination from the outset.",
+      "basis": "Official OpenAI HTTP history and app-server thread/turn contracts preserve developer input without a Claude role translation.",
+      "limits": "This is an integration alternative, not a rerun native acceptance result. Do not migrate an active Claude child or send Subswitch Claude replay tokens to a different provider."
+    },
+    {
+      "option": "Coordinate an explicit upstream harness/target-protocol contract that emits operator updates at a target-supported boundary.",
+      "basis": "Claude documents legal after-user system positions on supporting models.",
+      "limits": "Requires an explicit producer/adapter design and fresh synthetic then authorized native/live qualification. Arbitrary proxy reordering is not an implementation of that contract."
+    }
+  ],
+  "nextAction": "Coordinator to retain the native HTTP Claude follow-up merge gate as failed and choose the native Responses child alternative or scope a producer/target contract change. No safe transparent proxy correction was established for the recorded exact order. Kimi relay/native acceptance remains a separate unexecuted gate.",
+  "sourceSha256": {
+    "src/claude-adapter.ts": "396cfd39ba960244d7f0609ac2da5d996f20eee63855b949071c8493e4f7f9cd",
+    "src/claude-handler.ts": "2c468bc2b88c8668b421b0dc40c3ca433aeb37f4bf7c3d2cb64e37a9ba164a69",
+    "src/claude-stream.ts": "e04bc0f9d870585f4e0d8e12a41f908152db602c5ad63a3df37e69b994f66077",
+    "src/claude-state.ts": "12c5fab5ed15add31a7e2fe147310cd5e9d32ed4fbd28a687a3cf4cfc01a81f9",
+    "e2e/gates/native-history-observer.ts": "e3934aca8749612414173d980cfe8aa38696573641b93ef44608b8436d3705c7",
+    "e2e/gates/native-codex-http-review-source-observed-failure-2026-10-11.json": "89b7cb563c9ac02fade582a6cc7dba92ae86671c7877c8ca80d78a49b199437b",
+    ".git/http-followup-boundary.test.ts": "d0e1aad363ad39900e238530c2e68767076d6e0de57485b7c1ac80c89858af40"
+  },
+  "boundaries": {
+    "nativeClientsExecuted": 0,
+    "liveInferenceCalls": 0,
+    "credentialsRead": false,
+    "sharedProxyChanged": false,
+    "otherCheckoutWrites": false,
+    "OHFControl": false,
+    "permissionsChanged": false,
+    "forcePush": false,
+    "mergeOrRelease": false
+  }
+}

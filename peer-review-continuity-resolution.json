@@ -1,0 +1,259 @@
+{
+  "schemaVersion": 1,
+  "reviewDate": "2026-10-19",
+  "reviewerThread": "01a13162-e803-7230-904c-b91d38edc9c7",
+  "reviewerCheckout": "/Users/dean/Sandbox/subswitch-kimi",
+  "reviewerHead": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+  "targetCheckoutReadOnly": "/Users/dean/Sandbox/subswitch-continuity",
+  "targetBase": "0183d6de0edfc6229cbd54c932f76e2d136c5ffa",
+  "reviewType": "Independent static continuity fix-diff and affected cache/ownership/cancellation/fixture-boundary review. No execution.",
+  "recommendation": "approve_source_review",
+  "findings": [],
+  "reviewedArtifacts": {
+    "assignment": "/Users/dean/Sandbox/.codex-orchestrator/continuity-fix-review-assignment.json",
+    "resolution": {
+      "path": "/Users/dean/Sandbox/subswitch-continuity/continuity-peer-resolution.json",
+      "sha256": "e7714d1c974e41bbdd5f47cbf172e477205a46edbd52f3361ac51a9925c94c48"
+    },
+    "patchSha256": {
+      "continuity-reviewed-before-fixes.patch": "c2bfdbeaef3f6f5fc575e2b5a96de78253f9b2ea5aa78a45bda11568130b3601",
+      "continuity-review.patch": "de379c1f5128118b0227d744db1f45da4135dd71b4efc6bf2584988f0172185d",
+      "continuity-fix-diff.patch": "d0bbcd096682b34a026b94d753b7c9cf2228f0fb1316a2ea99b972174c162ade"
+    },
+    "sourceFileSha256": {
+      "README.md": "2456d18239b6125b0b9e5760f9b13f05978e6932d90f124f2f128ea5a0ba58f4",
+      "src/claude-cache.ts": "42f12a297ec743b5faf1f04315c2789beab4201aec12d8c92fd756ab57a350a8",
+      "src/routing/replay-cache.ts": "545b91913daa38a51655f371a61375604679710033052ec597d7faa75155ebe1",
+      "src/routing/signed-thinking.ts": "df0661d6669d8c4cc2c11488c242f253bc29b976c9d59d044700d917f2ea3268",
+      "src/routing/request-adapter.ts": "4fb8297c883f8b538f06574e00eeb17d3f9664937863b5f430e00b7f7751a0f6",
+      "src/routing/routed-attempt.ts": "f6a32f887c323366eb043c80b25cb977d22c6fdd82d8d1404e45178efe5ee56d",
+      "src/routing/shared-routing.ts": "aad684e2b523d0fea7464f14cd73af28670e5e09a924535843bb4c14a520836f",
+      "test/integration/native-thinking-continuity.test.ts": "a854aba6e26cd395e81cc95e670cd1b73fafb22380e3fe9b4a74a474f5aa457e",
+      "test/unit/native-thinking-replay.test.ts": "dd7c8d435231bc52ec5f9ed10f2e9e783a81689a88dc1ccb6cfb8c384bbd6988",
+      "e2e/gates/native-thinking-continuity-offline-2026-10-19.json": "779e0b2dd89c365f070b54e426fa731f8ada6945134c876c54bae984b5efd9a0"
+    },
+    "allTenSourceAndThreePatchHashesVerified": true,
+    "fullPatchFileSetMatchesReviewedSourceSet": true,
+    "sourcesRecheckedUnchangedAtReportWrite": true
+  },
+  "resolvedFindings": [
+    {
+      "id": "CONT-01",
+      "status": "resolved in inspected source",
+      "evidence": [
+        {
+          "file": "src/routing/signed-thinking.ts",
+          "lineStart": 39,
+          "lineEnd": 53,
+          "detail": "Provenance now includes owner and conversation. Cold imports use a StagedCache reservation; known foreign or pending provenance is rejected. Existing exact signed-field checks remain."
+        },
+        {
+          "file": "src/routing/replay-cache.ts",
+          "lineStart": 32,
+          "lineEnd": 61,
+          "detail": "Reservation acquisition checks/writes synchronously into the shared bounded cache before the preparation path dispatches upstream. Commit checks object identity of every held reservation immediately before atomic putBatch publication."
+        },
+        {
+          "file": "src/routing/replay-cache.ts",
+          "lineStart": 64,
+          "lineEnd": 70,
+          "detail": "Discard deletes only a shared entry still identical to this attempt's pending reservation, then clears side maps and closes the stage. Committed provenance uses a distinct object and survives discard; foreign replacements are not removed."
+        },
+        {
+          "file": "src/routing/routed-attempt.ts",
+          "lineStart": 102,
+          "lineEnd": 121,
+          "detail": "Abort cleanup is installed before adaptation; preparation is enclosed in an outer try/catch, so partial adaptation or failure before returning a prepared attempt releases reservations."
+        },
+        {
+          "file": "src/routing/routed-attempt.ts",
+          "lineStart": 261,
+          "lineEnd": 294,
+          "detail": "Successful commit removes the abort listener after publication. Explicit cancellation discards before aborting transport, and preparation errors discard before rethrowing."
+        },
+        {
+          "file": "test/integration/native-thinking-continuity.test.ts",
+          "lineStart": 224,
+          "lineEnd": 300,
+          "detail": "Deferred injected-upstream regressions assert competing owners/conversations fail before a second dispatch, remain foreign after success, and become importable after rejection/cancellation. Partial-adaptation and parked streaming-consumer cleanup cases are present."
+        },
+        {
+          "file": "test/unit/native-thinking-replay.test.ts",
+          "lineStart": 68,
+          "lineEnd": 95,
+          "detail": "Source tests replace a claim before commit and require no partial scoped publication or deletion of its replacement; strict-capacity failure must release claims and byte accounting."
+        }
+      ]
+    },
+    {
+      "id": "CONT-02",
+      "status": "resolved in inspected source; HTTP behavior remains unexecuted",
+      "evidence": [
+        {
+          "file": "test/integration/native-thinking-continuity.test.ts",
+          "lineStart": 41,
+          "lineEnd": 74,
+          "detail": "Config explicitly sends Anthropic passthrough, Codex legacy/subscription/API, Claude, refresh and both routed profiles to the owned origin. Native auth files/config directory are absent paths under the fixture root; profiles use fabricated env credentials."
+        },
+        {
+          "file": "test/integration/native-thinking-continuity.test.ts",
+          "lineStart": 81,
+          "lineEnd": 88,
+          "detail": "Routed fetch admits only the exact two fixture Messages URLs and requires redirect:error before invoking its implementation."
+        },
+        {
+          "file": "test/integration/native-thinking-continuity.test.ts",
+          "lineStart": 133,
+          "lineEnd": 162,
+          "detail": "In-memory assertions cover every configured origin and isolated auth path, reject external/unexpected local URLs and redirect-following, and close constructed dependencies without listeners."
+        },
+        {
+          "file": "test/integration/native-thinking-continuity.test.ts",
+          "lineStart": 303,
+          "lineEnd": 381,
+          "detail": "The owned HTTP origin rejects all unexpected paths. Both stream modes retain unchanged-history/header/one-call checks and deliberately exercise an unmatched-model branch, asserting a local rejection path rather than a live vendor fallthrough. HTTP and temporary-directory cleanup are retained."
+        },
+        {
+          "file": "src/claude-auth.ts",
+          "lineStart": 35,
+          "lineEnd": 43,
+          "detail": "An explicit fixture authFile selects the file store before platform/keychain or default config-dir selection."
+        }
+      ]
+    }
+  ],
+  "boundaryAssessment": {
+    "pendingCapacityAndEviction": {
+      "detail": "Production replay storage is strict at 2048 entries / 32 MiB (routed-attempt.ts:70-73). Pending claims consume that shared budget; strict put refuses capacity overflow before changing entries, so pending ownership cannot be evicted by ordinary capacity pressure. Stage writes are separately bounded. Reservation and write side maps correspond to bounded cache entries, rather than an independent unbounded store. Batch preflight is atomic; failed publication discards claims without exposing partial scoped state.",
+      "locations": [
+        "src/claude-cache.ts:25",
+        "src/claude-cache.ts:47",
+        "src/routing/replay-cache.ts:14",
+        "src/routing/replay-cache.ts:32",
+        "src/routing/routed-attempt.ts:70"
+      ]
+    },
+    "pendingLifetimeAndExpiry": {
+      "detail": "There is no separate reservation TTL. Production SharedRouting requests have a 600000 ms total deadline; their combined signal is passed to prepare, whose abort listener discards held claims even when waiting before headers or parked at downstream delivery. Provider stream errors/timeouts and normal consumer closure also reach dispatcher finally/cancel. Successful publication replaces pending provenance, removes the listener, and conditional discard does not erase committed provenance. This lifetime argument is source-inspected; deadline/expiry runtime behavior was not exercised by this reviewer.",
+      "locations": [
+        "src/routing/shared-routing.ts:187",
+        "src/routing/shared-routing.ts:329",
+        "src/routing/shared-routing.ts:458",
+        "src/routing/routed-attempt.ts:103",
+        "src/routing/routed-attempt.ts:266",
+        "src/routing/provider-stream.ts:63"
+      ]
+    },
+    "sameScopeConcurrency": {
+      "detail": "A second cold import of a pending signature is rejected even for the same owner/conversation until the first attempt publishes or releases it. It cannot see the first stage's private scoped block, and knownThinking sees the shared pending claim. README explicitly documents overlapping-import rejection. After successful publication the original scope replays the exact signed block. No merging, silent reordering or signed-field normalization was introduced.",
+      "locations": [
+        "src/routing/request-adapter.ts:83",
+        "src/routing/signed-thinking.ts:18",
+        "src/routing/signed-thinking.ts:29",
+        "README.md:332"
+      ]
+    },
+    "nativeAndFallbackBoundary": {
+      "detail": "Import opt-in remains restricted to the effective singleton first attempt. The adapter independently requires Claude provider, Messages on both sides and no known prior-owner switch; cross-provider opaque history remains rejected. Auth selection, fallback policy and effort/model selection are not changed by the fix.",
+      "locations": [
+        "src/routing/shared-routing.ts:334",
+        "src/routing/request-adapter.ts:74",
+        "src/routing/request-adapter.ts:108"
+      ]
+    },
+    "terminalTranslationOrder": {
+      "detail": "Claude-to-Responses translation commits its replay data before yielding the terminal event, so closing the stage at dispatcher terminal publication does not cut off a later legitimate replay write in that translator.",
+      "locations": [
+        "src/claude-stream.ts:231",
+        "src/routing/response-delivery.ts:87"
+      ]
+    }
+  },
+  "authorReportedChecksNotIndependentlyRerun": [
+    {
+      "command": "node --import tsx --test --test-name-pattern='isolates every|imports an|replays the|retains rejection|does not adopt|reserves cold|releases concurrent|releases partially|releases imports' --test-timeout=30000 test/integration/native-thinking-continuity.test.ts",
+      "exitCode": 0,
+      "passed": 12,
+      "coverage": [
+        "before-startup import and same-process follow-up",
+        "fresh-instance restart",
+        "exact signed/redacted blocks and tool history",
+        "recorded tamper and known foreign owner rejection",
+        "deferred overlapping different owners and conversations reject before second dispatch",
+        "ownership stays exclusive after successful publication",
+        "release after rejection, missing terminal, aborted fetch, partial adaptation and streaming-consumer cancellation",
+        "all fixture endpoints local, all native auth paths isolated and nonexistent",
+        "fetch URL allowlist rejects unexpected vendor/local paths and redirects before implementation",
+        "isolated buildDeps constructs and closes without listeners"
+      ]
+    },
+    {
+      "command": "node --import tsx --test --test-reporter=dot --test-timeout=30000 test/unit/claude-cache.test.ts test/unit/native-thinking-replay.test.ts test/unit/wave1-codec-review.test.ts test/unit/wave1-reliability.test.ts test/unit/codex-request.test.ts test/unit/reverse-adapter.test.ts test/unit/claude-stream.test.ts",
+      "exitCode": 0,
+      "coverage": [
+        "native-only import authorization and exact field checks",
+        "publication revalidates reservation ownership before any scoped writes",
+        "rollback does not delete a replacement foreign claim",
+        "shared entry/byte budget bounds pending imports and failed batch publication releases claims",
+        "existing cache, codec, reliability, translation and stream regressions"
+      ]
+    },
+    {
+      "command": "npm run typecheck",
+      "exitCode": 0
+    },
+    {
+      "command": "npm run build",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    }
+  ],
+  "unverifiedGates": [
+    {
+      "gate": "Production HTTP stream=true/false and route-miss assertions",
+      "status": "unverified",
+      "reason": "Author reports listener EPERM. Reviewer read assertions only; no listener/test operation or cross-session rerouting was attempted."
+    },
+    {
+      "gate": "Full npm test/check under the shared heavy-test lock",
+      "status": "unverified",
+      "reason": "Incomplete in author evidence, not run by this read-only review."
+    },
+    {
+      "gate": "Real disposable native Claude client/provider signature validation",
+      "status": "unverified",
+      "reason": "Outside offline scope; no client, credential, existing profile or history was read or executed."
+    },
+    {
+      "gate": "Original released-user startup/restart incident",
+      "status": "unverified",
+      "reason": "Reviewed fix addresses explicit singleton Claude Messages import; released ordinary passthrough bypasses this adapter. This review does not establish that incident fixed."
+    },
+    {
+      "gate": "Commit/push/dependent PR/CI for continuity patch",
+      "status": "unverified",
+      "reason": "Author reports denied Git metadata writes. Source remains a saved patch on the recorded base; no Git mutations were attempted."
+    },
+    {
+      "gate": "Later system Messages, durable translated/Responses continuation, Codex HTTP follow-up, live Kimi acceptance",
+      "status": "separate unresolved scopes",
+      "reason": "Not implemented or certified by this continuity source review."
+    }
+  ],
+  "boundaries": {
+    "targetEdits": false,
+    "patchesApplied": false,
+    "testsOrBuildsExecuted": false,
+    "listenersStarted": false,
+    "stagingCommitsPushes": false,
+    "nativeAuthClientHistoryRead": false,
+    "sharedProxyOrOHFChanged": false,
+    "liveCalls": 0,
+    "deniedOperationsRerouted": false,
+    "completedKimiImplementationRestarted": false
+  },
+  "nextAction": "Source review approves the submitted continuity fix with CONT-01 and CONT-02 resolved and no new findings. Coordinator retains the explicit HTTP/full-suite/native/released-incident/delivery gates and permission boundaries. Reviewer stops this bounded assignment."
+}

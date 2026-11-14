@@ -1,0 +1,508 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-19",
+  "thread": "01a13162-e803-7230-904c-b91d38edc9c7",
+  "task": "Disposable process/package startup-restart product QA",
+  "checkout": "/Users/dean/Sandbox/subswitch-kimi",
+  "branch": "codex/http-followup-continuity",
+  "candidateHead": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+  "status": "Process QA completed; one new signed-content preservation finding blocks nonstream explicit-route acceptance",
+  "recommendation": "request_author_fix_for_RESTART-QA-01; scoped streaming restart behavior passes",
+  "basis": {
+    "releasedMain": "de137dedbd72d660657517251fe8a1051dd43465",
+    "releasedMetadataVerification": {
+      "command": "npm view subswitch@0.6.0 gitHead --json",
+      "result": "de137dedbd72d660657517251fe8a1051dd43465"
+    },
+    "remoteVerification": {
+      "command": "git ls-remote origin refs/heads/main refs/heads/codex/proxy-restart-continuity",
+      "main": "de137dedbd72d660657517251fe8a1051dd43465",
+      "pr85": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717"
+    },
+    "preFixExplicitRoute": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+    "priorSourceApproval": "peer-review-continuity-resolution.json",
+    "sourceAndPackagePins": "Each variant was built/packed at its recorded commit; main and pre-fix sources came from git archive in owned temporary directories. Candidate source HEAD/tracked cleanliness was checked before and after."
+  },
+  "commands": [
+    {
+      "command": "python3 .git/restart-product-qa-prepare.py",
+      "exitCode": 0,
+      "purpose": "Three pinned npm-pack artifacts, each including its prepack TypeScript build; production runtime dependencies staged from locked installed versions."
+    },
+    {
+      "command": "node .git/restart-product-qa.mjs",
+      "exitCode": 1,
+      "purpose": "Final exact-runner eight-case product matrix. Exit1 deliberately reports signed-history content loss; driver/infrastructure failure is absent."
+    },
+    {
+      "command": "node .git/restart-product-qa.mjs --reservations",
+      "exitCode": 0,
+      "purpose": "New package/process-level pending-conflict, cancellation-release and post-publication foreign-scope negative test."
+    }
+  ],
+  "qaLayer": {
+    "entrypoint": "Actual node <extracted-tarball>/dist/cli.js serve --quiet child processes; no in-process mocked proxy.",
+    "clients": "Fabricated HTTP Messages clients and persisted disposable client-history JSON; no actual Claude/Codex/app-server client.",
+    "upstream": "Owned 127.0.0.1 HTTP server with standard Messages SSE text/thinking/signature/tool-JSON deltas and redacted blocks; unexpected paths fail locally.",
+    "state": "Each child has a fresh temporary home/config/temp/cache namespace. Every configured legacy/API/subscription/refresh endpoint points to the fixture; native-auth/config paths are absent fixture-owned paths. Explicit profiles use a fabricated env key; ordinary incoming auth is fabricated.",
+    "runtimeDependencies": "Copy exact installed production package directories after verifying lockfile versions; no npm install, registry resolution or dependency scripts.",
+    "installationLimit": "This validates extracted package contents and packaged CLI behavior with staged locked dependencies. It does not validate a clean registry dependency install.",
+    "recording": "Limit recording disabled only in fixture children; its directory override is still owned. Parent environment/shared settings unchanged."
+  },
+  "results": {
+    "matrixCases": 8,
+    "fullyPassingCases": 5,
+    "expectedBeforeFixStreamingRejectionCases": 1,
+    "signedPreservationFailureCases": 2,
+    "newNegativeCasesPassed": 1,
+    "finalInvocationFixtureProcesses": 17,
+    "finalInvocationLoopbackUpstreamCalls": 38,
+    "toolExecutionsInFinalMatrix": 8,
+    "cases": [
+      {
+        "id": "released-main-ordinary-json",
+        "sourceSHA": "de137dedbd72d660657517251fe8a1051dd43465",
+        "path": "ordinary",
+        "stream": false,
+        "result": "passed",
+        "toolExecutions": 1,
+        "cleanShutdowns": 2,
+        "clientSignedHistoryPreserved": true,
+        "baselineRestartMaskedByContentLoss": false,
+        "upstreamCalls": 5,
+        "phaseStatuses": {
+          "history-created-before-startup": 200,
+          "native-shape-tool-request": 200,
+          "tool-result-before-restart": 200,
+          "full-history-after-restart": 200,
+          "next-message-after-restart": 200
+        },
+        "freshProcessAndSamePort": true,
+        "clientHistoryUnchangedByRestart": true
+      },
+      {
+        "id": "released-main-ordinary-stream",
+        "sourceSHA": "de137dedbd72d660657517251fe8a1051dd43465",
+        "path": "ordinary",
+        "stream": true,
+        "result": "passed",
+        "toolExecutions": 1,
+        "cleanShutdowns": 2,
+        "clientSignedHistoryPreserved": true,
+        "baselineRestartMaskedByContentLoss": false,
+        "upstreamCalls": 5,
+        "phaseStatuses": {
+          "history-created-before-startup": 200,
+          "native-shape-tool-request": 200,
+          "tool-result-before-restart": 200,
+          "full-history-after-restart": 200,
+          "next-message-after-restart": 200
+        },
+        "freshProcessAndSamePort": true,
+        "clientHistoryUnchangedByRestart": true
+      },
+      {
+        "id": "pre-fix-pr81-explicit-json",
+        "sourceSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+        "path": "explicit",
+        "stream": false,
+        "result": "failed-signed-history-preservation",
+        "toolExecutions": 1,
+        "cleanShutdowns": 2,
+        "clientSignedHistoryPreserved": false,
+        "baselineRestartMaskedByContentLoss": true,
+        "upstreamCalls": 4,
+        "phaseStatuses": {
+          "history-created-before-startup": 409,
+          "native-shape-tool-request": 200,
+          "tool-result-before-restart": 200,
+          "full-history-after-restart": 200,
+          "next-message-after-restart": 200
+        },
+        "freshProcessAndSamePort": true,
+        "clientHistoryUnchangedByRestart": true
+      },
+      {
+        "id": "pre-fix-pr81-explicit-stream",
+        "sourceSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+        "path": "explicit",
+        "stream": true,
+        "result": "expected-before-fix-rejection-reproduced",
+        "toolExecutions": 1,
+        "cleanShutdowns": 2,
+        "clientSignedHistoryPreserved": true,
+        "baselineRestartMaskedByContentLoss": false,
+        "upstreamCalls": 2,
+        "phaseStatuses": {
+          "history-created-before-startup": 409,
+          "native-shape-tool-request": 200,
+          "tool-result-before-restart": 200,
+          "full-history-after-restart": 409,
+          "next-message-after-restart": 409
+        },
+        "freshProcessAndSamePort": true,
+        "clientHistoryUnchangedByRestart": true
+      },
+      {
+        "id": "candidate-pr85-ordinary-json",
+        "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+        "path": "ordinary",
+        "stream": false,
+        "result": "passed",
+        "toolExecutions": 1,
+        "cleanShutdowns": 2,
+        "clientSignedHistoryPreserved": true,
+        "baselineRestartMaskedByContentLoss": false,
+        "upstreamCalls": 5,
+        "phaseStatuses": {
+          "history-created-before-startup": 200,
+          "native-shape-tool-request": 200,
+          "tool-result-before-restart": 200,
+          "full-history-after-restart": 200,
+          "next-message-after-restart": 200
+        },
+        "freshProcessAndSamePort": true,
+        "clientHistoryUnchangedByRestart": true
+      },
+      {
+        "id": "candidate-pr85-ordinary-stream",
+        "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+        "path": "ordinary",
+        "stream": true,
+        "result": "passed",
+        "toolExecutions": 1,
+        "cleanShutdowns": 2,
+        "clientSignedHistoryPreserved": true,
+        "baselineRestartMaskedByContentLoss": false,
+        "upstreamCalls": 5,
+        "phaseStatuses": {
+          "history-created-before-startup": 200,
+          "native-shape-tool-request": 200,
+          "tool-result-before-restart": 200,
+          "full-history-after-restart": 200,
+          "next-message-after-restart": 200
+        },
+        "freshProcessAndSamePort": true,
+        "clientHistoryUnchangedByRestart": true
+      },
+      {
+        "id": "candidate-pr85-explicit-json",
+        "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+        "path": "explicit",
+        "stream": false,
+        "result": "failed-signed-history-preservation",
+        "toolExecutions": 1,
+        "cleanShutdowns": 2,
+        "clientSignedHistoryPreserved": false,
+        "baselineRestartMaskedByContentLoss": false,
+        "upstreamCalls": 5,
+        "phaseStatuses": {
+          "history-created-before-startup": 200,
+          "native-shape-tool-request": 200,
+          "tool-result-before-restart": 200,
+          "full-history-after-restart": 200,
+          "next-message-after-restart": 200
+        },
+        "freshProcessAndSamePort": true,
+        "clientHistoryUnchangedByRestart": true
+      },
+      {
+        "id": "candidate-pr85-explicit-stream",
+        "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+        "path": "explicit",
+        "stream": true,
+        "result": "passed",
+        "toolExecutions": 1,
+        "cleanShutdowns": 2,
+        "clientSignedHistoryPreserved": true,
+        "baselineRestartMaskedByContentLoss": false,
+        "upstreamCalls": 5,
+        "phaseStatuses": {
+          "history-created-before-startup": 200,
+          "native-shape-tool-request": 200,
+          "tool-result-before-restart": 200,
+          "full-history-after-restart": 200,
+          "next-message-after-restart": 200
+        },
+        "freshProcessAndSamePort": true,
+        "clientHistoryUnchangedByRestart": true
+      }
+    ],
+    "reservationCase": {
+      "id": "candidate-pr85-explicit-stream-reservations",
+      "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+      "result": "passed",
+      "path": "explicit",
+      "stream": true,
+      "pendingCompetingDispatchBlocked": true,
+      "heldUpstreamClosedOnClientAbort": true,
+      "reservationReleasedOnAbort": true,
+      "knownForeignScopeRejectedAfterPublication": true,
+      "upstreamCalls": 2,
+      "fixturePids": [
+        83243
+      ],
+      "cleanShutdowns": 1,
+      "requests": [
+        {
+          "phase": "competing-import-while-pending",
+          "expectedStatus": 409,
+          "actualStatus": 409,
+          "terminalAndClosed": false,
+          "upstreamCalls": 0,
+          "historySha256": "f75427ff9d86c7707403b469b9b0fcde2b122f8197c83838edb2be8372ca7e54"
+        },
+        {
+          "phase": "claim-after-client-cancellation",
+          "expectedStatus": 200,
+          "actualStatus": 200,
+          "terminalAndClosed": true,
+          "upstreamCalls": 1,
+          "historySha256": "f75427ff9d86c7707403b469b9b0fcde2b122f8197c83838edb2be8372ca7e54"
+        },
+        {
+          "phase": "original-scope-after-competing-publication",
+          "expectedStatus": 409,
+          "actualStatus": 409,
+          "terminalAndClosed": false,
+          "upstreamCalls": 0,
+          "historySha256": "f8b8f637bb285dc927cc2bb9b8cb9b05dd88463f25d6a139ab3d34b65cdbb2ee"
+        }
+      ],
+      "forwarded": [
+        {
+          "phase": "held-cold-import",
+          "historySha256": "f8b8f637bb285dc927cc2bb9b8cb9b05dd88463f25d6a139ab3d34b65cdbb2ee",
+          "completedTool": true
+        },
+        {
+          "phase": "claim-after-client-cancellation",
+          "historySha256": "f75427ff9d86c7707403b469b9b0fcde2b122f8197c83838edb2be8372ca7e54",
+          "completedTool": true
+        }
+      ]
+    },
+    "beforeAfter": [
+      "Released/main ordinary passthrough and candidate ordinary passthrough both preserve complete fabricated histories through cold startup, tool/result continuation, process restart and the next message in JSON and streaming modes.",
+      "Pre-fix explicit streaming accepts a fresh tool turn/result but rejects pre-existing signed history and both post-restart messages with409 foreign_opaque_state before upstream. Candidate explicit streaming accepts the same phases with200, one tool execution and complete terminals.",
+      "Candidate explicit JSON accepts the pre-existing signed-history import that pre-fix rejects, but both versions silently omit signed thinking/redacted blocks from a newly generated nonstream response.",
+      "The pre-fix JSON live-history restart success is masked by this earlier content loss. It is not evidence of correct signed-history continuity."
+    ]
+  },
+  "findings": [
+    {
+      "id": "RESTART-QA-01",
+      "priority": "P2",
+      "gateBlockingForNonstreamAcceptance": true,
+      "title": "Explicit nonstream Messages aggregation silently drops thinking and redacted-thinking history",
+      "candidateHead": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+      "alsoReproducedAt": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+      "scope": "Inherited PR81 explicit-route HTTP aggregation path, present in PR85 candidate; not introduced by the PR85 reservation/import diff.",
+      "locations": [
+        {
+          "file": "src/routing/http-ingress.ts",
+          "lineStart": 92,
+          "lineEnd": 97,
+          "detail": "Native Messages events in stream=false requests are passed through the legacy aggregateFrames helper."
+        },
+        {
+          "file": "src/codex-response.ts",
+          "lineStart": 641,
+          "lineEnd": 670,
+          "detail": "Only text/input_json deltas are accumulated; content_block_stop publishes text/tool_use blocks. Thinking/signature deltas and redacted_thinking payloads are omitted."
+        }
+      ],
+      "runtimeEvidence": [
+        {
+          "id": "RESTART-QA-01",
+          "case": "pre-fix-pr81-explicit-json",
+          "sourceSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+          "observed": "Nonstream explicit Messages response silently omits provider thinking and redacted_thinking blocks.",
+          "expectedTypes": [
+            "thinking",
+            "redacted_thinking"
+          ],
+          "actualTypes": [],
+          "expectedSignedSha256": "aacb288832402adcdac9734fcce6331df1f937f13c61f137c958cc6e3463e739",
+          "actualSignedSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        {
+          "id": "RESTART-QA-01",
+          "case": "candidate-pr85-explicit-json",
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "observed": "Nonstream explicit Messages response silently omits provider thinking and redacted_thinking blocks.",
+          "expectedTypes": [
+            "thinking",
+            "redacted_thinking"
+          ],
+          "actualTypes": [],
+          "expectedSignedSha256": "93883e0db48728d5bc105708be0fab2dfef1accc42e657d4f06d3582d4895c7d",
+          "actualSignedSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ],
+      "reproduction": "Run the pinned package QA prepare helper, then the matrix runner. A fake upstream emits valid signed thinking/signature deltas, redacted thinking and one Read tool. With stream=false, the explicit client receives only the tool; stream=true and ordinary passthrough retain both signed block types.",
+      "impact": "The client cannot return the original complete signed context on its next tool/result turn. It also invalidates a naive restart control by making pre-fix JSON history look portable after signed content was lost. The fake upstream does not validate real cryptographic signatures, so its later200 is not proof of provider acceptance.",
+      "requestedChange": "Route to the owning author: preserve known native Messages thinking/signature deltas and redacted payloads during nonstream aggregation, or introduce a protocol-appropriate aggregator. Retain bounds, valid terminals, tool argument validation and fail-closed unsupported-content behavior. Do not strip signed history to make the restart test pass.",
+      "requestedRegression": "Add unit delta-aggregation and production HTTP stream=false coverage comparing provider and returned signed fields, then replay that returned tool history before/after a fresh process restart. Retain the existing stream=true/control/tampering coverage.",
+      "implementationChangedByQaWorker": false
+    }
+  ],
+  "transientRuns": [
+    {
+      "evidence": ".git/restart-product-qa-first-runtime.json",
+      "log": ".git/restart-product-qa-first.log",
+      "interpretation": "Initial fixture incorrectly put complete tool arguments in a start frame; corrected producer/client parsing to standard deltas. Product code unchanged."
+    },
+    {
+      "evidence": ".git/restart-product-qa-second-runtime.json",
+      "log": ".git/restart-product-qa-second.log",
+      "interpretation": "Corrected-wire run exposed the masked pre-fix JSON restart success. Source inspection identified dropped signed blocks; final runner explicitly marks preservation failures and exits1 rather than treating that success as a pass."
+    }
+  ],
+  "notEstablished": [
+    "Original released real-client stuck-session incident: ordinary synthetic passthrough does not reproduce it and cannot certify actual native startup/resume behavior.",
+    "Real native CLI tool execution, real signed-history validation, native auth refresh, model entitlement or live provider availability.",
+    "Kimi relay/native acceptance, the separate Codex HTTP instruction-ordering limitation, durable Responses continuation handles or later system-role Messages.",
+    "A full new suite/source approval or release. Existing green full-suite/source checks were not repeated; this new process QA found a separate gap."
+  ],
+  "artifacts": {
+    "released-main": {
+      "sourceSHA": "de137dedbd72d660657517251fe8a1051dd43465",
+      "tarballSha256": "ead8e2b2ee99d83c9a0d7e8f20e19cf6087a5ccdbc5007830e22df9519ecd3de",
+      "npmIntegrity": "sha512-Y1G3DqlT7PodXMEuWBSfOGSn5P+2ARyYhmezJkCt9a99rbAJDafRSmWtvB3fzn242V5OKMCso3Y7nYGaEP569A==",
+      "cliSha256": "7d3976cf306eadd90c5af84246cfddb5c104a7ebc82344d8f391f11e564e1fee",
+      "packageLockSha256": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445",
+      "stagedProductionDependencies": {
+        "node_modules/@clack/core": "1.4.3",
+        "node_modules/@clack/prompts": "1.7.0",
+        "node_modules/eslint-visitor-keys": "5.0.1",
+        "node_modules/fast-string-truncated-width": "3.0.3",
+        "node_modules/fast-string-width": "3.0.2",
+        "node_modules/fast-wrap-ansi": "0.2.2",
+        "node_modules/picocolors": "1.1.1",
+        "node_modules/sisteransi": "1.0.5",
+        "node_modules/toml-eslint-parser": "1.0.3",
+        "node_modules/ws": "8.21.3",
+        "node_modules/zod": "4.4.3"
+      },
+      "packCommand": [
+        "npm",
+        "pack",
+        "--pack-destination",
+        "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-restart-product-qa-mwdcfhyz/released-main",
+        "--json"
+      ],
+      "packCwd": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-restart-product-qa-mwdcfhyz/released-main/source",
+      "savedTarball": "/Users/dean/Sandbox/subswitch-kimi/.git/restart-product-qa-artifacts/released-main.tgz",
+      "distFileTreeSha256": "de1dd00dd8e489bb460533b2e2112f288e2b2f07fc976a7703caf8161950f88e",
+      "stagedRuntimeDependenciesSha256": "58330113cdfe672866ea724e5049d062e7b52cbd216589739fa26e8086e3718d"
+    },
+    "pre-fix-pr81": {
+      "sourceSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+      "tarballSha256": "8916a3401265437a06a2eaa446d795f1c48f23b597b9ad0425eba6a183cddca8",
+      "npmIntegrity": "sha512-+GEMSV8uTPwpgTQZV0UxaUySMFbZQjVuCnupxx2rHWjlkXuxHBT+ayaCeL5GoMwGbxVpG889jKdKEBVg55+qBg==",
+      "cliSha256": "b2af94cfdbef186269a2c15d79e291130dcd8fef39f8ceffade276f6620fe403",
+      "packageLockSha256": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445",
+      "stagedProductionDependencies": {
+        "node_modules/@clack/core": "1.4.3",
+        "node_modules/@clack/prompts": "1.7.0",
+        "node_modules/eslint-visitor-keys": "5.0.1",
+        "node_modules/fast-string-truncated-width": "3.0.3",
+        "node_modules/fast-string-width": "3.0.2",
+        "node_modules/fast-wrap-ansi": "0.2.2",
+        "node_modules/picocolors": "1.1.1",
+        "node_modules/sisteransi": "1.0.5",
+        "node_modules/toml-eslint-parser": "1.0.3",
+        "node_modules/ws": "8.21.3",
+        "node_modules/zod": "4.4.3"
+      },
+      "packCommand": [
+        "npm",
+        "pack",
+        "--pack-destination",
+        "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-restart-product-qa-mwdcfhyz/pre-fix-pr81",
+        "--json"
+      ],
+      "packCwd": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-restart-product-qa-mwdcfhyz/pre-fix-pr81/source",
+      "savedTarball": "/Users/dean/Sandbox/subswitch-kimi/.git/restart-product-qa-artifacts/pre-fix-pr81.tgz",
+      "distFileTreeSha256": "9e556864f1803d5fc76c10c2173aa5721f0b8088504b5edca7b40b47643dac41",
+      "stagedRuntimeDependenciesSha256": "58330113cdfe672866ea724e5049d062e7b52cbd216589739fa26e8086e3718d"
+    },
+    "candidate-pr85": {
+      "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+      "tarballSha256": "16a795ff3c9c45f6c1eeb1162a231bc7a034122c512bf4439e9f29ef7350f873",
+      "npmIntegrity": "sha512-BwoZZMvP4MsJu8AbbVL76W6OHzv7FnyBJPzvdX5JwrY0rGupoOsrRPLJHHJFfxE5ofyY3bjfoEJqScz539p2ow==",
+      "cliSha256": "b2af94cfdbef186269a2c15d79e291130dcd8fef39f8ceffade276f6620fe403",
+      "packageLockSha256": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445",
+      "stagedProductionDependencies": {
+        "node_modules/@clack/core": "1.4.3",
+        "node_modules/@clack/prompts": "1.7.0",
+        "node_modules/eslint-visitor-keys": "5.0.1",
+        "node_modules/fast-string-truncated-width": "3.0.3",
+        "node_modules/fast-string-width": "3.0.2",
+        "node_modules/fast-wrap-ansi": "0.2.2",
+        "node_modules/picocolors": "1.1.1",
+        "node_modules/sisteransi": "1.0.5",
+        "node_modules/toml-eslint-parser": "1.0.3",
+        "node_modules/ws": "8.21.3",
+        "node_modules/zod": "4.4.3"
+      },
+      "packCommand": [
+        "npm",
+        "pack",
+        "--pack-destination",
+        "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-restart-product-qa-mwdcfhyz/candidate-pr85",
+        "--json"
+      ],
+      "packCwd": "/Users/dean/Sandbox/subswitch-kimi",
+      "savedTarball": "/Users/dean/Sandbox/subswitch-kimi/.git/restart-product-qa-artifacts/candidate-pr85.tgz",
+      "distFileTreeSha256": "f126083fa39c84f7edc0328d7fea28e6aa31943a6fb01b6b208531f5705ebdca",
+      "stagedRuntimeDependenciesSha256": "58330113cdfe672866ea724e5049d062e7b52cbd216589739fa26e8086e3718d"
+    }
+  },
+  "candidateSourceSha256": {
+    "package.json": "90b619e227c67a61de01f7e312027c0b1b610388afb12d93e8424e0100dc31b4",
+    "package-lock.json": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445",
+    "src/cli.ts": "fb115b59ef7ae400450ae6be307ee72e8f2eb368c8e734b2d08d15ccfc7d0797",
+    "src/server.ts": "00bc7ad173abbb6b59eb525ce10395bc9edc55d40419180c0cc94041c791110c",
+    "src/codex-response.ts": "b8cb232ac1d15d046559c7df10bafe0b32c14e3a24424f604e2fc9e31ae2c04a",
+    "src/routing/http-ingress.ts": "9411a089f6b2486ffb12982471cf848a575120dbf9afec064f1f8a1bda161a16",
+    "src/routing/request-adapter.ts": "4fb8297c883f8b538f06574e00eeb17d3f9664937863b5f430e00b7f7751a0f6",
+    "src/routing/signed-thinking.ts": "df0661d6669d8c4cc2c11488c242f253bc29b976c9d59d044700d917f2ea3268",
+    "src/routing/replay-cache.ts": "545b91913daa38a51655f371a61375604679710033052ec597d7faa75155ebe1",
+    "src/routing/routed-attempt.ts": "f6a32f887c323366eb043c80b25cb977d22c6fdd82d8d1404e45178efe5ee56d",
+    "src/routing/shared-routing.ts": "aad684e2b523d0fea7464f14cd73af28670e5e09a924535843bb4c14a520836f",
+    "src/routing/action-control.ts": "60e260ef1b29376133c1af88a6cd301b98d0dc278657119e509fd45e84e47a0a"
+  },
+  "evidenceFiles": {
+    ".git/restart-product-qa-prepare.py": "93e7f49fac70704885099cc64f17222c42ea945e37ae3ee9c26b651887676d87",
+    ".git/restart-product-qa.mjs": "6e4db106c8e71c27aa975d2bf507bf51f97e3dda60b1bc1bebf11bcf186c199e",
+    ".git/restart-product-qa-artifacts/matrix.json": "d3ddf0e4657805deae5604ba7820d2c54496f39e7daceb70c65bbd3b4c328ee8",
+    ".git/restart-product-qa-artifacts/reservations.json": "af58ca7f2e4333e4d1b8e9ff36190729f5efa7afc3ae985a56179da2c0b440e4",
+    ".git/restart-product-qa-artifacts/matrix.log": "12bb98709c4b058835541e770d2892ad0c6e786ecd6de1719db9f4f6455619c6",
+    ".git/restart-product-qa-artifacts/reservations.log": "7437c9d1b69484995fe7df8c7b573910d64c2334596d9503379f00217d959119"
+  },
+  "cleanup": {
+    "all17FinalInvocationChildrenExitedCleanly": true,
+    "allFinalInvocationChildrenClosed": true,
+    "allFixtureListenersClosed": true,
+    "fixtureActionControlFilesRemoved": true,
+    "perCaseClientHomesHistoryAndNonceFilesRemoved": true,
+    "temporaryArtifactRoot": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-restart-product-qa-mwdcfhyz",
+    "temporaryArtifactRootRemoved": true,
+    "immutableTarballsAndReportsRetainedPrivately": "/Users/dean/Sandbox/subswitch-kimi/.git/restart-product-qa-artifacts"
+  },
+  "boundaries": {
+    "actualNativeClients": 0,
+    "realProviderInferenceCalls": 0,
+    "nativeCredentialStoresRead": false,
+    "sharedProxyChanged": false,
+    "otherCheckoutWrites": false,
+    "OHFControl": false,
+    "goalsModelsPermissionsChanged": false,
+    "deniedActionsRerouted": false,
+    "productSourceChanged": false,
+    "commitsPushesMergesReleases": false
+  },
+  "nextStep": "Coordinator routes RESTART-QA-01 to the implementation owner, then requests fix-diff review and the nonstream signed-history regression at the new exact head. Retain passing scoped streaming/process and ordinary passthrough evidence; do not declare the original native incident or all explicit Messages modes qualified."
+}

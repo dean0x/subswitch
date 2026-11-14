@@ -1,0 +1,394 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-10-19T21:01:51.121086+00:00",
+  "task": "Concrete bounded Kimi phaseA runner and offline qualification only",
+  "assignment": "/Users/dean/Sandbox/.codex-orchestrator/kimi-phase-a-runner-assignment.json",
+  "assignmentSha256": "97996b0f31923aa37c0a3ed5e7b5f60c402233dc5d4f07fea8686a5f1e979963",
+  "thread": "01a13162-e803-7230-904c-b91d38edc9c7",
+  "checkout": "/Users/dean/Sandbox/subswitch-kimi",
+  "status": "offline_qualified_runner_ready_for_independent_review; live_not_authorized_or_executed",
+  "head": "6528f3f602307cfdfba277b2047a18825c1407fb",
+  "sourceHash": "f1589b721f6ae6dbe1550497ebfff6c1366057ef7c910a42ecd4aa6790eed03d",
+  "runnerHash": "b3957b5bc0cf471ce44491b1b7767443454b00e0fbb494a4187b2b2c23a16c3e",
+  "ownBranchPreserved": "codex/native-messages-aggregation",
+  "trackedSourceDependenciesAndIndexUnchanged": true,
+  "entrypoint": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/runner.mjs",
+  "readme": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/README.md",
+  "core": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/core.mjs",
+  "tests": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/offline.test.mjs",
+  "commands": [
+    {
+      "command": "node --import tsx .git/kimi-phase-a/runner.mjs --offline",
+      "exitCode": 0,
+      "result": {
+        "passed": true,
+        "offline": true,
+        "cases": [
+          {
+            "protocol": "messages",
+            "text": true,
+            "fallbackTool": true,
+            "ownedReads": 1,
+            "recoveredFakePrimary": true,
+            "parkedContinuation": true,
+            "nonceEchoed": true
+          },
+          {
+            "protocol": "responses",
+            "text": true,
+            "fallbackTool": true,
+            "ownedReads": 1,
+            "recoveredFakePrimary": true,
+            "parkedContinuation": true,
+            "nonceEchoed": true
+          }
+        ],
+        "counts": {
+          "messages": 3,
+          "responses": 3
+        },
+        "attempts": [
+          {
+            "protocol": "messages",
+            "requestedTokens": 256
+          },
+          {
+            "protocol": "messages",
+            "requestedTokens": 256
+          },
+          {
+            "protocol": "messages",
+            "requestedTokens": 256
+          },
+          {
+            "protocol": "responses",
+            "requestedTokens": 256
+          },
+          {
+            "protocol": "responses",
+            "requestedTokens": 256
+          },
+          {
+            "protocol": "responses",
+            "requestedTokens": 256
+          }
+        ],
+        "requestedOutputTokens": 1536,
+        "ports": {
+          "relay": 63821,
+          "primary": 63820
+        },
+        "syntheticPrimaryRecovery": true,
+        "nativeClients": 0,
+        "cleanup": {
+          "actionsClosed": true,
+          "listenersClosed": true,
+          "directoryRemoved": true
+        },
+        "head": "6528f3f602307cfdfba277b2047a18825c1407fb",
+        "sourceHash": "f1589b721f6ae6dbe1550497ebfff6c1366057ef7c910a42ecd4aa6790eed03d",
+        "runnerHash": "b3957b5bc0cf471ce44491b1b7767443454b00e0fbb494a4187b2b2c23a16c3e",
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "outputOverflow": false,
+        "credentialReferenceName": null,
+        "childEnvironmentNames": [
+          "CLAUDE_CONFIG_DIR",
+          "CODEX_HOME",
+          "HOME",
+          "KIMI_CODE_HOME",
+          "PATH",
+          "PHASE_A_ROOT",
+          "SUBSWITCH_LIMIT_DIR",
+          "SUBSWITCH_LIMIT_RECORDING",
+          "TMPDIR",
+          "XDG_CACHE_HOME",
+          "XDG_CONFIG_HOME"
+        ],
+        "controllerCleanup": {
+          "root": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-phase-a-lpY4B2",
+          "directoryRemoved": true,
+          "childExited": true,
+          "workerPid": 99078
+        }
+      },
+      "log": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/offline-final.log"
+    },
+    {
+      "command": "/usr/bin/lockf -t 0 /Users/dean/Sandbox/.devflow/locks/heavy-tests.lock node --import tsx .git/kimi-phase-a/runner.mjs --test",
+      "exitCode": 0,
+      "tests": 18,
+      "pass": 18,
+      "fail": 0,
+      "result": {
+        "head": "6528f3f602307cfdfba277b2047a18825c1407fb",
+        "sourceHash": "f1589b721f6ae6dbe1550497ebfff6c1366057ef7c910a42ecd4aa6790eed03d",
+        "runnerHash": "b3957b5bc0cf471ce44491b1b7767443454b00e0fbb494a4187b2b2c23a16c3e",
+        "mode": "offline-tests",
+        "exit": {
+          "code": 0,
+          "signal": null
+        },
+        "outputOverflow": false,
+        "childEnvironmentNames": [
+          "CLAUDE_CONFIG_DIR",
+          "CODEX_HOME",
+          "HOME",
+          "KIMI_CODE_HOME",
+          "PATH",
+          "PHASE_A_ROOT",
+          "SUBSWITCH_LIMIT_DIR",
+          "SUBSWITCH_LIMIT_RECORDING",
+          "TMPDIR",
+          "XDG_CACHE_HOME",
+          "XDG_CONFIG_HOME"
+        ],
+        "controllerCleanup": {
+          "root": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-phase-a-8mtLoT",
+          "directoryRemoved": true,
+          "childExited": true,
+          "workerPid": 99034
+        }
+      },
+      "log": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/offline-tests.log"
+    },
+    {
+      "command": "node --import tsx .git/kimi-phase-a/cap-mutation-test.mjs",
+      "exitCode": 1,
+      "expectedRed": true,
+      "log": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/cap-red.log",
+      "meaning": "Only cap-refusal line removed from a private copy; expected refusal assertion fails after1fabricated dispatch. No external transport exists in this control."
+    },
+    {
+      "command": "node --import tsx .git/kimi-phase-a/runner.mjs --live --approval .git/kimi-phase-a/live-approval.template.json --credential-env-name FABRICATED_REFUSAL_TEST_REFERENCE",
+      "exitCode": 1,
+      "expectedPreflightRefusal": true,
+      "log": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/cli-refusal.log",
+      "meaning": "Actual entrypoint refuses false authorization bits before key lookup, claim creation, worker/fixture creation or provider calls. No actual live attempt was made."
+    }
+  ],
+  "futureLiveCommand": "node --import tsx .git/kimi-phase-a/runner.mjs --live --approval .git/kimi-phase-a/live-approval.json --credential-env-name <APPROVED_ENVIRONMENT_VARIABLE_NAME>",
+  "authorization": {
+    "current": false,
+    "templatePath": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/live-approval.template.json",
+    "template": {
+      "phase": "A",
+      "head": "6528f3f602307cfdfba277b2047a18825c1407fb",
+      "sourceHash": "f1589b721f6ae6dbe1550497ebfff6c1366057ef7c910a42ecd4aa6790eed03d",
+      "runnerHash": "b3957b5bc0cf471ce44491b1b7767443454b00e0fbb494a4187b2b2c23a16c3e",
+      "product": "kimi-code",
+      "region": "global",
+      "model": "kimi-for-coding",
+      "effort": "high",
+      "credentialKind": "coding-plan-key",
+      "credentialEnvName": null,
+      "expiresAt": null,
+      "liveAuthorized": false,
+      "credentialBindingApproved": false,
+      "continuityPrerequisiteConfirmed": false
+    },
+    "requirements": [
+      "Independent runner review.",
+      "Coordinator confirms candidate6528/source composition and separate continuity prerequisite evidence.",
+      "Approved Kimi Code/global coding-plan key NAME only; root has requested it and it remains missing.",
+      "Fresh private approval matches phaseA/product/region/model/effort/key-kind/head/source/runner/name, expiresAt and all authorization/binding/continuity booleans."
+    ],
+    "keyLookupOrder": "Only after every declaration/hash/expiry prerequisite; offline and tests use fabricated maps and never look up real key variables. Live worker receives one approved key under fixed internal PHASE_A_KIMI_KEY, no parent env spread.",
+    "singleUse": "Atomic exclusive .consumed claim; concurrent second consume refuses. Parent PID, random claim, source/head/runner pin rechecked in worker. Failed runs do not silently reuse the same approval or reset allowance.",
+    "durableAttemptLedger": "Live-only owner-private live-ledger-<claim>.jsonl is created exclusively and records sanitized admission counters synchronously before every vendor transport; a controller/worker crash conservatively consumes the approval and leaves evidence. No live claim/ledger/result exists from this turn."
+  },
+  "productionReuse": {
+    "mode": "Actual pinned TypeScript source via installed tsx; no ignored dist build/load, npm install or artifact replacement.",
+    "sourcePin": "Exact Git HEAD plus clean src/package/lock diff, with SHA256 digest of all tracked src and manifest/lock bytes. Both controller and child verify before production import.",
+    "wiring": "Production loadConfig/buildDeps/createProxyServer. Default initially constructed SharedRouting/CodexGateway are closed and replaced with production SharedRouting using test-owned clock plus production CodexGateway wired to that same routing. Existing legacy components target only owned loopback/absent auth paths. Fake native-auth objects fail on unexpected use.",
+    "clock": "Only synthetic primary cooldown advances61000ms on test-owned clock; request/phase deadlines use independent real monotonic time and AbortSignals. No real provider quota/recovery claim.",
+    "ownedActionControl": "New loopback relay listens0; action HTTP endpoints use only that instance capability; no run-action discovery/control-file/shared proxy reads. Six actions across two protocols; complete/cancel cleanup checked."
+  },
+  "limits": {
+    "phase": "A only",
+    "maxAttempts": 6,
+    "maxAttemptsPerProtocol": 3,
+    "maxRequestedOutputTokens": 1536,
+    "maxOutputTokensPerAttempt": 256,
+    "requestDeadlineMs": 30000,
+    "phaseDeadlineMs": 180000,
+    "largerPlanCeilingNotReassigned": {
+      "allPhasesAttempts": 18,
+      "allPhasesTokens": 4608,
+      "totalSeconds": 420
+    },
+    "retries": 0,
+    "model": "kimi-for-coding",
+    "effort": "high",
+    "product": "kimi-code",
+    "region": "global",
+    "outboundUrls": [
+      "https://api.kimi.ai/coding/v1/messages",
+      "https://api.kimi.ai/coding/v1/responses"
+    ],
+    "noRewriting": "Missing/oversized caps refuse; incoming fixture requests explicitly provide256. Wrong endpoints, auth or model/effort refuse before dispatch; redirect:error plus explicit3xx refusal never follows redirects. Attempt/token accounting occurs before transport, including thrown network errors and rejected HTTP status."
+  },
+  "plannedOfflineCases": {
+    "messages": {
+      "protocol": "messages",
+      "text": true,
+      "fallbackTool": true,
+      "ownedReads": 1,
+      "recoveredFakePrimary": true,
+      "parkedContinuation": true,
+      "nonceEchoed": true
+    },
+    "responses": {
+      "protocol": "responses",
+      "text": true,
+      "fallbackTool": true,
+      "ownedReads": 1,
+      "recoveredFakePrimary": true,
+      "parkedContinuation": true,
+      "nonceEchoed": true
+    },
+    "exactUpstreamOrder": "For each protocol: Kimi text, fake primary quota, Kimi tool, fake recovered primary, parked Kimi tool-result continuation.",
+    "perProtocolRealOwnedReads": 1,
+    "nonceAndHistory": "Nonce generated in child-owned root; require returned tool exactly Read with owned path, read once, one result forwarded, exact output-text nonce echo and no duplicate tool. No nonce/prompt/history persisted.",
+    "upstreamCallsInFinalStandaloneRun": 10,
+    "fabricatedKimiAttemptsInFinalStandaloneRun": 6,
+    "actualVendorCalls": 0
+  },
+  "offlineControls": [
+    "Source-head drift refusal.",
+    "Authorization/hash/product/reference/missing-key boundaries with no real environment lookup; a getter proves no lookup before prerequisite rejection.",
+    "Concurrent single-use approval race allows exactly one claimant.",
+    "Wrong origin and auth paths, redirect mode, missing/oversized cap, wrong model/auth/effort all refuse before fake dispatch.",
+    "Rejected HTTP401 attempts still count; fourth of a protocol and seventh total refuse.",
+    "Admission event occurs before transport and survives a fabricated transport exception.",
+    "Redirect response refuses with exactly one fake request and no follow.",
+    "Phase deadline pre-dispatch refusal using injected monotonic time.",
+    "Real loopback delayed headers and stalled response body both abort at a tightened100ms test request deadline.",
+    "Full production HTTP planned flow passes for both originating protocols.",
+    "Injected failure while a tool action is still active cancels owned actions, closes listeners and removes fixture."
+  ],
+  "redGreen": {
+    "redMutationDiff": "--- core.mjs\n+++ cap-disabled-control.mjs\n@@ -75,7 +75,6 @@\n     if (body.previous_response_id !== undefined || JSON.stringify(body).includes('resp_subswitch_route_')) return this.refuse('continuation_handle');\n     if (!primary) {\n       const cap = body[protocol === 'messages' ? 'max_tokens' : 'max_output_tokens'];\n-      if (!Number.isInteger(cap) || cap < 1 || cap > LIMITS.perCall) return this.refuse('output_cap');\n       if (!this.key) return this.refuse('credential_missing');\n       if (this.counts[protocol] >= LIMITS.perProtocol || this.attempts.length >= LIMITS.attempts || this.requestedTokens + cap > LIMITS.tokens) return this.refuse('attempt_or_token_budget');\n       this.counts[protocol]++; this.requestedTokens += cap;\n",
+    "redMutationSha256": "090dab0ad653286469aa9c44f79ea42e73595589f8d434c3a5b588a1a9f183a8",
+    "red": {
+      "exitCode": 1,
+      "fabricatedDispatches": 1,
+      "vendorCalls": 0
+    },
+    "green": "Original oversized-cap refusal control passes with0dispatches; all18controls pass.",
+    "transientRuns": "Earlier successful developmental logs first-offline.log, check-first.log are retained. Final authoritative hashes/results are offline-final.log/check-final.log/offline-tests.log and current result JSON. No unexpected failing runtime attempt is hidden."
+  },
+  "isolation": {
+    "nodeChildOnly": true,
+    "positiveEnvironmentNames": [
+      "CLAUDE_CONFIG_DIR",
+      "CODEX_HOME",
+      "HOME",
+      "KIMI_CODE_HOME",
+      "PATH",
+      "PHASE_A_ROOT",
+      "SUBSWITCH_LIMIT_DIR",
+      "SUBSWITCH_LIMIT_RECORDING",
+      "TMPDIR",
+      "XDG_CACHE_HOME",
+      "XDG_CONFIG_HOME"
+    ],
+    "state": "Fresh0700marked fixture home/XDG/cache/Codex/Claude/Kimi dirs; child TMPDIR stays under same root. No existing client/auth/history copied.",
+    "rootSafety": "Only generated prefix/owner-private marked directories accepted by worker before recursive cleanup.",
+    "processes": "Only dedicated Node worker process group is managed; no native client/control session. Captured own PID only, bounded TERM/KILL cleanup.",
+    "sensitiveOutput": "Production logger no-op; generic allowlisted failure codes. Only structural assertions/counters/ports/hash pins and optional env reference NAME persisted. Real provider bodies/headers/prompt/nonce and key values never included in reports.",
+    "cleanup": {
+      "actionsClosed": true,
+      "listenersClosed": true,
+      "directoryRemoved": true
+    },
+    "controllerCleanup": {
+      "root": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-phase-a-lpY4B2",
+      "directoryRemoved": true,
+      "childExited": true,
+      "workerPid": 99078
+    },
+    "testsControllerCleanup": {
+      "root": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-phase-a-8mtLoT",
+      "directoryRemoved": true,
+      "childExited": true,
+      "workerPid": 99034
+    },
+    "savedRootsConfirmedAbsentAfterCommands": true,
+    "noNativeStoresOrSecretValuesReadThisTurn": true
+  },
+  "runtime": {
+    "node": "v22.22.3",
+    "installedPackagesVerifiedAgainstPinnedLock": {
+      "node_modules/@clack/core": "1.4.3",
+      "node_modules/@clack/prompts": "1.7.0",
+      "node_modules/@esbuild/darwin-arm64": "0.28.1",
+      "node_modules/@types/node": "22.20.1",
+      "node_modules/@types/ws": "8.18.1",
+      "node_modules/@typescript/typescript-darwin-arm64": "7.0.2",
+      "node_modules/esbuild": "0.28.1",
+      "node_modules/eslint-visitor-keys": "5.0.1",
+      "node_modules/fast-string-truncated-width": "3.0.3",
+      "node_modules/fast-string-width": "3.0.2",
+      "node_modules/fast-wrap-ansi": "0.2.2",
+      "node_modules/fsevents": "2.3.3",
+      "node_modules/picocolors": "1.1.1",
+      "node_modules/sisteransi": "1.0.5",
+      "node_modules/toml-eslint-parser": "1.0.3",
+      "node_modules/tsx": "4.23.1",
+      "node_modules/typescript": "7.0.2",
+      "node_modules/undici-types": "6.21.0",
+      "node_modules/ws": "8.21.3",
+      "node_modules/zod": "4.4.3"
+    },
+    "nodeModulesFileCount": 1511,
+    "nodeModulesTreeSha256": "6f8a6f5244870a4760e0c4c3dd2ad946d5705fedbc5c3e2a05d461731d7f6687",
+    "limitation": "Runtime is pinned source and current lockfile-verified installed dependencies, not a newly built npm tarball or a clean registry install."
+  },
+  "artifactHashes": {
+    "README.md": "ff3fccb6f270b9c913b186e7e96cc3a7267a14081e13e3530b1769f86b391f53",
+    "cap-disabled-control.mjs": "090dab0ad653286469aa9c44f79ea42e73595589f8d434c3a5b588a1a9f183a8",
+    "cap-mutation-test.mjs": "9cf6891abfd8053370d429434d2fc58a32a0b2fdae1f0e21edd7ac16e824c23d",
+    "cap-red.log": "7870c5282b2f1b039d766b61491fa4a5372521a1ac5b2c5ba2d96129d280f573",
+    "check-final.log": "a99800a575b22df060c1607d756eb0452e34f52ec6def44c10322c73d830793c",
+    "check-first.log": "8c04174a642dad6aeb8c1ed84ae096f665fd28de65d4ea17d3a769a9aef72844",
+    "cli-refusal.log": "80d83e09037e937154229841b1b6299a698f1024db135585c13722466ff48d86",
+    "core.mjs": "07b27f78cef02cdc560151aab0a235d078616e088151cfcf6e95f5f4efd2e1e9",
+    "first-offline.log": "b5e8eed04ae4644fba7543be7223abe9d7e05e7fa7051979f9cacf1cbc31b523",
+    "live-approval.template.json": "19f95f484f601faa54bb57fbb0cd9c0e117c6449c4a2002f4627ccc306dce332",
+    "offline-final.log": "023b86835caf14ce1a8929296d45b8f3b398693c70b17fe82af459219a7cd25c",
+    "offline-result.json": "0f1b96bad6fb539f7431b6a68a15b53b1bfbbbecb0f1abc312fbda4756af1b65",
+    "offline-tests-result.json": "02fa4b184d76796da5678527e0df889a939e278cfaa9972d596f43a3bd92ac33",
+    "offline-tests.log": "e0bb7db8c2dc31133063cb6bd17ad404a16b7114f531f0d90d1e863aad58ebea",
+    "offline.test.mjs": "d4561c03ee96fd4e6bb657a27a647d4e7ea48cd664cbda344d7d3ae0449e6de9",
+    "runner.mjs": "c32b00cb263ab8e32744fe658e7c2343b4f4a0a88d2da536006eb0613915d0f6"
+  },
+  "review": {
+    "selfReview": "Full private runner/controller/guards/tests/cleanup reviewed; no tracked source edits.",
+    "independentRunnerReview": "pending root routing; no self-approval",
+    "fullProductSuiteRepeated": false
+  },
+  "remainingGates": [
+    "Independent runner review for exact runner hash.",
+    "Approved key environment NAME and coding-plan/global binding; no actual key value requested/read.",
+    "Coordinator-confirmed exact live candidate and continuity preconditions, plus explicit live execution authorization.",
+    "Native phaseB/C output-cap/disposable-client isolation and HTTP instruction-history gate remain separate.",
+    "No live/native acceptance, real quota/recovery, new product/model/region or restart acceptance inferred from offline results."
+  ],
+  "boundaries": {
+    "productionDependencyBranchEdits": false,
+    "packageBuildOrInstall": false,
+    "actualVendorAuthUsageMetadataRequests": 0,
+    "actualVendorInferenceCalls": 0,
+    "actualNativeClientLaunches": 0,
+    "savedCredentialHistoryOrHostSecretValuesRead": false,
+    "sharedProxyClaudeOHFControls": false,
+    "sessionPermissionModelGoalChanges": false,
+    "mergeReleasePush": false,
+    "deniedReroute": false,
+    "privatePriorArtifactsPreserved": true
+  },
+  "nextAction": "Stop finite offline implementation turn. Root independently reviews exact runnable deliverable/hash and gathers the missing key NAME; no live execution is authorized by this report."
+}

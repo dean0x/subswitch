@@ -1,0 +1,1533 @@
+{
+  "allOriginalLocalHeadsCovered": "Fresh remote tips, checkpoint ancestry, or two dedicated exact-tip archive refs.",
+  "exactDuplicateSourceFiles": [
+    {
+      "bytes": 1063,
+      "clone": "subswitch-continuity",
+      "gitBlob": "c26b351e1bd7d2ab868d60e8bb4eedb80c1a9c7a",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/LICENSE",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "b1303ae3764158052861e706a46ee23cacaeca2d3cc27f6f2420616896fec875"
+    },
+    {
+      "bytes": 45196,
+      "clone": "subswitch-continuity",
+      "gitBlob": "373db8da9fdf3824f58e1c68140c72c00e41c073",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/README.md",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "7df27e3e4251e206f79efb0ad3ff67e33df6d20c2fd891a95160683bc4e2b7ca"
+    },
+    {
+      "bytes": 33809,
+      "clone": "subswitch-continuity",
+      "gitBlob": "2733fd1655e813d3dbc242ac1e71b52885dba368",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/package-lock.json",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445"
+    },
+    {
+      "bytes": 2008,
+      "clone": "subswitch-continuity",
+      "gitBlob": "5fb8e0426f3797cdee52b975d03c481b9c1fe21b",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/package.json",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "f09b13f1c042ac7f105d85503268d34870e0c93795050b638b03e59b8790297f"
+    },
+    {
+      "bytes": 10344,
+      "clone": "subswitch-continuity",
+      "gitBlob": "57c886a9f1f953a9e402fb9548ae43ac21770f84",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/agent-scan.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "9883c6a0412d45af8d3c40d5e94497b37ba03fa05a3f756c378444909335b491"
+    },
+    {
+      "bytes": 4299,
+      "clone": "subswitch-continuity",
+      "gitBlob": "07da5705630d3457317b202765a4e3ef1039acd5",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/anthropic-parse.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "502307a08714e73aeaa2553caabee1a54b673144b41d2eced70cc8be654d56c2"
+    },
+    {
+      "bytes": 963,
+      "clone": "subswitch-continuity",
+      "gitBlob": "f0e428399c2c089438612794568bdecf3c0c6b30",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/anthropic-passthrough.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "ca1024e9bb3bb088e40f594cad96cb8d0b93b7586c8921bfcb674f48dabf44a0"
+    },
+    {
+      "bytes": 1717,
+      "clone": "subswitch-continuity",
+      "gitBlob": "1c1f96e4dcfd98863fc97a044195748e93b5574a",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/anthropic-wire-types.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d459e1dd4f8c2e5317613dfd08d6a4398fd504a38a6f299e908345a5f447e049"
+    },
+    {
+      "bytes": 20015,
+      "clone": "subswitch-continuity",
+      "gitBlob": "c7bc0e1d2fbc1426619a9ca784922aadbda0a756",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/claude-adapter.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "7c0ffb644c6e3b69207c78fd39bff4744cb4e3a13234f7e1f852bece727f24fd"
+    },
+    {
+      "bytes": 12525,
+      "clone": "subswitch-continuity",
+      "gitBlob": "afaa7b3fd459ce18d390bb072b3fa5ae78afceb3",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/claude-auth.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "0a61cb2e882990ed292b6d80fc90eb927c246348b5c652fdcfe7b0d4ffd93bb4"
+    },
+    {
+      "bytes": 2189,
+      "clone": "subswitch-continuity",
+      "gitBlob": "ac6e097b2c1f7018191bdba63465d3a575f14b26",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/claude-cache.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "3672488ee5fb2f40794a318f2f3b0b25ec3cec29b363c3b3d870cd646f6c234c"
+    },
+    {
+      "bytes": 259,
+      "clone": "subswitch-continuity",
+      "gitBlob": "c60a82fc3939c9de333d18dd718f93dd83cbde23",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/claude-contract.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "3c37a632c11f547f4a4e011944f4c936ecd0277f349fcfe568e65145cf6fff0f"
+    },
+    {
+      "bytes": 4639,
+      "clone": "subswitch-continuity",
+      "gitBlob": "a1d5a54ad7133ed2cc40a7e0ca96e09669d97d18",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/claude-errors.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "033248bcbf673f1b3779091eb6f67474ec1225d535077dc43217bc34e7948f41"
+    },
+    {
+      "bytes": 7251,
+      "clone": "subswitch-continuity",
+      "gitBlob": "f92d5b6fa9780bcbe146b0f95bb47e71e760cbfa",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/claude-handler.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "ec50bea5cd2289b93fdce829d2a036c17f0de2c4831fa23fb44e469b25e6e610"
+    },
+    {
+      "bytes": 11105,
+      "clone": "subswitch-continuity",
+      "gitBlob": "95476bb44aaf8161ba5bc7f846a61c9d0bf536a2",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/claude-models.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "b5ca7090230ae119fec6b6c93f36a061b3e6024d9896eb67518066f539882c8b"
+    },
+    {
+      "bytes": 5228,
+      "clone": "subswitch-continuity",
+      "gitBlob": "302ad58ba9f628af21644aba224abed733e9d058",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/claude-state.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "12c5fab5ed15add31a7e2fe147310cd5e9d32ed4fbd28a687a3cf4cfc01a81f9"
+    },
+    {
+      "bytes": 10086,
+      "clone": "subswitch-continuity",
+      "gitBlob": "bb422e37c6ea878bb7aa5d8c0f10517b9a3533d3",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/claude-stream.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "19a40408a261096895712a9b84ecd502c3c2d95063f00a41fe9f9ade828f9d86"
+    },
+    {
+      "bytes": 21631,
+      "clone": "subswitch-continuity",
+      "gitBlob": "5815f3279bbd56003484f3a5c60e82cdad95ecb2",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/cli.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "6d473ddd9d0233d4f2a829e3b15b6ce50330dc0cb9fcdb060e9117a4e4298595"
+    },
+    {
+      "bytes": 595,
+      "clone": "subswitch-continuity",
+      "gitBlob": "01418e2b09f112feaf6b10ef1b21ab065bb510c2",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/clients.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "2e24bbcf89b7c70f3553196d80eb46a3eddb6984312ff6ccfe2fa8ddb586b15f"
+    },
+    {
+      "bytes": 21516,
+      "clone": "subswitch-continuity",
+      "gitBlob": "a36a045f0a8eaa4dbb65e64cbb5221bc58b7bb17",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-auth.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "ad353544746ec676aa5e33638d93de98d1fda502b26beab51d41f95db93cd0f8"
+    },
+    {
+      "bytes": 711,
+      "clone": "subswitch-continuity",
+      "gitBlob": "e0b7d30425e6352e61759917ff9226e4090e7a9f",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-body.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "df3ce4d5637f1c0c177dc6093334f1903af508efb1555f421583b8555a87b095"
+    },
+    {
+      "bytes": 7617,
+      "clone": "subswitch-continuity",
+      "gitBlob": "f71c26b80527ba9a04cd4b2408180b2175483e76",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-doctor.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d8c0c29d30e46a4443d1c4b2a78216d3820b65759eb7fb274e28d95b99d428ce"
+    },
+    {
+      "bytes": 15619,
+      "clone": "subswitch-continuity",
+      "gitBlob": "b36c03855ce27aec80210aceecd339d8b0e05f2f",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-gateway.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "252701e5fb2037f746bafc28bb8144a619293a81695dd855a056acd7b20b38f1"
+    },
+    {
+      "bytes": 21795,
+      "clone": "subswitch-continuity",
+      "gitBlob": "46c4edf68d92b3bb4da45fa137291c1e4b8cb8a0",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-handler.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "4ba104a8aed6c0530b94dafce0cbcc15027dbaaa9401bea84c4d1ef4c4dcb53d"
+    },
+    {
+      "bytes": 1117,
+      "clone": "subswitch-continuity",
+      "gitBlob": "0ded81b162de944bd4c95b6bea62534641713142",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-health.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d5ab6629f952eb954d30b1f9b9bdad89eb4555a0f129fc835a15196d30357dbd"
+    },
+    {
+      "bytes": 1034,
+      "clone": "subswitch-continuity",
+      "gitBlob": "36f013c455b0d62f6840911d3d439baa53ec514b",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-ingress.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "2b8d59206619c3203f3cc947e52e5a2a7b2fad596f4cae1b8b0325ce18a263d0"
+    },
+    {
+      "bytes": 10761,
+      "clone": "subswitch-continuity",
+      "gitBlob": "d9271ca44d8a817732fc89fb465946d6c2d8665c",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-init.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "744049ab2900baa8bb4774ee9dfb9782944e9bb8c7a009692e13e2b9395c846a"
+    },
+    {
+      "bytes": 1673,
+      "clone": "subswitch-continuity",
+      "gitBlob": "7f04855ff55e133de893ba20f82ed69e690a9650",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-native-auth.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "109683d752b053061fbe444983beeeb66a0f8d5b166d3d1484c565498caeedb5"
+    },
+    {
+      "bytes": 10570,
+      "clone": "subswitch-continuity",
+      "gitBlob": "cafe3e600bd9f5855f1431dc568a1106426d3981",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-request.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "97058c5dbb54f0ce72f37d41e43c038cb9b3cae6d744f975cd08a6dbf560e855"
+    },
+    {
+      "bytes": 32207,
+      "clone": "subswitch-continuity",
+      "gitBlob": "2346552a1b9f0287792bdd1210873bfeb3a7c0e0",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-response.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "b5083793ebca2e122584e744f4ad0e3abd11957a37f8a05ff97e44823a353fee"
+    },
+    {
+      "bytes": 2361,
+      "clone": "subswitch-continuity",
+      "gitBlob": "a999f36800521ed87f0582e24722d2315e0551ee",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-route.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "8e60b53f88da54579f1ffea6b746d72930e08642b16e9e9398e23ccb8473de14"
+    },
+    {
+      "bytes": 6800,
+      "clone": "subswitch-continuity",
+      "gitBlob": "f3649b817dadf828650dbdf0f1cd55c399bec5b1",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-upstream.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "e476e5b8c5fe8856a16575eb6a14016a68af6875adacba42bff11890e2430493"
+    },
+    {
+      "bytes": 11717,
+      "clone": "subswitch-continuity",
+      "gitBlob": "60175a1b6da42ff36c6b75cd2f812cdf33dc6df5",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/codex-ws.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "0a3ed80aa28462c51d542597d3c59768574b5241e7dfc2731380a8d6067b6828"
+    },
+    {
+      "bytes": 5437,
+      "clone": "subswitch-continuity",
+      "gitBlob": "9e6ca9d8a55c3ab92eda41f2f725ea74b0b46b41",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/collaboration-compat.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d403ebec56b2c2fc175b41ebabf1d4a047a954e03fc0bd806896720a93fe9eb1"
+    },
+    {
+      "bytes": 44228,
+      "clone": "subswitch-continuity",
+      "gitBlob": "caee397c07ee2b7c74bd854a96c8bae15243d574",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/config.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "8efe01c15cf6ecb9605c963fda60eaa085a12e4b9f2fbcf0e70025b1c54ccee2"
+    },
+    {
+      "bytes": 1045,
+      "clone": "subswitch-continuity",
+      "gitBlob": "6926a5c61f0b92b3a067d1a9002802a7e02252fa",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/content-encoding.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "0c0722681631ddb4eb3525f8e0c7c9ad891587175c41f7bb19a79500390220aa"
+    },
+    {
+      "bytes": 2852,
+      "clone": "subswitch-continuity",
+      "gitBlob": "3156dc68c507ce8507dc0d919aff737158e2c580",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/conversation-key.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "b748638d9bdfc524ef2db1fd429736e27c58ddcd0fbd231749542fe871f0d805"
+    },
+    {
+      "bytes": 20297,
+      "clone": "subswitch-continuity",
+      "gitBlob": "5d7cc78b50bc63f34033e4c3124c36b273535087",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/doctor.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "89e47c6d9d6bdece86458e78ba738c1237c54718d28971b97c183d1cb4b82723"
+    },
+    {
+      "bytes": 7948,
+      "clone": "subswitch-continuity",
+      "gitBlob": "9c2a26df52c86b65c5ec451ddf9671d2732c2374",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/errors.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "749ff3f71403228585543f2909608fcd138584da130f631048ec1831f4af2220"
+    },
+    {
+      "bytes": 21166,
+      "clone": "subswitch-continuity",
+      "gitBlob": "87437bd932af9735e6f7f76a35c2614b4f485984",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/inbound-policy.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "51d378296b4c1943d571a607215062fa5bd09719fcbdd9355b1fee14705bf694"
+    },
+    {
+      "bytes": 25577,
+      "clone": "subswitch-continuity",
+      "gitBlob": "ad09e792ff668279a8dad1f824a026a5897dce0c",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/init.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "683da874d934271a2966577d6cabfe9fa2763a47048c57a530c358ecaccae692"
+    },
+    {
+      "bytes": 6567,
+      "clone": "subswitch-continuity",
+      "gitBlob": "10158ecaf46a7b936270b03b579bb088c84ea5a1",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/logger.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "31640ea2d30612975eb6f36485a03fe0c70d23478c9468c6958ec50a5bcc6836"
+    },
+    {
+      "bytes": 42848,
+      "clone": "subswitch-continuity",
+      "gitBlob": "ecc9f590616508a39d6905e2064aa4cb69f86398",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/models.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "24e01a803d24870d54726fa473437681363e2042bea9f4260b9e43a52170c39a"
+    },
+    {
+      "bytes": 7464,
+      "clone": "subswitch-continuity",
+      "gitBlob": "7612f01f8449ea0b86c8c1b87d9b0c7549a966ce",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/openai-passthrough.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d24649635075055638733e4631e044e35c11229a8c2c7d67da8ba3d723f4b188"
+    },
+    {
+      "bytes": 585,
+      "clone": "subswitch-continuity",
+      "gitBlob": "16951cb8f822125312acca4bf6b95482998a8e5c",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/plain-object.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "fec96b19cf86e4dce3c5a9bd6befa5edd50e6068523c911b8bdee6b9e984d8ad"
+    },
+    {
+      "bytes": 4262,
+      "clone": "subswitch-continuity",
+      "gitBlob": "37c3af7aed0d93ec3313f553ab557ddb5a0dc602",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/provider-auth.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "01893bc997854dbdec7faebb83cf62777b403c99403e4ae9c4db91b56be12e4c"
+    },
+    {
+      "bytes": 8712,
+      "clone": "subswitch-continuity",
+      "gitBlob": "610a62ba98265fe2bb07006abd8547873c771aef",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/provider-events.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "40b0a742ec4d28a31ca4e135293f5ba28628f5f950cb651e8291fab1cd49696d"
+    },
+    {
+      "bytes": 971,
+      "clone": "subswitch-continuity",
+      "gitBlob": "baf0448f3386872bf13c0edf37276a90db6f098a",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/provider-handler.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "0dde7b22b559a2a268fcc53b208d3f2be3fff312fa97f93227aadc33424197fc"
+    },
+    {
+      "bytes": 8697,
+      "clone": "subswitch-continuity",
+      "gitBlob": "54865fbed7e104f6a75fef80e2e0cf2ab02ae07d",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/provider-transport.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "ae1e226a428a5f4205a22f1eef81d2cb6828626c2e6a14ba4b8c589822288e89"
+    },
+    {
+      "bytes": 17801,
+      "clone": "subswitch-continuity",
+      "gitBlob": "89fbb7eb7f2b805a1e0e5e6fd9e09e2446262432",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/raw-http-passthrough.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "967b9deff65aa96818d87d4fa0b6817f4b2dbffd8e96beed3d140c3165688b8f"
+    },
+    {
+      "bytes": 2933,
+      "clone": "subswitch-continuity",
+      "gitBlob": "2dea1da414926df570214d630302d3cc33ec4f2f",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/reasoning-cache.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "fb462d49e234883277528ef664b616121c60d065b7b8834fabd8c0607487036e"
+    },
+    {
+      "bytes": 318,
+      "clone": "subswitch-continuity",
+      "gitBlob": "5566c5f87ab007a2c042c9ee248367ddabc000f3",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/result.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "77546be88da59d1924e0183c7ea4be49cf543ff571816d2a79b9f25350ab0a3f"
+    },
+    {
+      "bytes": 3403,
+      "clone": "subswitch-continuity",
+      "gitBlob": "bbfc65d763110e4dfef8dfa3d68d8ae8c796a1c1",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/router.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "dfa15abe9d205d5b088b0bbd5b3077fc4dec14f49de928ca26ddb509803286c6"
+    },
+    {
+      "bytes": 32926,
+      "clone": "subswitch-continuity",
+      "gitBlob": "8b389aaa372844b234a78cf69b46bb49f26e800c",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/server.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "15cd7792ba64185df831f65ddca1c236ba0bff7630006df8fd568e78512790d3"
+    },
+    {
+      "bytes": 817,
+      "clone": "subswitch-continuity",
+      "gitBlob": "8c0e92a0c16e7359247b171833b818af1bb7d5de",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/tcp-connect.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "c5a0b351e0e76ecc1e73aea8eb19164b2bc880f40874525768d6b16f405d8719"
+    },
+    {
+      "bytes": 717,
+      "clone": "subswitch-continuity",
+      "gitBlob": "48e0fa811138d68873f0a66d3dbdfe3a6b54cff6",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/tty.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d226e1b2603c807c47958a848d60d7c13ffc56cd1358f7abb56c108bb3e61cd0"
+    },
+    {
+      "bytes": 1279,
+      "clone": "subswitch-continuity",
+      "gitBlob": "7fe61aa32895fb3bcd7dc78491d2fc272d40b970",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/upstream-policy.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "15060f2d0c5625289b2ef17146042089ff6fe765baf2e701bc58e4f2568f0d0b"
+    },
+    {
+      "bytes": 186,
+      "clone": "subswitch-continuity",
+      "gitBlob": "0ebe34391c810851ca7a5ccab096f985619f60af",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/version.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "113556df63c31a8a1fee4b55dd4775a444a87f56a97954dcf5bfef68d97480f5"
+    },
+    {
+      "bytes": 1233,
+      "clone": "subswitch-continuity",
+      "gitBlob": "fc5d08ed180e7b75c746bf118af6640b8e39f084",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/websocket-budget.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "2c91fc8e43952bf0d5fd0e0af03681334c2008cfd26607aae3890bcff94eac21"
+    },
+    {
+      "bytes": 3094,
+      "clone": "subswitch-continuity",
+      "gitBlob": "75a782aa6b7d96f69fe3750ead2c05c6718c7f42",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/src/wire-types.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "8857b52d31dad0d5281858c1cd93af5a52b1e55364ed10687820280221abcfec"
+    },
+    {
+      "bytes": 1538,
+      "clone": "subswitch-continuity",
+      "gitBlob": "739d32486163e0ba973cbb9178ff06dd6a9b6e5a",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/baseline/source/subswitch.config.example.json",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "14fc72910f014819334aed3fe5450121fb5541b7ffe30b33a184fa7aaaefb884"
+    },
+    {
+      "bytes": 1063,
+      "clone": "subswitch-continuity",
+      "gitBlob": "c26b351e1bd7d2ab868d60e8bb4eedb80c1a9c7a",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/LICENSE",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "b1303ae3764158052861e706a46ee23cacaeca2d3cc27f6f2420616896fec875"
+    },
+    {
+      "bytes": 45466,
+      "clone": "subswitch-continuity",
+      "gitBlob": "2d17d978535ec12129fa898a1d6bca9ee55b7bb2",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/README.md",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "ec22f5b40628d745ec13f84ea84272e149cde72680c375cedb7e1f75b89986f1"
+    },
+    {
+      "bytes": 33809,
+      "clone": "subswitch-continuity",
+      "gitBlob": "2733fd1655e813d3dbc242ac1e71b52885dba368",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/package-lock.json",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445"
+    },
+    {
+      "bytes": 2008,
+      "clone": "subswitch-continuity",
+      "gitBlob": "5fb8e0426f3797cdee52b975d03c481b9c1fe21b",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/package.json",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "f09b13f1c042ac7f105d85503268d34870e0c93795050b638b03e59b8790297f"
+    },
+    {
+      "bytes": 10344,
+      "clone": "subswitch-continuity",
+      "gitBlob": "57c886a9f1f953a9e402fb9548ae43ac21770f84",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/agent-scan.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "9883c6a0412d45af8d3c40d5e94497b37ba03fa05a3f756c378444909335b491"
+    },
+    {
+      "bytes": 4299,
+      "clone": "subswitch-continuity",
+      "gitBlob": "07da5705630d3457317b202765a4e3ef1039acd5",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/anthropic-parse.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "502307a08714e73aeaa2553caabee1a54b673144b41d2eced70cc8be654d56c2"
+    },
+    {
+      "bytes": 963,
+      "clone": "subswitch-continuity",
+      "gitBlob": "f0e428399c2c089438612794568bdecf3c0c6b30",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/anthropic-passthrough.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "ca1024e9bb3bb088e40f594cad96cb8d0b93b7586c8921bfcb674f48dabf44a0"
+    },
+    {
+      "bytes": 1717,
+      "clone": "subswitch-continuity",
+      "gitBlob": "1c1f96e4dcfd98863fc97a044195748e93b5574a",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/anthropic-wire-types.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d459e1dd4f8c2e5317613dfd08d6a4398fd504a38a6f299e908345a5f447e049"
+    },
+    {
+      "bytes": 20015,
+      "clone": "subswitch-continuity",
+      "gitBlob": "c7bc0e1d2fbc1426619a9ca784922aadbda0a756",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/claude-adapter.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "7c0ffb644c6e3b69207c78fd39bff4744cb4e3a13234f7e1f852bece727f24fd"
+    },
+    {
+      "bytes": 12525,
+      "clone": "subswitch-continuity",
+      "gitBlob": "afaa7b3fd459ce18d390bb072b3fa5ae78afceb3",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/claude-auth.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "0a61cb2e882990ed292b6d80fc90eb927c246348b5c652fdcfe7b0d4ffd93bb4"
+    },
+    {
+      "bytes": 2189,
+      "clone": "subswitch-continuity",
+      "gitBlob": "ac6e097b2c1f7018191bdba63465d3a575f14b26",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/claude-cache.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "3672488ee5fb2f40794a318f2f3b0b25ec3cec29b363c3b3d870cd646f6c234c"
+    },
+    {
+      "bytes": 259,
+      "clone": "subswitch-continuity",
+      "gitBlob": "c60a82fc3939c9de333d18dd718f93dd83cbde23",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/claude-contract.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "3c37a632c11f547f4a4e011944f4c936ecd0277f349fcfe568e65145cf6fff0f"
+    },
+    {
+      "bytes": 4639,
+      "clone": "subswitch-continuity",
+      "gitBlob": "a1d5a54ad7133ed2cc40a7e0ca96e09669d97d18",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/claude-errors.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "033248bcbf673f1b3779091eb6f67474ec1225d535077dc43217bc34e7948f41"
+    },
+    {
+      "bytes": 7251,
+      "clone": "subswitch-continuity",
+      "gitBlob": "f92d5b6fa9780bcbe146b0f95bb47e71e760cbfa",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/claude-handler.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "ec50bea5cd2289b93fdce829d2a036c17f0de2c4831fa23fb44e469b25e6e610"
+    },
+    {
+      "bytes": 11105,
+      "clone": "subswitch-continuity",
+      "gitBlob": "95476bb44aaf8161ba5bc7f846a61c9d0bf536a2",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/claude-models.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "b5ca7090230ae119fec6b6c93f36a061b3e6024d9896eb67518066f539882c8b"
+    },
+    {
+      "bytes": 5228,
+      "clone": "subswitch-continuity",
+      "gitBlob": "302ad58ba9f628af21644aba224abed733e9d058",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/claude-state.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "12c5fab5ed15add31a7e2fe147310cd5e9d32ed4fbd28a687a3cf4cfc01a81f9"
+    },
+    {
+      "bytes": 10086,
+      "clone": "subswitch-continuity",
+      "gitBlob": "bb422e37c6ea878bb7aa5d8c0f10517b9a3533d3",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/claude-stream.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "19a40408a261096895712a9b84ecd502c3c2d95063f00a41fe9f9ade828f9d86"
+    },
+    {
+      "bytes": 21631,
+      "clone": "subswitch-continuity",
+      "gitBlob": "5815f3279bbd56003484f3a5c60e82cdad95ecb2",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/cli.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "6d473ddd9d0233d4f2a829e3b15b6ce50330dc0cb9fcdb060e9117a4e4298595"
+    },
+    {
+      "bytes": 595,
+      "clone": "subswitch-continuity",
+      "gitBlob": "01418e2b09f112feaf6b10ef1b21ab065bb510c2",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/clients.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "2e24bbcf89b7c70f3553196d80eb46a3eddb6984312ff6ccfe2fa8ddb586b15f"
+    },
+    {
+      "bytes": 21516,
+      "clone": "subswitch-continuity",
+      "gitBlob": "a36a045f0a8eaa4dbb65e64cbb5221bc58b7bb17",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-auth.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "ad353544746ec676aa5e33638d93de98d1fda502b26beab51d41f95db93cd0f8"
+    },
+    {
+      "bytes": 711,
+      "clone": "subswitch-continuity",
+      "gitBlob": "e0b7d30425e6352e61759917ff9226e4090e7a9f",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-body.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "df3ce4d5637f1c0c177dc6093334f1903af508efb1555f421583b8555a87b095"
+    },
+    {
+      "bytes": 7617,
+      "clone": "subswitch-continuity",
+      "gitBlob": "f71c26b80527ba9a04cd4b2408180b2175483e76",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-doctor.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d8c0c29d30e46a4443d1c4b2a78216d3820b65759eb7fb274e28d95b99d428ce"
+    },
+    {
+      "bytes": 15619,
+      "clone": "subswitch-continuity",
+      "gitBlob": "b36c03855ce27aec80210aceecd339d8b0e05f2f",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-gateway.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "252701e5fb2037f746bafc28bb8144a619293a81695dd855a056acd7b20b38f1"
+    },
+    {
+      "bytes": 21795,
+      "clone": "subswitch-continuity",
+      "gitBlob": "46c4edf68d92b3bb4da45fa137291c1e4b8cb8a0",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-handler.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "4ba104a8aed6c0530b94dafce0cbcc15027dbaaa9401bea84c4d1ef4c4dcb53d"
+    },
+    {
+      "bytes": 1117,
+      "clone": "subswitch-continuity",
+      "gitBlob": "0ded81b162de944bd4c95b6bea62534641713142",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-health.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d5ab6629f952eb954d30b1f9b9bdad89eb4555a0f129fc835a15196d30357dbd"
+    },
+    {
+      "bytes": 1034,
+      "clone": "subswitch-continuity",
+      "gitBlob": "36f013c455b0d62f6840911d3d439baa53ec514b",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-ingress.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "2b8d59206619c3203f3cc947e52e5a2a7b2fad596f4cae1b8b0325ce18a263d0"
+    },
+    {
+      "bytes": 10761,
+      "clone": "subswitch-continuity",
+      "gitBlob": "d9271ca44d8a817732fc89fb465946d6c2d8665c",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-init.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "744049ab2900baa8bb4774ee9dfb9782944e9bb8c7a009692e13e2b9395c846a"
+    },
+    {
+      "bytes": 1673,
+      "clone": "subswitch-continuity",
+      "gitBlob": "7f04855ff55e133de893ba20f82ed69e690a9650",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-native-auth.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "109683d752b053061fbe444983beeeb66a0f8d5b166d3d1484c565498caeedb5"
+    },
+    {
+      "bytes": 10570,
+      "clone": "subswitch-continuity",
+      "gitBlob": "cafe3e600bd9f5855f1431dc568a1106426d3981",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-request.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "97058c5dbb54f0ce72f37d41e43c038cb9b3cae6d744f975cd08a6dbf560e855"
+    },
+    {
+      "bytes": 32207,
+      "clone": "subswitch-continuity",
+      "gitBlob": "2346552a1b9f0287792bdd1210873bfeb3a7c0e0",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-response.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "b5083793ebca2e122584e744f4ad0e3abd11957a37f8a05ff97e44823a353fee"
+    },
+    {
+      "bytes": 2361,
+      "clone": "subswitch-continuity",
+      "gitBlob": "a999f36800521ed87f0582e24722d2315e0551ee",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-route.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "8e60b53f88da54579f1ffea6b746d72930e08642b16e9e9398e23ccb8473de14"
+    },
+    {
+      "bytes": 6800,
+      "clone": "subswitch-continuity",
+      "gitBlob": "f3649b817dadf828650dbdf0f1cd55c399bec5b1",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-upstream.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "e476e5b8c5fe8856a16575eb6a14016a68af6875adacba42bff11890e2430493"
+    },
+    {
+      "bytes": 11717,
+      "clone": "subswitch-continuity",
+      "gitBlob": "60175a1b6da42ff36c6b75cd2f812cdf33dc6df5",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/codex-ws.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "0a3ed80aa28462c51d542597d3c59768574b5241e7dfc2731380a8d6067b6828"
+    },
+    {
+      "bytes": 5437,
+      "clone": "subswitch-continuity",
+      "gitBlob": "9e6ca9d8a55c3ab92eda41f2f725ea74b0b46b41",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/collaboration-compat.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d403ebec56b2c2fc175b41ebabf1d4a047a954e03fc0bd806896720a93fe9eb1"
+    },
+    {
+      "bytes": 44228,
+      "clone": "subswitch-continuity",
+      "gitBlob": "caee397c07ee2b7c74bd854a96c8bae15243d574",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/config.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "8efe01c15cf6ecb9605c963fda60eaa085a12e4b9f2fbcf0e70025b1c54ccee2"
+    },
+    {
+      "bytes": 1045,
+      "clone": "subswitch-continuity",
+      "gitBlob": "6926a5c61f0b92b3a067d1a9002802a7e02252fa",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/content-encoding.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "0c0722681631ddb4eb3525f8e0c7c9ad891587175c41f7bb19a79500390220aa"
+    },
+    {
+      "bytes": 2852,
+      "clone": "subswitch-continuity",
+      "gitBlob": "3156dc68c507ce8507dc0d919aff737158e2c580",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/conversation-key.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "b748638d9bdfc524ef2db1fd429736e27c58ddcd0fbd231749542fe871f0d805"
+    },
+    {
+      "bytes": 20312,
+      "clone": "subswitch-continuity",
+      "gitBlob": "80e3dbf90366dcd5b447bcd6fa2257428d1e05ad",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/doctor.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "5978c4e2f04a30997f4fbf245fa0e1aab44e50d26b53ffc343cac86b546a6f29"
+    },
+    {
+      "bytes": 7948,
+      "clone": "subswitch-continuity",
+      "gitBlob": "9c2a26df52c86b65c5ec451ddf9671d2732c2374",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/errors.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "749ff3f71403228585543f2909608fcd138584da130f631048ec1831f4af2220"
+    },
+    {
+      "bytes": 21166,
+      "clone": "subswitch-continuity",
+      "gitBlob": "87437bd932af9735e6f7f76a35c2614b4f485984",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/inbound-policy.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "51d378296b4c1943d571a607215062fa5bd09719fcbdd9355b1fee14705bf694"
+    },
+    {
+      "bytes": 25577,
+      "clone": "subswitch-continuity",
+      "gitBlob": "ad09e792ff668279a8dad1f824a026a5897dce0c",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/init.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "683da874d934271a2966577d6cabfe9fa2763a47048c57a530c358ecaccae692"
+    },
+    {
+      "bytes": 6567,
+      "clone": "subswitch-continuity",
+      "gitBlob": "10158ecaf46a7b936270b03b579bb088c84ea5a1",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/logger.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "31640ea2d30612975eb6f36485a03fe0c70d23478c9468c6958ec50a5bcc6836"
+    },
+    {
+      "bytes": 43810,
+      "clone": "subswitch-continuity",
+      "gitBlob": "dcee22d2ae103a09c426b1ffa2e5fba0fb8b2f47",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/models.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "969d675522339432d6ad48e9f785c0328390457ca7bfe856cf0ad2e0753676db"
+    },
+    {
+      "bytes": 7464,
+      "clone": "subswitch-continuity",
+      "gitBlob": "7612f01f8449ea0b86c8c1b87d9b0c7549a966ce",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/openai-passthrough.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d24649635075055638733e4631e044e35c11229a8c2c7d67da8ba3d723f4b188"
+    },
+    {
+      "bytes": 585,
+      "clone": "subswitch-continuity",
+      "gitBlob": "16951cb8f822125312acca4bf6b95482998a8e5c",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/plain-object.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "fec96b19cf86e4dce3c5a9bd6befa5edd50e6068523c911b8bdee6b9e984d8ad"
+    },
+    {
+      "bytes": 4262,
+      "clone": "subswitch-continuity",
+      "gitBlob": "37c3af7aed0d93ec3313f553ab557ddb5a0dc602",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/provider-auth.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "01893bc997854dbdec7faebb83cf62777b403c99403e4ae9c4db91b56be12e4c"
+    },
+    {
+      "bytes": 8712,
+      "clone": "subswitch-continuity",
+      "gitBlob": "610a62ba98265fe2bb07006abd8547873c771aef",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/provider-events.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "40b0a742ec4d28a31ca4e135293f5ba28628f5f950cb651e8291fab1cd49696d"
+    },
+    {
+      "bytes": 971,
+      "clone": "subswitch-continuity",
+      "gitBlob": "baf0448f3386872bf13c0edf37276a90db6f098a",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/provider-handler.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "0dde7b22b559a2a268fcc53b208d3f2be3fff312fa97f93227aadc33424197fc"
+    },
+    {
+      "bytes": 8697,
+      "clone": "subswitch-continuity",
+      "gitBlob": "54865fbed7e104f6a75fef80e2e0cf2ab02ae07d",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/provider-transport.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "ae1e226a428a5f4205a22f1eef81d2cb6828626c2e6a14ba4b8c589822288e89"
+    },
+    {
+      "bytes": 17801,
+      "clone": "subswitch-continuity",
+      "gitBlob": "89fbb7eb7f2b805a1e0e5e6fd9e09e2446262432",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/raw-http-passthrough.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "967b9deff65aa96818d87d4fa0b6817f4b2dbffd8e96beed3d140c3165688b8f"
+    },
+    {
+      "bytes": 2933,
+      "clone": "subswitch-continuity",
+      "gitBlob": "2dea1da414926df570214d630302d3cc33ec4f2f",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/reasoning-cache.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "fb462d49e234883277528ef664b616121c60d065b7b8834fabd8c0607487036e"
+    },
+    {
+      "bytes": 318,
+      "clone": "subswitch-continuity",
+      "gitBlob": "5566c5f87ab007a2c042c9ee248367ddabc000f3",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/result.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "77546be88da59d1924e0183c7ea4be49cf543ff571816d2a79b9f25350ab0a3f"
+    },
+    {
+      "bytes": 3403,
+      "clone": "subswitch-continuity",
+      "gitBlob": "bbfc65d763110e4dfef8dfa3d68d8ae8c796a1c1",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/router.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "dfa15abe9d205d5b088b0bbd5b3077fc4dec14f49de928ca26ddb509803286c6"
+    },
+    {
+      "bytes": 32926,
+      "clone": "subswitch-continuity",
+      "gitBlob": "8b389aaa372844b234a78cf69b46bb49f26e800c",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/server.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "15cd7792ba64185df831f65ddca1c236ba0bff7630006df8fd568e78512790d3"
+    },
+    {
+      "bytes": 817,
+      "clone": "subswitch-continuity",
+      "gitBlob": "8c0e92a0c16e7359247b171833b818af1bb7d5de",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/tcp-connect.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "c5a0b351e0e76ecc1e73aea8eb19164b2bc880f40874525768d6b16f405d8719"
+    },
+    {
+      "bytes": 717,
+      "clone": "subswitch-continuity",
+      "gitBlob": "48e0fa811138d68873f0a66d3dbdfe3a6b54cff6",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/tty.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "d226e1b2603c807c47958a848d60d7c13ffc56cd1358f7abb56c108bb3e61cd0"
+    },
+    {
+      "bytes": 1279,
+      "clone": "subswitch-continuity",
+      "gitBlob": "7fe61aa32895fb3bcd7dc78491d2fc272d40b970",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/upstream-policy.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "15060f2d0c5625289b2ef17146042089ff6fe765baf2e701bc58e4f2568f0d0b"
+    },
+    {
+      "bytes": 186,
+      "clone": "subswitch-continuity",
+      "gitBlob": "0ebe34391c810851ca7a5ccab096f985619f60af",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/version.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "113556df63c31a8a1fee4b55dd4775a444a87f56a97954dcf5bfef68d97480f5"
+    },
+    {
+      "bytes": 1233,
+      "clone": "subswitch-continuity",
+      "gitBlob": "fc5d08ed180e7b75c746bf118af6640b8e39f084",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/websocket-budget.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "2c91fc8e43952bf0d5fd0e0af03681334c2008cfd26607aae3890bcff94eac21"
+    },
+    {
+      "bytes": 3094,
+      "clone": "subswitch-continuity",
+      "gitBlob": "75a782aa6b7d96f69fe3750ead2c05c6718c7f42",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/src/wire-types.ts",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "8857b52d31dad0d5281858c1cd93af5a52b1e55364ed10687820280221abcfec"
+    },
+    {
+      "bytes": 1538,
+      "clone": "subswitch-continuity",
+      "gitBlob": "739d32486163e0ba973cbb9178ff06dd6a9b6e5a",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/head/source/subswitch.config.example.json",
+      "reason": "exact source blob already reachable in retained Git history",
+      "sha256": "14fc72910f014819334aed3fe5450121fb5541b7ffe30b33a184fa7aaaefb884"
+    }
+  ],
+  "excludedCounts": {
+    "subswitch-continuity": 1826
+  },
+  "excludedDisposition": "Left unchanged locally; no read/upload of runtime/private credential fixtures, caches/dependency links, generated packages/archives/logs/traces or third-party artifacts. All122 packaged source copies match reachable Git blobs, no unmatched source. Full private path inventory retained under assignment stageRoot. Exclusions do not prevent reconstructing product source.",
+  "excludedTopDirectories": {
+    "future-model-packaged-qa-artifacts-cZHBWA": 95,
+    "future-model-release-artifacts-pj90ms1j": 891,
+    "future-model-release-base-update-artifacts-kom7mx9k": 740,
+    "kimi-phase-a-runner-fix-review-artifacts-mjzqvxd6": 8,
+    "kimi-phase-a-runner-review-artifacts-2v530xff": 83,
+    "release-0.6.1-publish-diagnosis-artifacts-8xttjk_w": 9
+  },
+  "historicalCheckpoints": [
+    {
+      "HEAD": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+      "branch": "codex/subswitch-paused-archive-1-2026-11-14",
+      "kind": "exact-existing-tip",
+      "remoteVerified": true,
+      "sourceCheckout": "/Users/dean/Sandbox/subswitch-continuity",
+      "sourceRef": "refs/heads/codex/future-model-overrides"
+    },
+    {
+      "HEAD": "51f2b9ee01f4b358c4b383165f39d649635524f1",
+      "branch": "codex/subswitch-paused-archive-2-2026-11-14",
+      "kind": "exact-existing-tip",
+      "remoteVerified": true,
+      "sourceCheckout": "/Users/dean/Sandbox/subswitch-kimi-store",
+      "sourceRef": "refs/heads/codex/kimi-auth-store"
+    },
+    {
+      "HEAD": "2a814bf06443f7edfae5e2ad335b6f08437a86d0",
+      "branch": "codex/subswitch-paused-continuity-2026-11-14",
+      "kind": "historical-reports-and-source",
+      "parent": "b8549643d5af3316d0b65d608b16fafc390e0287",
+      "remoteVerified": true,
+      "savedFiles": [
+        "continuity-delivery.json",
+        "continuity-delivery.patch",
+        "continuity-fix-diff.patch",
+        "continuity-peer-resolution.json",
+        "continuity-pr-body.md",
+        "continuity-review.patch",
+        "continuity-reviewed-before-fixes.patch",
+        "continuity-status.json",
+        "future-model-delivery.json",
+        "future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "future-model-packaged-qa.json",
+        "future-model-packaged-qa.mjs",
+        "future-model-pr-body.md",
+        "future-model-release-artifacts-pj90ms1j/bash-fixtures.sh",
+        "future-model-release-artifacts-pj90ms1j/release-smoke.py",
+        "future-model-release-artifacts-pj90ms1j/runtime-guard.cjs",
+        "future-model-release-base-update-artifacts-kom7mx9k/bash-fixtures.sh",
+        "future-model-release-base-update-artifacts-kom7mx9k/release-smoke.py",
+        "future-model-release-base-update-artifacts-kom7mx9k/runtime-guard.cjs",
+        "future-model-release-base-update-status.json",
+        "future-model-release-before-main-update.json",
+        "future-model-release-candidate.json",
+        "future-model-release-pr-body.md",
+        "future-model-review.patch",
+        "future-model-status.json",
+        "kimi-phase-a-runner-fix-independent-review.json",
+        "kimi-phase-a-runner-fix-review-artifacts-mjzqvxd6/independent-preflight.mjs",
+        "kimi-phase-a-runner-fix-review-status.json",
+        "kimi-phase-a-runner-independent-review.json",
+        "kimi-phase-a-runner-review-artifacts-2v530xff/offline-guard.cjs",
+        "kimi-phase-a-runner-review-artifacts-2v530xff/runtime-pin-probe.mjs",
+        "kimi-phase-a-runner-review-status.json",
+        "peer-review-kimi.json",
+        "release-0.6.1-postpublish-qa.json",
+        "release-0.6.1-publish-diagnosis-status.json",
+        "release-0.6.1-publish-diagnosis.json",
+        "wave1-package-ci-smoke-evidence.json",
+        "wave1-package-independent-review.json",
+        "PAUSED-CHECKPOINT.md"
+      ],
+      "sourceCheckout": "/Users/dean/Sandbox/subswitch-continuity"
+    },
+    {
+      "HEAD": "13c2f1c0b50b32b579b58f9b39c72e54e4df6417",
+      "branch": "codex/subswitch-paused-pr90-review-2026-11-14",
+      "kind": "historical-uncommitted-review-diff",
+      "parent": "1d75512af0a5b17093302fca4962f461c989bb1e",
+      "remoteVerified": true,
+      "savedFiles": [
+        "e2e/gates/kimi-managed-oauth.md",
+        "src/cli.ts",
+        "src/kimi-auth.ts",
+        "src/routing/destination-catalog.ts",
+        "src/routing/request-adapter.ts",
+        "test/unit/kimi-managed-auth.test.ts",
+        "test/unit/kimi-model-effort.test.ts",
+        "PAUSED-CHECKPOINT.md"
+      ],
+      "sourceCheckout": "/Users/dean/Sandbox/subswitch-kimi-pr90-review"
+    }
+  ],
+  "historicalPR90ExactFiles": [
+    {
+      "bytes": 4769,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi-pr90-review/e2e/gates/kimi-managed-oauth.md",
+      "sha256": "887058d9da393f6ae0be110e6bb3ec139574f5ed0ba8ff74e1df0b493fa8ad20"
+    },
+    {
+      "bytes": 28176,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi-pr90-review/src/cli.ts",
+      "sha256": "e3c5ab32ab3ad5ddfc3001db2539b6d10bbff6de17d1fa3ed9cc6fdb7e627848"
+    },
+    {
+      "bytes": 13335,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi-pr90-review/src/kimi-auth.ts",
+      "sha256": "7d8827ca4e47f545a7e46a03a15601465f50db90cfaa56b388f7c283aba8fda7"
+    },
+    {
+      "bytes": 4085,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi-pr90-review/src/routing/destination-catalog.ts",
+      "sha256": "42f08d56d3d6f3c108691d5dc6a6d1475deb6a1854ac4d88beb31be992fc75b2"
+    },
+    {
+      "bytes": 8023,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi-pr90-review/src/routing/request-adapter.ts",
+      "sha256": "6abea472b5df08b4cbe2fe5b13dc5a418bfa5372cce3ce15b50a132f148c2762"
+    },
+    {
+      "bytes": 16482,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi-pr90-review/test/unit/kimi-managed-auth.test.ts",
+      "sha256": "1c0afe6ac11bb90341f8b4e94a5c4bb0a91d2cb70b1da6def80164e65d2e34ee"
+    },
+    {
+      "bytes": 4193,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi-pr90-review/test/unit/kimi-model-effort.test.ts",
+      "sha256": "21d54f105e080214c5b884bb853b2498e642ec16d87c4cce7f4eab2f63fc7e67"
+    }
+  ],
+  "historicalSelectedFiles": [
+    {
+      "bytes": 7148,
+      "clone": "subswitch-continuity",
+      "path": "continuity-delivery.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "2bfc112588c04020a5e5dd880f46be8fa474b2ec9ea02f87e7a8734fc5c82adc"
+    },
+    {
+      "bytes": 59750,
+      "clone": "subswitch-continuity",
+      "path": "continuity-delivery.patch",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "309e39fd0c0d0ba3c805add0e8d0202b3b4e3470aa028f36939961c9a71138b8"
+    },
+    {
+      "bytes": 47905,
+      "clone": "subswitch-continuity",
+      "path": "continuity-fix-diff.patch",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "d0bbcd096682b34a026b94d753b7c9cf2228f0fb1316a2ea99b972174c162ade"
+    },
+    {
+      "bytes": 7553,
+      "clone": "subswitch-continuity",
+      "path": "continuity-peer-resolution.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "e7714d1c974e41bbdd5f47cbf172e477205a46edbd52f3361ac51a9925c94c48"
+    },
+    {
+      "bytes": 2704,
+      "clone": "subswitch-continuity",
+      "path": "continuity-pr-body.md",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "fcaac2097109cdc7bd6b4886c9ad8836909e9d1e4bbde673b0e03c797a388a2f"
+    },
+    {
+      "bytes": 61079,
+      "clone": "subswitch-continuity",
+      "path": "continuity-review.patch",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "de379c1f5128118b0227d744db1f45da4135dd71b4efc6bf2584988f0172185d"
+    },
+    {
+      "bytes": 27872,
+      "clone": "subswitch-continuity",
+      "path": "continuity-reviewed-before-fixes.patch",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "c2bfdbeaef3f6f5fc575e2b5a96de78253f9b2ea5aa78a45bda11568130b3601"
+    },
+    {
+      "bytes": 11772,
+      "clone": "subswitch-continuity",
+      "path": "continuity-status.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "d4afa305307a427e1c5592d529d45af8a908dd41ed86658d2b1cf4494d3acd50"
+    },
+    {
+      "bytes": 8562,
+      "clone": "subswitch-continuity",
+      "path": "future-model-delivery.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "06c6c8a50dcad1a1d91ebefffb9a486ca6d876f5d2083236b6f7c44f07c2318a"
+    },
+    {
+      "bytes": 2953,
+      "clone": "subswitch-continuity",
+      "path": "future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "e2e26f6f75a614b7161751c345644529400001da329e8a6e6981ab6e060cfe62"
+    },
+    {
+      "bytes": 53265,
+      "clone": "subswitch-continuity",
+      "path": "future-model-packaged-qa.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "99c020a14a3e0a21676af75ba9c1a2d57abf36c57aaa8eb7b13a551c275e8908"
+    },
+    {
+      "bytes": 27344,
+      "clone": "subswitch-continuity",
+      "path": "future-model-packaged-qa.mjs",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "6f6d5cff54fd8ee6e92d1f96ee61ecc1897f72492c88faab572d7c19db112508"
+    },
+    {
+      "bytes": 2515,
+      "clone": "subswitch-continuity",
+      "path": "future-model-pr-body.md",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "fd31e93ff486112f4b40a6b47073e53c57f34260af1d99bd8fefa9e7fe850646"
+    },
+    {
+      "bytes": 434,
+      "clone": "subswitch-continuity",
+      "path": "future-model-release-artifacts-pj90ms1j/bash-fixtures.sh",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "2416511474b00593668e3d7645288ecf9f969e24b9e76dc7d1236026ef711179"
+    },
+    {
+      "bytes": 6239,
+      "clone": "subswitch-continuity",
+      "path": "future-model-release-artifacts-pj90ms1j/release-smoke.py",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "46ec4625e7da418ce99a98235e1ce9e57eb581538cdf0508fb8e259867548c84"
+    },
+    {
+      "bytes": 4006,
+      "clone": "subswitch-continuity",
+      "path": "future-model-release-artifacts-pj90ms1j/runtime-guard.cjs",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "f3ca3f20c6d00355210875f78f177806af5492ceb610d91da9b09f7baaca026c"
+    },
+    {
+      "bytes": 434,
+      "clone": "subswitch-continuity",
+      "path": "future-model-release-base-update-artifacts-kom7mx9k/bash-fixtures.sh",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "2416511474b00593668e3d7645288ecf9f969e24b9e76dc7d1236026ef711179"
+    },
+    {
+      "bytes": 6239,
+      "clone": "subswitch-continuity",
+      "path": "future-model-release-base-update-artifacts-kom7mx9k/release-smoke.py",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "46ec4625e7da418ce99a98235e1ce9e57eb581538cdf0508fb8e259867548c84"
+    },
+    {
+      "bytes": 4006,
+      "clone": "subswitch-continuity",
+      "path": "future-model-release-base-update-artifacts-kom7mx9k/runtime-guard.cjs",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "f3ca3f20c6d00355210875f78f177806af5492ceb610d91da9b09f7baaca026c"
+    },
+    {
+      "bytes": 3024,
+      "clone": "subswitch-continuity",
+      "path": "future-model-release-base-update-status.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "82d2abf14fc2e7093e967400e3069d425d97d0cc5d146a26de9729bad93cc9a6"
+    },
+    {
+      "bytes": 69096,
+      "clone": "subswitch-continuity",
+      "path": "future-model-release-before-main-update.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "870d80b3c212e99478b76c1c83c6bb222363c0610b9b65a61b3b99a0f209d35f"
+    },
+    {
+      "bytes": 72586,
+      "clone": "subswitch-continuity",
+      "path": "future-model-release-candidate.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "02a8f0438589441a28484e3b7862473d6427b2775bec60e7024189e4b746642a"
+    },
+    {
+      "bytes": 2843,
+      "clone": "subswitch-continuity",
+      "path": "future-model-release-pr-body.md",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "662e45ed7fbef72b923a20b9d49da7dc47929b3156c15065064a604dfb37c89d"
+    },
+    {
+      "bytes": 27137,
+      "clone": "subswitch-continuity",
+      "path": "future-model-review.patch",
+      "reviewedException": "Exact pre-existing tracked test source literal in mocked readAuthFile with fabricated-refresh; no token is decoded, used, logged or treated as native authentication.",
+      "secretPatternMatches": [
+        "JWT"
+      ],
+      "sha256": "0fd6cd0873c0933100ee9c8c8741b8e028b096818cacb5b0c35fb3aa47ad9a39"
+    },
+    {
+      "bytes": 7919,
+      "clone": "subswitch-continuity",
+      "path": "future-model-status.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "36a8475c8a74f8fe8383b8110216bc8a2e9197e693cb6972aeb791885e724ab8"
+    },
+    {
+      "bytes": 23913,
+      "clone": "subswitch-continuity",
+      "path": "kimi-phase-a-runner-fix-independent-review.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "0bb6ad91cfbf388657ff3a9a2091f22f8454f5b78d4bd305eec6fdb87c315d8e"
+    },
+    {
+      "bytes": 9004,
+      "clone": "subswitch-continuity",
+      "path": "kimi-phase-a-runner-fix-review-artifacts-mjzqvxd6/independent-preflight.mjs",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "b0a594ec45a72374ef7a7ca4704c62fa2b27770d2a8b9f187b736897f30eb8de"
+    },
+    {
+      "bytes": 716,
+      "clone": "subswitch-continuity",
+      "path": "kimi-phase-a-runner-fix-review-status.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "4a36ced09e65b0ac0c58683be2bc79a92467c87882178190a571fac108a6c78a"
+    },
+    {
+      "bytes": 20765,
+      "clone": "subswitch-continuity",
+      "path": "kimi-phase-a-runner-independent-review.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "27e46a2cd00e706395b2c0d6fbb2735719f8892e25a0c993342f3b40171c1359"
+    },
+    {
+      "bytes": 4039,
+      "clone": "subswitch-continuity",
+      "path": "kimi-phase-a-runner-review-artifacts-2v530xff/offline-guard.cjs",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "b18242eea2ba8eb1b1cd4cdf5aa06b777e73e1a9777e4640e47f7e05e140e1cf"
+    },
+    {
+      "bytes": 1732,
+      "clone": "subswitch-continuity",
+      "path": "kimi-phase-a-runner-review-artifacts-2v530xff/runtime-pin-probe.mjs",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "21c4c64246828335a245da9b79b1e51d62276bcc0a41af11071da1e78f5fa694"
+    },
+    {
+      "bytes": 3142,
+      "clone": "subswitch-continuity",
+      "path": "kimi-phase-a-runner-review-status.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "e313fdc34ce81c908ab15a63fd2aa73c5f23bf49e5bedac34c2b97d433a75210"
+    },
+    {
+      "bytes": 4955,
+      "clone": "subswitch-continuity",
+      "path": "peer-review-kimi.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "0c91fba07650d6c8765648206e4b3f9cbc5b430e2e90f8c08de09a12ecb25b1f"
+    },
+    {
+      "bytes": 24226,
+      "clone": "subswitch-continuity",
+      "path": "release-0.6.1-postpublish-qa.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "106a7fca4196252d40255644ac630034df7139c8e1a7a0f7db938f71f03cc825"
+    },
+    {
+      "bytes": 1076,
+      "clone": "subswitch-continuity",
+      "path": "release-0.6.1-publish-diagnosis-status.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "8b9ec9e9813bab1292e1a2c2b6880fd5945bd8b8e8e33168a5a29c0134546a52"
+    },
+    {
+      "bytes": 14010,
+      "clone": "subswitch-continuity",
+      "path": "release-0.6.1-publish-diagnosis.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "071719ec35adac9e65f443bb90190cafcd3b7745df65a120ac95dc24b81b8564"
+    },
+    {
+      "bytes": 7421,
+      "clone": "subswitch-continuity",
+      "path": "wave1-package-ci-smoke-evidence.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "b42b2d622bfc5300031adfe2053b6b21b18deb831a4d5c8bedb8878298ca6b10"
+    },
+    {
+      "bytes": 14802,
+      "clone": "subswitch-continuity",
+      "path": "wave1-package-independent-review.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "77e72256b7d64d9d35c1239c4bf8dcd2282824d7bd6b7fb1b65cf076d708ddae"
+    }
+  ],
+  "hookAudit": "No core.hooksPath override or active hooks in five clones; ordinary commits/pushes, no bypass.",
+  "noDeletion": true,
+  "primaryBranch": "codex/subswitch-paused-handoff-2026-11-14",
+  "primaryOriginalReports": [
+    {
+      "bytes": 12238,
+      "clone": "subswitch-kimi",
+      "path": "future-model-independent-review.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "678aaf7445234bc36fcb071b87815d7e35d6b52a56c5a6925a4a76845a3e7aa0"
+    },
+    {
+      "bytes": 22570,
+      "clone": "subswitch-kimi",
+      "path": "future-model-release-independent-review.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "d9bed7b55f1211f84fe9901cd60a1c96ea2be132365cb606f25f31a916bf0a18"
+    },
+    {
+      "bytes": 10107,
+      "clone": "subswitch-kimi",
+      "path": "http-followup-contract-report.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "d0821a63e5e2216aa32650df193b4ba56db5ab3c0916a8650dddeb918e7f4698"
+    },
+    {
+      "bytes": 27927,
+      "clone": "subswitch-kimi",
+      "path": "kimi-isolated-live-readiness.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "b3947477aec28fd936e62179cf2a4ff7f34911e7fd60a19f886802c1f751ef8d"
+    },
+    {
+      "bytes": 24952,
+      "clone": "subswitch-kimi",
+      "path": "kimi-native-auth-isolation-report.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "f5fccac571fd3f76149e930564d583418399f449936696ce71c0a6a779f01d16"
+    },
+    {
+      "bytes": 20049,
+      "clone": "subswitch-kimi",
+      "path": "kimi-phase-a-runner-delivery.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "9e9ebf9697da7dcf6265e8ea15a62cdea1c1403f7b3ae71cf85d3efe7b9aa5b3"
+    },
+    {
+      "bytes": 17522,
+      "clone": "subswitch-kimi",
+      "path": "kimi-phase-a-runner-fix-delivery.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "194be107d47b12ddde7173d14cc106965f67a2666642745cfd36dd84a6b8e499"
+    },
+    {
+      "bytes": 102773,
+      "clone": "subswitch-kimi",
+      "path": "native-messages-aggregation-delivery.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "8e90d0b6a54237253c3497d8d6b7df6d55080ce0e48c8108addc3c1eb8ad455f"
+    },
+    {
+      "bytes": 14935,
+      "clone": "subswitch-kimi",
+      "path": "peer-review-continuity-resolution.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "d84b7fd65a5e2ea1605f79d7b129ec411e8cb93c4135122e885d762e7e8e99f3"
+    },
+    {
+      "bytes": 10004,
+      "clone": "subswitch-kimi",
+      "path": "peer-review-continuity.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "7da835edad2ca73d1ea3f7ecfb2fe846b550e64cb5dd1b374fd6fef7577f662b"
+    },
+    {
+      "bytes": 26148,
+      "clone": "subswitch-kimi",
+      "path": "restart-product-qa.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "734961e88fe5c011d0c01991ed100d416ed326eb121ee2183b16a99ba94d3430"
+    },
+    {
+      "bytes": 12789,
+      "clone": "subswitch-kimi",
+      "path": "wave1-smoke-env-fix-review.json",
+      "reviewedException": null,
+      "secretPatternMatches": [],
+      "sha256": "0636eacc57cb49d9fab88591ca7664376ab71be02ecf4e25358baf487a5a267e"
+    }
+  ],
+  "schemaVersion": 1,
+  "status": "PORTABLE_PRESERVATION_DISPOSITIONS"
+}

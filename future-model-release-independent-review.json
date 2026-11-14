@@ -1,0 +1,401 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-10-19T15:33:34.532228+00:00",
+  "reviewerThread": "01a13162-e803-7230-904c-b91d38edc9c7",
+  "assignment": "/Users/dean/Sandbox/.codex-orchestrator/future-model-release-review-assignment.json",
+  "assignmentSha256": "202b6e1af4056a398ad20098389551aff65cf0a44714e39fcb3db69ee647a149",
+  "ownClone": "/Users/dean/Sandbox/subswitch-kimi",
+  "readOnlyAuthorClone": "/Users/dean/Sandbox/subswitch-continuity",
+  "ownBranchUnchanged": "codex/native-messages-aggregation",
+  "ownHeadUnchanged": "6528f3f602307cfdfba277b2047a18825c1407fb",
+  "pr": 89,
+  "url": "https://github.com/dean0x/subswitch/pull/89",
+  "baseSHA": "0e7b3df3b34847c06bc1679b0e8144c2363b89d7",
+  "targetSHA": "3ed93e8b793eaeebadd9edacd3b9a5788b9cc498",
+  "version": "0.6.1",
+  "recommendation": "approve_source_review",
+  "findings": [],
+  "approvalScope": "Exact four-file release preparation at3ed93e8b793eaeebadd9edacd3b9a5788b9cc498 plus retained package/QA evidence. Source approval for metadata/changelog and reviewed candidate artifact; no merge, tag, publish or release authorization. Dean sign-off remains required.",
+  "reviewedFiles": [
+    {
+      "file": "CHANGELOG.md",
+      "sha256": "8ae22c53aa7118c47dea3660f468f194351a0e3bd0d176ad6255a78d810bccfe",
+      "assessment": "New dated0.6.1 section accurately describes merged PR86 alias consistency, direct declared target IDs and warning-only doctor behavior for configured unknown targets. Preserves registered/canonical and existing alias precedence and unknown-agent failure distinction. Explicitly requires upstream account availability and disclaims added capability metadata. No claim to fix the unreproduced user startup/stuck native session or Kimi/Wave1/continuity defects."
+    },
+    {
+      "file": "package.json",
+      "sha256": "3f87885a71a81b6f155234eb4f1a263ab96bd5d3831d183a6acf029a0e56a7e6",
+      "assessment": "Only .version0.6.0->0.6.1. Full parsed manifest otherwise identical to main base, including files/bin/scripts/engines/dependencies. No PR87 Wave1 sample addition."
+    },
+    {
+      "file": "package-lock.json",
+      "sha256": "6cc269c277552a59d5a6b251b31a2c4f179a171a36131ff5d28f54a4bc1b5da2",
+      "assessment": "Only top-level and packages-root version0.6.0->0.6.1; parsed lock exactly matches base after normalizing these two fields. No local self-dependency, dependency drift or additional resolution entries remain."
+    },
+    {
+      "file": "src/version.ts",
+      "sha256": "8c6edac60c45f17c2af66dfdfd2545d2e343536b758f4738e125f14c2823f90c",
+      "assessment": "Only SUBSWITCH_VERSION changes to0.6.1; name/type declaration unchanged."
+    }
+  ],
+  "versionAlignment": {
+    "package.json": "0.6.1",
+    "package-lock.json": "0.6.1",
+    "package-lock.json packages root": "0.6.1",
+    "src/version.ts": "0.6.1",
+    "CHANGELOG newest heading": "0.6.1"
+  },
+  "sourceAndPackageScope": {
+    "directParentEqualsAssignedMain": true,
+    "mergedMainBaseTreeEqualsReviewedPR86Tree": true,
+    "previousApprovedPR86Head": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+    "fullSourceReviewOfPR86Repeated": false,
+    "excludedUnmergedFeatures": [
+      81,
+      85,
+      87,
+      88
+    ],
+    "packageFiles": 60,
+    "newWave1SampleOrRoutingFiles": false,
+    "runtimeApiCliConfigDependenciesChanged": false
+  },
+  "releaseGuide": {
+    "path": ".release/RELEASE-FLOW.md",
+    "sha256": "78aaf483f642bf9fc9e0adf82f470472effb7bd36eb5031b67946965e9959621",
+    "workflow": ".github/workflows/release.yml",
+    "workflowSha256": "41060c8ff5a44ee24060cd3f729f317ea30cb30dd1c79fe5950d541a84eb54bf",
+    "reviewedInFull": true,
+    "workflowUnchanged": true,
+    "requirements": "Fully clean release checkout; current tag/version/registry preflight; five version alignment; npm ci/check/tarball smoke; token existence metadata; annotated tag-push triggers guarded CI provenance publish; postpublish registry and clean install verification. No publish/tag step executed.",
+    "cleanTreeLimit": "Tracked candidate source is clean, but preserved private artifacts remain untracked in author clone. An authorized tag/release must use a fully clean release checkout as required by the guide.",
+    "guideMetadataLimit": "Guide summary engine text is historical; unchanged manifest engines remain authoritative. This review does not alter the guide or release workflow."
+  },
+  "verifiedEvidence": {
+    "authorReport": {
+      "path": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-candidate.json",
+      "sha256": "870d80b3c212e99478b76c1c83c6bb222363c0610b9b65a61b3b99a0f209d35f"
+    },
+    "hashVerification": {
+      "source": {
+        "CHANGELOG.md": {
+          "committed": "8ae22c53aa7118c47dea3660f468f194351a0e3bd0d176ad6255a78d810bccfe",
+          "working": "8ae22c53aa7118c47dea3660f468f194351a0e3bd0d176ad6255a78d810bccfe"
+        },
+        "package-lock.json": {
+          "committed": "6cc269c277552a59d5a6b251b31a2c4f179a171a36131ff5d28f54a4bc1b5da2",
+          "working": "6cc269c277552a59d5a6b251b31a2c4f179a171a36131ff5d28f54a4bc1b5da2"
+        },
+        "package.json": {
+          "committed": "3f87885a71a81b6f155234eb4f1a263ab96bd5d3831d183a6acf029a0e56a7e6",
+          "working": "3f87885a71a81b6f155234eb4f1a263ab96bd5d3831d183a6acf029a0e56a7e6"
+        },
+        "src/version.ts": {
+          "committed": "8c6edac60c45f17c2af66dfdfd2545d2e343536b758f4738e125f14c2823f90c",
+          "working": "8c6edac60c45f17c2af66dfdfd2545d2e343536b758f4738e125f14c2823f90c"
+        }
+      },
+      "artifacts": {
+        "logs/version.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "logs/guide-smoke.stdout": "02f09af2cfc0f3bc2dfb9550c953d0013eb47005975d3498b0aff7cc334d3101",
+        "logs/help.stdout": "98be7555d3ecfb2101326a8dcf42a19cd16e1a6239b39b8229652803bcc62ed3",
+        "logs/registry-before.json": "fefba99fda8373af91fcb7f98aceca9be879ca18bea9cc2ed34600f44fce701b",
+        "logs/pr89-snapshot.json": "f8cd9f27fbf7a99f75911b4ced4a64762c4c0e71deb3ba63499c0ec6d3575b7d",
+        "logs/registry-before.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "logs/models-text.stdout": "4813629d988927cfda005852720fd1f2835250e4ffda35c60c8a24bfe0eb5d12",
+        "logs/npm-ci.log": "df9a5f74f9c6f0091535a38eebca1116d6f116e043e5d52197da72f3a121bf8d",
+        "logs/registry-final.json": "c83334b71925c73cc9044816a9ee0cefeb7cb084415ec92acf2dae3babdd3267",
+        "logs/models-text.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "logs/guide-smoke.stderr": "737683530f33a5d3d50c0446b3c5e4343b1df25bcb8a421f138f2a2767a99b3d",
+        "logs/help.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "logs/version.stdout": "87b241b275c591694846560e9879f50c9da3150f854efdabd782c539772f3033",
+        "logs/npm-ci-after-smoke-fixture-correction.log": "e95b0ab330b600eb2c0beb0d724757a93c23d3ced38da6fcb7bd5d546ed41456",
+        "logs/models-json.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "logs/pack.stderr": "1dbde109799b3e76e0913f85fd4b0a75f6f01825a49b94d32f92ada80abb49f8",
+        "logs/install.stdout": "a251fe0d3c1f85c250462d63d85819fa4a9f2fc060497c817b900e3a850b4368",
+        "logs/models-json.stdout": "ca3a249d140bccac03405330de51709f6dd41ab7244425ffb47fef0a28e2f21c",
+        "logs/install.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "logs/pack.stdout": "1455f696da5fa8005340f42e676a7c1ef63b3d5eb792f19f9bf11b0bf981ba1f",
+        "logs/remote-heads.txt": "435822f15c1bc249113fa22abce0860ee88722edea2bd48d884ce87e0d3ff071",
+        "logs/full-check.log": "6b6db451cddec0ed2746dad580a381fea5467a173c6483cb1b747b92ddca260f",
+        "logs/npm-ci-after-fixture-correction.log": "df9a5f74f9c6f0091535a38eebca1116d6f116e043e5d52197da72f3a121bf8d",
+        "runtime-trace.jsonl": "59b4cb8bb4f0e521c8ccbc7391788f35147fdaf8c7820df3c1884ed890d355e3"
+      },
+      "helpers": {
+        "runtime-guard.cjs": "f3ca3f20c6d00355210875f78f177806af5492ceb610d91da9b09f7baaca026c",
+        "bash-fixtures.sh": "2416511474b00593668e3d7645288ecf9f969e24b9e76dc7d1236026ef711179",
+        "release-smoke.py": "46ec4625e7da418ce99a98235e1ce9e57eb581538cdf0508fb8e259867548c84"
+      },
+      "metadata": {
+        "manifestDiffOnlyVersion": true,
+        "lockDiffOnlyTopAndRootVersions": true,
+        "dependenciesUnchanged": true,
+        "guideHash": "78aaf483f642bf9fc9e0adf82f470472effb7bd36eb5031b67946965e9959621",
+        "workflowHash": "41060c8ff5a44ee24060cd3f729f317ea30cb30dd1c79fe5950d541a84eb54bf"
+      },
+      "packageComparison": {
+        "baseline": {
+          "added": [],
+          "removed": [],
+          "changed": [
+            "README.md",
+            "dist/doctor.js",
+            "dist/models.js",
+            "dist/version.js",
+            "package.json"
+          ]
+        },
+        "head": {
+          "added": [],
+          "removed": [],
+          "changed": [
+            "dist/version.js",
+            "package.json"
+          ]
+        }
+      },
+      "package": {
+        "sha256": "ce2e0b261eb94856c55a38c24593f35a8c86b846d483d530aa6d6f27a59ad082",
+        "sha1": "8bf02b981d91a18051a96d0087be50cac42a0106",
+        "sha512Integrity": "sha512-ZyP+yz10GQmuskEdwVUbo8fsVK3vuOGZ1ywua2t5OLterWOXFRq5ivEHHrPGMk9IexVF/403Op7PU6lcbK1IOw==",
+        "files": 60,
+        "installedFilesByteEqualToTarball": true,
+        "noUnmergedRoutingOrWave1Example": true
+      }
+    },
+    "qualificationVerification": {
+      "priorPackages": {
+        "baseline": {
+          "commit": "de137dedbd72d660657517251fe8a1051dd43465",
+          "tarballSha256": "ead8e2b2ee99d83c9a0d7e8f20e19cf6087a5ccdbc5007830e22df9519ecd3de",
+          "integrity": "sha512-Y1G3DqlT7PodXMEuWBSfOGSn5P+2ARyYhmezJkCt9a99rbAJDafRSmWtvB3fzn242V5OKMCso3Y7nYGaEP569A==",
+          "files": 60,
+          "extractedBytesMatchTarball": true
+        },
+        "head": {
+          "commit": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+          "tarballSha256": "ae3b48b9a6727e1849f3c49a22391401d5c768a0dc1bc4ba3978eee92cf01b20",
+          "integrity": "sha512-GTgF3h/FTyqMJlDLWEAUYY4TNrF5uoKMHc33qszTKSQATikA7eCY0m42qmcgx6c8YzMADzzoJB68RoSNxosroA==",
+          "files": 60,
+          "extractedBytesMatchTarball": true
+        }
+      },
+      "versionAlignment": {
+        "package.json": "0.6.1",
+        "package-lock.json": "0.6.1",
+        "package-lock.json packages root": "0.6.1",
+        "src/version.ts": "0.6.1",
+        "CHANGELOG newest heading": "0.6.1"
+      },
+      "failedAttempts": [
+        {
+          "result": "guard-stopped-before-install",
+          "retainedFiles": {
+            "pack.stderr": "1dbde109799b3e76e0913f85fd4b0a75f6f01825a49b94d32f92ada80abb49f8",
+            "pack.stdout": "41519dcd835fda32787f552dd5bcf0d9b0a84c9138f13927ab20212f80d85d1a"
+          }
+        },
+        {
+          "result": "harness-error-before-cli-execution",
+          "retainedFiles": {
+            "version.stderr": "aca91f904775ec12aaa5530483d80f67a10a81fa6b32fe9339bf4cc3244911e4",
+            "version.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "runtime-trace.jsonl": "3718b6e372a1936522ec59634f189c869c15c0b746081832673f3405e3c83369"
+          }
+        },
+        {
+          "result": "harness-fixture-prefix-error",
+          "retainedFiles": {
+            "version.stderr": "6f908d1da91bbcf94b59fa4f36559554c228c3349284f8a7822859279db66879",
+            "version.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "runtime-trace.jsonl": "973655d1084550e4a02a282d564ed390aa5633613cb34e19981a7ff2623260f2",
+            "package-lock.json": "7cf9233af99bc1b609f7cab71188c5035042cf4e55670426f8f354dd5b0f68a3",
+            "package.json": "a9a812f2dc78cafa44d0506a7575c202e353de820b097511a40d6c109850cae2",
+            "install.stdout": "eb8af5e9eb07a88b2e40ad55905d1a5de6a1e50ee729fdea56f8f68da120fd54",
+            "install.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "result": "dependency-cache-miss",
+          "retainedFiles": {
+            "install.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "install.stderr": "f39f83dec43a7e550535d2a364bd65edef7cb99570878522ffabdb04f98964be"
+          }
+        },
+        {
+          "result": "fixture-location-guard-stop",
+          "retainedFiles": {
+            "guide-smoke.stdout": "755f631c4faa4bec5d0996947d1041c0981a7e28d8c4adde240639545c4390d4",
+            "guide-smoke.stderr": "e4f12529f746d805ad482ab800bba788c40999b9fe8edcde7a2fb6c13c4d1e48",
+            "runtime-trace.jsonl": "7e9cec6ddc678902fe8019396a6efde8d0805698149a513f6f19561489e2354b"
+          }
+        },
+        {
+          "result": "nested-smoke-fixture-prefix-error",
+          "retainedFiles": {
+            "guide-smoke.stdout": "b3869e8e630365041d598573320df2dbe02e912e3766c2234c7628b5b6ee9b2d",
+            "guide-smoke.stderr": "8165d37d5f736260023886446dd2b4781a3de13665b686ce89e06f9ced5edb0d",
+            "runtime-trace.jsonl": "f2f82cf60f46173a636c36e5a60cb50ef61cac829be8ceed38ba8c4127b644f7",
+            "package-lock.json": "e9729bac3671d3d2d44587b3cc141fe8edad4e985cc2cf3310fb1a70edbfd141",
+            "package.json": "4d79637944de9be77acc1f0e8f6ac8bc974066ad28fb1a802eef39bbacd286dd"
+          }
+        }
+      ],
+      "mergedBaseTreeEqualsApprovedPR86Tree": true
+    },
+    "releasePatch": {
+      "path": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/release-candidate.patch",
+      "sha256": "656eea6f698be4497294723702766b27c3e44a705b96206f79612ae239dbb1b9"
+    },
+    "patchBytesEqualExactGitDiff": true,
+    "sourceWorkingBytesMatchPinnedHead": true,
+    "all24DeclaredArtifactHashesMatch": true,
+    "all3HelperHashesMatch": true,
+    "priorSourceReview": {
+      "path": "/Users/dean/Sandbox/subswitch-kimi/future-model-independent-review.json",
+      "sha256": "678aaf7445234bc36fcb071b87815d7e35d6b52a56c5a6925a4a76845a3e7aa0",
+      "decision": "approve_source_review",
+      "head": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca"
+    },
+    "priorPackageEvidence": {
+      "path": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa.json",
+      "sha256": "99c020a14a3e0a21676af75ba9c1a2d57abf36c57aaa8eb7b13a551c275e8908",
+      "headTarball": "ae3b48b9a6727e1849f3c49a22391401d5c768a0dc1bc4ba3978eee92cf01b20",
+      "baselineNpmIntegrityMatchesRecordedPublished060": true
+    },
+    "restoredInstalledDependencyTree": {
+      "packagesVerifiedAgainstLock": 20,
+      "extraInstalledLockEntries": [],
+      "rootLocalSelfDependencyOrInstallAbsent": true
+    }
+  },
+  "retainedFailuresAudit": [
+    {
+      "attempt": "guard-stopped-before-install",
+      "assessment": "Retained rejected tarball SHA2567788a4a18381618eae9f16203a6933effd73c141fbf7f87ddae526f97bf2e623 verified. It contains exactly27 forbidden dist/routing outputs; stale dist is preserved. Final tarball has60 reviewed files and none of these outputs. Clean current dist artifact bytes are constrained by comparison to reviewed PR86 artifact; compiler stale-output issue was caught before using that package."
+    },
+    {
+      "attempt": "harness-error-before-cli-execution",
+      "assessment": "Retained stderr confirms recursive trace logging RangeError through appendFileSync/writeFileSync. Current hashed guard uses captured rawTraceWrite to append without its wrapped fs path; observed final traces are valid and contain no blocked entries. Old helper source is not separately retained, so causal diagnosis rests on saved error stack plus corrected implementation, not an independently rerun reproduction."
+    },
+    {
+      "attempt": "harness-fixture-prefix-error",
+      "assessment": "Retained manifests/locks show unintended local subswitch self-dependency selected at ancestor repository; missing consumer CLI matches saved MODULE_NOT_FOUND. Transient self install preserved. Final root manifest/lock match assigned base except intended version fields; explicit private consumer manifest and npm --prefix ensure final install lands in owned consumer."
+    },
+    {
+      "attempt": "dependency-cache-miss",
+      "assessment": "Saved ENOTCACHED failure is consistent with only-if-cached dependency metadata unavailable. Final npm dependency resolution used empty owned npmrc/cache with normal registry fetching; no approval/security-denial reroute shown. Runtime CLI restrictions remained in place."
+    },
+    {
+      "attempt": "fixture-location-guard-stop",
+      "assessment": "Saved guard blocks loading a smoke binary in OS mktemp path outside owned QA root. Current Bash helper creates an explicit owned root/tmp template; it retains the runtime read restrictions. This is a corrected fixture location, not weakening the guard or evidence of a product fix."
+    },
+    {
+      "attempt": "nested-smoke-fixture-prefix-error",
+      "assessment": "Saved exit127 and transient manifest/lock identify the same ancestor npm selection after relocating smoke temp beneath repository. Final helper creates private fixture package.json before unchanged smoke install; final root metadata and20 installed locked dependencies are restored. Successful final two-startup log is preserved separately."
+    }
+  ],
+  "packageAndInstalledQa": {
+    "tarball": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs/subswitch-0.6.1.tgz",
+    "sha256": "ce2e0b261eb94856c55a38c24593f35a8c86b846d483d530aa6d6f27a59ad082",
+    "npmShasum": "8bf02b981d91a18051a96d0087be50cac42a0106",
+    "npmIntegrity": "sha512-ZyP+yz10GQmuskEdwVUbo8fsVK3vuOGZ1ywua2t5OLterWOXFRq5ivEHHrPGMk9IexVF/403Op7PU6lcbK1IOw==",
+    "inventoryEntries": 60,
+    "comparisonWithApprovedPR86": {
+      "added": [],
+      "removed": [],
+      "changed": [
+        "dist/version.js",
+        "package.json"
+      ]
+    },
+    "comparisonWithPublished060Artifact": {
+      "added": [],
+      "removed": [],
+      "changed": [
+        "README.md",
+        "dist/doctor.js",
+        "dist/models.js",
+        "dist/version.js",
+        "package.json"
+      ]
+    },
+    "installedPackageFilesEqualTarballBytes": true,
+    "consumerManifestPrivateAndOwned": true,
+    "installedCliVersionOutput": "0.6.1\n",
+    "modelsJsonVersionAndExplicitOwnedConfigVerified": true,
+    "configuredFutureAliasDisplayed": true,
+    "guardedRepositorySmoke": {
+      "scriptSourceUnchanged": true,
+      "healthChecks": 2,
+      "translationAvailableTrue": true,
+      "bothShutdownLogsObserved": true,
+      "smokeTempRemoved": true,
+      "runtimeGuardActivations": 9,
+      "runtimeTraceEvents": 5254,
+      "blockedEvents": 0,
+      "fixtureOriginRequests": 0
+    },
+    "helperReview": "Reviewed full runtime-guard.cjs, bash-fixtures.sh and release-smoke.py. Config enrichment and homedir override occur only in QA CLI children and stay under owned root; guard rejects outbound net/TLS and child commands instead of returning fake success. Real installed CLI still parses config, serves loopback health, prints metadata and executes init against fabricated fixture state.",
+    "installationQualification": "A locally built candidate tarball was installed in a new private consumer with npm registry dependency resolution and --ignore-scripts. This is not a clean installation of published subswitch@0.6.1, which is not yet released. Earlier PR86 artifact QA instead used an existing lockfile dependency tree symlink.",
+    "networkQualification": "Prior PR86 packaged QA reports TLS stubs2baseline/4head for its checks; those are fixture results, not real TLS/provider authorization/model availability. Current release smoke guard fails outbound net/TLS, and its fixture origin received0requests; only loopback health is exercised. No inference/native acceptance is established."
+  },
+  "authorCheckEvidence": {
+    "fullCheck": "Saved log973/973pass with typecheck, under shared nonblocking lock",
+    "postRestorationVersionCases": {
+      "authorReportedCases": 6,
+      "independentCheck": "Five final literals independently parsed; no focused test rerun by reviewer."
+    },
+    "build": "Saved npm prepack tsc successful; byte-compared final package",
+    "reviewerRerun": "No tests/build/install/pack/runtime reruns. Only read-only hashes/archives/source analysis and git diff --check."
+  },
+  "checks": [
+    {
+      "check": "Exact four-file source diff and direct parent",
+      "result": "pass"
+    },
+    {
+      "check": "Five-way version alignment",
+      "result": "all0.6.1"
+    },
+    {
+      "check": "Manifest/lock structural equality after onlyversion normalization",
+      "result": "pass"
+    },
+    {
+      "check": "Tarball SHA256/SHA1/SHA512, inventory sizes and installed byte equality",
+      "result": "pass"
+    },
+    {
+      "check": "Prior baseline/head tarballs and extracted files integrity/provenance",
+      "result": "pass"
+    },
+    {
+      "check": "Retained transient failure logs, metadata and rejected package",
+      "result": "consistent with report; final state corrected"
+    },
+    {
+      "command": "git diff --check 0e7b3df3b34847c06bc1679b0e8144c2363b89d7 3ed93e8b793eaeebadd9edacd3b9a5788b9cc498",
+      "exitCode": 0
+    }
+  ],
+  "boundaries": {
+    "sourceBranchSettingsEdits": false,
+    "authorCloneWrites": false,
+    "newRuntimeTestsInstallsProviderNativeRequests": false,
+    "actualNativeClientsAuthHistoryReads": false,
+    "sharedProxyClaudeOHFControls": false,
+    "goalsModelsPermissionsChanged": false,
+    "mergeTagPublishRelease": false,
+    "deniedReroute": false,
+    "privateArtifactsPreserved": true
+  },
+  "remainingGates": [
+    "Coordinator independently verifies current GitHub head/base/CI/threads and merge order.",
+    "Dean sign-off before tag/publish/release.",
+    "Recheck registry version availability/tag and use fully clean release checkout immediately before an authorized release.",
+    "After publication, verify registry artifact/provenance and perform clean published-version install/smoke.",
+    "Original released startup/native-session incident, live provider access and Kimi qualification remain unproven and outside this patch release."
+  ],
+  "nextAction": "Coordinator may record exact-head release-diff/source approval; preserve remaining release authorization and CI/registry/clean-checkout gates. Worker stops bounded review."
+}

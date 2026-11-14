@@ -1,0 +1,345 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-10-20T09:29:36.810673+00:00",
+  "workerThread": "01a13162-e803-7230-904c-b91d38edc9c7",
+  "assignment": "/Users/dean/Sandbox/.codex-orchestrator/kimi-native-auth-isolation-assignment.json",
+  "assignmentSha256": "a729efc501ecf6896c94ce9f8dbb47f2e61351a251443766f43a8558beeadc90",
+  "ownClone": "/Users/dean/Sandbox/subswitch-kimi",
+  "head": "6528f3f602307cfdfba277b2047a18825c1407fb",
+  "branch": "codex/native-messages-aggregation",
+  "authority": "Bounded read-only native subscription authentication/isolation investigation. Dean rejects API-key path. No key or environment binding requested; no live/login/implementation authority inferred.",
+  "conclusion": {
+    "supportedNoKeyThroughCurrentSubswitch": "NO",
+    "nativeKimiSubscriptionLoginSupported": "YES",
+    "isolatedNativeClientWithFreshOfficialLogin": "Feasible in principle for native-only use; not executed or fully qualified here.",
+    "reuseExistingLoginWithGuaranteedZeroSharedStateEffects": "NO supported zero-write guarantee found. Shared credential refresh/save/lock paths remain part of the native auth lifecycle.",
+    "newAdapterOrBridgeFeasibility": "UNKNOWN until a separately scoped integration contract and offline prototype preserve Subswitch HTTP/model/tool semantics. Not a configuration switch.",
+    "release061Dependency": "Independent. The reviewed0.6.1 release is the prior future-model alias/doctor fix and excludes routing PR81/85/87/88. Kimi native auth work neither becomes supported by that release nor must block its separate release process.",
+    "recommendedNextAction": "Keep the key-based runner preserved and inactive. Route a separate Kimi subscription-native destination design/implementation task before further through-Subswitch validation. Evaluate official opaque-auth CLI/ACP integration against caller-owned tool semantics; if it cannot satisfy the model-destination contract, establish a supported managed-provider SDK integration contract. Qualify offline before any bounded login/live phase."
+  },
+  "gateCorrection": {
+    "nativeGate": "e2e/gates/native-kimi-headless-live-2026-10-12.json",
+    "nativeGateSha256": "ba06661d7cf8ff9575e49c1218218b8c0ad247dd1e3495b30cc71f23774ed3cc",
+    "passedDate": "2026-10-12",
+    "clientVersion": "2.1.1",
+    "nativeTextAndOneUnpredictableFileReadPassed": true,
+    "originatingThroughSubswitch": false,
+    "providerWireProtocolCaptured": false,
+    "installedEntrypointMatchesPassedGate": true,
+    "installedEntrypointSha256": "2563a338c94868a34e1bfd2e5579067d5a472acf4cb0bf350a3bfe1092bbe59d",
+    "interpretation": "The passed native login/text/tool gate remains passed. It never demonstrated Subswitch destination OAuth, Messages/Responses compatibility or fallback. Current login status was not re-read; Dean reports the machine is authorized."
+  },
+  "actualAdapter": [
+    {
+      "path": "src/routing/destination-catalog.ts",
+      "line": 48,
+      "finding": "supportsNativeOAuth accepts only codex/chatgpt-codex and claude/claude-code; Kimi products are absent."
+    },
+    {
+      "path": "src/routing/routing-config.ts",
+      "line": 83,
+      "finding": "Configuration requires the native-oauth credential kind exactly when supportsNativeOAuth is true. Kimi native-oauth is rejected with credential_product_mismatch; env credential is the implemented Kimi path."
+    },
+    {
+      "path": "src/routing/profile-auth.ts",
+      "lines": [
+        126,
+        190,
+        201,
+        323
+      ],
+      "finding": "Native manager construction/get/refresh guard against unsupported Kimi OAuth before saved-auth access. Kimi env profile creates Bearer headers from its explicitly supplied environment credential. There is no Kimi CLI/ACP/SDK transport or token lifecycle here."
+    },
+    {
+      "path": "src/routing/destination-catalog.ts",
+      "lines": [
+        26,
+        104
+      ],
+      "finding": "Kimi destination catalog exposes Messages/Responses HTTP protocols. Official native CLI/ACP is an agent/session interface, not this raw model destination protocol."
+    },
+    {
+      "path": ".git/kimi-phase-a/core.mjs",
+      "finding": "The preserved runner deliberately targets that existing adapter, constructs credential.kind=env, and requires a coding-plan-key authorization binding. It cannot use native login without changing source/authorization/runtime assumptions. Dean has now rejected its key-based live path."
+    }
+  ],
+  "officialCurrentEvidence": {
+    "retrievedDateUTC": "2026-10-20",
+    "repository": "https://github.com/MoonshotAI/kimi-code",
+    "pinnedHead": "3079e9515f05f097a3f34afdc8ebe2b9b377bf0d",
+    "headCommitDate": "2026-10-20T09:21:18Z",
+    "savedPrimaryFiles": 25,
+    "manifest": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-native-auth-isolation/official-evidence-manifest.json",
+    "documentationUrls": {
+      "login": "https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-command.html",
+      "providers": "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/providers.html",
+      "data": "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/data-locations.html",
+      "environment": "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/env-vars.html",
+      "acp": "https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-acp.html",
+      "server": "https://www.kimi.com/code/docs/en/kimi-code-cli/reference/server-api.html",
+      "loop": "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/config-files.html"
+    },
+    "findings": [
+      {
+        "fact": "Kimi Code managed authentication is OAuth. The official CLI login/device-code flow stores and automatically refreshes native credentials; no API key is needed for the native client.",
+        "sources": [
+          "https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-command.html",
+          "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/providers.html"
+        ]
+      },
+      {
+        "fact": "KIMI_CODE_HOME relocates native configuration, credential files, sessions and logs. Instances sharing it share config/credentials. Generic .agents resources have a separate OS-home discovery root.",
+        "sources": [
+          "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/env-vars.html",
+          "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/data-locations.html",
+          "https://github.com/MoonshotAI/kimi-code/blob/3079e9515f05f097a3f34afdc8ebe2b9b377bf0d/packages/agent-core-v2/src/app/bootstrap/bootstrap.ts"
+        ]
+      },
+      {
+        "fact": "Official ACP uses a dedicated JSON-RPC stdin/stdout subprocess with session/prompt/tool/permission operations and native authentication. It is not a drop-in Messages or Responses model endpoint.",
+        "sources": [
+          "https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-acp.html"
+        ]
+      },
+      {
+        "fact": "The repository exports KimiForCodingProvider with homeDir/model/baseUrl and an opaque managed OAuth toolkit. Its native provider is type=kimi; it can refresh on401 and retry the request once. This is a useful official implementation reference, not evidence that the current Subswitch adapter already supports it.",
+        "sources": [
+          "https://github.com/MoonshotAI/kimi-code/blob/3079e9515f05f097a3f34afdc8ebe2b9b377bf0d/packages/node-sdk/src/kimi-code-model-provider.ts"
+        ]
+      },
+      {
+        "fact": "At this pinned head, node-sdk0.21.0 and OAuth toolkit0.4.0 are marked private:true. Their short READMEs refer to the monorepo; no reviewed standalone consumer compatibility promise was established. Do not infer public package availability or a stable supported plug-in from source exports alone. No registry install/probe was performed.",
+        "sources": [
+          "https://github.com/MoonshotAI/kimi-code/blob/3079e9515f05f097a3f34afdc8ebe2b9b377bf0d/packages/node-sdk/package.json",
+          "https://github.com/MoonshotAI/kimi-code/blob/3079e9515f05f097a3f34afdc8ebe2b9b377bf0d/packages/oauth/package.json",
+          "https://github.com/MoonshotAI/kimi-code/blob/3079e9515f05f097a3f34afdc8ebe2b9b377bf0d/packages/node-sdk/README.md"
+        ]
+      },
+      {
+        "fact": "Native ensureFresh can take a cross-process lock and persist refreshed tokens; token storage writes atomically. Reusing the current credential directory is intentionally shared behavior, not read-only isolation.",
+        "sources": [
+          "https://github.com/MoonshotAI/kimi-code/blob/3079e9515f05f097a3f34afdc8ebe2b9b377bf0d/packages/oauth/src/oauth-manager.ts",
+          "https://github.com/MoonshotAI/kimi-code/blob/3079e9515f05f097a3f34afdc8ebe2b9b377bf0d/packages/oauth/src/storage.ts"
+        ]
+      }
+    ]
+  },
+  "installedClient": {
+    "discovery": "PATH executable metadata and known distribution files only; never executed the CLI or loaded user config/auth/history.",
+    "shim": "/Users/dean/.nvm/versions/node/v22.22.3/bin/kimi",
+    "entrypoint": "/Users/dean/.nvm/versions/node/v22.22.3/lib/node_modules/@moonshot-ai/kimi-code/dist/main.mjs",
+    "packageVersion": "2.1.1",
+    "entrypointSha256": "2563a338c94868a34e1bfd2e5579067d5a472acf4cb0bf350a3bfe1092bbe59d",
+    "inventoryArtifact": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-native-auth-isolation/installed-runtime-inventory.json",
+    "distributionRegularFiles": 1188,
+    "distributionSymlinks": 1,
+    "distributionTreeSha256": "67fdcac7f19191ac811332df7d60fb3c6666e07c96b763b55d16091909f32080",
+    "nodeRuntime": {
+      "version": "v22.22.3",
+      "versions": {
+        "acorn": "8.16.0",
+        "ada": "2.9.2",
+        "amaro": "1.1.8",
+        "ares": "1.34.6",
+        "brotli": "1.1.0",
+        "cjs_module_lexer": "2.2.0",
+        "cldr": "48.0",
+        "icu": "78.2",
+        "llhttp": "9.3.1",
+        "modules": "127",
+        "napi": "10",
+        "nbytes": "0.1.3",
+        "ncrypto": "0.0.1",
+        "nghttp2": "1.64.0",
+        "node": "22.22.3",
+        "openssl": "3.5.6",
+        "simdjson": "4.5.0",
+        "simdutf": "6.4.2",
+        "sqlite": "3.51.3",
+        "tz": "2026a",
+        "undici": "6.24.1",
+        "unicode": "17.0",
+        "uv": "1.51.0",
+        "uvwasi": "0.0.23",
+        "v8": "12.4.254.21-node.56",
+        "zlib": "1.3.1-e00f703",
+        "zstd": "1.5.7"
+      },
+      "platform": "darwin",
+      "arch": "arm64",
+      "executable": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "executableSha256": "5d9d3872911e2340a43b707962e68143de8a4e8d54628845c0c4f2de1fb7cd5c"
+    },
+    "externalRuntimeDependenciesObserved": {
+      "ws": "8.22.0",
+      "qrcode": "1.5.4",
+      "node-pty": "1.1.0",
+      "@mariozechner/clipboard": "0.3.9"
+    },
+    "qualification": "Public current source and installed bundled version differ in SDK version. Installed runtime is separately inventoried; no upgrade or equality to current main is claimed."
+  },
+  "isolationAssessment": [
+    {
+      "surface": "Authentication state",
+      "status": "Unresolved for using the existing login without shared writes",
+      "finding": "An empty isolated home has no existing native login. Pointing credential storage at the original home can refresh/save/lock credentials there. No secret-free documented operation was found to attach the existing login to an independent writable home without copying/repurposing credentials.",
+      "safeDirection": "Future explicitly authorized official login in a new private home, with credentials kept opaque inside the native toolchain. No copying/extracting/printing existing tokens."
+    },
+    {
+      "surface": "Other native sessions",
+      "status": "Can isolate local state with prerequisites",
+      "finding": "Use a new cwd/session and fresh HOME, XDG roots, KIMI_CODE_HOME and TMPDIR, not continue/load/resume or shared native home. Verify OS-home discovery is also redirected or disabled; KIMI_CODE_HOME alone is insufficient.",
+      "uncertainty": "Fresh OAuth grant server-side multi-device behavior was not established. Local filesystem separation does not promise account/quota separation."
+    },
+    {
+      "surface": "Processes and ports",
+      "status": "Owned process feasible; not launched",
+      "finding": "Prefer a dedicated stdio ACP process if a bridge is chosen; no shared server is required by that interface. Any loopback relay gets its own captured OS-assigned port and owned capability, no shared-proxy discovery.",
+      "avoid": "No existing server shutdown/restart, server kill, token rotation, logout, session listing/resume/delete or browser remote-control attachment."
+    },
+    {
+      "surface": "Web/server mode",
+      "status": "Do not reuse existing instance",
+      "finding": "Official web mode registers per-home instances and uses a per-home server token. Rotation affects all instances sharing that home. It adds REST/WebSocket/session lifecycle rather than raw model API semantics.",
+      "source": "https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-command.html"
+    },
+    {
+      "surface": "Environment and ancillary network",
+      "status": "Positive explicit environment required",
+      "finding": "Drop inherited HTTP(S)/ALL_PROXY/NO_PROXY variants, provider keys/other-client routing variables, Node preloads and Kimi endpoint/model overrides. Set only reviewed fixed native settings. Disable auto-update, telemetry and cron; keep hooks/MCP/plugins/skills absent or explicitly owned. Pin executable, Node, complete distribution/dependencies/config before launch.",
+      "source": "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/env-vars.html"
+    },
+    {
+      "surface": "Native bootstrap side effects",
+      "status": "Must be qualified offline",
+      "finding": "Installed main runs update preflight even in prompt mode and installs/cleans native workers/caches during bootstrap. A future process needs its own temp/cache roots and documented KIMI_CODE_NO_AUTO_UPDATE=1. No version/help invocation was needed or performed here."
+    },
+    {
+      "surface": "Tool semantics",
+      "status": "Implementation prerequisite",
+      "finding": "Subswitch currently returns tool calls for the originating Claude/Codex client to execute. Native Kimi is a full agent and can execute its own tools; ACP exposes reverse RPC, permissions and terminal/filesystem capabilities. A bridge must preserve tool ownership, exact call IDs/results, streaming errors, cancellation and affinity without an extra autonomous agent loop or duplicate tool execution."
+    },
+    {
+      "surface": "Quota/account",
+      "status": "Shared subscription allowance",
+      "finding": "Inference under the same subscription would consume its entitlement. Filesystem/process isolation cannot promise separate quota. No usage/metadata/entitlement request was made."
+    }
+  ],
+  "newNativeCapFinding": {
+    "sources": [
+      "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/env-vars.html",
+      "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/config-files.html"
+    ],
+    "fact": "Documented KIMI_MODEL_MAX_COMPLETION_TOKENS, KIMI_LOOP_MAX_STEPS_PER_TURN and KIMI_LOOP_MAX_ATTEMPTS_PER_STEP controls are present in the installed2.1.1 bundle. The cap overlay feeds maxCompletionTokens; the Kimi wire trait encodes max_completion_tokens.",
+    "installedEvidence": [
+      "installed-configuration-excerpts.txt",
+      "installed-request-cap-excerpts.txt"
+    ],
+    "usefulCorrection": "Native per-step output limiting has a documented candidate; it is not simply missing because the CLI has no max-token flag. Prior native harness qualification remains pending, rather than being impossible for lack of any control.",
+    "notYetQualified": "No offline native transport execution or live wire capture here. Per-step caps/attempt controls do not alone prove a global six-dispatch ceiling, no lower-level retries,30s full-body deadlines or all-request accounting. The managed provider can refresh/retry on401; auxiliary requests, compaction, subagents and projection retries require explicit controls. Do not substitute headers-timeout for total request deadline."
+  },
+  "minimalFuturePlan": {
+    "feasibleNowWithoutImplementation": false,
+    "offlineFirst": [
+      "Select a maintained documented native interface and write an adapter contract preserving originating HTTP protocol/history and caller tool ownership. Verify that it is a model destination rather than a nested agent with changed semantics.",
+      "Implement and independently review an isolated no-key adapter/harness in a separate task. Use fabricated OAuth/storage and owned loopback transport to test missing auth, refresh/account ownership, request caps, retries/counts, errors, tool handoff, cancellation and cleanup.",
+      "Fingerprint the exact native runtime/distribution/dependencies and config. Prove positive environment, isolated OS/Kimi homes, no shared daemon/port/native store discovery, ancillary-network refusal and complete process/state cleanup."
+    ],
+    "authenticationPrerequisite": "Only after a separately authorized bounded authentication setup: official subscription login in the owned Kimi home, handled by its native toolchain with no token extraction. Device-code polling/auth endpoints need their own finite reviewed allowlist/deadline; the prior inference-only runner does not authorize them.",
+    "livePrerequisite": "Coordinator confirms product/region/model, isolated OAuth setup, protocol/continuity gates and amended executable plan after implementation review. Do not run the old key-bound runner or relabel a standalone native-client test as through-Subswitch validation.",
+    "budgetCeilingPreserved": {
+      "wholePlanInferenceAttempts": 18,
+      "wholePlanRequestedOutputTokens": 4608,
+      "perAttemptOutputTokens": 256,
+      "perInferenceRequestMs": 30000,
+      "phaseAMs": 180000,
+      "phaseBMs": 120000,
+      "phaseCMs": 120000,
+      "wholeInferencePlanMs": 420000,
+      "phaseAInferenceAttempts": 6,
+      "phaseARequestedOutputTokens": 1536,
+      "noReallocationOrNewBudget": true
+    },
+    "authority": "Proposal only, not execution approval. A new CLI bridge/protocol or OAuth setup is not automatically covered by the existing key-based phaseA implementation."
+  },
+  "releaseIndependence": {
+    "reviewedRelease": "0.6.1",
+    "reviewedReleaseHead": "3ed93e8b793eaeebadd9edacd3b9a5788b9cc498",
+    "localEvidence": "future-model-release-independent-review.json",
+    "localEvidenceSha256": "d9bed7b55f1211f84fe9901cd60a1c96ea2be132365cb606f25f31a916bf0a18",
+    "excludedRoutingPRs": [
+      81,
+      85,
+      87,
+      88
+    ],
+    "conclusion": "Keep the0.6.1 release process separate. Native Kimi auth remains new work and is not a release dependency for that reviewed scope. Current publish/signoff/registry status belongs to coordinator; this investigation did not inspect npm credentials or query registry."
+  },
+  "preservation": {
+    "head": "6528f3f602307cfdfba277b2047a18825c1407fb",
+    "branch": "codex/native-messages-aggregation",
+    "runnerArtifactsAllUnchanged": true,
+    "sourcePackageLockConfigIndexClean": true,
+    "runnerHash": "8085782448a74a8f3e87893b9948611b116988f9e6f8abca510ec23f46455198",
+    "runtimeHash": "9a746b7b4720025228f5c13e607911184d1aaed47c18b14e18dcfe6bc130a9b1",
+    "priorDeliverySha256": "194be107d47b12ddde7173d14cc106965f67a2666642745cfd36dd84a6b8e499",
+    "priorReportByteIdentical": true
+  },
+  "boundaries": {
+    "apiKeyRequested": false,
+    "actualHostSecretOrNativeConfigCredentialHistoryValueReads": false,
+    "tokenExtractionCopyRepurposing": false,
+    "actualProviderAuthUsageMetadataOrInferenceCalls": 0,
+    "nativeCliSdkProcessLaunches": 0,
+    "loginConfigOrNativeStateChanges": false,
+    "sharedProxyNativeSessionClaudeOHFControls": false,
+    "productSourceDependencyRunnerChanges": false,
+    "heavyTests": false,
+    "npmCredentialProbesInstallsPublishRetries": false,
+    "goalsModelsPermissionsChanged": false,
+    "deniedActionReroutes": false,
+    "networkScope": "Only public official GitHub API/raw source and web documentation reads."
+  },
+  "artifactRoot": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-native-auth-isolation",
+  "artifactSha256": {
+    "before-state.json": "60442b50820fc3538313cac9bc03239be2cd0721d55814a7a2f0a61b35e235f7",
+    "final-preservation.json": "f5726bd8c322b146ffc948e110b914a371314b9d6a0c6c641923c50d6db6bd8f",
+    "installed-code-excerpts.txt": "67d1bdd6fda7159d1daa663a0bf41255ba800c61088b9bc8efc380b686a9e87d",
+    "installed-configuration-excerpts.txt": "17ec83353b5915502834b239dfda276d8cac7eff3e10b0252e5c4c45a6c7934f",
+    "installed-headless-entry-excerpt.txt": "febba7bd736584beac9acd5a4faf2e80ed1ff0f563b87d6fcb970a4650f17152",
+    "installed-package.json": "61fa2d6169c8b6b46ca47f529d5ea52415735faddac5640e960d2c3a7a13d441",
+    "installed-request-cap-excerpts.txt": "48d9ee8745b88297428faa8296a45217bec951739c79ead2f89d330c6c0fd8b5",
+    "installed-runtime-inventory.json": "e44501322a332a5d4474244caac3359b62ab337e9e098c03dd7529d9cf4feb93",
+    "installed-source-search.json": "fac64208faf961ae7fb2c114acf193e557529d6c5e88999d383e9cd4054e16b0",
+    "local-evidence-manifest.json": "d91198befcf71d6a8156f2c852beb077c2dd2253a8b4b5505ee3d4a81944c392",
+    "official/docs/en/configuration/data-locations.md": "6d50aeb5e923e4a17186c73096fae18625797fdb367aeba8fa8d4614d26a428f",
+    "official/docs/en/configuration/env-vars.md": "96ca6bfac375cbceae1543091a66e13b815edd156860ac3c1d3d723103adb379",
+    "official/docs/en/configuration/providers.md": "84a267233ed7a6956962a9f5bff31593329291eed7a23b3b2a3efe4300250fd0",
+    "official/docs/en/reference/kimi-acp.md": "f3dad9c59f1b2a717fbf410a97f8812cc01590292e40deb2d9b7e54029acda75",
+    "official/docs/en/reference/kimi-command.md": "3e7888275daf64453f02d096fdf7ec22ff53f541ac90010379b61900a94da179",
+    "official/docs/en/reference/server-api.md": "156e13ad82e154319d84af8d0b5927da8100c6fda3a2a2b9ba4d4d31602a686f",
+    "official/packages/agent-core-v2/src/_base/utils/paths.ts": "f065703d40cf3662864ccc3ace747c772d9e3dfa49b13b46e84e3b5f37d2abf6",
+    "official/packages/agent-core-v2/src/app/bootstrap/bootstrap.ts": "b1f7938db6e65d7d19201657a202e6dd02898e14affe2180dd99da18b6bee173",
+    "official/packages/node-sdk/README.md": "9184c3d889139e2477191c5e3798bcb9d0c5764d47c7b0eaf76e91d4d25f9317",
+    "official/packages/node-sdk/package.json": "53f4f1c721242f131f35a3cf769b691efeb028d1003577307a489472bf4f2aa3",
+    "official/packages/node-sdk/src/auth.ts": "2ef0099eaa13a84ba31234cad38396864d447e14e2b17bc9895531316ccabc6a",
+    "official/packages/node-sdk/src/index.ts": "b6ec31a1f317da0918f57b63dbe68e95e7b2562974d492921d72458e4d9bf4fe",
+    "official/packages/node-sdk/src/kimi-code-model-provider.ts": "d1e5cdae53b7f8077dcfc7d41b50c7c6ecb9d158a9c77c5c597ee49915c77bcc",
+    "official/packages/node-sdk/src/kimi-harness.ts": "6926e0eca6df6b0ff90933346b73b344dc914c9f30aeecd169269d024f532421",
+    "official/packages/node-sdk/src/model-provider.ts": "92f01d80120c885c7db32debfbd05866dd9b42300d40d12a6c3c91dc2a0fac44",
+    "official/packages/node-sdk/src/session.ts": "ba83dc3e98bf5080a4c5a98c1197b3c805b17c44f8b368df6180359bfaa3cf8e",
+    "official/packages/oauth/README.md": "3512b2c418c9bb0e13a234bb7d7918f88ce7287ae42a304e645626e2b86cdef3",
+    "official/packages/oauth/package.json": "013bce52f93dcc00f32cb416c39935f5da2b8d1922913e0fbaec6cb470a1f969",
+    "official/packages/oauth/src/constants.ts": "030d2b874ba94b77a9b068ba502b6706addb7b90279122c8f91f5796d6205444",
+    "official/packages/oauth/src/managed-kimi-code.ts": "a15c02f3845f06ca7b8b811faa32863bce01d76c70403b0e60bae9c4063f019c",
+    "official/packages/oauth/src/oauth-manager.ts": "f723d502651ab20399b5e4921181bb81840e6fe6ed10df74bab70d943db3482a",
+    "official/packages/oauth/src/oauth-token-transaction.ts": "d7a4df183b241c92e9ef3757613e1f5a510105b883cdf9ebfddbe38ae4535873",
+    "official/packages/oauth/src/provider-credential.ts": "ce648fbc9c10d78649d045c455eff7cb13a5f3352273068c45d63679353d3d36",
+    "official/packages/oauth/src/region.ts": "e854c091fba5332c22996d91737ad04b9430aa1a9671ec8033f47f4687b38b1b",
+    "official/packages/oauth/src/storage.ts": "7881f9f3e7f7eeb334d4bc96ece494d4d7338fc1e10fb22a32752300ff0a350b",
+    "official-evidence-manifest.json": "b22c98e036f4be505073b71da3c4ba4a8ca11f3fdcd7bf2808b825edc67d91f1",
+    "official-head.json": "10f5ea72c6f9f04a1c2d85697b426b0c9e22c12531d93766b668c42e3530a78b",
+    "official-tree.json": "2336cf279984baec9bcba1e92f7a66448d947c38d33649b07c7f556912a8e54e"
+  },
+  "nextAction": "Stop this read-only investigation. Coordinator explains missing native-subscription destination implementation, supersedes the key-name wait, keeps0.6.1 independent, and scopes the no-key adapter contract/offline work. No live or native-login action from this report."
+}

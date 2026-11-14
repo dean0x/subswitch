@@ -1,0 +1,444 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-10-19T20:46:15.610936+00:00",
+  "task": "Isolated existing-plan Kimi live readiness preparation and official authentication research; no live execution",
+  "thread": "01a13162-e803-7230-904c-b91d38edc9c7",
+  "assignment": "/Users/dean/Sandbox/.codex-orchestrator/kimi-isolated-live-readiness-assignment.json",
+  "assignmentSha256": "3852ee0a7a13ba64f3cfa4cc52106cebf6d95730c0134526de64f873f8fbefbf",
+  "checkout": "/Users/dean/Sandbox/subswitch-kimi",
+  "ownBranchPreserved": "codex/native-messages-aggregation",
+  "ownHeadPreserved": "6528f3f602307cfdfba277b2047a18825c1407fb",
+  "status": "prepared_metadata_only; live execution blocked by missing approved coding-plan key reference and runner/native prerequisites",
+  "liveAuthorizedThisTurn": false,
+  "liveExecuted": false,
+  "mainFinding": "Kimi CLI subscription OAuth authorization and a Kimi Code Console coding-plan key are distinct credentials. Official third-party integration uses a separately issued Code Console key under Kimi Code membership benefits. Current Subswitch supports that env-key path; native Kimi OAuth is intentionally rejected before credential store access. No token extraction, conversion or implicit reuse is implemented or attempted.",
+  "authenticationOptions": [
+    {
+      "path": "Kimi Code membership coding-plan key",
+      "existingAdapterSupport": "yes, credential.kind=env -> Authorization: Bearer; product=kimi-code, region=global, billing=subscription",
+      "readiness": "missing approved environment-variable NAME and confirmation it references Code Console/global coding-plan key",
+      "qualification": "Code Console key supports third-party coding tools according to official docs. This is separate from Kimi Platform pay-as-you-go credentials; no Platform access/product or new spend allowance is selected."
+    },
+    {
+      "path": "Existing Kimi CLI OAuth session",
+      "existingAdapterSupport": "no; supportsNativeOAuth permits only codex/chatgpt-codex and claude/claude-code. ProfileAuth.get/refresh reject Kimi OAuth.",
+      "readiness": "cannot substitute for supported key or be read/copied this turn",
+      "futureOption": "A separately scoped native OAuth adapter could use official public source as a contract-research reference, but needs storage/account/region binding, refresh rotation/concurrency/cancellation and protocol qualification. Public source package @moonshot-ai/kimi-code-oauth currently marks private:true; it is not a drop-in supported published SDK contract."
+    },
+    {
+      "path": "Run authorized Kimi CLI directly or through ACP",
+      "existingAdapterSupport": "not a Subswitch Kimi HTTP destination gate",
+      "readiness": "not scheduled",
+      "qualification": "Would exercise native CLI orchestration using its own authentication, not existing relay API-key adapter. Oct12 direct CLI pass remains valid in its recorded scope."
+    }
+  ],
+  "officialSources": [
+    {
+      "url": "https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html",
+      "retrievedDate": "2026-10-19",
+      "supports": "Membership/Code benefits prerequisite; create separate API key in Code Console; overseas Anthropic-compatible root https://api.kimi.ai/coding/; kimi-for-coding remains a documented model alias with account/tier constraints.",
+      "localAction": "Did not execute the page scripts that edit real ~/.claude.json/settings or shell profiles. Only fixture plans are prepared."
+    },
+    {
+      "url": "https://www.kimi.com/code/docs/en/third-party-tools/codex.html",
+      "retrievedDate": "2026-10-19",
+      "supports": "Code Console key required; env_key is a reference name; overseas https://api.kimi.ai/coding/v1 versus China https://api.kimi.com/coding/v1; Responses wire protocol."
+    },
+    {
+      "url": "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/providers",
+      "retrievedDate": "2026-10-19",
+      "supports": "Managed Kimi Code login uses OAuth with its own automatic credential refresh. OAuth and configured API-key paths are separate."
+    },
+    {
+      "url": "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/env-vars",
+      "retrievedDate": "2026-10-19",
+      "supports": "KIMI_CODE_HOME relocates Kimi data; explicitly declared api_key_env is different from relying on ambient conventional key variables. OAuth managed endpoint variables differ from direct-key provider configuration."
+    },
+    {
+      "url": "https://www.kimi.com/code/docs/en/kimi-code-cli/configuration/data-locations.html",
+      "retrievedDate": "2026-10-19",
+      "supports": "KIMI_CODE_HOME relocates config, session, logs and OAuth data, while generic .agents resources can still use real OS home. Thus this variable alone does not establish complete user-resource isolation."
+    },
+    {
+      "url": "https://github.com/MoonshotAI/kimi-code/tree/5710c5496a213742ca0687f69dd8eeb5bde52dbf/packages/oauth",
+      "retrievedDate": "2026-10-19",
+      "supports": "Pinned official internal OAuth source; distinct OAuth refs/token storage, key/env/OAuth declaration conflicts, managed auth and refresh model. No local installed credential file was inspected."
+    }
+  ],
+  "officialPublicSourceSnapshot": {
+    "repo": "MoonshotAI/kimi-code",
+    "head": "5710c5496a213742ca0687f69dd8eeb5bde52dbf",
+    "commitDate": "2026-10-19T12:24:57Z",
+    "files": {
+      "packages/agent-core-v2/src/app/kosongConfig/oauthTokenAdapter.ts": {
+        "sha256": "90e94909f790cb66f5f2782790934037f324e008b8b0f6840cd870485fab2bf8",
+        "url": "https://github.com/MoonshotAI/kimi-code/blob/5710c5496a213742ca0687f69dd8eeb5bde52dbf/packages/agent-core-v2/src/app/kosongConfig/oauthTokenAdapter.ts"
+      },
+      "packages/oauth/README.md": {
+        "sha256": "3512b2c418c9bb0e13a234bb7d7918f88ce7287ae42a304e645626e2b86cdef3",
+        "url": "https://github.com/MoonshotAI/kimi-code/blob/5710c5496a213742ca0687f69dd8eeb5bde52dbf/packages/oauth/README.md"
+      },
+      "packages/oauth/package.json": {
+        "sha256": "013bce52f93dcc00f32cb416c39935f5da2b8d1922913e0fbaec6cb470a1f969",
+        "url": "https://github.com/MoonshotAI/kimi-code/blob/5710c5496a213742ca0687f69dd8eeb5bde52dbf/packages/oauth/package.json"
+      },
+      "packages/oauth/src/constants.ts": {
+        "sha256": "030d2b874ba94b77a9b068ba502b6706addb7b90279122c8f91f5796d6205444",
+        "url": "https://github.com/MoonshotAI/kimi-code/blob/5710c5496a213742ca0687f69dd8eeb5bde52dbf/packages/oauth/src/constants.ts"
+      },
+      "packages/oauth/src/managed-kimi-code.ts": {
+        "sha256": "a15c02f3845f06ca7b8b811faa32863bce01d76c70403b0e60bae9c4063f019c",
+        "url": "https://github.com/MoonshotAI/kimi-code/blob/5710c5496a213742ca0687f69dd8eeb5bde52dbf/packages/oauth/src/managed-kimi-code.ts"
+      },
+      "packages/oauth/src/provider-credential.ts": {
+        "sha256": "ce648fbc9c10d78649d045c455eff7cb13a5f3352273068c45d63679353d3d36",
+        "url": "https://github.com/MoonshotAI/kimi-code/blob/5710c5496a213742ca0687f69dd8eeb5bde52dbf/packages/oauth/src/provider-credential.ts"
+      },
+      "packages/oauth/src/storage.ts": {
+        "sha256": "7881f9f3e7f7eeb334d4bc96ece494d4d7338fc1e10fb22a32752300ff0a350b",
+        "url": "https://github.com/MoonshotAI/kimi-code/blob/5710c5496a213742ca0687f69dd8eeb5bde52dbf/packages/oauth/src/storage.ts"
+      }
+    },
+    "installedClientVersionVerifiedNow": false,
+    "limit": "Upstream current source/doc evidence is not proof that installed Oct12 CLI2.1.1 exposes every current flag/path/API."
+  },
+  "endpointAudit": {
+    "existingPlanRoot": "https://api.kimi.ai/coding",
+    "currentOfficialOverseasRoot": "https://api.kimi.ai/coding/",
+    "semanticDriftFound": false,
+    "reason": "Only trailing slash differs. destinationUrl strips one trailing slash before appending native protocol suffixes; official Codex overseas URL independently confirms api.kimi.ai. Some managed OAuth docs default to api.kimi.com; that is distinct from the explicit overseas API-key plan, not an instruction to change hosts.",
+    "exactMessagesDestination": "https://api.kimi.ai/coding/v1/messages",
+    "exactResponsesDestination": "https://api.kimi.ai/coding/v1/responses",
+    "allowlist": "Only these HTTPS origin/path pairs; no userinfo/query/fragment or redirects. A redirect/model/auth rejection must stop rather than follow to .com or try another product/model.",
+    "unchangedModel": "kimi-for-coding",
+    "unchangedEffort": "high",
+    "modelLimit": "Current docs still list alias, but alias backing model can evolve and entitlement is account-defined. Keep existing candidate and stop on rejection; do not substitute recommended k3/k3-256k or claim same-model equivalence."
+  },
+  "candidate": {
+    "sourceHead": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+    "pr": {
+      "baseRefName": "main",
+      "headRefName": "codex/wave1-kimi-failover",
+      "headRefOid": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+      "isDraft": true,
+      "number": 81,
+      "state": "OPEN",
+      "url": "https://github.com/dean0x/subswitch/pull/81"
+    },
+    "packageVersion": "0.6.0 source candidate, not a Kimi-capable published release claim",
+    "retainedTarball": "/Users/dean/Sandbox/subswitch-kimi/.git/restart-product-qa-artifacts/pre-fix-pr81.tgz",
+    "tarballSha256": "8916a3401265437a06a2eaa446d795f1c48f23b597b9ad0425eba6a183cddca8",
+    "provenance": {
+      "sourceSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+      "tarballSha256": "8916a3401265437a06a2eaa446d795f1c48f23b597b9ad0425eba6a183cddca8",
+      "npmIntegrity": "sha512-+GEMSV8uTPwpgTQZV0UxaUySMFbZQjVuCnupxx2rHWjlkXuxHBT+ayaCeL5GoMwGbxVpG889jKdKEBVg55+qBg==",
+      "cliSha256": "b2af94cfdbef186269a2c15d79e291130dcd8fef39f8ceffade276f6620fe403",
+      "packageLockSha256": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445",
+      "stagedProductionDependencies": {
+        "node_modules/@clack/core": "1.4.3",
+        "node_modules/@clack/prompts": "1.7.0",
+        "node_modules/eslint-visitor-keys": "5.0.1",
+        "node_modules/fast-string-truncated-width": "3.0.3",
+        "node_modules/fast-string-width": "3.0.2",
+        "node_modules/fast-wrap-ansi": "0.2.2",
+        "node_modules/picocolors": "1.1.1",
+        "node_modules/sisteransi": "1.0.5",
+        "node_modules/toml-eslint-parser": "1.0.3",
+        "node_modules/ws": "8.21.3",
+        "node_modules/zod": "4.4.3"
+      },
+      "packCommand": [
+        "npm",
+        "pack",
+        "--pack-destination",
+        "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-restart-product-qa-mwdcfhyz/pre-fix-pr81",
+        "--json"
+      ],
+      "packCwd": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-restart-product-qa-mwdcfhyz/pre-fix-pr81/source",
+      "savedTarball": "/Users/dean/Sandbox/subswitch-kimi/.git/restart-product-qa-artifacts/pre-fix-pr81.tgz",
+      "distFileTreeSha256": "9e556864f1803d5fc76c10c2173aa5721f0b8088504b5edca7b40b47643dac41",
+      "stagedRuntimeDependenciesSha256": "58330113cdfe672866ea724e5049d062e7b52cbd216589739fa26e8086e3718d"
+    },
+    "sourceHashes": {
+      "src/routing/profile-auth.ts": "a242cb8c2f1cd7d0cb5dd89343ac7829ae237d5faf228b61eddf18b5da4fbd62",
+      "src/routing/destination-catalog.ts": "0c7c6777e28ced040a108fdf0070a47b934f9325c99b910b2d0c5cee2051aca9",
+      "src/routing/request-adapter.ts": "f9ad0dc3e21f3a5ef8fcd9bed5170b06194bc4b53824c872940f2af8a69e3121",
+      "e2e/gates/kimi-readiness.md": "5bd8cd1ad6a8e1191d4ec7c9016ce465235b8298d88efcfb28a53eb41e7dae26",
+      "e2e/gates/kimi-probe.ts": "1d47666df53c9b1560c861288d0f8e8e53056701f0571ecde43c66130f59d630",
+      "e2e/gates/native-process.ts": "5f49722817a6810885b162b95bfdcd00497ffb0e91d39d1962fe407225fee9e1",
+      "e2e/gates/native-claude.ts": "435b662f78a760a5df80e29b0ffdad173fc293dca0573def64533ed8c5bcc90a",
+      "e2e/gates/native-codex.ts": "a95296e139df11e27528d8291d51dbe5141f97ab7ea8ac4dfd4eca960e945c5e",
+      "e2e/gates/native-production.ts": "b6a652bd465c9e95eca9cb4e16a51028f66bc5e97ac6847258fbc7046ba23ce4"
+    },
+    "ownCurrentHeadIsDifferent": true,
+    "recheckAtExecution": true,
+    "dependencyWarning": "PR81 candidate excludes PR85 cold-import fix and PR88 nonstream signed-content correction. Coordinator must identify and approve the exact source composition and continuity evidence before live execution; do not silently test own branch or claim those gates passed on PR81."
+  },
+  "priorGateAudit": {
+    "nativeKimiOct12": {
+      "path": "e2e/gates/native-kimi-headless-live-2026-10-12.json",
+      "success": true,
+      "clientVersion": "2.1.1",
+      "text": true,
+      "nativeFileRead": true,
+      "throughSubswitch": false,
+      "providerProtocolCaptured": false,
+      "oauthAdapterImplemented": false
+    },
+    "offlineKimiOct19": {
+      "path": "e2e/gates/kimi-offline-2026-10-19.json",
+      "cases": 27,
+      "passed": 27,
+      "vendorCalls": 0,
+      "nativeClients": 0,
+      "scope": "synthetic env-key/product/region/protocol/fallback/recovery/tool/cancel boundaries only"
+    },
+    "continuityPackageQa": "Separate local reports restart-product-qa.json and native-messages-aggregation-delivery.json qualify fabricated streaming and composed nonstream startup/restart paths; original real-client incident remains unproven.",
+    "instructionHistory": "http-followup-contract-report.json retains unsupported native Codex HTTP developer/system instruction ordering gate. Kimi auth binding alone does not resolve it."
+  },
+  "unchangedFiniteLimits": {
+    "maxKimiInferenceAttempts": 18,
+    "maxRequestedOutputTokens": 4608,
+    "maxPerAttemptOutputTokens": 256,
+    "phaseA": {
+      "attempts": 6,
+      "requestedOutputTokens": 1536,
+      "deadlineSeconds": 180,
+      "perOriginatingProtocolCalls": 3
+    },
+    "phaseBClaudeCode": {
+      "attempts": 6,
+      "requestedOutputTokens": 1536,
+      "deadlineSeconds": 120
+    },
+    "phaseCCodex": {
+      "attempts": 6,
+      "requestedOutputTokens": 1536,
+      "deadlineSeconds": 120
+    },
+    "perVendorRequestDeadlineSeconds": 30,
+    "overallDeadlineSeconds": 420,
+    "automaticRetries": 0,
+    "unusedNativeAllowanceReallocated": false,
+    "exclusions": [
+      "Kimi Platform/API billing",
+      "mainland hosts",
+      "k3/kimi-k3 model substitutions/equivalence",
+      "/usages or metadata polling",
+      "native OAuth refresh",
+      "deliberate quota exhaustion",
+      "credit/account changes",
+      "additional transports or live restart cases"
+    ]
+  },
+  "caseReadiness": [
+    {
+      "case": "A1 text, Messages and Responses",
+      "plannedLiveCalls": 2,
+      "status": "blocked pending supported key reference and bounded production relay runner",
+      "assertions": "exact named Kimi route/profile/model/effort, valid provider start/terminal, cap<=256, no direct CLI bypass"
+    },
+    {
+      "case": "A2 synthetic primary quota -> live Kimi Read tool, both protocols",
+      "plannedLiveCalls": 2,
+      "status": "blocked; fabricated primary emits recognized API429 insufficient_quota only",
+      "assertions": "one valid executable Read after terminal/replay publication, one owned nonce read; no OpenAI provider calls"
+    },
+    {
+      "case": "A3 live Kimi tool-result continuation while fabricated primary recovers, both protocols",
+      "plannedLiveCalls": 2,
+      "status": "blocked; test-owned routing clock drives only synthetic cooldown/recovery",
+      "assertions": "parked action stays on Kimi, new action uses recovered fake primary, exact tool result once, no duplicate read or internal continuation handle forwarded"
+    },
+    {
+      "case": "B/C native-client tool and same-child follow-up",
+      "plannedLiveCalls": "up to6each within unreallocated existing allowance",
+      "status": "not runnable from existing harnesses without further fixture work",
+      "assertions": "supported disposable client state and explicit output cap, local sentinel auth only, isolated relay/action binding, native tool/result and follow-up; no permission/model setting changes"
+    },
+    {
+      "case": "Proxy startup/restart or existing native session recovery",
+      "plannedAdditionalLiveCalls": 0,
+      "status": "not an explicit live case in current six-call phaseA plan; remains a separate continuity gate",
+      "assertions": "do not spend additional calls or claim fabricated package restart as live/native acceptance"
+    }
+  ],
+  "entrypointAudit": {
+    "probeKimi": "e2e/gates/kimi-probe.ts dispatches directly to vendor, selects k3 forCode and uses60s timeout; it neither routes through Subswitch nor implements finite total/native budgets. It is not the planned live relay entrypoint and was not executed.",
+    "nativeProduction": "e2e/gates/native-production.ts:38 reads existing Codex auth and copies token data; incompatible with this task boundary. Not reused or executed.",
+    "nativeClaude": "e2e/gates/native-claude.ts:138-155 uses a broader inherited environment helper, permission-mode dontAsk, no supported per-request output-token cap and a live timeout190s. These do not satisfy the120s phase/cap/isolation requirements as-is.",
+    "nativeCodex": "e2e/gates/native-codex.ts:227-269 uses disposable CODEX_HOME but helper still inherits ambient home/XDG/Kimi settings, writes permission/sandbox config and supplies no explicit per-request output cap. Native instruction-history gate is separate. Not executed.",
+    "isolatedNativeEnv": "e2e/gates/native-process.ts:60-65 spreads parent environment and only strips selected prefixes; it does not establish fresh HOME/XDG/Kimi state. Proposed correction is a small positive child-env allowlist with owned homes, not copying parent env or credential stores.",
+    "neededBoundedRunner": "Create/independently check a phaseA-only runner using the pinned production buildDeps/createProxyServer/SharedRouting and injected test clock + guarded fetch. Real loopback relay and fake primary bind0; explicit actions use that relay only. Pre-dispatch allowlist, redirect:error, strict per-protocol/per-phase/global attempt/output accounting and30s/180s/420s deadlines must wrap every attempted Kimi call. Current turn prepared metadata/config/admission checks only; no live runner or authorization was inferred."
+  },
+  "preparedMetadataPreflight": {
+    "entrypoint": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-isolated-live-preflight.mjs",
+    "sha256": "750fe394649f4b088b729f8ece77b6c3b13a0c77dff98f460838ff701ffff65b",
+    "executedCommand": "node --import tsx .git/kimi-isolated-live-preflight.mjs",
+    "exitCode": 0,
+    "result": {
+      "schemaVersion": 1,
+      "candidate": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+      "preparationOnly": true,
+      "configSchemaAccepted": true,
+      "fixtureRoot": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-live-prepare-HDbAeu",
+      "ports": [
+        63376,
+        63377
+      ],
+      "portMeaning": "Two temporary reservations only; no relay/native/vendor requests. Actual run must bind new :0 sockets and record those ports.",
+      "credentialReferenceName": null,
+      "credentialValueRead": false,
+      "nativeOrRelayChildProcessesStarted": 0,
+      "metadataGitSubprocesses": 1,
+      "providerCalls": 0,
+      "configSha256": "f6ba8f8ee4183526e22f6e15968ad556dbf2047d2cdb6785020b2b6366aef46e",
+      "fixtureConfigTemplate": {
+        "configVersion": 2,
+        "port": 63376,
+        "logLevel": "warn",
+        "anthropic": {
+          "baseUrl": "http://127.0.0.1:63377/disabled/anthropic"
+        },
+        "providers": {
+          "codex": {
+            "baseUrl": "http://127.0.0.1:63377/disabled/codex",
+            "oauthTokenUrl": "http://127.0.0.1:63377/disabled/refresh",
+            "authFile": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-live-prepare-HDbAeu/absent-codex-auth.json"
+          }
+        },
+        "codexIngress": {
+          "enabled": true,
+          "apiBaseUrl": "http://127.0.0.1:63377/disabled/api",
+          "subscriptionBaseUrl": "http://127.0.0.1:63377/disabled/subscription",
+          "claude": {
+            "baseUrl": "http://127.0.0.1:63377/disabled/claude",
+            "oauthTokenUrl": "http://127.0.0.1:63377/disabled/claude-refresh",
+            "authFile": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-live-prepare-HDbAeu/absent-claude-auth.json",
+            "configDir": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-live-prepare-HDbAeu/claude"
+          }
+        },
+        "accessProfiles": {
+          "kimi": {
+            "provider": "kimi",
+            "product": "kimi-code",
+            "region": "global",
+            "billing": "subscription",
+            "account": "isolated-kimi-code",
+            "baseUrl": "https://api.kimi.ai/coding",
+            "credential": {
+              "kind": "env",
+              "name": "REQUIRES_APPROVED_KIMI_CODE_KEY_NAME"
+            }
+          },
+          "fabricated": {
+            "provider": "codex",
+            "product": "openai-api",
+            "billing": "api",
+            "account": "fabricated-primary",
+            "baseUrl": "http://127.0.0.1:63377/primary",
+            "credential": {
+              "kind": "env",
+              "name": "FABRICATED_PRIMARY_KEY"
+            }
+          }
+        },
+        "routes": {
+          "kimi-direct": {
+            "clients": [
+              "claude-code",
+              "codex"
+            ],
+            "primary": {
+              "profile": "kimi",
+              "model": "kimi-for-coding",
+              "effort": "high"
+            }
+          },
+          "kimi-fallback": {
+            "clients": [
+              "claude-code",
+              "codex"
+            ],
+            "primary": {
+              "profile": "fabricated",
+              "model": "gpt-6-sol",
+              "effort": "high"
+            },
+            "fallbacks": [
+              {
+                "profile": "kimi",
+                "model": "kimi-for-coding",
+                "effort": "high"
+              }
+            ]
+          }
+        }
+      },
+      "clientEnvironmentPlan": {
+        "HOME": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-live-prepare-HDbAeu/home",
+        "XDG_CONFIG_HOME": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-live-prepare-HDbAeu/xdg",
+        "XDG_CACHE_HOME": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-live-prepare-HDbAeu/cache",
+        "CODEX_HOME": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-live-prepare-HDbAeu/codex",
+        "CLAUDE_CONFIG_DIR": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-live-prepare-HDbAeu/claude",
+        "KIMI_CODE_HOME": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-live-prepare-HDbAeu/kimi-code",
+        "SUBSWITCH_LIMIT_RECORDING": "0",
+        "SUBSWITCH_LIMIT_DIR": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-kimi-live-prepare-HDbAeu/limits"
+      },
+      "keyPropagation": "Future relay child alone receives the approved single key reference; future native children receive fabricated local sentinel credentials and an explicit allowlist, no inherited environment spread.",
+      "limits": {
+        "attemptsPerPhase": 6,
+        "attemptsTotal": 18,
+        "requestedTokens": 4608,
+        "outputTokensPerCall": 256,
+        "vendorTimeoutMs": 30000,
+        "phaseAMs": 180000,
+        "nativePhaseMs": 120000,
+        "overallMs": 420000
+      },
+      "pureBudgetTests": "18 simulated admissions hit the exact cap; 19th, absent/oversized token caps and wrong origin/path reject. No dispatch occurs in this script.",
+      "liveReadiness": "blocked: approved coding-plan key environment NAME and exact supported binding; bounded production-through-relay phase-A runner still required; native caps/isolation and instruction-history prerequisites remain unqualified",
+      "ownedFixtureRemoved": true,
+      "reservationSocketsClosed": true
+    },
+    "optionalMetadataOnlyCommand": "node --import tsx .git/kimi-isolated-live-preflight.mjs --credential-env-name <APPROVED_ENVIRONMENT_VARIABLE_NAME>",
+    "limit": "No --live mode exists. Preflight does not inspect even presence of key variables. It validates a fixture config with candidate-identical parser, reserves two distinct loopback ports temporarily, checks pure attempt/token/origin rejection and removes the fixture. It does not launch relay/native processes or enforce runtime deadlines in a real driver. Ports/paths are for this completed metadata test only; a real run generates fresh paths/ports."
+  },
+  "isolationAndCleanupDesign": {
+    "state": "new owner-only fixture root/home/XDG/cache/CLAUDE_CONFIG_DIR/CODEX_HOME/KIMI_CODE_HOME/work/client-state; no migrated profiles/history/OAuth files",
+    "keyScope": "approved coding-plan key resolved by its exact single env name only in future relay child; native clients receive fabricated incoming sentinel auth and positive env allowlist. No key values in config/log/report/argv. Parent environment never changed.",
+    "control": "do not use run-action shared-proxy discovery; bind explicit action control to newly created relay. Library listen0 records assigned ports; CLI serve needs nonzero port and alone cannot enforce this gate.",
+    "network": "only explicit external api.kimi.ai coding protocol paths plus owned primary loopback, all legacy/auth refresh endpoints fixture-loopback and absent owned auth paths; block redirects before credential-bearing dispatch",
+    "cleanup": "cancel/complete only owned actions, close owned request streams/sockets, terminate/wait only captured owned process group/PID, remove only generated fixture root; sanitize evidence to structural booleans/counts/version/pins and envNAME",
+    "preparedFixtureCleanup": "both reservation sockets closed and whole generated directory removed in finally; no actual client/relay process existed"
+  },
+  "exactRemainingInput": {
+    "userInput": "Name only of an environment variable holding an approved Kimi Code/global Code Console coding-plan key; confirm credential product/region. Do not send the key value. If only native OAuth login exists, say so; it cannot substitute in current adapter.",
+    "coordinatorPrerequisites": [
+      "Confirm exact supported credential binding and existing-plan live authorization after readiness review.",
+      "Select/recheck exact reviewed candidate/composition and separate continuity prerequisite evidence.",
+      "Assign/check finite production-through-relay phaseA driver before any external call; cap enforcement must reject oversized/missing native requests, never rewrite them.",
+      "Keep nativeB/C pending until supported client isolation/output-cap options are established without changing session permissions/models or touching existing state; keep HTTP instruction-ordering gate explicit."
+    ],
+    "duplicateUserQuestionSent": false,
+    "readyToRunLiveNow": false
+  },
+  "boundaries": {
+    "nativeCredentialOrHistoryRead": false,
+    "environmentSecretValuesRead": false,
+    "nativeCliInvocations": 0,
+    "providerInferenceAttempts": 0,
+    "providerMetadataOrAuthRequests": 0,
+    "loopbackReservationSockets": 2,
+    "nativeOrRelayChildrenStarted": 0,
+    "gitMetadataSubprocess": 1,
+    "parentEnvironmentChanged": false,
+    "sharedProxyClaudeOHFControlled": false,
+    "permissionModelGoalChanges": false,
+    "sourceOrBranchEdits": false,
+    "mergeTagPublish": false,
+    "deniedReroute": false,
+    "officialPublicDocumentationAndGithubRequestsOnly": true
+  },
+  "nextAction": "Stop this bounded preparation/research turn with report. Coordinator obtains the missing supported key NAME and routes the concrete runner/native prerequisites. No auth-store reuse, key creation, login, provider call or new budget is authorized by this report."
+}

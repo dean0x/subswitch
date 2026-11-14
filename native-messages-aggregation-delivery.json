@@ -1,0 +1,2405 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-19",
+  "thread": "01a13162-e803-7230-904c-b91d38edc9c7",
+  "task": "Resolve RESTART-QA-01: preserve signed native nonstream Messages content",
+  "assignment": "/Users/dean/Sandbox/.codex-orchestrator/native-messages-aggregation-assignment.json",
+  "checkout": "/Users/dean/Sandbox/subswitch-kimi",
+  "branch": "codex/native-messages-aggregation",
+  "base": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+  "head": "6528f3f602307cfdfba277b2047a18825c1407fb",
+  "status": "Implemented, verified, normally pushed; dependent draft PR88 open; all four exact-head CI jobs green; independent source review pending",
+  "pr": {
+    "number": 88,
+    "url": "https://github.com/dean0x/subswitch/pull/88",
+    "draft": true,
+    "baseBranch": "codex/wave1-kimi-failover",
+    "baseSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+    "headSHA": "6528f3f602307cfdfba277b2047a18825c1407fb",
+    "remoteHeadVerified": true,
+    "ci": {
+      "conclusion": "success",
+      "databaseId": 39277065687,
+      "event": "pull_request",
+      "headBranch": "codex/native-messages-aggregation",
+      "headSha": "6528f3f602307cfdfba277b2047a18825c1407fb",
+      "jobs": [
+        {
+          "completedAt": "2026-10-19T15:21:28Z",
+          "conclusion": "success",
+          "databaseId": 118144102946,
+          "name": "check (ubuntu-latest)",
+          "startedAt": "2026-10-19T15:20:39Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-10-19T15:20:41Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-19T15:20:40Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:42Z",
+              "conclusion": "success",
+              "name": "Checkout",
+              "number": 2,
+              "startedAt": "2026-10-19T15:20:41Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:46Z",
+              "conclusion": "success",
+              "name": "Set up Node",
+              "number": 3,
+              "startedAt": "2026-10-19T15:20:42Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:48Z",
+              "conclusion": "success",
+              "name": "Install dependencies",
+              "number": 4,
+              "startedAt": "2026-10-19T15:20:46Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:48Z",
+              "conclusion": "success",
+              "name": "Typecheck",
+              "number": 5,
+              "startedAt": "2026-10-19T15:20:48Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:22Z",
+              "conclusion": "success",
+              "name": "Test",
+              "number": 6,
+              "startedAt": "2026-10-19T15:20:48Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:23Z",
+              "conclusion": "success",
+              "name": "Build",
+              "number": 7,
+              "startedAt": "2026-10-19T15:21:22Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:26Z",
+              "conclusion": "success",
+              "name": "Smoke test tarball",
+              "number": 8,
+              "startedAt": "2026-10-19T15:21:23Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:27Z",
+              "conclusion": "success",
+              "name": "Post Set up Node",
+              "number": 15,
+              "startedAt": "2026-10-19T15:21:26Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:27Z",
+              "conclusion": "success",
+              "name": "Post Checkout",
+              "number": 16,
+              "startedAt": "2026-10-19T15:21:27Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:27Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 17,
+              "startedAt": "2026-10-19T15:21:27Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/dean0x/subswitch/actions/runs/39277065687/job/118144102946"
+        },
+        {
+          "completedAt": "2026-10-19T15:21:48Z",
+          "conclusion": "success",
+          "databaseId": 118144103252,
+          "name": "check (macos-latest, Node 24)",
+          "startedAt": "2026-10-19T15:20:48Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-10-19T15:20:49Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-19T15:20:49Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:51Z",
+              "conclusion": "success",
+              "name": "Checkout",
+              "number": 2,
+              "startedAt": "2026-10-19T15:20:49Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:54Z",
+              "conclusion": "success",
+              "name": "Set up Node",
+              "number": 3,
+              "startedAt": "2026-10-19T15:20:51Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:56Z",
+              "conclusion": "success",
+              "name": "Install dependencies",
+              "number": 4,
+              "startedAt": "2026-10-19T15:20:54Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:57Z",
+              "conclusion": "success",
+              "name": "Typecheck",
+              "number": 5,
+              "startedAt": "2026-10-19T15:20:56Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:38Z",
+              "conclusion": "success",
+              "name": "Test",
+              "number": 6,
+              "startedAt": "2026-10-19T15:20:57Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:39Z",
+              "conclusion": "success",
+              "name": "Build",
+              "number": 7,
+              "startedAt": "2026-10-19T15:21:38Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:44Z",
+              "conclusion": "success",
+              "name": "Smoke test tarball",
+              "number": 8,
+              "startedAt": "2026-10-19T15:21:39Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:44Z",
+              "conclusion": "success",
+              "name": "Post Set up Node",
+              "number": 15,
+              "startedAt": "2026-10-19T15:21:44Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:45Z",
+              "conclusion": "success",
+              "name": "Post Checkout",
+              "number": 16,
+              "startedAt": "2026-10-19T15:21:44Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:46Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 17,
+              "startedAt": "2026-10-19T15:21:45Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/dean0x/subswitch/actions/runs/39277065687/job/118144103252"
+        },
+        {
+          "completedAt": "2026-10-19T15:21:28Z",
+          "conclusion": "success",
+          "databaseId": 118144103399,
+          "name": "check (ubuntu-latest, Node 24)",
+          "startedAt": "2026-10-19T15:20:41Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-10-19T15:20:43Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-19T15:20:42Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:44Z",
+              "conclusion": "success",
+              "name": "Checkout",
+              "number": 2,
+              "startedAt": "2026-10-19T15:20:43Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:48Z",
+              "conclusion": "success",
+              "name": "Set up Node",
+              "number": 3,
+              "startedAt": "2026-10-19T15:20:44Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:51Z",
+              "conclusion": "success",
+              "name": "Install dependencies",
+              "number": 4,
+              "startedAt": "2026-10-19T15:20:48Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:52Z",
+              "conclusion": "success",
+              "name": "Typecheck",
+              "number": 5,
+              "startedAt": "2026-10-19T15:20:51Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:21Z",
+              "conclusion": "success",
+              "name": "Test",
+              "number": 6,
+              "startedAt": "2026-10-19T15:20:52Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:22Z",
+              "conclusion": "success",
+              "name": "Build",
+              "number": 7,
+              "startedAt": "2026-10-19T15:21:21Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:25Z",
+              "conclusion": "success",
+              "name": "Smoke test tarball",
+              "number": 8,
+              "startedAt": "2026-10-19T15:21:22Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:25Z",
+              "conclusion": "success",
+              "name": "Post Set up Node",
+              "number": 15,
+              "startedAt": "2026-10-19T15:21:25Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:26Z",
+              "conclusion": "success",
+              "name": "Post Checkout",
+              "number": 16,
+              "startedAt": "2026-10-19T15:21:25Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:26Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 17,
+              "startedAt": "2026-10-19T15:21:26Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/dean0x/subswitch/actions/runs/39277065687/job/118144103399"
+        },
+        {
+          "completedAt": "2026-10-19T15:21:36Z",
+          "conclusion": "success",
+          "databaseId": 118144103472,
+          "name": "check (macos-latest)",
+          "startedAt": "2026-10-19T15:20:45Z",
+          "status": "completed",
+          "steps": [
+            {
+              "completedAt": "2026-10-19T15:20:47Z",
+              "conclusion": "success",
+              "name": "Set up job",
+              "number": 1,
+              "startedAt": "2026-10-19T15:20:46Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:48Z",
+              "conclusion": "success",
+              "name": "Checkout",
+              "number": 2,
+              "startedAt": "2026-10-19T15:20:47Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:55Z",
+              "conclusion": "success",
+              "name": "Set up Node",
+              "number": 3,
+              "startedAt": "2026-10-19T15:20:48Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:56Z",
+              "conclusion": "success",
+              "name": "Install dependencies",
+              "number": 4,
+              "startedAt": "2026-10-19T15:20:55Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:20:57Z",
+              "conclusion": "success",
+              "name": "Typecheck",
+              "number": 5,
+              "startedAt": "2026-10-19T15:20:56Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:28Z",
+              "conclusion": "success",
+              "name": "Test",
+              "number": 6,
+              "startedAt": "2026-10-19T15:20:57Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:28Z",
+              "conclusion": "success",
+              "name": "Build",
+              "number": 7,
+              "startedAt": "2026-10-19T15:21:28Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:32Z",
+              "conclusion": "success",
+              "name": "Smoke test tarball",
+              "number": 8,
+              "startedAt": "2026-10-19T15:21:28Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:32Z",
+              "conclusion": "success",
+              "name": "Post Set up Node",
+              "number": 15,
+              "startedAt": "2026-10-19T15:21:32Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:33Z",
+              "conclusion": "success",
+              "name": "Post Checkout",
+              "number": 16,
+              "startedAt": "2026-10-19T15:21:32Z",
+              "status": "completed"
+            },
+            {
+              "completedAt": "2026-10-19T15:21:33Z",
+              "conclusion": "success",
+              "name": "Complete job",
+              "number": 17,
+              "startedAt": "2026-10-19T15:21:33Z",
+              "status": "completed"
+            }
+          ],
+          "url": "https://github.com/dean0x/subswitch/actions/runs/39277065687/job/118144103472"
+        }
+      ],
+      "status": "completed",
+      "url": "https://github.com/dean0x/subswitch/actions/runs/39277065687"
+    },
+    "evidenceComment": "https://github.com/dean0x/subswitch/pull/88#issuecomment-6270760005",
+    "snapshot": {
+      "baseRefName": "codex/wave1-kimi-failover",
+      "baseRefOid": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+      "headRefName": "codex/native-messages-aggregation",
+      "headRefOid": "6528f3f602307cfdfba277b2047a18825c1407fb",
+      "isDraft": true,
+      "mergeable": "MERGEABLE",
+      "number": 88,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-19T15:21:28Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39277065687/job/118144102946",
+          "name": "check (ubuntu-latest)",
+          "startedAt": "2026-10-19T15:20:39Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-19T15:21:36Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39277065687/job/118144103472",
+          "name": "check (macos-latest)",
+          "startedAt": "2026-10-19T15:20:45Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-19T15:21:28Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39277065687/job/118144103399",
+          "name": "check (ubuntu-latest, Node 24)",
+          "startedAt": "2026-10-19T15:20:41Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-19T15:21:48Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39277065687/job/118144103252",
+          "name": "check (macos-latest, Node 24)",
+          "startedAt": "2026-10-19T15:20:48Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        }
+      ],
+      "url": "https://github.com/dean0x/subswitch/pull/88"
+    }
+  },
+  "implementation": [
+    "Extend the existing shared aggregateFrames helper; preserve thinking/signature deltas and redacted block payloads without rewriting signed fields.",
+    "Retain initial native text/tool argument content and known block metadata; accumulate subsequent fragments.",
+    "Assemble closed blocks by original content index because the native validator defers executable tool stops until its terminal.",
+    "Reject unsupported closed block types and unclosed native thinking/redacted blocks; retain malformed tool JSON errors and existing legacy empty translated-block handling.",
+    "Native provider validation, 64MiB HTTP/nonstream response bound, credentials, replay publication and scope checks unchanged."
+  ],
+  "changedFiles": {
+    "src/codex-response.ts": {
+      "sha256": "67e00ae2f3db5eb2a8961d5723c811f4ff0eb73de3cce4e47720af9dc093a405",
+      "gitBlob": "5e05ad106d7003c45d246a05a5a8f56d9314de81"
+    },
+    "test/fixtures/native-messages.ts": {
+      "sha256": "b0c4adc496b99a9505abb7612fc4a708ca3a2d1557512bd6d8be349831bb1509",
+      "gitBlob": "e7dcb8b9a6e3db90eedc19df03b013d1ef7924f1"
+    },
+    "test/integration/native-messages-aggregation.test.ts": {
+      "sha256": "4bdf1e0f30381cb5d3098089b07a89d308fb918c7b9e78495b1dd3d546e1818a",
+      "gitBlob": "bd0db25bfc9ce4f93b3fbbf6bdd2233d8edc53ef"
+    },
+    "test/unit/native-messages-aggregation.test.ts": {
+      "sha256": "2556b077ae77a6217ee10b50e212170d3eb4f58f08a09ed38687d35be8d9acd6",
+      "gitBlob": "17c779332f9cfeb9109e9aaeba9ac7f7318110e8"
+    }
+  },
+  "checks": [
+    {
+      "command": "node --import tsx --test --test-timeout=30000 test/unit/native-messages-aggregation.test.ts test/integration/native-messages-aggregation.test.ts",
+      "stage": "before production fix",
+      "exitCode": 1,
+      "tests": 11,
+      "pass": 5,
+      "fail": 6,
+      "expectedFailure": true,
+      "log": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-red.log",
+      "detail": "All five new aggregation unit cases and nonstream production HTTP exact-content case fail; streaming and malformed upstream controls pass."
+    },
+    {
+      "command": "node --import tsx --test --test-timeout=30000 test/unit/native-messages-aggregation.test.ts test/integration/native-messages-aggregation.test.ts test/unit/codex-response.test.ts",
+      "stage": "after fix",
+      "exitCode": 0,
+      "tests": 59,
+      "log": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-focused.log"
+    },
+    {
+      "command": "npm run typecheck",
+      "exitCode": 0,
+      "log": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-typecheck.log"
+    },
+    {
+      "command": "/usr/bin/lockf -t 0 /Users/dean/Sandbox/.devflow/locks/heavy-tests.lock npm run check",
+      "attempt": 1,
+      "exitCode": 75,
+      "detail": "Shared heavy-suite lock busy; no tests started and no bypass attempted.",
+      "log": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-check.log"
+    },
+    {
+      "command": "/usr/bin/lockf -t 0 /Users/dean/Sandbox/.devflow/locks/heavy-tests.lock npm run check",
+      "attempt": 2,
+      "exitCode": 0,
+      "tests": 1169,
+      "pass": 1169,
+      "fail": 0,
+      "log": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-check-attempt2.log"
+    },
+    {
+      "command": "npm run build",
+      "exitCode": 0,
+      "log": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-build.log"
+    },
+    {
+      "command": "git diff --check; git diff --cached --check",
+      "exitCode": 0
+    },
+    {
+      "command": "python3 .git/native-messages-aggregation-qa-prepare.py",
+      "exitCode": 0,
+      "detail": "Five pinned npm-pack artifacts; exact installed lockfile-verified production dependencies; no installs or registry resolution."
+    },
+    {
+      "command": "node .git/native-messages-aggregation-qa.mjs",
+      "exitCode": 0,
+      "cases": 14,
+      "detail": "Nine complete passes, three expected PR81 cold-import rejections, two explicitly failing-preservation unfixed controls. No unexpected product/driver failure."
+    },
+    {
+      "command": "node .git/native-messages-aggregation-qa.mjs --reservations",
+      "exitCode": 0,
+      "cases": 1,
+      "detail": "PR85 plus exact aggregation fix: pending conflict, cancellation-release and foreign-scope rejection pass."
+    },
+    {
+      "command": "gh run watch 39277065687 --interval 10 --exit-status",
+      "exitCode": 0,
+      "headSHA": "6528f3f602307cfdfba277b2047a18825c1407fb",
+      "jobs": 4,
+      "result": "Linux/macOS, Node22.15/24; typecheck, full tests, build and tarball smoke all pass."
+    }
+  ],
+  "productionHttpRegression": {
+    "returnedFieldsExact": true,
+    "multiFragmentThinkingAndSignatures": true,
+    "initialBlockContentPreserved": true,
+    "textToolOrderPreserved": true,
+    "returnedHistoryUsedForToolResultAndNextTurn": true,
+    "streamingControl": true,
+    "tamperAndOtherProfileRejectedBeforeDispatch": true,
+    "missingTerminalUnsupportedBlockUnsupportedDeltaMalformedToolRejected": true,
+    "nativeOrProviderAcceptance": false
+  },
+  "packagedQa": {
+    "inputs": {
+      "qaRoot": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1",
+      "node": "v22.22.3",
+      "runtimeDependencyStaging": "Copy exact installed production package directories after verifying lockfile versions; no npm install, registry resolution or dependency scripts.",
+      "artifacts": {
+        "released-main": {
+          "sourceSHA": "de137dedbd72d660657517251fe8a1051dd43465",
+          "aggregationFixHead": null,
+          "codexResponseSha256": "b5083793ebca2e122584e744f4ad0e3abd11957a37f8a05ff97e44823a353fee",
+          "tarball": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/released-main/subswitch-0.6.0.tgz",
+          "tarballSha256": "ead8e2b2ee99d83c9a0d7e8f20e19cf6087a5ccdbc5007830e22df9519ecd3de",
+          "npmIntegrity": "sha512-Y1G3DqlT7PodXMEuWBSfOGSn5P+2ARyYhmezJkCt9a99rbAJDafRSmWtvB3fzn242V5OKMCso3Y7nYGaEP569A==",
+          "packageDirectory": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/released-main/runtime/package",
+          "cli": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/released-main/runtime/package/dist/cli.js",
+          "cliSha256": "7d3976cf306eadd90c5af84246cfddb5c104a7ebc82344d8f391f11e564e1fee",
+          "packageLockSha256": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445",
+          "packCommand": [
+            "npm",
+            "pack",
+            "--pack-destination",
+            "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/released-main",
+            "--json"
+          ],
+          "packCwd": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/released-main/source",
+          "packLog": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/released-main/pack.log",
+          "stagedProductionDependencies": {
+            "node_modules/@clack/core": "1.4.3",
+            "node_modules/@clack/prompts": "1.7.0",
+            "node_modules/eslint-visitor-keys": "5.0.1",
+            "node_modules/fast-string-truncated-width": "3.0.3",
+            "node_modules/fast-string-width": "3.0.2",
+            "node_modules/fast-wrap-ansi": "0.2.2",
+            "node_modules/picocolors": "1.1.1",
+            "node_modules/sisteransi": "1.0.5",
+            "node_modules/toml-eslint-parser": "1.0.3",
+            "node_modules/ws": "8.21.3",
+            "node_modules/zod": "4.4.3"
+          },
+          "retainedTarball": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-artifacts/released-main.tgz",
+          "distTree": {
+            "files": 56,
+            "sha256": "56fa2fd69cd5eefd8e4c93c8e0678861a4d546ec4fb5260c4a64680d1510db55"
+          },
+          "runtimeDependenciesTree": {
+            "files": 795,
+            "sha256": "24d1ad8a631687bffabccd2c0ff6c56e74f5e442c0466b470938fda5480bb53d"
+          }
+        },
+        "pre-fix-pr81": {
+          "sourceSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+          "aggregationFixHead": null,
+          "codexResponseSha256": "b8cb232ac1d15d046559c7df10bafe0b32c14e3a24424f604e2fc9e31ae2c04a",
+          "tarball": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/pre-fix-pr81/subswitch-0.6.0.tgz",
+          "tarballSha256": "8916a3401265437a06a2eaa446d795f1c48f23b597b9ad0425eba6a183cddca8",
+          "npmIntegrity": "sha512-+GEMSV8uTPwpgTQZV0UxaUySMFbZQjVuCnupxx2rHWjlkXuxHBT+ayaCeL5GoMwGbxVpG889jKdKEBVg55+qBg==",
+          "packageDirectory": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/pre-fix-pr81/runtime/package",
+          "cli": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/pre-fix-pr81/runtime/package/dist/cli.js",
+          "cliSha256": "b2af94cfdbef186269a2c15d79e291130dcd8fef39f8ceffade276f6620fe403",
+          "packageLockSha256": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445",
+          "packCommand": [
+            "npm",
+            "pack",
+            "--pack-destination",
+            "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/pre-fix-pr81",
+            "--json"
+          ],
+          "packCwd": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/pre-fix-pr81/source",
+          "packLog": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/pre-fix-pr81/pack.log",
+          "stagedProductionDependencies": {
+            "node_modules/@clack/core": "1.4.3",
+            "node_modules/@clack/prompts": "1.7.0",
+            "node_modules/eslint-visitor-keys": "5.0.1",
+            "node_modules/fast-string-truncated-width": "3.0.3",
+            "node_modules/fast-string-width": "3.0.2",
+            "node_modules/fast-wrap-ansi": "0.2.2",
+            "node_modules/picocolors": "1.1.1",
+            "node_modules/sisteransi": "1.0.5",
+            "node_modules/toml-eslint-parser": "1.0.3",
+            "node_modules/ws": "8.21.3",
+            "node_modules/zod": "4.4.3"
+          },
+          "retainedTarball": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-artifacts/pre-fix-pr81.tgz",
+          "distTree": {
+            "files": 90,
+            "sha256": "ef7fb8b3a915621710ecb98d8220b8ea246e1cb7c3a5bd0a5a8101019d397197"
+          },
+          "runtimeDependenciesTree": {
+            "files": 795,
+            "sha256": "24d1ad8a631687bffabccd2c0ff6c56e74f5e442c0466b470938fda5480bb53d"
+          }
+        },
+        "candidate-pr85": {
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "aggregationFixHead": null,
+          "codexResponseSha256": "b8cb232ac1d15d046559c7df10bafe0b32c14e3a24424f604e2fc9e31ae2c04a",
+          "tarball": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/candidate-pr85/subswitch-0.6.0.tgz",
+          "tarballSha256": "16a795ff3c9c45f6c1eeb1162a231bc7a034122c512bf4439e9f29ef7350f873",
+          "npmIntegrity": "sha512-BwoZZMvP4MsJu8AbbVL76W6OHzv7FnyBJPzvdX5JwrY0rGupoOsrRPLJHHJFfxE5ofyY3bjfoEJqScz539p2ow==",
+          "packageDirectory": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/candidate-pr85/runtime/package",
+          "cli": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/candidate-pr85/runtime/package/dist/cli.js",
+          "cliSha256": "b2af94cfdbef186269a2c15d79e291130dcd8fef39f8ceffade276f6620fe403",
+          "packageLockSha256": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445",
+          "packCommand": [
+            "npm",
+            "pack",
+            "--pack-destination",
+            "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/candidate-pr85",
+            "--json"
+          ],
+          "packCwd": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/candidate-pr85/source",
+          "packLog": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/candidate-pr85/pack.log",
+          "stagedProductionDependencies": {
+            "node_modules/@clack/core": "1.4.3",
+            "node_modules/@clack/prompts": "1.7.0",
+            "node_modules/eslint-visitor-keys": "5.0.1",
+            "node_modules/fast-string-truncated-width": "3.0.3",
+            "node_modules/fast-string-width": "3.0.2",
+            "node_modules/fast-wrap-ansi": "0.2.2",
+            "node_modules/picocolors": "1.1.1",
+            "node_modules/sisteransi": "1.0.5",
+            "node_modules/toml-eslint-parser": "1.0.3",
+            "node_modules/ws": "8.21.3",
+            "node_modules/zod": "4.4.3"
+          },
+          "retainedTarball": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-artifacts/candidate-pr85.tgz",
+          "distTree": {
+            "files": 91,
+            "sha256": "394e509bbfb4505f130b14cb48f68cdaceea76d5f6bcaed32d63b936a6c89f78"
+          },
+          "runtimeDependenciesTree": {
+            "files": 795,
+            "sha256": "24d1ad8a631687bffabccd2c0ff6c56e74f5e442c0466b470938fda5480bb53d"
+          }
+        },
+        "fixed-pr81": {
+          "sourceSHA": "6528f3f602307cfdfba277b2047a18825c1407fb",
+          "aggregationFixHead": "6528f3f602307cfdfba277b2047a18825c1407fb",
+          "codexResponseSha256": "67e00ae2f3db5eb2a8961d5723c811f4ff0eb73de3cce4e47720af9dc093a405",
+          "tarball": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr81/subswitch-0.6.0.tgz",
+          "tarballSha256": "1f3c821b92351bb1f6686379798c56cc4eed1f0ea4b58fc3c5b59193f508cff2",
+          "npmIntegrity": "sha512-Lx67cTQe/wQO3ssb0QrhNk6g4hkXgJCKRTklhc6baAL+qV2ouFG4tELiqTwRq6lkWc8Id9XoSPaqng87+rWucA==",
+          "packageDirectory": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr81/runtime/package",
+          "cli": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr81/runtime/package/dist/cli.js",
+          "cliSha256": "b2af94cfdbef186269a2c15d79e291130dcd8fef39f8ceffade276f6620fe403",
+          "packageLockSha256": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445",
+          "packCommand": [
+            "npm",
+            "pack",
+            "--pack-destination",
+            "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr81",
+            "--json"
+          ],
+          "packCwd": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr81/source",
+          "packLog": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr81/pack.log",
+          "stagedProductionDependencies": {
+            "node_modules/@clack/core": "1.4.3",
+            "node_modules/@clack/prompts": "1.7.0",
+            "node_modules/eslint-visitor-keys": "5.0.1",
+            "node_modules/fast-string-truncated-width": "3.0.3",
+            "node_modules/fast-string-width": "3.0.2",
+            "node_modules/fast-wrap-ansi": "0.2.2",
+            "node_modules/picocolors": "1.1.1",
+            "node_modules/sisteransi": "1.0.5",
+            "node_modules/toml-eslint-parser": "1.0.3",
+            "node_modules/ws": "8.21.3",
+            "node_modules/zod": "4.4.3"
+          },
+          "retainedTarball": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-artifacts/fixed-pr81.tgz",
+          "distTree": {
+            "files": 90,
+            "sha256": "223b4f4fbee487498f6e286ad1888ff899a54c16c2ab66043484a428f0b34364"
+          },
+          "runtimeDependenciesTree": {
+            "files": 795,
+            "sha256": "24d1ad8a631687bffabccd2c0ff6c56e74f5e442c0466b470938fda5480bb53d"
+          }
+        },
+        "fixed-pr85": {
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "aggregationFixHead": "6528f3f602307cfdfba277b2047a18825c1407fb",
+          "codexResponseSha256": "67e00ae2f3db5eb2a8961d5723c811f4ff0eb73de3cce4e47720af9dc093a405",
+          "tarball": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr85/subswitch-0.6.0.tgz",
+          "tarballSha256": "40f089b02c3c5981565f9e9fe0efd81dc656ab9a449b599efd5f27864aa84e96",
+          "npmIntegrity": "sha512-y5puDOHnOmzYsfYqj1h6ypl+QhB8vaQ6r4lW93gxF0/GHHVA7MCinpab9pR8LeY9P0Vm9lD7P9l8ERPeePDeYQ==",
+          "packageDirectory": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr85/runtime/package",
+          "cli": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr85/runtime/package/dist/cli.js",
+          "cliSha256": "b2af94cfdbef186269a2c15d79e291130dcd8fef39f8ceffade276f6620fe403",
+          "packageLockSha256": "ba88b2ca947953d34c7f569ebfc3c847198aaab4bd90d9a651298f9df8190445",
+          "packCommand": [
+            "npm",
+            "pack",
+            "--pack-destination",
+            "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr85",
+            "--json"
+          ],
+          "packCwd": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr85/source",
+          "packLog": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1/fixed-pr85/pack.log",
+          "stagedProductionDependencies": {
+            "node_modules/@clack/core": "1.4.3",
+            "node_modules/@clack/prompts": "1.7.0",
+            "node_modules/eslint-visitor-keys": "5.0.1",
+            "node_modules/fast-string-truncated-width": "3.0.3",
+            "node_modules/fast-string-width": "3.0.2",
+            "node_modules/fast-wrap-ansi": "0.2.2",
+            "node_modules/picocolors": "1.1.1",
+            "node_modules/sisteransi": "1.0.5",
+            "node_modules/toml-eslint-parser": "1.0.3",
+            "node_modules/ws": "8.21.3",
+            "node_modules/zod": "4.4.3"
+          },
+          "retainedTarball": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-artifacts/fixed-pr85.tgz",
+          "distTree": {
+            "files": 91,
+            "sha256": "61311037dd468d745b1097cc4f0614beae4b76aa20d6b3ddaa64b46080080a50"
+          },
+          "runtimeDependenciesTree": {
+            "files": 795,
+            "sha256": "24d1ad8a631687bffabccd2c0ff6c56e74f5e442c0466b470938fda5480bb53d"
+          }
+        }
+      }
+    },
+    "matrix": {
+      "sourceHead": "6528f3f602307cfdfba277b2047a18825c1407fb",
+      "results": [
+        {
+          "id": "released-main-ordinary-json",
+          "sourceSHA": "de137dedbd72d660657517251fe8a1051dd43465",
+          "path": "ordinary",
+          "stream": false,
+          "result": "passed",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3614,
+            3615
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 5,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "fd38e6d73bf442ce14bb5e158ef51613b2f817d0f7afdb8816bac9076d942a74"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "a1488e50cf0fa5d73541669051616db7ac5e0e73b69a4d5b7b77d7115d3ca42b"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "004b67d272aae63319621dcb23519424c96affc47457b83b5738653443a808cb"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "b66cd6cf6b139e97dd32b2b651c36e0e04cb6763c9cece04ec0b3db7db15b412"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "ce86112eba317bcb4e80404c578d6bfee18f231e2073a811667e10afe3466574"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "history-created-before-startup",
+              "historySha256": "fd38e6d73bf442ce14bb5e158ef51613b2f817d0f7afdb8816bac9076d942a74",
+              "completedTool": true
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "a1488e50cf0fa5d73541669051616db7ac5e0e73b69a4d5b7b77d7115d3ca42b",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "004b67d272aae63319621dcb23519424c96affc47457b83b5738653443a808cb",
+              "completedTool": true
+            },
+            {
+              "phase": "full-history-after-restart",
+              "historySha256": "b66cd6cf6b139e97dd32b2b651c36e0e04cb6763c9cece04ec0b3db7db15b412",
+              "completedTool": true
+            },
+            {
+              "phase": "next-message-after-restart",
+              "historySha256": "ce86112eba317bcb4e80404c578d6bfee18f231e2073a811667e10afe3466574",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "released-main-ordinary-stream",
+          "sourceSHA": "de137dedbd72d660657517251fe8a1051dd43465",
+          "path": "ordinary",
+          "stream": true,
+          "result": "passed",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3616,
+            3625
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 5,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "60c3ac95de4e95aaa2341cd66af3f117e983c59f8bf11c377eeb4a42418adbef"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "7f254f09ab8c5b17807936d8cea152195370adcd5740e73a11212760319e5983"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "6590314b24232fedb5555cdbab7851019532fe57acda082732155f64f4629509"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "f2b4e427f10fca7c445ef298172af608a523577adcced4db40fa1fc12213b64b"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "ddc965f624096ad0b09b813633fab0f7cdd0c54b5e86a5497522803720c8151b"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "history-created-before-startup",
+              "historySha256": "60c3ac95de4e95aaa2341cd66af3f117e983c59f8bf11c377eeb4a42418adbef",
+              "completedTool": true
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "7f254f09ab8c5b17807936d8cea152195370adcd5740e73a11212760319e5983",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "6590314b24232fedb5555cdbab7851019532fe57acda082732155f64f4629509",
+              "completedTool": true
+            },
+            {
+              "phase": "full-history-after-restart",
+              "historySha256": "f2b4e427f10fca7c445ef298172af608a523577adcced4db40fa1fc12213b64b",
+              "completedTool": true
+            },
+            {
+              "phase": "next-message-after-restart",
+              "historySha256": "ddc965f624096ad0b09b813633fab0f7cdd0c54b5e86a5497522803720c8151b",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "pre-fix-pr81-explicit-json",
+          "sourceSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+          "path": "explicit",
+          "stream": false,
+          "result": "expected-unfixed-signed-history-loss",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3633,
+            3635
+          ],
+          "clientSignedHistoryPreserved": false,
+          "baselineRestartMaskedByContentLoss": true,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 4,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "c22f5366896d3749c2485464a5b720b2050c3e0aa8b31e55bf51c4fd389f397e"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "eba61be56f2b6ed532af88b40cdb9b7df84758fc542e4c2c7921ae2e68f98bfa"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "c1f555ab30bd866fe1198caff0f554a49d2d910ff4044f9b98f622c065c77a2f"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "be2c927b43a9cdd2d5b592b18e6ed7f682e12f922a223887ade8fbe7fdae161a"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "b7230bc4cf462fd73391f82ac3d7bf248e499f80a14bfa6a79db0c2c762e1e0e"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "eba61be56f2b6ed532af88b40cdb9b7df84758fc542e4c2c7921ae2e68f98bfa",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "c1f555ab30bd866fe1198caff0f554a49d2d910ff4044f9b98f622c065c77a2f",
+              "completedTool": true
+            },
+            {
+              "phase": "full-history-after-restart",
+              "historySha256": "be2c927b43a9cdd2d5b592b18e6ed7f682e12f922a223887ade8fbe7fdae161a",
+              "completedTool": true
+            },
+            {
+              "phase": "next-message-after-restart",
+              "historySha256": "b7230bc4cf462fd73391f82ac3d7bf248e499f80a14bfa6a79db0c2c762e1e0e",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "pre-fix-pr81-explicit-stream",
+          "sourceSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+          "path": "explicit",
+          "stream": true,
+          "result": "expected-before-fix-rejection-reproduced",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3637,
+            3638
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 2,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "2d3634cfc78829fbda3dd08b29f10cbc836961c041212ef82c79b7042e416bc9"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "de1b58e46885737210ebe6568755dfee4e9e68e4955d1b2192a4ccb4ddfd3363"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "35464c96deaf0949d5341adf8e4595a625b1be22b4f9074c8669f84e7f60b831"
+            },
+            {
+              "phase": "returned-history-tamper-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "77338f1d397a34694284e97b1c598200322da8ac69f5c3b7545105b2226ecfb3"
+            },
+            {
+              "phase": "returned-history-scope-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "ecad995d65488a46646422c659dc8706c042b21f1f79bbafc8734ed71ddab564"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "25cc5b8870d32359969d44661b92bb2e037d417bcd452ffbd526d5ba29ddc7ea"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "f26dc5b9c73e93db6ee87c52cbfbf22829344755402a618074909030479df154"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "de1b58e46885737210ebe6568755dfee4e9e68e4955d1b2192a4ccb4ddfd3363",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "35464c96deaf0949d5341adf8e4595a625b1be22b4f9074c8669f84e7f60b831",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "candidate-pr85-ordinary-json",
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "path": "ordinary",
+          "stream": false,
+          "result": "passed",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3648,
+            3662
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 5,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "156fc44b125f602a8e2a3fa65639ea35facb584b3e160aedf68bc61631b276a7"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "8a9b3ac0777caa703aff25b747781ec2b74232bf727e97060abfc014610e934d"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "74ae6dc67ba2388a09e354b80765d20d5779066be5dbba152a34cb1612b98e18"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "27615702987458f82d47a1fc1bfa1099db756934ab27038ae3ad15f0dd3f1958"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "04041ce741f0f3a688584bafbe7d1766edb423bd0bef4f09b50610e736e2d9d5"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "history-created-before-startup",
+              "historySha256": "156fc44b125f602a8e2a3fa65639ea35facb584b3e160aedf68bc61631b276a7",
+              "completedTool": true
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "8a9b3ac0777caa703aff25b747781ec2b74232bf727e97060abfc014610e934d",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "74ae6dc67ba2388a09e354b80765d20d5779066be5dbba152a34cb1612b98e18",
+              "completedTool": true
+            },
+            {
+              "phase": "full-history-after-restart",
+              "historySha256": "27615702987458f82d47a1fc1bfa1099db756934ab27038ae3ad15f0dd3f1958",
+              "completedTool": true
+            },
+            {
+              "phase": "next-message-after-restart",
+              "historySha256": "04041ce741f0f3a688584bafbe7d1766edb423bd0bef4f09b50610e736e2d9d5",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "candidate-pr85-ordinary-stream",
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "path": "ordinary",
+          "stream": true,
+          "result": "passed",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3663,
+            3665
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 5,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "0aa8a13b96cd4602b093855a1be18dc336ac1d07508273585d200d28fa7cc3df"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "d50d0d633e7cbb29f3eb47fa4f7aa19fe81013f8126e0c54772cdf97c7926322"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "e80e8f0eef90e20f0bca987101d3bd0d94c05422ee801b498f22357804fc0a6c"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "76d95766044e1a8a9e97eaf348a164de4eb3ce1295c53c929628732439152aba"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "5388f9052751f18ad7728d38a807004ef9fe3afc29f7f1f2f13176a0b617fa2e"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "history-created-before-startup",
+              "historySha256": "0aa8a13b96cd4602b093855a1be18dc336ac1d07508273585d200d28fa7cc3df",
+              "completedTool": true
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "d50d0d633e7cbb29f3eb47fa4f7aa19fe81013f8126e0c54772cdf97c7926322",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "e80e8f0eef90e20f0bca987101d3bd0d94c05422ee801b498f22357804fc0a6c",
+              "completedTool": true
+            },
+            {
+              "phase": "full-history-after-restart",
+              "historySha256": "76d95766044e1a8a9e97eaf348a164de4eb3ce1295c53c929628732439152aba",
+              "completedTool": true
+            },
+            {
+              "phase": "next-message-after-restart",
+              "historySha256": "5388f9052751f18ad7728d38a807004ef9fe3afc29f7f1f2f13176a0b617fa2e",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "candidate-pr85-explicit-json",
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "path": "explicit",
+          "stream": false,
+          "result": "expected-unfixed-signed-history-loss",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3667,
+            3668
+          ],
+          "clientSignedHistoryPreserved": false,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 5,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "88da1c123d8e431fae27fb71e7936e8b080152c949b44ee3bd8f24839dec8c5f"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "9147ebedab850032ea19cedfee3a9e6a219758a7702e1fde6b1a6e8a093be488"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "a9ed81bb9deeb6ce3b0b2972a4570738d987bb38d32c2bd0791db27197e5c02d"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "abf977875427776b5d4a6ededbc11e8534526aee5e485283315240f17d4cc31c"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "da100200a60db43882d823cf7299f34899336f78d3cabf77da02fab32111efde"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "history-created-before-startup",
+              "historySha256": "88da1c123d8e431fae27fb71e7936e8b080152c949b44ee3bd8f24839dec8c5f",
+              "completedTool": true
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "9147ebedab850032ea19cedfee3a9e6a219758a7702e1fde6b1a6e8a093be488",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "a9ed81bb9deeb6ce3b0b2972a4570738d987bb38d32c2bd0791db27197e5c02d",
+              "completedTool": true
+            },
+            {
+              "phase": "full-history-after-restart",
+              "historySha256": "abf977875427776b5d4a6ededbc11e8534526aee5e485283315240f17d4cc31c",
+              "completedTool": true
+            },
+            {
+              "phase": "next-message-after-restart",
+              "historySha256": "da100200a60db43882d823cf7299f34899336f78d3cabf77da02fab32111efde",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "candidate-pr85-explicit-stream",
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "path": "explicit",
+          "stream": true,
+          "result": "passed",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3669,
+            3671
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 5,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "185219450afd2bdd358912c3f0302279561e12b8f396d6dab50b89d63cbd1db5"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "1ff35d1288a3a394f01860dd9b66854b6cd28de6f5a35f871cbb56c34e987922"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "b137da0398eb84c9ec91c0c410d333c39de02529e093ddf9b3606cc48a9eac64"
+            },
+            {
+              "phase": "returned-history-tamper-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "8310b1d4648a2fc55bba7f14f21889133d99980d25a5d7bd6d5d74d54848c4a3"
+            },
+            {
+              "phase": "returned-history-scope-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "e86f304bde5365ed36609f732cac648e02c4a603c05fe6070a26471e32274a40"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "274fe269be18c68f5dab8702ceacb4305de1343b89d4723cef91f13efcb120ef"
+            },
+            {
+              "phase": "returned-history-tamper-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "a72b081029eb74851415f7044dfc4a43cb3b7c423ef8c2874dd6c0451c3f72e7"
+            },
+            {
+              "phase": "returned-history-scope-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "09028c6903f90f94166c54363861414f9384ba40e8ddb6a58384ef2711b012cf"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "ed6f14b377462cd9b2cf02df7ff7e06d26241bd67c0c2003c897deaacd3319bf"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "history-created-before-startup",
+              "historySha256": "185219450afd2bdd358912c3f0302279561e12b8f396d6dab50b89d63cbd1db5",
+              "completedTool": true
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "1ff35d1288a3a394f01860dd9b66854b6cd28de6f5a35f871cbb56c34e987922",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "b137da0398eb84c9ec91c0c410d333c39de02529e093ddf9b3606cc48a9eac64",
+              "completedTool": true
+            },
+            {
+              "phase": "full-history-after-restart",
+              "historySha256": "274fe269be18c68f5dab8702ceacb4305de1343b89d4723cef91f13efcb120ef",
+              "completedTool": true
+            },
+            {
+              "phase": "next-message-after-restart",
+              "historySha256": "ed6f14b377462cd9b2cf02df7ff7e06d26241bd67c0c2003c897deaacd3319bf",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "fixed-pr81-explicit-json",
+          "sourceSHA": "6528f3f602307cfdfba277b2047a18825c1407fb",
+          "path": "explicit",
+          "stream": false,
+          "result": "expected-before-fix-rejection-reproduced",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3672,
+            3673
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 2,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "cfeea69e63ea1fdabcfd6072b88e7a07490cabb147f50a36c6b385c3739e224f"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "5f605550f96a0289fbb65bf40334dad7fc85f388deb4c285c7aee6db0efc9117"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "7796e7dea87f058fe6b161f66a73455f7240cbb50b5f6240cac9a65e530d0892"
+            },
+            {
+              "phase": "returned-history-tamper-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "4763f58f9aae429917e6eb50d8de0b7164cd6af404f1a5e0f07257bd6099e77a"
+            },
+            {
+              "phase": "returned-history-scope-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "6a4f92f2114cbb1a4ff892699b464501f8f7f808a31bc5bcfdf7ce9975847553"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "9c0bccd1f589bece5b7c6582e33467c6db4e6477e1e5854ff1236c7ece8d12bc"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "6c24dc935e55fee9fa2c48974caba4dc47e67ec074a935573362cf638e0f5110"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "5f605550f96a0289fbb65bf40334dad7fc85f388deb4c285c7aee6db0efc9117",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "7796e7dea87f058fe6b161f66a73455f7240cbb50b5f6240cac9a65e530d0892",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "fixed-pr81-explicit-stream",
+          "sourceSHA": "6528f3f602307cfdfba277b2047a18825c1407fb",
+          "path": "explicit",
+          "stream": true,
+          "result": "expected-before-fix-rejection-reproduced",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3675,
+            3676
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 2,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "167539815a5f716d214e4d225e68906cfaa460fe42f8b0646018009df12c2165"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "1c3bd33535f65e176f7d543db9128e2cc922bb3d42b4e5da68926b19168b5a66"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "a2c9872be333ca8be41b2f2a468286a5d26c42bc6775968b7c16c2581f1cd3da"
+            },
+            {
+              "phase": "returned-history-tamper-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "5a380b5e07c9d7d5b60d0577c5e36383c95b8325fd5f1e29308564d5967635fb"
+            },
+            {
+              "phase": "returned-history-scope-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "dd6d430884b851db3a2a564f1eb321ac83019653f9ebb38427412c820b3eb1c6"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "cbfc5298c5167041d92a751420b37694339b129d227ff99f83ca42de1a4f41a7"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "1d3b22446e9225ed1108a36f849cb62008af2b5ac8dfb0a77efbc919a87d1db3"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "1c3bd33535f65e176f7d543db9128e2cc922bb3d42b4e5da68926b19168b5a66",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "a2c9872be333ca8be41b2f2a468286a5d26c42bc6775968b7c16c2581f1cd3da",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "fixed-pr85-ordinary-json",
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "path": "ordinary",
+          "stream": false,
+          "result": "passed",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3687,
+            3689
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 5,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "adde4aa8cd47b47a5c8c213da869daeac7c9ba6ecd96feeff3c36a2672383bf6"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "cab5617b73c60c8805a27a78230ba984c46234092bc856fb352a0f9af1979e20"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "678553816e7b54a7cd9f6f48e2e5fc64690e5c8d9ea67aca1862e26cef4d7a3d"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "dece168cca31f9fc5266b9362797928d1456d4928ef195611b10063613868878"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "1752a8469bf62e681e025ecb66d236062e54e90b3e8d25b330a57663e67f16fc"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "history-created-before-startup",
+              "historySha256": "adde4aa8cd47b47a5c8c213da869daeac7c9ba6ecd96feeff3c36a2672383bf6",
+              "completedTool": true
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "cab5617b73c60c8805a27a78230ba984c46234092bc856fb352a0f9af1979e20",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "678553816e7b54a7cd9f6f48e2e5fc64690e5c8d9ea67aca1862e26cef4d7a3d",
+              "completedTool": true
+            },
+            {
+              "phase": "full-history-after-restart",
+              "historySha256": "dece168cca31f9fc5266b9362797928d1456d4928ef195611b10063613868878",
+              "completedTool": true
+            },
+            {
+              "phase": "next-message-after-restart",
+              "historySha256": "1752a8469bf62e681e025ecb66d236062e54e90b3e8d25b330a57663e67f16fc",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "fixed-pr85-ordinary-stream",
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "path": "ordinary",
+          "stream": true,
+          "result": "passed",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3692,
+            3693
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 5,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "52fb6c3edefd2892b390f19a0c5e02deb833635bf9d770a0185c72f709558e65"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "e230373bab5dd4d25f4ff0df7daad525bab75094e0a2973d0c9e7b7550dc5ba7"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "a0959c324e319a404eeb774b6265cb0b769f6c390a972ad37140a957a5a833d1"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "549dc2f1b76cc4212066ceedc1ae941ae3609ab91a30e3da1e8698b198da399d"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "eb9a83db0fdee3deda4b223613ad2614bf849e34c2772456614fa18a45cb95e3"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "history-created-before-startup",
+              "historySha256": "52fb6c3edefd2892b390f19a0c5e02deb833635bf9d770a0185c72f709558e65",
+              "completedTool": true
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "e230373bab5dd4d25f4ff0df7daad525bab75094e0a2973d0c9e7b7550dc5ba7",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "a0959c324e319a404eeb774b6265cb0b769f6c390a972ad37140a957a5a833d1",
+              "completedTool": true
+            },
+            {
+              "phase": "full-history-after-restart",
+              "historySha256": "549dc2f1b76cc4212066ceedc1ae941ae3609ab91a30e3da1e8698b198da399d",
+              "completedTool": true
+            },
+            {
+              "phase": "next-message-after-restart",
+              "historySha256": "eb9a83db0fdee3deda4b223613ad2614bf849e34c2772456614fa18a45cb95e3",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "fixed-pr85-explicit-json",
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "path": "explicit",
+          "stream": false,
+          "result": "passed",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3695,
+            3701
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 5,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "87b9b5194db8e871b0e6f89fd6a0c9794e372b7d0d30b8d6f6395f455fdfa283"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "10bf0919463a8ca8e5b5b3ad9ef80fe6cc8f11dbc21d8d6cd8f19672c0553b1c"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "8e18cc460c2a9f3b7df7432b99a874ee63fbbc2d46f60935e1e8e2cabbe1db13"
+            },
+            {
+              "phase": "returned-history-tamper-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "f0b86334a99d315c5d12b4c0a41dde49d43dac4738524b4395bd4d7ee0bc56ad"
+            },
+            {
+              "phase": "returned-history-scope-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "d0e71ce9f62c292f102b0c72255a729de24d7eccd11147884d40b1446912fab5"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "4c71437d2fa5eda940a595e46d9682a8cc0374e40e84d9280f62e102ab166fe3"
+            },
+            {
+              "phase": "returned-history-tamper-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "2189e1dd8d7566a3a21d5a1cc41e3980d88280a299527d6d784ded10657c7473"
+            },
+            {
+              "phase": "returned-history-scope-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "ef9cc7af021d18a242c6eaccd2d3f5d4490ec02160035233bb9ba5468021c5c1"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "7b2fd6b783ace68061cb73eff93ce179190c6b80d406ad5a21cf9d051f091521"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "history-created-before-startup",
+              "historySha256": "87b9b5194db8e871b0e6f89fd6a0c9794e372b7d0d30b8d6f6395f455fdfa283",
+              "completedTool": true
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "10bf0919463a8ca8e5b5b3ad9ef80fe6cc8f11dbc21d8d6cd8f19672c0553b1c",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "8e18cc460c2a9f3b7df7432b99a874ee63fbbc2d46f60935e1e8e2cabbe1db13",
+              "completedTool": true
+            },
+            {
+              "phase": "full-history-after-restart",
+              "historySha256": "4c71437d2fa5eda940a595e46d9682a8cc0374e40e84d9280f62e102ab166fe3",
+              "completedTool": true
+            },
+            {
+              "phase": "next-message-after-restart",
+              "historySha256": "7b2fd6b783ace68061cb73eff93ce179190c6b80d406ad5a21cf9d051f091521",
+              "completedTool": true
+            }
+          ]
+        },
+        {
+          "id": "fixed-pr85-explicit-stream",
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "path": "explicit",
+          "stream": true,
+          "result": "passed",
+          "toolExecutions": 1,
+          "cleanShutdowns": 2,
+          "fixturePids": [
+            3705,
+            3713
+          ],
+          "clientSignedHistoryPreserved": true,
+          "baselineRestartMaskedByContentLoss": false,
+          "freshProcessAndSamePort": true,
+          "clientHistoryUnchangedByRestart": true,
+          "signedHistoryExactAtUpstream": true,
+          "authBindingVerified": true,
+          "completedToolNotDuplicated": true,
+          "upstreamCalls": 5,
+          "requests": [
+            {
+              "phase": "history-created-before-startup",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "0ee897cd60da5bed6e71f44039f8aff111a94e105f6652f5bc96f86d78c1ee3d"
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "e60f9e7d65ad8bdc5cbcf8501596b5ae5e984c75e7d0b9fe86d6589f04bbdac3"
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "1fc4c5ac43644b59b9e8e0e2607b793f9ccc6d229709da2128c880c285ae5ea8"
+            },
+            {
+              "phase": "returned-history-tamper-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "9734bc179e271c9b9e61f3f2fc5314de6c3b3d249bdfed2a291807daeb6a9343"
+            },
+            {
+              "phase": "returned-history-scope-before-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "10a3b4b5da9fe06d1c58a5bb1952a6a61b5ed487c4ded050f8af436823cfb343"
+            },
+            {
+              "phase": "full-history-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "65c3c006558fb273faa4f1e6699bdf2c6b05fe6335514f7621d001c67522e06d"
+            },
+            {
+              "phase": "returned-history-tamper-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "41eb8489f2aa5a0fae3c1ecd4bf067dcc34cf9d350a73cd79afd39f417cb5d3a"
+            },
+            {
+              "phase": "returned-history-scope-after-restart",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "02be746f6ce7f0ef65029eea0d0c3ce9ea4480c1cdfaeed2d1ef982efd8844a3"
+            },
+            {
+              "phase": "next-message-after-restart",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "b730dd345928aa1d524b8ca2a9ee659fbab9cff86c6c509d91617775a956523c"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "history-created-before-startup",
+              "historySha256": "0ee897cd60da5bed6e71f44039f8aff111a94e105f6652f5bc96f86d78c1ee3d",
+              "completedTool": true
+            },
+            {
+              "phase": "native-shape-tool-request",
+              "historySha256": "e60f9e7d65ad8bdc5cbcf8501596b5ae5e984c75e7d0b9fe86d6589f04bbdac3",
+              "completedTool": false
+            },
+            {
+              "phase": "tool-result-before-restart",
+              "historySha256": "1fc4c5ac43644b59b9e8e0e2607b793f9ccc6d229709da2128c880c285ae5ea8",
+              "completedTool": true
+            },
+            {
+              "phase": "full-history-after-restart",
+              "historySha256": "65c3c006558fb273faa4f1e6699bdf2c6b05fe6335514f7621d001c67522e06d",
+              "completedTool": true
+            },
+            {
+              "phase": "next-message-after-restart",
+              "historySha256": "b730dd345928aa1d524b8ca2a9ee659fbab9cff86c6c509d91617775a956523c",
+              "completedTool": true
+            }
+          ]
+        }
+      ],
+      "productFindings": [],
+      "expectedControlFindings": [
+        {
+          "id": "RESTART-QA-01",
+          "case": "pre-fix-pr81-explicit-json",
+          "sourceSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+          "observed": "Nonstream explicit Messages response silently omits provider thinking and redacted_thinking blocks.",
+          "expectedTypes": [
+            "thinking",
+            "redacted_thinking"
+          ],
+          "actualTypes": [],
+          "expectedSignedSha256": "aacb288832402adcdac9734fcce6331df1f937f13c61f137c958cc6e3463e739",
+          "actualSignedSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        {
+          "id": "RESTART-QA-01",
+          "case": "candidate-pr85-explicit-json",
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "observed": "Nonstream explicit Messages response silently omits provider thinking and redacted_thinking blocks.",
+          "expectedTypes": [
+            "thinking",
+            "redacted_thinking"
+          ],
+          "actualTypes": [],
+          "expectedSignedSha256": "93883e0db48728d5bc105708be0fab2dfef1accc42e657d4f06d3582d4895c7d",
+          "actualSignedSha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ],
+      "upstreamProblems": [],
+      "fixtureProcessCount": 28,
+      "spawnedProcesses": [
+        3614,
+        3615,
+        3616,
+        3625,
+        3633,
+        3635,
+        3637,
+        3638,
+        3648,
+        3662,
+        3663,
+        3665,
+        3667,
+        3668,
+        3669,
+        3671,
+        3672,
+        3673,
+        3675,
+        3676,
+        3687,
+        3689,
+        3692,
+        3693,
+        3695,
+        3701,
+        3705,
+        3713
+      ],
+      "allFixtureChildrenClosed": true,
+      "listenersClosed": true,
+      "vendorInferenceCalls": 0,
+      "actualNativeClients": 0,
+      "dependencyStaging": "Copy exact installed production package directories after verifying lockfile versions; no npm install, registry resolution or dependency scripts."
+    },
+    "reservations": {
+      "sourceHead": "6528f3f602307cfdfba277b2047a18825c1407fb",
+      "results": [
+        {
+          "id": "fixed-pr85-explicit-stream-reservations",
+          "sourceSHA": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+          "result": "passed",
+          "path": "explicit",
+          "stream": true,
+          "pendingCompetingDispatchBlocked": true,
+          "heldUpstreamClosedOnClientAbort": true,
+          "reservationReleasedOnAbort": true,
+          "knownForeignScopeRejectedAfterPublication": true,
+          "upstreamCalls": 2,
+          "fixturePids": [
+            3984
+          ],
+          "cleanShutdowns": 1,
+          "requests": [
+            {
+              "phase": "competing-import-while-pending",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "4a1fc5008af4bc9c17ef54cc44ebe425940b8e49370103fa4dfec67764bbd65a"
+            },
+            {
+              "phase": "claim-after-client-cancellation",
+              "expectedStatus": 200,
+              "actualStatus": 200,
+              "terminalAndClosed": true,
+              "upstreamCalls": 1,
+              "historySha256": "4a1fc5008af4bc9c17ef54cc44ebe425940b8e49370103fa4dfec67764bbd65a"
+            },
+            {
+              "phase": "original-scope-after-competing-publication",
+              "expectedStatus": 409,
+              "actualStatus": 409,
+              "terminalAndClosed": false,
+              "upstreamCalls": 0,
+              "historySha256": "4da49683841203ead29dd89b1a0b0c3f67d24d61966e58430f53e86ef317179e"
+            }
+          ],
+          "forwarded": [
+            {
+              "phase": "held-cold-import",
+              "historySha256": "4da49683841203ead29dd89b1a0b0c3f67d24d61966e58430f53e86ef317179e",
+              "completedTool": true
+            },
+            {
+              "phase": "claim-after-client-cancellation",
+              "historySha256": "4a1fc5008af4bc9c17ef54cc44ebe425940b8e49370103fa4dfec67764bbd65a",
+              "completedTool": true
+            }
+          ]
+        }
+      ],
+      "productFindings": [],
+      "expectedControlFindings": [],
+      "upstreamProblems": [],
+      "fixtureProcessCount": 1,
+      "spawnedProcesses": [
+        3984
+      ],
+      "allFixtureChildrenClosed": true,
+      "listenersClosed": true,
+      "vendorInferenceCalls": 0,
+      "actualNativeClients": 0,
+      "dependencyStaging": "Copy exact installed production package directories after verifying lockfile versions; no npm install, registry resolution or dependency scripts."
+    },
+    "method": "Actual extracted tarball CLI child processes with fresh fixture-owned HOME/config/auth-absent paths, loopback-only endpoints, fabricated keys/history and one owned file read per matrix case.",
+    "dependencyComposition": "fixed-pr85 is an explicit composition probe: archive of dfe7429756e89be123f2b6d1e1d4689b6c1fa717 with only src/codex-response.ts copied from delivered head. It is not a merged commit or independently delivered branch.",
+    "assertions": [
+      "JSON.stringify returned thinking/redacted arrays equals fabricated provider originals; complete returned block order equals provider message",
+      "Use actual returned content in subsequent tool-result/follow-up and persisted client history",
+      "Fresh child PID on same port; unchanged persisted history; post-restart and next messages; exactly one fixture tool read",
+      "Complete terminal; no duplicate completed tool; chronology and exact signed fields at upstream",
+      "Tamper/conversation-scope rejection before and after restart where provenance exists",
+      "Ordinary passthrough streaming/JSON controls; unfixed preservation-loss controls retained",
+      "Pending competing import rejected without dispatch; abort closes held origin, releases claim; foreign scope rejected after publication"
+    ],
+    "authoritativeFinalCounts": {
+      "matrixCases": 14,
+      "fullPasses": 9,
+      "expectedColdRejectionCases": 3,
+      "expectedUnfixedSignedLossCases": 2,
+      "reservationCases": 1,
+      "fixtureProcesses": 29,
+      "loopbackUpstreamCalls": 62,
+      "fixtureToolReads": 14,
+      "actualNativeClients": 0,
+      "vendorInferenceCalls": 0
+    },
+    "result": "Fixed PR81 preserves signed output and exposes its expected existing cold-restart rejection in both modes. PR85 plus fix passes full returned-history startup/tool-result/restart/next-message flow in both modes. Ordinary released/candidate/composed controls pass.",
+    "installationLimit": "Staged exact installed production dependencies; not a clean registry install.",
+    "cleanup": {
+      "ownedRoot": "/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/subswitch-native-aggregation-qa-q3ky7l_1",
+      "removed": true,
+      "allFinalFixtureChildrenClosed": true,
+      "allFinalFixtureListenersClosed": true
+    },
+    "immutableArtifacts": "/Users/dean/Sandbox/subswitch-kimi/.git/native-messages-aggregation-artifacts"
+  },
+  "evidenceHashes": {
+    ".git/native-messages-aggregation-artifacts/candidate-pr85-pack.log": "f0f50d9f796dcb050f2209d558e9e2ab05d221b22b54ad7c0263388bf9af9e54",
+    ".git/native-messages-aggregation-artifacts/candidate-pr85.tgz": "16a795ff3c9c45f6c1eeb1162a231bc7a034122c512bf4439e9f29ef7350f873",
+    ".git/native-messages-aggregation-artifacts/fixed-pr81-pack.log": "c2da9c17134747df515a49688ce612061ec920c150faec3346250d8698c910a7",
+    ".git/native-messages-aggregation-artifacts/fixed-pr81.tgz": "1f3c821b92351bb1f6686379798c56cc4eed1f0ea4b58fc3c5b59193f508cff2",
+    ".git/native-messages-aggregation-artifacts/fixed-pr85-pack.log": "1a3bb18cfa89fd9c13dcbc9b8a0a866ca3092b5997ac685ed7f5de32741d4e65",
+    ".git/native-messages-aggregation-artifacts/fixed-pr85.tgz": "40f089b02c3c5981565f9e9fe0efd81dc656ab9a449b599efd5f27864aa84e96",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-build.log": "6dd6aa9d59b27ae3c30a1105b2d1f8ed8e5466acbd2eaaa6a65288f714a82e2d",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-check-attempt2.log": "3cddae75fb27bbf67a926539464c786a37eef38ea2994dd65f9253797daf4714",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-check.log": "6977b5d4b06da29e65a569266b5573bb5986d803bdb5de0adb1660b11403fc81",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-focused.log": "35420f034e0df737a988155885d1812b2f7435d144174d92f89332bb46416ea9",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-qa-input.json": "eb542e6b1e352941d4b9a553d1565146185e6a70d09ce29937aa53d7a2b7ee1c",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-qa-matrix.log": "21184f1e02958fd64b5b65c3d84264e9e30cf07da3370eedcf4f4119e20db039",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-qa-prepare.log": "6b491312e64258dd07fd098fabb81856c5cc2f860d08ebe952041afe238ac69f",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-qa-prepare.py": "87262542aa4192f5d7428ebd3de23b44db48be57990c63a5278bbcf99ea0596d",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-qa-reservations.json": "c3e54f023b72981147150ac534a5b56a678082cdffa8fb18d92f1c87efbf2074",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-qa-reservations.log": "1eac5141736f8cb6cab290536999105e48b521e65496881621612d0896f618ee",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-qa-runtime.json": "34855fadde49025302cc285e07eada44ced69db922fe2237c3f5a551bda49e57",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-qa.mjs": "48501f97b3a5c402007014195093afe1c107abc493ba12330494959ccda3ed67",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-red.log": "fd39d42f071f98e9d9cf3ff34e73560eb99c84fa6a886b64804b8e573462426b",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-typecheck.log": "61d750799d2415420238e1bd3f774ea028886710a9a331a5a82968313354e2c0",
+    ".git/native-messages-aggregation-artifacts/pre-fix-pr81-pack.log": "3f2653041bc1ed7027d9bda45bfbd3c2166cc2fd4edd7442e1d364455ea119ab",
+    ".git/native-messages-aggregation-artifacts/pre-fix-pr81.tgz": "8916a3401265437a06a2eaa446d795f1c48f23b597b9ad0425eba6a183cddca8",
+    ".git/native-messages-aggregation-artifacts/released-main-pack.log": "6034a5dbef98beec18679bdade52002f8930ebe1d3b123512b6509d8dfd686c5",
+    ".git/native-messages-aggregation-artifacts/released-main.tgz": "ead8e2b2ee99d83c9a0d7e8f20e19cf6087a5ccdbc5007830e22df9519ecd3de",
+    ".git/native-messages-aggregation-artifacts/tested-inputs.json": "118d01592160262edb2a284a4bbf91f58ed59e4b05f07965d3e38680bad16a1e",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-ci.json": "8568ad23ea42dba373eb175b5724b2db610990c73fddd96b9a341c31fd776771",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-ci-watch.log": "8026dde3290d8c254c84f50489d2826f6104009e3a011d46642a1bf124340d57",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-pr.json": "0f00f1e2dded5623dbc0d5dc5293bf1130731e74da3c8358868cf181b63620fa",
+    ".git/native-messages-aggregation-artifacts/native-messages-aggregation-qa-cleanup.json": "955bf98eeca7b2619f84a5f8aa0d041564f4579a516ed22d9221a0f8668b9b69"
+  },
+  "review": {
+    "ownFullChangeReview": "completed; no unresolved findings in authored diff",
+    "independentSourceReview": "pending coordinator assignment; not self-approved",
+    "sourceImpact": "Wire output preservation and ordering only; no API/CLI/config/schema/auth/endpoints/dependencies/release changes."
+  },
+  "preservation": {
+    "oldBranches": [
+      "codex/wave1-kimi-failover",
+      "codex/proxy-restart-continuity",
+      "codex/http-followup-continuity"
+    ],
+    "oldQaAndReports": "Preserved; original private scripts, logs, tarballs and root reports unchanged",
+    "trackedWorkingTreeClean": true,
+    "forcePush": false,
+    "merge": false,
+    "release": false
+  },
+  "limitations": [
+    "Original released real-client stuck-session incident remains unproven.",
+    "Fake upstream does not validate real provider signatures; no native/provider acceptance claimed.",
+    "Kimi qualification and HTTP instruction-ordering gate remain separate and unresolved by this patch.",
+    "PR85 is still required for cold full-history restart admission.",
+    "Independent source review remains pending coordinator assignment."
+  ],
+  "next": "Coordinator arranges independent full fix review and sequences PR88 with PR81/PR85; worker stops after bounded draft delivery.",
+  "coordinationNotification": {
+    "attempted": true,
+    "delivered": false,
+    "reason": "Existing codex_tui message transport endpoint unavailable; no reroute or session controls attempted. Durable report and checkpoint saved for coordinator completion polling."
+  }
+}

@@ -1,0 +1,149 @@
+{
+  "date": "2026-10-30T08:40:57.020845+00:00",
+  "status": "Planning only; Kimi fix review prioritized and completed, independent checks blocked by occupied heavy lock. No product/native configuration changes.",
+  "sequence": [
+    "Finish Kimi validation, independent evidence, PR/CI and authorized merge first.",
+    "Implement capability/effort contract and Devflow consumer in dependent PRs.",
+    "Qualify caller context controls and supported compaction behavior; do not claim translated Codex compaction until lifecycle tests pass.",
+    "Integrate DeepSeek after capability/compaction foundation."
+  ],
+  "ownership": {
+    "subswitch": "Existing owning Subswitch lane /Users/dean/Sandbox/subswitch-kimi; owner rebases onto merged Kimi head before implementation.",
+    "review": "/Users/dean/Sandbox/subswitch-kimi-pr90-review; preserve all existing edits, use .git scratch snapshots for exact frozen reviews.",
+    "devflow": "Existing owning Devflow worker in its independent clone; coordinator resolves active clone before dispatch. /Users/dean/Sandbox/devflow inspected read-only; no write authorization assumed for reviewer.",
+    "tests": "One workspace heavy suite at a time under /usr/bin/lockf shared heavy-tests.lock. Optional priority ENOENT means no reservation; other read errors fail closed. No lock retry loops."
+  },
+  "verifiedBaseline": [
+    {
+      "evidence": "subswitch src/cli.ts:422-454; src/routing/routing-discovery.ts:17-48",
+      "fact": "Default models --json schema1 exposes IDs/aliases; schema3 exposes routes/profiles/provider model IDs, without context capacity."
+    },
+    {
+      "evidence": "devflow src/core/model-discovery.ts:118,129-134,261,299-331; installed devflow-kit/dist/core/model-discovery.js:99,138,177,212",
+      "fact": "Consumer requests schema1 only, filters codex provider, retains id/aliases only. Adding capability JSON alone does not change caller behavior."
+    },
+    {
+      "evidence": "devflow src/core/agent-models.ts:66,633-655; src/core/agent-frontmatter.ts:197; src/core/flags.ts:626-653",
+      "fact": "Global effort enum low/medium/high/xhigh/max; mapping model/effort only. Inherit removes effort field. Existing auto-compact-window flag writes global CLAUDE_CODE_AUTO_COMPACT_WINDOW; unset default."
+    },
+    {
+      "evidence": "subswitch src/codex-request.ts:229-241; src/routing/request-adapter.ts:158,178; src/models.ts:242",
+      "fact": "Legacy unsupported effort is dropped with warning; explicit route has its own target effort. Need trace requested versus effective effort after alias resolution and protocol translation."
+    },
+    {
+      "evidence": "subswitch src/claude-models.ts:230-268; src/codex-gateway.ts:301-312; src/codex-route.ts:32-37; src/claude-adapter.ts:192",
+      "fact": "Claude catalog adds context fields but inherits remaining OpenAI template fields. Native OpenAI compact passes through; translated Claude and explicit routes reject /responses/compact; opaque compaction items are rejected by reverse adapter."
+    },
+    {
+      "evidence": "subswitch src/claude-adapter.ts:247-260; src/claude-handler.ts:80; src/codex-request.ts:280; src/routing/request-adapter.ts:162; src/routing/target-capabilities.ts:20-46",
+      "fact": "Output limits are independent: reverse default4096/legacy handler64000, Claude ceiling clamp or explicit validation; Codex subscription output parameter unsupported; OpenAI API mapping separate. No input token capacity enforcement established."
+    }
+  ],
+  "minimalImplementation": [
+    {
+      "phase": "1. Versioned capability contract",
+      "changes": [
+        "Keep default schema1 behavior stable. Add an explicitly negotiated capability schema (new schema version rather than change existing row shapes); include selectable route/model ID, resolved targets, originating client/protocol and model/product capability record.",
+        "Minimal record: contextWindowTokens:number|null; maxOutputTokens:number|null; effort accepted values/default/fixed-or-configurable; compaction mode native-pass-through/caller-managed/unsupported/unknown; provenance revision/date and documented/observed status. Separate advertised capability from enforced limit and locally configured caller threshold.",
+        "Centralize known model capability source; do not fill unknown Kimi/model/account values from unrelated Claude/OpenAI defaults. Route with mixed targets reports each target; conservative route capacity only when all targets known, otherwise unknown.",
+        "Do not add remote discovery, automatic credential reads or inference to models command. Do not advertise account rights from static docs."
+      ],
+      "acceptance": [
+        "Schema1 golden unchanged; deterministic new schema, no secrets or environment credential values.",
+        "Alias resolves exact model capabilities; explicit routes/fallbacks preserve target/product differences; unknown remains null.",
+        "Catalog additions do not inherit incompatible compaction/tool/limit fields from template unnoticed."
+      ]
+    },
+    {
+      "phase": "2. Devflow model/effort consumer",
+      "changes": [
+        "Negotiate new schema with documented fallback to existing schema1; validate/version/cache it, retain capabilities. Preserve old caches as names-only/unknown rather than invent defaults.",
+        "Expose effective model and effort for selected route. Distinguish caller-requested effort from fixed route target effort; do not present a control that cannot affect the outbound request.",
+        "Model-specific effort options plus inherit/default semantics; surface unsupported settings rather than silently substitute. Preserve existing stored choices during migration with an explicit unsupported-state display.",
+        "Choose policy for legacy unsupported-effort warning/drop versus explicit refusal in owning lane, with compatibility note; never assume same named efforts are semantically equivalent across providers."
+      ],
+      "acceptance": [
+        "Old/new runtime and stale-cache cases; unsupported schemas; non-codex provider rows when explicitly routable.",
+        "Per-model effort picker/inherit/default; route-fixed effort labeled; raw outgoing effort assertion for each codec and alias.",
+        "No model/effort edits to unrelated agents; dormant external behavior and shipped defaults preserved."
+      ]
+    },
+    {
+      "phase": "3. Caller context controls",
+      "changes": [
+        "UI shows destination advertised context, caller assumed context, compaction threshold, output ceiling as distinct concepts. A generic context-length slider must not claim to enlarge provider capacity.",
+        "Claude Code: per-agent autoCompactWindow can lower threshold on supported versions; global env override takes precedence. Existing global Devflow flag remains separate. Correct custom-model assumed window only through actual supported caller controls; do not fake Claude model identity to borrow capabilities.",
+        "Codex: verify installed0.165.0 catalog/config loading and child inheritance offline before emitting model_context_window/model_auto_compact_token_limit or model catalog metadata. Per-profile rather than global changes when caller supports them; no shared active-session settings edits.",
+        "Version-gate and explain unsupported control scopes. Account for prompt/tool overhead and differing fallback capacities without silently trimming history."
+      ],
+      "acceptance": [
+        "Fabricated catalog/config + client fixtures prove actual effective settings, not just serialized JSON.",
+        "Claude per-agent/global precedence, unsupported versions, parent versus child model cases.",
+        "Codex model switch/child default/catalog override cases and non-OpenAI destination behavior.",
+        "Boundary request rejection preserves complete history; oversized fallback does not silently truncate or claim successful dispatch."
+      ]
+    },
+    {
+      "phase": "4. Supported compaction path",
+      "changes": [
+        "Keep native OpenAI pass-through intact. Preserve explicit unsupported errors until a supported caller path is verified.",
+        "First inspect version-pinned installed Codex/source for caller-side compaction on non-OpenAI providers and the provider identity/config switch selecting it. Current existence of config thresholds does not prove fallback after /compact400.",
+        "Prefer a verified native caller-managed summarization mechanism using the same selected backend and normal request path, if supported. Do not invent encrypted_content, drop opaque items, summarize in relay without contract, or send transcript to original provider without authorization.",
+        "If installed client lacks a supported path, scope a separate upstream/client integration contract and keep translated compaction unsupported; this is a research gate, not an implementation promise. Claude caller compaction also needs protocol/tool/history preservation qualification."
+      ],
+      "acceptance": [
+        "Native pass-through endpoint/body identity; unsupported translated compact errors are stable and no alternate-provider calls occur.",
+        "For chosen supported path: before/after compaction tool-call/result pairing, instructions, outstanding work and continuation ownership preserved; no missing messages silently accepted.",
+        "Cancellation/failure leaves prior conversation recoverable; retry does not duplicate tool execution.",
+        "Long-history synthetic lifecycle and exact installed-client compatibility test before any opt-in live validation."
+      ]
+    }
+  ],
+  "installedEvidence": {
+    "codex": "npm launcher package0.165.0 verified read-only, native implementation/compaction decisions not yet proved.",
+    "claudeCode": "Current /Users/dean/.local/bin/claude symlink resolves2.1.314; earlier auth audit pinned2.1.312. No running session version inferred and no CLI launched.",
+    "devflow": "Source and installed package3.9.0; installed discovery/flags inspected.",
+    "limitation": "Docs establish supported controls, not actual effective settings in Dean sessions. Do not inspect secrets or control active sessions to fill this gap."
+  },
+  "officialSources": [
+    {
+      "url": "https://learn.chatgpt.com/docs/config-file/config-reference",
+      "supports": "model_context_window, model_auto_compact_token_limit, model_catalog_json configuration controls; not proof of translated compact support."
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/agent-configuration/subagents",
+      "supports": "Model/effort inheritance and explicit/custom overrides; caller owns agent lifecycle."
+    },
+    {
+      "url": "https://code.claude.com/docs/en/sub-agents#manage-subagent-context",
+      "supports": "Subagent window follows own model; per-agent autoCompactWindow from2.1.296 lowers threshold; global env overrides."
+    },
+    {
+      "url": "https://code.claude.com/docs/en/model-config#context-window-and-auto-compaction",
+      "supports": "Custom ID assumptions, MAX_CONTEXT_TOKENS applicability, distinction between actual capacity and compact threshold."
+    }
+  ],
+  "deepseekPrerequisites": {
+    "order": "After Kimi merge and effort/context/compaction foundation; planning only now.",
+    "primarySources": [
+      "https://api-docs.deepseek.com/guides/anthropic_api/",
+      "https://api-docs.deepseek.com/quick_start/agent_integrations/codex/",
+      "https://api-docs.deepseek.com/quick_start/pricing"
+    ],
+    "evidence": "Current docs advertise Anthropic and Responses compatibility and native DeepSeek model IDs. Anthropic compatibility explicitly ignores some fields (e.g. tool-result is_error, thinking budget); investigate preservation rather than claim equivalence. Codex guide supplies model catalog context metadata; this is not a validated Subswitch compaction implementation.",
+    "requirements": [
+      "Confirm intended DeepSeek product/billing/API endpoints and current exact model IDs; no assumption of subscription OAuth reuse or native credentials.",
+      "Inspect Responses and Anthropic compatibility matrices and version/date-pin evidence: effort, thinking/reasoning continuity, SSE, tool IDs/results/errors, output caps, context and compact endpoint semantics.",
+      "Prefer existing native protocol paths where genuinely supported; add explicit provider/profile/type/schema/endpoint/auth boundaries, capability metadata and error classification; no pretend Claude names or identity borrowing.",
+      "Synthetic both-client tool round trip, cancellation, error/refusal, unsupported features, context overflow, output cap and compaction lifecycle; package and discovery consumer tests.",
+      "Review full security/API diff before any separately scoped live qualification. No setup scripts, credential collection or shared model/provider edits in this plan."
+    ]
+  },
+  "unknowns": [
+    "Version-pinned Codex non-OpenAI compaction selection and custom child context inheritance.",
+    "Runtime-configured caller windows/overrides and per-route changes cannot be inferred from installed files alone.",
+    "Exact destination limits/account entitlements and fallback budget accounting; avoid hardcoded unverified values.",
+    "DeepSeek current compact semantics and opaque-state compatibility require targeted primary-source inspection."
+  ],
+  "nextAction": "Coordinator finishes Kimi validation/merge, then routes phase1 design/implementation to existing owning lane; Devflow dependent consumer to existing owner. Independent review before merge; release still requires Dean sign-off."
+}

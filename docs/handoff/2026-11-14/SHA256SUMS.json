@@ -1,0 +1,121 @@
+{
+  "files": [
+    {
+      "bytes": 22921,
+      "path": "RESUME-FROM-HERE.md",
+      "sha256": "705c8edf7356d3626a266c65a34ea115f156af5644c2c723114c1f60e52912a2"
+    },
+    {
+      "bytes": 13623,
+      "path": "docs/handoff/2026-11-14/effort-context-plan.archived.json",
+      "sha256": "c0b8e94d1c62f1208de4a43c8dfd167451756813e1e37674e2404d9644d68c03"
+    },
+    {
+      "bytes": 17786,
+      "path": "docs/handoff/2026-11-14/existing-native-path-preparation.json",
+      "sha256": "73595c5f8c33218cd790589523c1d24e903c7b9b6bb82169cc7a9ccb6fae170c"
+    },
+    {
+      "bytes": 11969,
+      "path": "docs/handoff/2026-11-14/github-snapshot.json",
+      "sha256": "bef571b4956c5111c147615652cf3932e14e674bd215236f1aecf200b811d676"
+    },
+    {
+      "bytes": 1913,
+      "path": "docs/handoff/2026-11-14/manual-vs-strict.json",
+      "sha256": "de292dbb7e95848c8577530d362c40322e31a51a5d577b8ac60a7ab06253d74d"
+    },
+    {
+      "bytes": 7477,
+      "path": "docs/handoff/2026-11-14/open-issues.json",
+      "sha256": "63faca538c9fd1b2c074e65fd8653f279ce02d85ab459e4db8b268bf52a7a0d4"
+    },
+    {
+      "bytes": 68332,
+      "path": "docs/handoff/2026-11-14/saved-inventory.json",
+      "sha256": "0eb97311e8593079b3b80289474cff42255187588edbca8b6ccf73518ef4715d"
+    },
+    {
+      "bytes": 4742,
+      "path": "docs/handoff/2026-11-14/source-state.json",
+      "sha256": "ed3e33fbd2b972fcb710555b48c91c61e89a14fd2b41f6c5ecee659e6ff0f281"
+    },
+    {
+      "bytes": 2611,
+      "path": "docs/handoff/2026-11-14/validation-and-review.json",
+      "sha256": "2a306ad37a49974fdccf32e8bb9106a73fdc9ed7277328a63c9062315c6e75d9"
+    },
+    {
+      "bytes": 12238,
+      "path": "future-model-independent-review.json",
+      "sha256": "678aaf7445234bc36fcb071b87815d7e35d6b52a56c5a6925a4a76845a3e7aa0"
+    },
+    {
+      "bytes": 22570,
+      "path": "future-model-release-independent-review.json",
+      "sha256": "d9bed7b55f1211f84fe9901cd60a1c96ea2be132365cb606f25f31a916bf0a18"
+    },
+    {
+      "bytes": 10107,
+      "path": "http-followup-contract-report.json",
+      "sha256": "d0821a63e5e2216aa32650df193b4ba56db5ab3c0916a8650dddeb918e7f4698"
+    },
+    {
+      "bytes": 27927,
+      "path": "kimi-isolated-live-readiness.json",
+      "sha256": "b3947477aec28fd936e62179cf2a4ff7f34911e7fd60a19f886802c1f751ef8d"
+    },
+    {
+      "bytes": 24952,
+      "path": "kimi-native-auth-isolation-report.json",
+      "sha256": "f5fccac571fd3f76149e930564d583418399f449936696ce71c0a6a779f01d16"
+    },
+    {
+      "bytes": 20049,
+      "path": "kimi-phase-a-runner-delivery.json",
+      "sha256": "9e9ebf9697da7dcf6265e8ea15a62cdea1c1403f7b3ae71cf85d3efe7b9aa5b3"
+    },
+    {
+      "bytes": 17522,
+      "path": "kimi-phase-a-runner-fix-delivery.json",
+      "sha256": "194be107d47b12ddde7173d14cc106965f67a2666642745cfd36dd84a6b8e499"
+    },
+    {
+      "bytes": 102773,
+      "path": "native-messages-aggregation-delivery.json",
+      "sha256": "8e90d0b6a54237253c3497d8d6b7df6d55080ce0e48c8108addc3c1eb8ad455f"
+    },
+    {
+      "bytes": 14935,
+      "path": "peer-review-continuity-resolution.json",
+      "sha256": "d84b7fd65a5e2ea1605f79d7b129ec411e8cb93c4135122e885d762e7e8e99f3"
+    },
+    {
+      "bytes": 10004,
+      "path": "peer-review-continuity.json",
+      "sha256": "7da835edad2ca73d1ea3f7ecfb2fe846b550e64cb5dd1b374fd6fef7577f662b"
+    },
+    {
+      "bytes": 26148,
+      "path": "restart-product-qa.json",
+      "sha256": "734961e88fe5c011d0c01991ed100d416ed326eb121ee2183b16a99ba94d3430"
+    },
+    {
+      "bytes": 12789,
+      "path": "wave1-smoke-env-fix-review.json",
+      "sha256": "0636eacc57cb49d9fab88591ca7664376ab71be02ecf4e25358baf487a5a267e"
+    },
+    {
+      "bytes": 2609,
+      "path": "AGENTS.md",
+      "sha256": "739fe053a96e0e25287bb9df3f7d308382e5162aa6bc79be0a55b31752c6aff4"
+    },
+    {
+      "bytes": 2609,
+      "path": "CLAUDE.md",
+      "sha256": "739fe053a96e0e25287bb9df3f7d308382e5162aa6bc79be0a55b31752c6aff4"
+    }
+  ],
+  "schemaVersion": 1,
+  "scope": "SHA256 of saved guide/evidence/original primary reports and aligned instructions; excludes this manifest itself. Hashes preserve content, not independent attestation."
+}

@@ -1,0 +1,302 @@
+{
+  "criticalOrder": [
+    81,
+    88,
+    90
+  ],
+  "criticalPRs": [
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/wave1-kimi-failover",
+      "headRefOid": "b95e9e37802b84641150b0f00aed763043bec4cb",
+      "isDraft": true,
+      "mergeStateStatus": "CLEAN",
+      "number": 81,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-10T19:05:14Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/42881573445/job/130058913319",
+          "name": "check (ubuntu-latest)",
+          "startedAt": "2026-11-10T19:04:30Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-10T19:05:48Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/42881573445/job/130058913412",
+          "name": "check (macos-latest)",
+          "startedAt": "2026-11-10T19:04:37Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-10T19:05:13Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/42881573445/job/130058913534",
+          "name": "check (ubuntu-latest, Node 24)",
+          "startedAt": "2026-11-10T19:04:30Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-10T19:05:33Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/42881573445/job/130058912907",
+          "name": "check (macos-latest, Node 24)",
+          "startedAt": "2026-11-10T19:04:34Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        }
+      ],
+      "title": "feat: add access-profile routing, ordered failover, and limit observations",
+      "url": "https://github.com/dean0x/subswitch/pull/81"
+    },
+    {
+      "baseRefName": "codex/wave1-kimi-failover",
+      "headRefName": "codex/native-messages-aggregation",
+      "headRefOid": "40fef17b87497da13b3f547e860dacd98126b6b0",
+      "isDraft": true,
+      "mergeStateStatus": "CLEAN",
+      "number": 88,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-14T13:45:01Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/43601242783/job/132466244026",
+          "name": "check (ubuntu-latest)",
+          "startedAt": "2026-11-14T13:44:09Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-14T13:45:09Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/43601242783/job/132466244128",
+          "name": "check (macos-latest)",
+          "startedAt": "2026-11-14T13:44:10Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-14T13:44:45Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/43601242783/job/132466244130",
+          "name": "check (ubuntu-latest, Node 24)",
+          "startedAt": "2026-11-14T13:44:10Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-14T13:45:36Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/43601242783/job/132466244140",
+          "name": "check (macos-latest, Node 24)",
+          "startedAt": "2026-11-14T13:44:10Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        }
+      ],
+      "title": "fix: preserve signed native Messages in nonstream responses",
+      "url": "https://github.com/dean0x/subswitch/pull/88"
+    },
+    {
+      "baseRefName": "codex/native-messages-aggregation",
+      "headRefName": "codex/kimi-native-subscription",
+      "headRefOid": "e80584c67a42a6fa8a2e723276ff1ee5959e4a67",
+      "isDraft": true,
+      "mergeStateStatus": "CLEAN",
+      "number": 90,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-14T13:45:23Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/43601257432/job/132466288807",
+          "name": "check (ubuntu-latest)",
+          "startedAt": "2026-11-14T13:44:21Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-14T13:45:35Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/43601257432/job/132466288536",
+          "name": "check (macos-latest)",
+          "startedAt": "2026-11-14T13:44:21Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-14T13:45:06Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/43601257432/job/132466288732",
+          "name": "check (ubuntu-latest, Node 24)",
+          "startedAt": "2026-11-14T13:44:20Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-11-14T13:45:45Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/43601257432/job/132466288751",
+          "name": "check (macos-latest, Node 24)",
+          "startedAt": "2026-11-14T13:44:21Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        }
+      ],
+      "title": "feat: add isolated model-only Kimi subscription OAuth",
+      "url": "https://github.com/dean0x/subswitch/pull/90"
+    }
+  ],
+  "devflowFallbackIssue": {
+    "number": 464,
+    "state": "OPEN",
+    "title": "feat(agents): add per-agent primary and fallback models via Subswitch routes",
+    "url": "https://github.com/dean0x/devflow/issues/464"
+  },
+  "limitations": "Fresh read-only metadata at pause; no merge/release readiness certificate. Reverify mutable heads/review/CI after explicit resume.",
+  "observedAtUTC": "2026-11-14T22:10:12.281232+00:00",
+  "otherPRs": [
+    {
+      "baseRefName": "main",
+      "headRefName": "dependabot/npm_and_yarn/multi-d6692e72fd",
+      "headRefOid": "0e12211eb4da3003789b1517f0e5e66025c7cc0d",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 92,
+      "state": "OPEN",
+      "title": "chore(deps): bump ws and @types/ws",
+      "url": "https://github.com/dean0x/subswitch/pull/92"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "dependabot/npm_and_yarn/zod-4.6.7",
+      "headRefOid": "51bd8e17ddd8623a90033891200bb5577b844092",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 91,
+      "state": "OPEN",
+      "title": "chore(deps): bump zod from 4.4.3 to 4.6.7",
+      "url": "https://github.com/dean0x/subswitch/pull/91"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/release-future-model-fix",
+      "headRefOid": "b8549643d5af3316d0b65d608b16fafc390e0287",
+      "isDraft": false,
+      "mergedAt": "2026-10-19T20:37:25Z",
+      "number": 89,
+      "state": "MERGED",
+      "title": "chore(release): prepare v0.6.1",
+      "url": "https://github.com/dean0x/subswitch/pull/89"
+    },
+    {
+      "baseRefName": "codex/wave1-kimi-failover",
+      "headRefName": "codex/wave1-package-example",
+      "headRefOid": "f62b2a5de393a0794d9f9aa286fbaba99b60912a",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 87,
+      "state": "OPEN",
+      "title": "fix: ship Wave1 example and isolate tarball init smoke",
+      "url": "https://github.com/dean0x/subswitch/pull/87"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "codex/future-model-overrides",
+      "headRefOid": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+      "isDraft": false,
+      "mergedAt": "2026-10-19T15:06:47Z",
+      "number": 86,
+      "state": "MERGED",
+      "title": "fix: honor configured future Codex model overrides",
+      "url": "https://github.com/dean0x/subswitch/pull/86"
+    },
+    {
+      "baseRefName": "codex/wave1-kimi-failover",
+      "headRefName": "codex/proxy-restart-continuity",
+      "headRefOid": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 85,
+      "state": "OPEN",
+      "title": "fix: retain native Claude signed history across proxy startup",
+      "url": "https://github.com/dean0x/subswitch/pull/85"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "dependabot/github_actions/actions/setup-node-7.1.0",
+      "headRefOid": "2c5bb854645aaf1f92152e73267ada2b24304320",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 83,
+      "state": "OPEN",
+      "title": "chore(ci): bump actions/setup-node from 7.0.0 to 7.1.0",
+      "url": "https://github.com/dean0x/subswitch/pull/83"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "dependabot/npm_and_yarn/tsx-4.23.15",
+      "headRefOid": "6675b7a320c30845957a588770e2f02a94a51fee",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 69,
+      "state": "OPEN",
+      "title": "chore(deps): bump tsx from 4.23.1 to 4.23.15",
+      "url": "https://github.com/dean0x/subswitch/pull/69"
+    },
+    {
+      "baseRefName": "main",
+      "headRefName": "dependabot/npm_and_yarn/clack/prompts-1.8.1",
+      "headRefOid": "d0c65867270d6aae32688cc66cc1cdac9fe57c90",
+      "isDraft": false,
+      "mergedAt": null,
+      "number": 66,
+      "state": "OPEN",
+      "title": "chore(deps): bump @clack/prompts from 1.7.0 to 1.8.1",
+      "url": "https://github.com/dean0x/subswitch/pull/66"
+    }
+  ],
+  "release061": {
+    "isDraft": false,
+    "isPrerelease": false,
+    "name": "v0.6.1",
+    "publishedAt": "2026-10-20T14:27:11Z",
+    "tagName": "v0.6.1",
+    "url": "https://github.com/dean0x/subswitch/releases/tag/v0.6.1"
+  },
+  "remoteHeadsBeforePauseCheckpoint": {
+    "refs/heads/codex/kimi-native-subscription": "e80584c67a42a6fa8a2e723276ff1ee5959e4a67",
+    "refs/heads/codex/native-messages-aggregation": "40fef17b87497da13b3f547e860dacd98126b6b0",
+    "refs/heads/codex/proxy-restart-continuity": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+    "refs/heads/codex/wave1-kimi-failover": "b95e9e37802b84641150b0f00aed763043bec4cb",
+    "refs/heads/codex/wave1-package-example": "f62b2a5de393a0794d9f9aa286fbaba99b60912a",
+    "refs/heads/dependabot/github_actions/actions/setup-node-7.1.0": "2c5bb854645aaf1f92152e73267ada2b24304320",
+    "refs/heads/dependabot/npm_and_yarn/clack/prompts-1.8.1": "d0c65867270d6aae32688cc66cc1cdac9fe57c90",
+    "refs/heads/dependabot/npm_and_yarn/multi-d6692e72fd": "0e12211eb4da3003789b1517f0e5e66025c7cc0d",
+    "refs/heads/dependabot/npm_and_yarn/tsx-4.23.15": "6675b7a320c30845957a588770e2f02a94a51fee",
+    "refs/heads/dependabot/npm_and_yarn/zod-4.6.7": "51bd8e17ddd8623a90033891200bb5577b844092",
+    "refs/heads/feat/native-passthrough-behavior": "c20efd9120dc7f2bc69501d057b4390aa6f1a7e6",
+    "refs/heads/feat/stale-socket-retry-and-synthesis-header": "b49fd246731b1c2742b7af271a94ce2d1e4f1dcb",
+    "refs/heads/fix/codex-auth-concurrent-refresh-guard": "687e5a65b6f19bebbd40c79433a4e989a3a1a14a",
+    "refs/heads/fix/issue-27-timeout-semantics": "34a6785442cf472ff1917e1abf662b58dd8f2ef3",
+    "refs/heads/main": "00a85771c71996f70bcce2f0d019942c735d49cc"
+  }
+}

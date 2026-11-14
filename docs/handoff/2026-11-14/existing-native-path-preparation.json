@@ -1,0 +1,188 @@
+{
+  "candidateHEAD": "6828096e739ca5f807b87dceaf433e8237ae0674",
+  "credentialAndEnvironmentContract": {
+    "isolation": "New owned0700 root, independent home/config/cache/tmp/work and0600 fixtures; exact preapproved command/package pins. Construct a positive child environment rather than reusing isolatedNativeEnv denylist or runAction inherited process.env. Do not alter either existing helper in this unit. Pass each credential only to its corresponding transport, never through logs or the other provider.",
+    "referencesOnly": "Future scenario input must contain ROOT-approved exact absolute private owned auth-file references for Kimi managed OAuth and existing Claude/OpenAI subscription grants. No real auth path or bytes were opened, copied or invented here. No source=kimi-code, native home lookup, keychain, CLI/SDK delegation or login is allowed by this preparation.",
+    "refresh": "KimiAuthManager.credentials may refresh at expiry<=now+120s; future allowance must count/permit such HTTP before acquisition, or the reviewed scenario must deny that dispatch with a fixed error. An expired/unauthorized grant ends the unit; no login, reauth, forced refresh or fallback-key workaround follows."
+  },
+  "minimumFiles": [
+    {
+      "change": "A later reviewed optional typed scenario input may select prepared explicit profiles/actions instead of the current credential probes. Keep default behavior intact. Contain scenario-owned local ingress hold and orchestration in this existing gate; no new executable, daemon or framework. This is a design proposal, not a patch or new CLI option.",
+      "entry": "runNativeClaude (lines16-176); existing module invocation lines178-180 unchanged",
+      "path": "e2e/gates/native-claude.ts"
+    },
+    {
+      "change": "Reuse scenario predicates and owned loopback helpers for later bounded fabricated HTTP hold tests. Native process launch must be replaced by fabricated request emission in all offline tests. The now-committed reviewed case remains byte-exact in this unit.",
+      "entry": "existing synthetic scenario lines355-427 and existing fixture lines84-211",
+      "path": "test/integration/kimi-qualification.test.ts"
+    }
+  ],
+  "nextOwner": "ROOT: verify exact local storage, review this plan, then dispatch only the smallest named offline HTTP-boundary/source-qualification task or resolve the concrete observation/accounting blocker. No live dispatch follows automatically.",
+  "offlineQualificationBeforeLive": [
+    "ROOT-routed independent full source/security review and fix review of the later exact diff. Focus on secrets, positive env, path/ownership, request bytes, action/branch isolation, body bounds, abort/disconnect, no late forwarding, process-group cleanup, accounting-before-auth/transport and once-only behavior. No worker reviewer dispatch.",
+    "Fabricated owned loopback positive: exact correlated A Read result is held, B finishes through distinct action, A released once with byte-identical body/history/tools and same fallback owner. Also assert absence of external/auth/native calls.",
+    "Fabricated negatives: report-only/no Read, foreign generated-agent/parent/action/call/path, missing/duplicate/errored Read result, repeated histories, malformed/compressed oversized payload, disconnect/abort while held or forwarding, B failure, stale action, late duplicate release, cleanup failure and insufficient/missing permit. Source-faithful no-forwarded-text positive requires the full exact completed report and matching actual emission contract, not a made-up SDK packet.",
+    "Run only meaningful targeted tests/typecheck under existing shared lock and gates in an expressly assigned future offline unit; no tests were run in this storage/preparation unit. Existing21/21 and typecheck0 cover the committed unchanged synthetic case, not this unimplemented HTTP hold."
+  ],
+  "preDispatchAccounting": {
+    "currentStatus": "MISSING_CURRENT_ELIGIBLE_RUNNER_AND_LIVE_ALLOWANCE_BINDING; no budget consumed or created.",
+    "failure": "Preserve original failed ledger, adoption, permits and evidence byte-for-byte. No replay/reset/new allowance/denied reroute or reconstruction of missing/retired runner. Unknown or insufficient allowance stops before credential/native/provider action. Retries remain UNRESOLVED_RETIRED.",
+    "required": "Exact candidate source/pins, native parent/child/B inference count including fallback attempts and ordinary client retries, strict18/4608/256/420 and A6/1536/180 conservation, B/C reserved status, auth refresh admission if any, durable shared lock/once claim and per-dispatch reservation before transport. Existing local QuotaStore is not this ledger."
+  },
+  "proposedSequence": [
+    "Before ANY real credential acquisition, process launch or dispatch, ROOT must bind a reviewed nonretired execution path, exact permitted credential references, eligible existing ledger/adoption/permit lineage, all request/token/time reservations, failure policy and cleanup to the exact candidate. No current live attempt is permitted by this preparation.",
+    "Construct one owned ephemeral production proxy/router with explicit Claude-only route: primary global Kimi Code subscription managed native-oauth/model kimi-for-coding/high, fallback existing approved OpenAI/Codex SUBSCRIPTION profile/model/effort. The synthetic case uses an API fixture; its fabricated key is never copied into a live fallback. No API billing substitution, key workaround, borrowed identity or implicit fallback.",
+    "Use current capability-bound POST /__subswitch/actions twice against that same owned proxy to obtain A/B prefixes, with distinct owned conversation IDs. Do not discover or publish shared action-control state. Keep parent and generated child within A; B is a different complete action. Only owned control endpoints see the capability.",
+    "Inside existing gate create an owned 127.0.0.1 ephemeral front listener. Each native base URL points to its exact action ingress on this front listener; forwards only to the owned proxy, never arbitrary host/path or a shared proxy. No upstream HTTP redirect is followed. Preserve caller body bytes, role/history/tools, compression representation and relevant end-to-end headers; never rewrite an unsupported native request to pass.",
+    "For scenario A preserve the ordinary parent Agent/Read command and CLI options; subagent selects the explicit test route. The front listener observes bounded request bytes and decoded structure in memory. It correlates exactly one newly appended Read tool-use and successful tool_result by active A prefix, selected route, branch, call ID and exact owned fixture path. Repeated history is not a new call; substring nonce detection and existing any-history booleans are insufficient.",
+    "Hold exactly A's genuine already-produced Read tool_result HTTP request before forwarding it. This holds dispatch, not the native tool or stdin; the native caller has already run Read. Signal hold readiness in memory. No response has been committed by the owned proxy, and A remains active. A peer abort, timeout, malformed/foreign/duplicate result or second simultaneous match cancels the scenario; never forward after ambiguous failure.",
+    "After the one held A request is positively bound, run bounded B through its own existing nativeProcess invocation and action-specific base URL on the SAME router. B can use a plain text request without Agent/Read; it must select Kimi with actual Subswitch identity and produce the expected ordinary answer. No recurring probes or retries. Finish B only on terminal success and observed owned cleanup.",
+    "On B success release the original held A raw request exactly once to the owned proxy, preserving its original action/branch/call IDs and bytes. Assert A retains the same fallback owner and target, exact continuation and nonce, one Read/result, ordered A-fallback/B-Kimi/A-fallback dispatch and no duplicate tool execution. Finish A after terminal success; cancellation closes held/outgoing sockets and cancels both action lifetimes before local cleanup."
+  ],
+  "quotaEvidenceClass": {
+    "limits": "Actual provider quota exhaustion, its classification, restoration time, identity acceptance and refresh success stay unmeasured unless separately evidenced. No extra calls to exhaust an account. If future scope requires observed provider exhaustion instead, this injected scenario is insufficient and must not be relabeled.",
+    "mechanism": "Reuse existing SharedRouting RoutingClock/QuotaStore.fail seams only in the gate-owned router. Inject one already-classified local quota state, retain A on fallback, advance only quota clock for B eligibility. Do not advance auth expiry, native timeout, monotonic real runtime or durable allowance clocks; do not reset the ledger.",
+    "selectedMinimum": "NATIVE_CLIENT_AND_REAL_PROVIDER_TRAFFIC_WITH_EXPLICITLY_INJECTED_LOCAL_QUOTA_STATE, if separately authorized later; not observed provider exhaustion/classification."
+  },
+  "realBlockers": [
+    "Concrete boundary adaptation is unimplemented and unreviewed. Current native gate has no Kimi/action-pair scenario or actual holding listener; a passive prependListener cannot supply this.",
+    "Current gate output-format=json terminal result and ingress any-history booleans do not independently bind SDK-generated agent identity to emitted Read and successful result or attest exact completed typed child report. Current tracked ActionIngress branch hash is not that identity. A permitted nonretired supported observation contract must be pinned in a separate offline unit; do not assume unavailable forwarding, change native flags, reconstruct retired harness or claim strict acceptance from HTTP correlation alone.",
+    "No exact current permitted live runner/eligible allowance/credential reference and accounting binding exists for this proposed scenario. This preparation grants none.",
+    "Actual managed OAuth identity, login/refresh/provider general acceptance and broader Wave1 access/product/equivalence/usage/API-profile gates remain open. Original manual routing success and strict FAIL_SPENT/report_notes4096/reportExactfalse remain separate."
+  ],
+  "recommendation": "Extend only the existing native-Claude gate with an opt-in internal scenario and a bounded test-owned HTTP ingress hold. Preserve existing public CLI/default paths, nativeProcess and all product source. First qualify the boundary entirely offline with fabricated requests. Do not reconstruct any retired/private runner.",
+  "sanitizedEvidenceContract": {
+    "neverPersist": "Raw native stdout/stderr/errors, prompts/thinking/messages/tool/schema/report text, request/response bodies, headers, URLs, fixture nonce/content, auth/device codes/tokens or real credential paths/identifiers. IDs may be compared in memory; saved facts cannot imply unobserved identity.",
+    "persistOnly": "Exact candidate/source pins and closed status/stage/error enums, numeric/null HTTP status, A/B/branch/owner-equality booleans, generated-identity-match booleans only when independently proved, per-kind counts and order, byte-equality/nonce/report predicates, authorized reservation outcome, numeric counts/timings, native code/failure/cleanup facts, allOwnedResourcesSettled. Keep provenance and evidence class explicit.",
+    "strictGate": "No weakening of exact full completed typed child report, independently matched generated-agent identity on emitted Read and successful result, genuine parent/call/count/order checks, strict original native exit/cleanup gates, CLI options, privacy/error gates or frozen v2. Existing native-claude gate booleans/substring success do not prove these predicates. No forwarded-text option or flag/env is added."
+  },
+  "schemaVersion": 1,
+  "sourceBasis": [
+    {
+      "fact": "Current gate probes Claude/OpenAI credentials, owns a relay plus proxy, observes Messages passively and launches one native group. Supports only claude/openai destinations. Existing prependListener observes but cannot delay the primary request handler.",
+      "lines": "16-19,75-95,110-140,142-157,162-174",
+      "path": "e2e/gates/native-claude.ts"
+    },
+    {
+      "fact": "nativeProcess owns one process group and returns buffered stdout/stderr after close; stdin ends immediately. No interactive per-tool pause callback exists. isolatedNativeEnv inherits broadly with a denylist; it does not supply the required positive environment.",
+      "lines": "275-279,300,334-359,368-374",
+      "path": "e2e/gates/native-process.ts"
+    },
+    {
+      "fact": "runAction discovers action control, creates explicit action, overrides the client base URL, inherits stdio and finishes after native exit. Reusing it directly would probe published control/native state and would not insert the proposed HTTP hold. Reuse its explicit lifecycle pattern, not execute it or change this product API.",
+      "lines": "24-46,73-118,145-165",
+      "path": "src/run-action.ts"
+    },
+    {
+      "fact": "Existing buildDeps injection and createProxyServer own the actual route dispatch. Action prefixes are stripped at request-handler entry. Place an independent test-owned front listener before this handler, not a second passive request listener on the same server.",
+      "lines": "106-108,381-386,543-552",
+      "path": "src/server.ts"
+    },
+    {
+      "fact": "Existing capability-bound action POST/control endpoints and fixed ingress prefix provide isolated A/B identity. Branch agentId is a hash of observed thread metadata, not proof of SDK-generated agent identity.",
+      "lines": "44-71,73-134",
+      "path": "src/routing/action-ingress.ts"
+    },
+    {
+      "fact": "Action state and affinity require the exact agent/route context; querying root context alone does not prove a native subagent selected the fallback.",
+      "lines": "57-63,83-107",
+      "path": "src/routing/action-store.ts"
+    },
+    {
+      "fact": "Cooldown depends on injected RoutingClock; eligible-for-retry is not provider recovery or a spending permit. QuotaStore reservation is not durable assignment budget accounting.",
+      "lines": "90-118,184-215",
+      "path": "src/routing/quota-store.ts"
+    },
+    {
+      "fact": "Managed Kimi uses createKimiAuthStore when source is omitted; source=kimi-code invokes native storage and is excluded. Profile/account/generation lineage is separate from provider identity acceptance.",
+      "lines": "187-203,370-395",
+      "path": "src/routing/profile-auth.ts"
+    },
+    {
+      "fact": "Truthful Subswitch identity exists. Credential acquisition may refresh if token expiry is within120seconds or forced. A nominal credential read can perform auth HTTP; preflight/refresh accounting must precede it.",
+      "lines": "45-48,107-138",
+      "path": "src/kimi-auth.ts"
+    }
+  ],
+  "sourcePins": [
+    {
+      "bytes": 12957,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/e2e/gates/native-claude.ts",
+      "sha256": "3bcbbf89afaa6f10f4f56c09a0d6078bba2d1a77b9ec4b00d6b195f6a5392dcc"
+    },
+    {
+      "bytes": 18756,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/e2e/gates/native-process.ts",
+      "sha256": "8728a858de7ce8e5136f49d23f51edd1abf22f8e480f4ea3c9c06b0956924cba"
+    },
+    {
+      "bytes": 5944,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/src/run-action.ts",
+      "sha256": "9221636f744e296eb01bc12622af18cc9754b4d11876642ef0863fee8107b92d"
+    },
+    {
+      "bytes": 34925,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/src/server.ts",
+      "sha256": "40aa4877fcaf42f973f56c27140bd618715debee6847f24305ecdd6a77185dc2"
+    },
+    {
+      "bytes": 2836,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/src/routing/action-control.ts",
+      "sha256": "60e260ef1b29376133c1af88a6cd301b98d0dc278657119e509fd45e84e47a0a"
+    },
+    {
+      "bytes": 5140,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/src/routing/action-ingress.ts",
+      "sha256": "3a5cd8db25cbccdbea0fe13cd06fc9ae263b4023198ce6ca97a8cf9fb020dce2"
+    },
+    {
+      "bytes": 6550,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/src/routing/action-store.ts",
+      "sha256": "be3f07ca658a199e8c2ef40b4cb7865474508ca308df93585dbfb136536e891d"
+    },
+    {
+      "bytes": 18405,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/src/routing/shared-routing.ts",
+      "sha256": "25022f689905391f8ea6e74d3dff076b79f5d331b4ad027cdf41bccb89cf9a8c"
+    },
+    {
+      "bytes": 18330,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/src/routing/profile-auth.ts",
+      "sha256": "b710c5ed536873a6f8c9f3d7e778c781778aabadea463f63c6f08f888c0b94fb"
+    },
+    {
+      "bytes": 9077,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/src/routing/quota-store.ts",
+      "sha256": "0e5b6cb6fc18e44193fc715b2db1029cccbd44c85c38f7a603611c1de91ba57a"
+    },
+    {
+      "bytes": 13364,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/src/kimi-auth.ts",
+      "sha256": "42867301ca15686fe6b4c31c30e7b3abb9856ca1f89b5011aa6dee1c5d63ab4c"
+    },
+    {
+      "bytes": 25680,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/e2e/gates/kimi-managed-oauth.md",
+      "sha256": "7cc73f7f4d12956c3c451370c570d4ce6519d02cbadbd7037c85099eba526aaf"
+    },
+    {
+      "bytes": 28929,
+      "mode": "0644",
+      "path": "/Users/dean/Sandbox/subswitch-kimi/test/integration/kimi-qualification.test.ts",
+      "sha256": "5d728f8233ccac1a00da795be3cc22fc8859aba9b2233503bc7664f51226bf67"
+    }
+  ],
+  "status": "READ_ONLY_PROPOSAL_NOT_IMPLEMENTED_NOT_LIVE_AUTHORITY"
+}
