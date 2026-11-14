@@ -1,0 +1,234 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-10-19T15:13:05.465563+00:00",
+  "reviewerThread": "01a12c0e-8830-72e1-9ffa-3cf694a094f5",
+  "assignment": "/Users/dean/Sandbox/.codex-orchestrator/wave1-package-review-assignment.json",
+  "assignmentSha256": "fa8413e57ec4a5861716323d37cb62106206f256ff4341407f5e3c5560feca61",
+  "checkpointRead": "/Users/dean/Sandbox/.codex-orchestrator/checkpoints/sol-issues-before-package-review.json",
+  "reviewCheckout": "/Users/dean/Sandbox/subswitch-continuity",
+  "authorCheckoutReadOnly": "/Users/dean/Sandbox/subswitch-review",
+  "ownBranch": "codex/future-model-overrides",
+  "ownHeadUnchanged": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+  "pr": 87,
+  "baseSHA": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+  "targetSHA": "84cf8bed6db669968228c109497031f04d685164",
+  "recommendation": "approve_source_review",
+  "approvalScope": "Exact two-file delta from the assigned PR81 base only; a separately identified pre-existing smoke isolation issue remains for coordinator tracking. This does not approve merge, stack reconciliation, release, native acceptance, or live Kimi compatibility.",
+  "findings": [],
+  "baselineFindings": [
+    {
+      "id": "SMOKE-ENV-01",
+      "severity": "medium",
+      "introducedByThisDelta": false,
+      "file": "scripts/smoke-tarball.sh",
+      "line": 99,
+      "title": "Inherited SUBSWITCH_CONFIG can redirect the existing init smoke outside the fixture",
+      "evidence": "The new metadata command and both serve commands override SUBSWITCH_CONFIG only for their child processes. The later init command sets CODEX_HOME and XDG_CONFIG_HOME but leaves any inherited SUBSWITCH_CONFIG intact. src/codex-init.ts:30-35 prefers that value over XDG_CONFIG_HOME; lines 85-89 read the selected config and lines 252-258 write the setup plan there. Thus a developer running the smoke with SUBSWITCH_CONFIG already set can read/change that external config despite the temporary install directory. The affected init invocation is unchanged from the assigned base.",
+      "impact": "Pre-existing developer-environment isolation gap; does not invalidate the recorded clean-environment red/green smoke or clean GitHub runners. No foreign configuration was read or modified during this review.",
+      "recommendedFollowup": "Have the owning package/smoke worker explicitly select a fixture-owned SUBSWITCH_CONFIG for init and verify an inherited sentinel path remains untouched. Track this separately or include it in a follow-up delta; do not claim the entire existing script is hermetic under arbitrary inherited environment.",
+      "owner": "Coordinator to route to the package/smoke owner",
+      "blocksThisDeltaSourceApproval": false
+    }
+  ],
+  "fullChangedFileReview": [
+    {
+      "file": "package.json",
+      "sha256": "4d6427e0ddff060fd56e72a91f600b2525a9b8cc9e747b008e2ffd3075ef6b1b",
+      "assessment": "The only semantic edit is the explicit files allowlist addition for subswitch.wave1.example.json. No version, scripts, dependency, export, bin, engine, runtime, config format or public command change. package-lock.json needs no files allowlist synchronization."
+    },
+    {
+      "file": "scripts/smoke-tarball.sh",
+      "sha256": "71cb7eb167b362218a2325a3db6ba2e4c0874403fab11a092310976da03cd87d",
+      "assessment": "Reviewed the complete shell file and 22-line addition. Quoted heredoc prevents shell interpolation; execFileSync passes an argv array through process.execPath without shell parsing. require.resolve locates the installed package rather than repository source; joins derive its sample and built CLI paths. Explicit SUBSWITCH_CONFIG selects the installed example. Missing/invalid sample, invalid config, bad discovery schema/route/order, or missing/wrong compatibility status fail the script through uncaught Node error and set -e. Temporary directory creation, ownership, trap and server PID cleanup are unchanged; the new failure point occurs before any server is spawned."
+    }
+  ],
+  "sampleReview": {
+    "file": "subswitch.wave1.example.json",
+    "sha256": "98cb220de6e07717033cb8b63a4184f56948e37672042d3652ca686370e554c8",
+    "unchangedFromBase": true,
+    "sizeBytes": 1113,
+    "sensitiveData": "Only illustrative account labels, environment variable names and the conventional native auth path; no credential values, private endpoints, session history, tokens or machine-specific source paths.",
+    "structure": "configVersion 2; primary kimi-code/k3/high, explicit fallbacks kimi-platform/kimi-k3/high then chatgpt-codex/gpt-6-sol/high; no invented verified-equivalence claim."
+  },
+  "metadataPathReview": {
+    "entry": "src/cli.ts:582-595 models branch",
+    "config": "loadConfig explicitly bypasses implicit user/project merge for SUBSWITCH_CONFIG; it parses only the installed example, validates schemas and endpoint/model metadata, then resolves in-memory config.",
+    "discovery": "routingDiscovery reads registry/constants/config metadata. It never calls buildDeps, doctor, credential resolution/refresh, native invocation or inference. Output omits credential configuration and values, reports availability unknown and native certification unverified, and labels Kimi live-unverified.",
+    "defaultEndpoints": "The sample contains production destination defaults and a native auth path, but metadata validation uses URLs and strings only. It never dispatches a request or reads that auth path. The new block runs before startup fixtures and is safe on this reviewed code path.",
+    "limit": "The assertion tests packaging/config parsing/discovery and does not establish native HTTP, websocket, live provider, credential, capability or tool execution acceptance."
+  },
+  "inventoryVerification": {
+    "redCount": 94,
+    "greenCount": 95,
+    "addedPaths": [
+      "subswitch.wave1.example.json"
+    ],
+    "removedPaths": [],
+    "changedCommonEntries": [
+      {
+        "before": {
+          "path": "package.json",
+          "size": 2433,
+          "mode": 420
+        },
+        "after": {
+          "path": "package.json",
+          "size": 2469,
+          "mode": 420
+        }
+      }
+    ],
+    "allowlist": "Only the existing sample is newly added; package.json size changes consistently with the allowlist edit. No source/test/private evidence files or dependency inventory were added.",
+    "sampleBytesEvidence": "Author green inventory records sample source equality and exact source SHA256, which matches the committed and working source. Author temporary tarballs were removed; this review did not independently reopen them.",
+    "redSmoke": "Actual saved log fails ENOENT at installed sample read before any proxy starts.",
+    "greenSmoke": "Actual saved log contains installed example assertion, expected live-unverified label, isolated health startup and reverse translation startup, with shutdowns logged."
+  },
+  "sourceHashVerification": {
+    "package.json": {
+      "expected": "4d6427e0ddff060fd56e72a91f600b2525a9b8cc9e747b008e2ffd3075ef6b1b",
+      "committed": "4d6427e0ddff060fd56e72a91f600b2525a9b8cc9e747b008e2ffd3075ef6b1b",
+      "working": "4d6427e0ddff060fd56e72a91f600b2525a9b8cc9e747b008e2ffd3075ef6b1b"
+    },
+    "scripts/smoke-tarball.sh": {
+      "expected": "71cb7eb167b362218a2325a3db6ba2e4c0874403fab11a092310976da03cd87d",
+      "committed": "71cb7eb167b362218a2325a3db6ba2e4c0874403fab11a092310976da03cd87d",
+      "working": "71cb7eb167b362218a2325a3db6ba2e4c0874403fab11a092310976da03cd87d"
+    },
+    "subswitch.wave1.example.json": {
+      "expected": "98cb220de6e07717033cb8b63a4184f56948e37672042d3652ca686370e554c8",
+      "committed": "98cb220de6e07717033cb8b63a4184f56948e37672042d3652ca686370e554c8",
+      "working": "98cb220de6e07717033cb8b63a4184f56948e37672042d3652ca686370e554c8"
+    }
+  },
+  "evidenceHashVerification": {
+    "wave1-package-red-inventory.json": {
+      "expected": "3a30eb190886b2e789184d9c07266cb0192aba946a4ca76513e69910187fe069",
+      "actual": "3a30eb190886b2e789184d9c07266cb0192aba946a4ca76513e69910187fe069"
+    },
+    "wave1-package-green-inventory.json": {
+      "expected": "c4b65e6ce83333948d4264ab3d23257021b90896188767046b5d1a5e5ec2dcce",
+      "actual": "c4b65e6ce83333948d4264ab3d23257021b90896188767046b5d1a5e5ec2dcce"
+    },
+    "wave1-package-red-smoke.log": {
+      "expected": "a73438528f2f01adb71fbd394155ac61630840c27b4448cdbd29c3feaf988fdc",
+      "actual": "a73438528f2f01adb71fbd394155ac61630840c27b4448cdbd29c3feaf988fdc"
+    },
+    "wave1-package-green-smoke.log": {
+      "expected": "9d12a17f8eb1fbf8cf5586069308b5e7ab060a0a3ec073e571861c59e5c8fc5d",
+      "actual": "9d12a17f8eb1fbf8cf5586069308b5e7ab060a0a3ec073e571861c59e5c8fc5d"
+    }
+  },
+  "authorReport": {
+    "path": "/Users/dean/Sandbox/.codex-orchestrator/wave1-package-delivery.json",
+    "sha256": "002c276c6bdae0286c58a3686eb0667d5c8afa27f9c35bab6165581ec74b50e7"
+  },
+  "ciVerification": {
+    "head": "84cf8bed6db669968228c109497031f04d685164",
+    "run": 39275048700,
+    "status": "4/4 SUCCESS",
+    "observedSteps": "Independently fetched full job logs for all four Linux/macOS Node22/24 jobs. Each logs the new installed sample assertion and both health checks, and the smoke step succeeds. Run metadata pins the assigned head.",
+    "evidencePath": "/Users/dean/Sandbox/subswitch-continuity/wave1-package-ci-smoke-evidence.json",
+    "evidenceSha256": "b42b2d622bfc5300031adfe2053b6b21b18deb831a4d5c8bedb8878298ca6b10",
+    "prSnapshot": {
+      "baseRefName": "codex/wave1-kimi-failover",
+      "baseRefOid": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+      "headRefName": "codex/wave1-package-example",
+      "headRefOid": "84cf8bed6db669968228c109497031f04d685164",
+      "isDraft": true,
+      "number": 87,
+      "state": "OPEN",
+      "statusCheckRollup": [
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-19T15:07:27Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39275048700/job/118137045600",
+          "name": "check (ubuntu-latest)",
+          "startedAt": "2026-10-19T15:06:46Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-19T15:07:59Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39275048700/job/118137045146",
+          "name": "check (macos-latest)",
+          "startedAt": "2026-10-19T15:06:52Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-19T15:07:26Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39275048700/job/118137046127",
+          "name": "check (ubuntu-latest, Node 24)",
+          "startedAt": "2026-10-19T15:06:46Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        },
+        {
+          "__typename": "CheckRun",
+          "completedAt": "2026-10-19T15:07:34Z",
+          "conclusion": "SUCCESS",
+          "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39275048700/job/118137045378",
+          "name": "check (macos-latest, Node 24)",
+          "startedAt": "2026-10-19T15:06:50Z",
+          "status": "COMPLETED",
+          "workflowName": "CI"
+        }
+      ],
+      "url": "https://github.com/dean0x/subswitch/pull/87"
+    }
+  },
+  "reviewChecks": [
+    {
+      "check": "Exact base/head ancestry and changed paths",
+      "result": "pass; direct parent is assigned PR81 SHA, exactly package.json and scripts/smoke-tarball.sh"
+    },
+    {
+      "check": "Committed and author-working source hashes",
+      "result": "all three recorded file hashes match; author tracked tree clean"
+    },
+    {
+      "check": "All four inventory/smoke evidence hashes",
+      "result": "match"
+    },
+    {
+      "check": "git diff --check exact base/head",
+      "exit": 0
+    },
+    {
+      "check": "bash -n fed exact committed shell contents through stdin",
+      "exit": 0
+    },
+    {
+      "check": "skim heatmap scripts insights",
+      "result": "4 historical commits; script flagged for churn/stability and single-author concentration. Full shell review and independent CI log verification performed; no incomplete heatmap output."
+    }
+  ],
+  "contextSourceHashes": {
+    "src/cli.ts": "fb115b59ef7ae400450ae6be307ee72e8f2eb368c8e734b2d08d15ccfc7d0797",
+    "src/config.ts": "ee44fd247d54a171bc3d29c3d56fd3f0e7e145454e907e969c2e390d6da715cd",
+    "src/routing/routing-discovery.ts": "6c2a8cde1e5df1c9c719e99c82e4f7f4df7e2e50a897653b7635a021a95cdb4b",
+    "src/routing/destination-catalog.ts": "0c7c6777e28ced040a108fdf0070a47b934f9325c99b910b2d0c5cee2051aca9",
+    "src/routing/routing-config.ts": "aa80bff9593647eea4dd1728ba5ad0847a8c133379d7e344724755a399590ce7",
+    "src/codex-init.ts": "744049ab2900baa8bb4774ee9dfb9782944e9bb8c7a009692e13e2b9395c846a",
+    "src/claude-auth.ts": "6ffb09dd629c4634ee21c0c8e5f240ab04474efa8b20d409ca008705e3265c80",
+    "src/codex-auth.ts": "742923756b4cee41343a87d6fcf9e9a67cc7a1c21f96291bc4eec9452c70dc74",
+    "src/native-auth-coordination.ts": "c0cfd2c8e6b73478f282d00b144b104937e0309a033448438f3e09ee5a396523",
+    "src/server.ts": "00bc7ad173abbb6b59eb525ce10395bc9edc55d40419180c0cc94041c791110c",
+    "src/limit-recorder.ts": "71de09ce294c82fab5a1d12fc8a6008e43d87bb3ca77d4b197eb02ea88b0a4d8",
+    ".github/workflows/ci.yml": "2679a152d89b185b286a0d1fa9d6074f7acb3fb27791e36b7fbcc82407a422bc"
+  },
+  "runtimeAndDeliveryLimits": [
+    "No local tests, builds, npm pack/install or smoke reruns; no green full-suite repeat.",
+    "No source/branch/index changes in either checkout; only reviewer evidence files written in own clone.",
+    "No actual native clients, native credential/profile/history access, provider requests/inference, shared proxy change, Claude/OHF control, merge/release, goal/model/permission changes or denied rerouting.",
+    "Existing startup smoke contacts loopback health only. Its credential paths are fixture-owned on the recorded default clean environment; the inherited SUBSWITCH_CONFIG caveat above remains explicit.",
+    "Keep PR87 on its exact PR81 base. Main already advanced independently; any future rebase/combined tree requires owning-worker reconciliation and applicable gates.",
+    "All native HTTP/Kimi live acceptance gates remain unchanged. Metadata-only and fixture startup evidence does not waive them."
+  ],
+  "nextAction": "Coordinator may record this exact-head source approval and four successful CI smoke logs. Track SMOKE-ENV-01 with the package/smoke owner; preserve PR81-dependent ordering and native/live gates. Worker stops this bounded read-only review."
+}

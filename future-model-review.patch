@@ -1,0 +1,488 @@
+diff --git a/README.md b/README.md
+index 373db8d..2d17d97 100644
+--- a/README.md
++++ b/README.md
+@@ -341,12 +341,15 @@ to run on the raw file first and why a refusal to start is the better failure.
+ The routable set is the **built-in model registry** — `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`,
+ `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Routing follows
+ the registry so a new model becomes available on upgrade with no config edit, and
+-everything outside it passes through to Anthropic. The registry itself is not
++unconfigured names outside it pass through to Anthropic. The registry itself is not
+ configurable; to reach a Codex model before subswitch registers it, point a
+ `providers.codex.aliases` entry at its id (`"sol-next": "gpt-future-sol"`, replacing
+ the illustrative target with a real model ID available to your account). The alias
+-routes to Codex, but `doctor` counts it as a failure (`target not in registry`)
+-until a subswitch release registers that id. Run
++routes to Codex, as do its declared full target ID and qualified spellings such as
++`codex:sol-next` and `codex:gpt-future-sol`. A family override such as
++`"sol": "gpt-future-sol"` also applies to `codex:sol`. Exact registered IDs remain
++pinned. `doctor` warns that the target is unregistered without failing that check;
++the provider still determines model availability and account access. Run
+ `subswitch models --json` for the machine-readable registry.
+ 
+ **Family aliases** (`astra`, `sol`, `terra`, `luna`) let you write a model name that
+diff --git a/e2e/gates/future-model-overrides-offline-2026-10-19.json b/e2e/gates/future-model-overrides-offline-2026-10-19.json
+new file mode 100644
+index 0000000..bea68ba
+--- /dev/null
++++ b/e2e/gates/future-model-overrides-offline-2026-10-19.json
+@@ -0,0 +1,113 @@
++{
++  "schemaVersion": 1,
++  "kind": "future-model-overrides-offline",
++  "date": "2026-10-19",
++  "base": "de137dedbd72d660657517251fe8a1051dd43465",
++  "baseBranch": "main",
++  "publishedBaseline": {
++    "version": "0.6.0",
++    "npmGitHead": "de137dedbd72d660657517251fe8a1051dd43465",
++    "npmIntegrity": "sha512-Y1G3DqlT7PodXMEuWBSfOGSn5P+2ARyYhmezJkCt9a99rbAJDafRSmWtvB3fzn242V5OKMCso3Y7nYGaEP569A==",
++    "verification": "npm view subswitch version dist.integrity --json; npm view subswitch@0.6.0 gitHead --json"
++  },
++  "scope": "Existing providers.codex.aliases overrides only; no registry additions, new schema or global unknown-model acceptance.",
++  "confirmed": [
++    "loadConfig/buildDeps already accept an unregistered alias target. A local startup validation error was not reproduced on current main.",
++    "A qualified family spelling such as codex:sol ignores its configured sol override and selects the built-in family winner.",
++    "A configured full future target ID and its qualified spelling are unresolved, so the production HTTP handler falls through to Anthropic.",
++    "doctor increments its failure count for every configured target absent from the built-in registry."
++  ],
++  "reproduction": {
++    "command": "node --import tsx --test --test-timeout=30000 test/unit/future-model-overrides.test.ts",
++    "beforeResult": "Initial 10 cases: 5 passed, 5 failed. Qualified sol selected gpt-6.1-sol; qualified worker and bare/qualified future IDs were unresolved; doctor exited 1. The two bare aliases already loaded and selected correctly.",
++    "fixtureModel": "gpt-fixture-next-sol",
++    "reasonForFixture": "Uses an ID absent from every current built-in catalog rather than a now-registered Sol 6.1 ID."
++  },
++  "resolution": [
++    "Populate qualified alias lookups from the effective explicit declarations, preserving exact registry pins.",
++    "Recognize only explicitly declared unknown targets in bare and qualified forms; actual aliases, family defaults and existing qualified names retain precedence.",
++    "Keep one-hop resolution and reserved-name/config validation; no wildcard model or provider acceptance.",
++    "doctor retains an unregistered-target warning without counting that deliberate override as failure. Other auth/probe/agent errors still fail.",
++    "Provider support and account access remain authoritative; a fake upstream rejection is returned without retry or Anthropic fallback."
++  ],
++  "checks": [
++    {
++      "command": "node --import tsx --test --test-timeout=30000 test/unit/future-model-overrides.test.ts test/integration/future-model-overrides.test.ts",
++      "exitCode": 0,
++      "passed": 14,
++      "failed": 0,
++      "skipped": 0,
++      "coverage": [
++        "six requested spellings across config/buildDeps selection",
++        "injected doctor warning and genuine unknown-agent failure",
++        "canonical pins, family/qualified-name collision protection and one-hop aliases",
++        "malformed/reserved aliases and unsupported configured providers remain invalid",
++        "production HTTP stream=false/true, fabricated credential selection and local unmatched-model rejection",
++        "provider rejection remains authoritative"
++      ]
++    },
++    {
++      "command": "node --import tsx --test --test-reporter=dot --test-timeout=30000 test/unit/future-model-overrides.test.ts test/unit/routing-table.test.ts test/unit/models.test.ts test/unit/doctor.test.ts test/unit/agent-scan.test.ts",
++      "exitCode": 0,
++      "note": "Focused baseline/model/doctor suites passed before the final collision guard; the final full check covers all later changes."
++    },
++    {
++      "command": "/usr/bin/lockf -t 0 /Users/dean/Sandbox/.devflow/locks/heavy-tests.lock npm run check",
++      "exitCode": 0,
++      "tests": 973,
++      "passed": 973,
++      "failed": 0,
++      "skipped": 0,
++      "durationMs": 11057.049459,
++      "scope": "Typecheck and full unit/integration suite under the acquired shared nonblocking heavy-test lock."
++    },
++    {
++      "command": "npm run build",
++      "exitCode": 0
++    },
++    {
++      "command": "git diff --check",
++      "exitCode": 0
++    }
++  ],
++  "validatedSourceSha256": {
++    "src/models.ts": "969d675522339432d6ad48e9f785c0328390457ca7bfe856cf0ad2e0753676db",
++    "src/doctor.ts": "5978c4e2f04a30997f4fbf245fa0e1aab44e50d26b53ffc343cac86b546a6f29",
++    "README.md": "ec22f5b40628d745ec13f84ea84272e149cde72680c375cedb7e1f75b89986f1",
++    "test/unit/future-model-overrides.test.ts": "e1e71c0aa548ac09ff23afe7403dfbd85f94d0610ac168ab19394249f4841e7f",
++    "test/integration/future-model-overrides.test.ts": "2c3391d5f20ebf6e7683782089086350d863b3564665beebdb89b859efd25000"
++  },
++  "selfReview": {
++    "status": "complete; independent review pending with coordinator",
++    "findingsResolved": [
++      "Target-only expansion cannot shadow existing family, exact registry or qualified alias/registry names. Regression included."
++    ],
++    "surfaceAssessment": "Configuration schema, registry data, model JSON format, credentials/endpoints, dependencies, effort validation and release version are unchanged. Intentional behavior changes are explicit declared-model request selection and doctor warning severity."
++  },
++  "separateUnresolvedScopes": [
++    {
++      "scope": "PR81 configVersion=2 explicit route targets",
++      "head": "7e6962c177b679bb2cbd55d8334df071bee262ad",
++      "source": [
++        "src/routing/routing-config.ts:139",
++        "src/routing/destination-catalog.ts:51"
++      ],
++      "status": "Static source still requires built-in modelEfforts metadata and emits invalid_target_model for unknown explicit target IDs. This independent released-path fix does not relax that validator. A separate capability-declaration design/review is needed."
++    },
++    {
++      "scope": "Original user-specific startup error",
++      "status": "No exact error/config was supplied; current published/main legacy alias loading succeeds. These reproduced doctor/selection defects do not establish that specific error source."
++    },
++    {
++      "scope": "Live provider availability and native-client behavior",
++      "status": "Unverified; no actual provider calls or existing clients/auth/history accessed."
++    }
++  ],
++  "isolation": {
++    "realProviderCalls": 0,
++    "realClientAuthOrHistoryTouched": false,
++    "sharedProxyOrOHFChanged": false,
++    "otherCheckoutWrites": false,
++    "fixtures": "Every configured API/subscription/refresh endpoint uses a fixture origin. Native auth/config paths are owned temporary paths; only fabricated Codex OAuth material is written/read. Unexpected upstream paths reject locally. Doctor I/O is fully injected."
++  }
++}
+diff --git a/src/doctor.ts b/src/doctor.ts
+index 5d7cc78..80e3dbf 100644
+--- a/src/doctor.ts
++++ b/src/doctor.ts
+@@ -261,11 +261,10 @@ export const runDoctor = async (
+ 
+   // Dangling alias warnings: targets that are not in the registry.
+   // The router still routes them (forward-compat), but the target won't appear in
+-  // model rows and is invisible to tools that enumerate the registry. Warn so the
+-  // user can detect a typo before it silently misroutes to an unknown model id.
++  // model rows and is invisible to tools that enumerate the registry. This is an
++  // explicit forward-compatible declaration, so warn without failing the check.
+   for (const { alias, target } of danglingAliases) {
+-    failures++;
+-    io.write(row("alias warning:", failStr(`"${alias}" → "${target}" — target not in registry (typo? or future model)`)));
++    io.write(row("alias warning:", pc.yellow(`"${alias}" → "${target}" — target not in registry (explicit override; upstream support is not verified)`)));
+   }
+ 
+   // N-provider auth check.
+diff --git a/src/models.ts b/src/models.ts
+index ecc9f59..dcee22d 100644
+--- a/src/models.ts
++++ b/src/models.ts
+@@ -81,9 +81,9 @@ export interface RoutingTable {
+   readonly byId: ReadonlyMap<string, ProviderId>;
+   /** Per-family resolution (unique claimant or ambiguous). */
+   readonly byFamily: ReadonlyMap<string, FamilyResolution>;
+-  /** Qualified lookups: "codex:gpt-5.6-sol" and "codex:sol" both resolve here. */
++  /** Qualified registry IDs, family defaults, configured aliases and declared targets. */
+   readonly byQualified: ReadonlyMap<string, ResolvedModel>;
+-  /** Alias lookups: built with Object.hasOwn guard (prototype-pollution safe). */
++  /** Configured aliases and otherwise-unclaimed declared targets (own-property guarded). */
+   readonly byAlias: ReadonlyMap<string, ResolvedModel>;
+ }
+ 
+@@ -585,8 +585,9 @@ export const buildRoutingTable = (
+   const byAlias = new Map<string, ResolvedModel>();
+   const rejectedAliases: { readonly alias: string; readonly target: string }[] = [];
+   const danglingAliases: { readonly alias: string; readonly target: string; readonly provider: ProviderId }[] = [];
++  const declarations = collectAliasDeclarations(aliasesByProvider);
+ 
+-  for (const { alias, target, provider, reserved } of collectAliasDeclarations(aliasesByProvider)) {
++  for (const { alias, target, provider, reserved } of declarations) {
+     // PF-007: a reserved key would route main-thread traffic to Codex; a reserved target
+     // becomes routable via the alias map, which decideRoute's exact-membership check
+     // would then match.
+@@ -614,6 +615,23 @@ export const buildRoutingTable = (
+     }
+   }
+ 
++  // Qualifying an alias must preserve its explicit override, including a family
++  // override such as sol. Exact registry IDs remain pinned in either spelling.
++  for (const { alias, provider, reserved } of declarations) {
++    if (!reserved && !byId.has(alias))
++      byQualified.set(`${provider}:${alias}`, byAlias.get(alias)!);
++  }
++  // An explicit declaration authorizes this target ID, not every unknown model.
++  // Keep registry pins, actual aliases (including qualified ones) and family
++  // defaults ahead of target-only names. Aliases still resolve exactly one hop.
++  for (const { alias, target, provider } of danglingAliases) {
++    const model = byAlias.get(alias)!;
++    if (!byAlias.has(target) && !byFamily.has(target) && !byQualified.has(target))
++      byAlias.set(target, model);
++    const qualified = `${provider}:${target}`;
++    if (!byQualified.has(qualified)) byQualified.set(qualified, model);
++  }
++
+   const table: RoutingTable = {
+     byId,
+     byFamily,
+@@ -637,7 +655,7 @@ export const buildRoutingTable = (
+  * Resolution order — exactly five rules, in this order:
+  *
+  * 1. Exact id in byId → resolved. Canonical ids ALWAYS win; no alias can hijack one.
+- * 2. Alias in byAlias → resolved (one hop; Map built with Object.hasOwn — pollution safe).
++ * 2. Configured alias or otherwise-unclaimed declared target → resolved (one hop).
+  * 3. Qualified "provider:id" → resolved only when the prefix is in PROVIDER_IDS.
+  *    An unrecognised prefix returns unknown_qualifier, not unresolved, so callers can
+  *    distinguish "typo in a model name" from "typo in a provider name".
+diff --git a/test/integration/future-model-overrides.test.ts b/test/integration/future-model-overrides.test.ts
+new file mode 100644
+index 0000000..c698452
+--- /dev/null
++++ b/test/integration/future-model-overrides.test.ts
+@@ -0,0 +1,128 @@
++/** Production HTTP routing with fixture-only endpoints and fabricated OAuth material. */
++import assert from "node:assert/strict";
++import { describe, it } from "node:test";
++import { mkdtemp, writeFile, rm } from "node:fs/promises";
++import { join } from "node:path";
++import { tmpdir } from "node:os";
++import type { AddressInfo } from "node:net";
++import { loadConfig } from "../../src/config.js";
++import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
++import { noopLogger } from "../../src/logger.js";
++import { makeAccessToken, makeAuthFileContent, startFakeUpstream } from "./fake-upstreams.js";
++
++const future = "gpt-fixture-next-sol";
++
++async function rig(rejectModel = false) {
++  const root = await mkdtemp(join(tmpdir(), "subswitch-future-http-"));
++  const token = makeAccessToken(Date.now() + 3600000, "acct_fabricated_future");
++  const authFile = join(root, "fabricated-auth.json");
++  await writeFile(authFile, makeAuthFileContent(token), "utf8");
++  const origin = await startFakeUpstream((req, res, body) => {
++    if (req.url !== "/codex/responses" || rejectModel) {
++      res.writeHead(400, { "content-type": "application/json" });
++      res.end(JSON.stringify({ error: { type: "invalid_request_error", message: "fabricated upstream model unavailable" } }));
++      return;
++    }
++    const model = (JSON.parse(body.toString()) as { model: string }).model;
++    const response = { id: "resp_fixture_future", model, output: [], usage: { input_tokens: 1, output_tokens: 0 } };
++    res.writeHead(200, { "content-type": "text/event-stream" });
++    for (const [type, status] of [["response.created", "in_progress"], ["response.completed", "completed"]])
++      res.write(`event: ${type}\ndata: ${JSON.stringify({ type, response: { ...response, status } })}\n\n`);
++    res.end();
++  });
++  try {
++    const loaded = loadConfig({
++      configPath: join(root, "config.json"), env: {},
++      readFile: () => JSON.stringify({
++        anthropic: { baseUrl: `${origin.url}/anthropic` },
++        providers: { codex: {
++          aliases: { sol: future, worker: future }, authFile,
++          baseUrl: `${origin.url}/codex`, oauthTokenUrl: `${origin.url}/unexpected-refresh`,
++        } },
++        codexIngress: {
++          subscriptionBaseUrl: `${origin.url}/unexpected-subscription`, apiBaseUrl: `${origin.url}/unexpected-api`,
++          claude: {
++            baseUrl: `${origin.url}/unexpected-claude`, oauthTokenUrl: `${origin.url}/unexpected-claude-refresh`,
++            authFile: join(root, "absent-claude.json"), configDir: join(root, "absent-claude-config"),
++          },
++        },
++      }),
++    });
++    assert.ok(loaded.ok);
++    const config = loaded.value.config;
++    for (const endpoint of [config.anthropic.baseUrl, config.providers.codex.baseUrl,
++      config.providers.codex.oauthTokenUrl, config.codexIngress.subscriptionBaseUrl,
++      config.codexIngress.apiBaseUrl, config.codexIngress.claude.baseUrl, config.codexIngress.claude.oauthTokenUrl])
++      assert.equal(new URL(endpoint).origin, origin.url);
++    for (const path of [config.providers.codex.authFile, config.codexIngress.claude.authFile!, config.codexIngress.claude.configDir!])
++      assert.ok(path.startsWith(`${root}/`));
++    const deps = buildDeps(loaded.value.config, noopLogger);
++    assert.ok(deps.ok);
++    const proxy = createProxyServer(deps.value);
++    const listening = await listenServer(proxy, 0, "127.0.0.1");
++    assert.ok(listening.ok);
++    return {
++      origin, token, url: `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`,
++      async close() {
++        proxy.closeAllConnections();
++        await new Promise<void>(resolve => proxy.close(() => resolve()));
++        await origin.close();
++        await rm(root, { recursive: true, force: true });
++      },
++    };
++  } catch (error) {
++    await origin.close();
++    await rm(root, { recursive: true, force: true });
++    throw error;
++  }
++}
++
++async function send(url: string, model: string, stream: boolean) {
++  return fetch(`${url}/v1/messages`, {
++    method: "POST",
++    headers: { "content-type": "application/json", authorization: "Bearer fabricated-incoming-not-for-codex" },
++    body: JSON.stringify({ model, stream, max_tokens: 16, messages: [{ role: "user", content: "fabricated prompt" }] }),
++  });
++}
++
++describe("future-model overrides through production HTTP", () => {
++  for (const stream of [false, true]) {
++    it(`starts and routes declared aliases/full/qualified IDs to the future model with stream=${stream}`, async () => {
++      const fixture = await rig();
++      try {
++        for (const requested of ["sol", "worker", "codex:sol", "codex:worker", future, `codex:${future}`]) {
++          const response = await send(fixture.url, requested, stream);
++          assert.equal(response.status, 200, requested);
++          if (stream) assert.match(await response.text(), /event: message_stop/);
++          else assert.equal((await response.json() as { stop_reason: string }).stop_reason, "end_turn");
++          const upstream = fixture.origin.requests.at(-1)!;
++          assert.equal(upstream.url, "/codex/responses");
++          assert.equal((JSON.parse(upstream.body.toString()) as { model: string }).model, future, requested);
++          assert.equal(upstream.headers.authorization, `Bearer ${fixture.token}`);
++          assert.notEqual(upstream.headers.authorization, "Bearer fabricated-incoming-not-for-codex");
++        }
++        assert.equal(fixture.origin.requests.length, 6, "one Codex call per declared spelling, no retries/fallback");
++        for (const requested of ["gpt-fixture-undeclared", "typo:sol"]) {
++          const response = await send(fixture.url, requested, stream);
++          assert.equal(response.status, 400);
++          assert.match(await response.text(), /fabricated upstream model unavailable/);
++          assert.equal(fixture.origin.requests.at(-1)!.url, "/anthropic/v1/messages");
++          assert.equal((JSON.parse(fixture.origin.requests.at(-1)!.body.toString()) as { model: string }).model, requested);
++        }
++        assert.equal(fixture.origin.requests.filter(req => req.url === "/codex/responses").length, 6);
++      } finally { await fixture.close(); }
++    });
++  }
++
++  it("keeps provider rejection authoritative for a declared but unavailable model", async () => {
++    const fixture = await rig(true);
++    try {
++      const response = await send(fixture.url, future, false);
++      assert.equal(response.status, 400);
++      assert.match(await response.text(), /fabricated upstream model unavailable/);
++      assert.equal(fixture.origin.requests.length, 1);
++      assert.equal(fixture.origin.requests[0]!.url, "/codex/responses");
++      assert.equal((JSON.parse(fixture.origin.requests[0]!.body.toString()) as { model: string }).model, future);
++    } finally { await fixture.close(); }
++  });
++});
+diff --git a/test/unit/future-model-overrides.test.ts b/test/unit/future-model-overrides.test.ts
+new file mode 100644
+index 0000000..883038e
+--- /dev/null
++++ b/test/unit/future-model-overrides.test.ts
+@@ -0,0 +1,127 @@
++/** Explicit future-model declarations use fabricated config and injected doctor I/O only. */
++import assert from "node:assert/strict";
++import { describe, it, type TestContext } from "node:test";
++import { mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { loadConfig } from "../../src/config.js";
++import { buildDeps } from "../../src/server.js";
++import { runDoctor, type DoctorIO } from "../../src/doctor.js";
++import { noopLogger } from "../../src/logger.js";
++import { MODEL_REGISTRY, buildRoutingTable, resolveModel } from "../../src/models.js";
++
++const future = "gpt-fixture-next-sol";
++
++function fixture(t: TestContext, aliases: Record<string, unknown> = { sol: future, worker: future }) {
++  const root = mkdtempSync(join(tmpdir(), "subswitch-future-model-"));
++  t.after(() => rmSync(root, { recursive: true, force: true }));
++  const loaded = loadConfig({
++    configPath: join(root, "config.json"), env: {},
++    readFile: () => JSON.stringify({
++      anthropic: { baseUrl: "http://127.0.0.1:1/anthropic" },
++      providers: { codex: {
++        aliases, authFile: join(root, "absent-auth.json"),
++        baseUrl: "http://127.0.0.1:1/codex", oauthTokenUrl: "http://127.0.0.1:1/refresh",
++      } },
++      codexIngress: {
++        subscriptionBaseUrl: "http://127.0.0.1:1/subscription", apiBaseUrl: "http://127.0.0.1:1/api",
++        claude: {
++          baseUrl: "http://127.0.0.1:1/claude", oauthTokenUrl: "http://127.0.0.1:1/claude-refresh",
++          authFile: join(root, "absent-claude.json"), configDir: join(root, "absent-claude-config"),
++        },
++      },
++    }),
++  });
++  assert.ok(loaded.ok, loaded.ok ? "" : loaded.error.message);
++  return { root, config: loaded.value.config };
++}
++
++function doctorIO(lines: string[], root: string, models: string[]): DoctorIO {
++  return {
++    color: false, write: line => lines.push(line),
++    readAuthFile: async () => JSON.stringify({ auth_mode: "oauth", tokens: {
++      access_token: "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJmYWJyaWNhdGVkIn0.sig", refresh_token: "fabricated-refresh",
++    } }),
++    httpGet: async () => ({ ok: true, status: 200, body: JSON.stringify({ name: "subswitch", version: "fixture" }) }),
++    tlsConnect: async () => ({ kind: "reachable" }),
++    listAgentFiles: async () => models.map((_model, i) => join(root, `agent-${i}.md`)),
++    readTextFile: async path => {
++      const index = Number(/agent-(\d+)\.md$/.exec(path)?.[1]);
++      return `---\nmodel: ${models[index]}\n---\n`;
++    },
++  };
++}
++
++describe("explicit future Codex model overrides", () => {
++  for (const requested of ["sol", "worker", "codex:sol", "codex:worker", future, `codex:${future}`]) {
++    it(`loads and selects the explicitly configured future target for ${requested}`, t => {
++      const { config } = fixture(t);
++      assert.equal(config.providers.codex.aliases.sol, future);
++      const deps = buildDeps(config, noopLogger);
++      assert.ok(deps.ok);
++      try {
++        assert.deepEqual(deps.value.resolve(requested), { kind: "resolved", target: { id: future, provider: "codex" } });
++      } finally { deps.value.forwardAnthropic.close?.(); deps.value.forwardOpenai?.close(); }
++    });
++  }
++
++  it("doctor warns about unverified provider support without failing declared aliases or full/qualified IDs", async t => {
++    const { config, root } = fixture(t);
++    const lines: string[] = [];
++    const status = await runDoctor(config, join(root, "config.json"), true,
++      doctorIO(lines, root, ["sol", "codex:sol", future, `codex:${future}`]), new Set(["codex"]));
++    assert.equal(status, 0);
++    assert.match(lines.join("\n"), /target not in registry/);
++    assert.match(lines.join("\n"), /upstream support.*not verified/);
++    assert.ok(!lines.some(line => line.includes("FAIL")));
++  });
++
++  it("keeps doctor failures for unconfigured unknown agent models", async t => {
++    const { config, root } = fixture(t);
++    const lines: string[] = [];
++    assert.equal(await runDoctor(config, join(root, "config.json"), true,
++      doctorIO(lines, root, ["gpt-fixture-undeclared"]), new Set(["codex"])), 1);
++    assert.ok(lines.some(line => line.includes("gpt-fixture-undeclared") && line.includes("FAIL")));
++  });
++
++  it("preserves canonical pins, one-hop aliases and unresolved undeclared names", () => {
++    const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: {
++      sol: future, "gpt-6.1-sol": future, a: "b", b: "gpt-6-sol",
++    } });
++    for (const name of ["gpt-6.1-sol", "codex:gpt-6.1-sol"])
++      assert.equal((resolveModel(table, name) as { target: { id: string } }).target.id, "gpt-6.1-sol");
++    for (const name of ["a", "codex:a"])
++      assert.equal((resolveModel(table, name) as { target: { id: string } }).target.id, "b");
++    for (const name of ["b", "codex:b"])
++      assert.equal((resolveModel(table, name) as { target: { id: string } }).target.id, "gpt-6-sol");
++    for (const name of ["gpt-fixture-undeclared", "codex:gpt-fixture-undeclared"])
++      assert.deepEqual(resolveModel(table, name), { kind: "unresolved" });
++    assert.deepEqual(resolveModel(table, "typo:sol"), { kind: "unknown_qualifier", qualifier: "typo" });
++  });
++
++  it("does not let target-only declarations claim existing family or qualified registry names", () => {
++    const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: {
++      worker: "sol", literal: "codex:gpt-6.1-sol", next: future, literalAlias: "codex:next",
++    } });
++    for (const name of ["sol", "codex:sol", "codex:gpt-6.1-sol"])
++      assert.equal((resolveModel(table, name) as { target: { id: string } }).target.id, "gpt-6.1-sol");
++    assert.equal((resolveModel(table, "worker") as { target: { id: string } }).target.id, "sol");
++    assert.equal((resolveModel(table, "literal") as { target: { id: string } }).target.id, "codex:gpt-6.1-sol");
++    assert.equal((resolveModel(table, "codex:next") as { target: { id: string } }).target.id, future);
++    assert.equal((resolveModel(table, "literalAlias") as { target: { id: string } }).target.id, "codex:next");
++  });
++
++  it("keeps malformed/reserved aliases and unsupported configured providers invalid", () => {
++    for (const value of [
++      { providers: { codex: { aliases: { "": future } } } },
++      { providers: { codex: { aliases: { sol: "" } } } },
++      { providers: { codex: { aliases: { sol: 42 } } } },
++      { providers: { codex: { aliases: { sonnet: future } } } },
++      { providers: { codex: { aliases: { sol: "claude-fixture" } } } },
++      { providers: { codexx: { aliases: { sol: future } } } },
++    ]) {
++      const loaded = loadConfig({ configPath: "/fabricated/no-read.json", env: {}, readFile: () => JSON.stringify(value) });
++      assert.equal(loaded.ok, false, JSON.stringify(value));
++    }
++  });
++});

@@ -1,0 +1,12 @@
+{
+  "status": "complete-read-only-diagnosis-publisher-action-needed",
+  "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/release-0.6.1-publish-diagnosis-artifacts-8xttjk_w",
+  "sourceLog": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-publish-failure.log",
+  "sourceLogSha256": "a9de28d35a9b486cbf33e0f098014d2c45c0a511552868847aaf1b752c4b32d5",
+  "workflowHead": "00a85771c71996f70bcce2f0d019942c735d49cc",
+  "completedAt": "2026-10-19T20:45:07.028554+00:00",
+  "report": "/Users/dean/Sandbox/subswitch-continuity/release-0.6.1-publish-diagnosis.json",
+  "reportSha256": "071719ec35adac9e65f443bb90190cafcd3b7745df65a120ac95dc24b81b8564",
+  "remainingBlocker": "Dean must inspect the publisher-side credential metadata/package policy or have npm support explain this rejection. The current denied write must not be bypassed.",
+  "nextAction": "Coordinator reviews this report and gives Dean the publisher-side metadata/credential action. Stop until that external state or an authorized follow-up changes; do not retry the rejected publish automatically."
+}

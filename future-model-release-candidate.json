@@ -1,0 +1,1743 @@
+{
+  "status": "draft-candidate-updated-local-gates-pass-ci-pending",
+  "startedAt": "2026-10-19T15:16:36.136377+00:00",
+  "branch": "codex/release-future-model-fix",
+  "base": "349fee7f808e2fa38b52af26e131fc044128e17f",
+  "version": "0.6.1",
+  "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k",
+  "environment": {
+    "PATH": "/Users/dean/.pyenv/versions/3.9.19/bin:/opt/homebrew/Cellar/pyenv/2.4.22/libexec:/opt/homebrew/Cellar/pyenv/2.4.22/plugins/python-build/bin:/Users/dean/.local/bin:/Users/dean/.codex/packages/app-server-daemon/releases/0.163.0-aarch64-apple-darwin/codex-path:/Users/dean/Sandbox/skim-issues/target/release:/Users/dean/.antigravity/antigravity/bin:/Users/dean/.fly/bin:/opt/homebrew/opt/openjdk/bin:/usr/local/opt/openjdk/bin:/Users/dean/.bun/bin:/Users/dean/.yarn/bin:/Users/dean/.config/yarn/global/node_modules/.bin:/Users/dean/Library/pnpm:/Users/dean/.nvm/versions/node/v22.22.3/bin:/Users/dean/.pyenv/shims:/Users/dean/.pyenv/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/Applications/Wireshark.app/Contents/MacOS:/usr/local/share/dotnet:~/.dotnet/tools:/Users/dean/.local/bin:/Users/dean/.codex/tmp/arg0-macos/codex-arg06y0zlU:/Users/dean/.codex/packages/app-server-daemon/releases/0.163.0-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg0RuxI4d:/Users/dean/.codex/packages/app-server-daemon/releases/0.162.1-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg0bIKmd2:/Users/dean/.codex/packages/app-server-daemon/releases/0.162.0-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg0eGrH8B:/Users/dean/.codex/packages/app-server-daemon/releases/0.161.0-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg0818CDe:/Users/dean/.codex/packages/app-server-daemon/releases/0.160.1-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg0E461GP:/Users/dean/.codex/packages/app-server-daemon/releases/0.160.0-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg0E3ECQC:/Users/dean/.codex/packages/app-server-daemon/releases/0.159.3-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg0D34SCi:/Users/dean/.codex/packages/app-server-daemon/releases/0.159.2-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg0sQ0R9J:/Users/dean/.codex/packages/app-server-daemon/releases/0.159.1-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg0bMgFA9:/Users/dean/.codex/packages/app-server-daemon/releases/0.159.0-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg0BpuSSV:/Users/dean/.codex/packages/app-server-daemon/releases/0.158.0-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg0LxUedX:/Users/dean/.codex/packages/app-server-daemon/releases/0.157.1-aarch64-apple-darwin/codex-path:/Users/dean/.codex/tmp/arg0/codex-arg08F4BKy:/Users/dean/.nvm/versions/node/v22.22.3/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex-path:/Users/dean/Sandbox/skim-issues/target/release:/Users/dean/.antigravity/antigravity/bin:/Users/dean/.fly/bin:/opt/homebrew/opt/openjdk/bin:/usr/local/opt/openjdk/bin:/Users/dean/.bun/bin:/Users/dean/.yarn/bin:/Users/dean/.config/yarn/global/node_modules/.bin:/Users/dean/Library/pnpm:/Users/dean/.nvm/versions/node/v22.22.3/bin:/Users/dean/.pyenv/bin:/Users/dean/.cargo/bin:/Users/dean/.orbstack/bin:/Users/dean/Sandbox/butler:/Users/dean/.mars/bin:/Users/dean/.local/bin:/Users/dean/.orbstack/bin:/Users/dean/Sandbox/butler:/Users/dean/.local/bin:/Users/dean/.mars/bin",
+    "TMPDIR": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/tmp",
+    "npm_config_cache": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/npm-cache",
+    "npm_config_logs_dir": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/npm-logs",
+    "npm_config_userconfig": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/empty-npmrc",
+    "npm_config_globalconfig": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/empty-global-npmrc",
+    "npm_config_update_notifier": "false",
+    "npm_config_audit": "false",
+    "npm_config_fund": "false",
+    "SUBSWITCH_LIMIT_RECORDING": "0"
+  },
+  "checks": [
+    {
+      "command": "npm ci --no-audit --no-fund",
+      "exit": 0,
+      "log": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/npm-ci.log",
+      "lockedTypesVersion": "22.20.5"
+    },
+    {
+      "command": [
+        "npm",
+        "run",
+        "typecheck"
+      ],
+      "lock": "nonblocking shared test lock",
+      "exit": 0,
+      "log": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/typecheck.log"
+    },
+    {
+      "command": [
+        "node",
+        "--import",
+        "tsx",
+        "--test",
+        "--test-timeout=30000",
+        "test/unit/version.test.ts"
+      ],
+      "lock": "nonblocking shared test lock",
+      "exit": 0,
+      "log": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/version-tests.log"
+    },
+    {
+      "command": "git diff --check 349fee7f808e2fa38b52af26e131fc044128e17f HEAD",
+      "exit": 0
+    }
+  ],
+  "releaseAuthorized": false,
+  "versionAlignment": {
+    "package.json": "0.6.1",
+    "package-lock.json": "0.6.1",
+    "package-lock.json packages root": "0.6.1",
+    "src/version.ts": "0.6.1",
+    "CHANGELOG newest heading": "0.6.1"
+  },
+  "packageComparisons": {
+    "baseline": {
+      "source": "published npm0.6.0 integrity-matched baseline",
+      "artifact": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/extracted/package",
+      "added": [],
+      "removed": [],
+      "changed": [
+        "README.md",
+        "dist/doctor.js",
+        "dist/models.js",
+        "dist/version.js",
+        "package.json"
+      ]
+    },
+    "head": {
+      "source": "independently approved and packaged-QA-passed PR86 exact e582cd0 artifact",
+      "artifact": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/extracted/package",
+      "added": [],
+      "removed": [],
+      "changed": [
+        "dist/version.js",
+        "package.json"
+      ]
+    }
+  },
+  "sourceSha256": {
+    "CHANGELOG.md": "8ae22c53aa7118c47dea3660f468f194351a0e3bd0d176ad6255a78d810bccfe",
+    "package-lock.json": "be36d2d29294794076226043d2294536b8e99106d9464932184e0b4b79c68b6e",
+    "package.json": "3f87885a71a81b6f155234eb4f1a263ab96bd5d3831d183a6acf029a0e56a7e6",
+    "src/version.ts": "8c6edac60c45f17c2af66dfdfd2545d2e343536b758f4738e125f14c2823f90c"
+  },
+  "qaIsolationHelpers": {
+    "runtime-guard.cjs": {
+      "path": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/runtime-guard.cjs",
+      "sha256": "f3ca3f20c6d00355210875f78f177806af5492ceb610d91da9b09f7baaca026c"
+    },
+    "bash-fixtures.sh": {
+      "path": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/bash-fixtures.sh",
+      "sha256": "2416511474b00593668e3d7645288ecf9f969e24b9e76dc7d1236026ef711179"
+    },
+    "release-smoke.py": {
+      "path": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/release-smoke.py",
+      "sha256": "46ec4625e7da418ce99a98235e1ce9e57eb581538cdf0508fb8e259867548c84"
+    }
+  },
+  "releasePatch": {
+    "path": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/current-release.patch",
+    "sha256": "f3a254db095d27ded4ce46b1d272621dc225a6fa313466848d8c055800a92bb6"
+  },
+  "selfReview": {
+    "status": "pass",
+    "scope": "Read exact expected three-field dev-only main lock diff; clean normal merge; compared full old/new release patches with only git blob index lines removed, all hunks identical; verified current lock equals new main except two intended version fields; fresh package/inventory/file bytes identical to approved candidate; five version fields and current focused checks verified. No implementation or release-scope expansion."
+  },
+  "completedAt": "2026-10-19T15:39:04.568473+00:00",
+  "head": "b8549643d5af3316d0b65d608b16fafc390e0287",
+  "pr": 89,
+  "url": "https://github.com/dean0x/subswitch/pull/89",
+  "draft": true,
+  "baseBranch": "main",
+  "baseSHA": "349fee7f808e2fa38b52af26e131fc044128e17f",
+  "candidateTrackedTreeClean": true,
+  "ciSnapshot": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "conclusion": "",
+      "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39279459762/job/118150861066",
+      "name": "check (ubuntu-latest)",
+      "startedAt": "2026-10-19T15:37:49Z",
+      "status": "QUEUED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "conclusion": "",
+      "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39279459762/job/118150861202",
+      "name": "check (macos-latest)",
+      "startedAt": "2026-10-19T15:37:49Z",
+      "status": "QUEUED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "conclusion": "",
+      "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39279459762/job/118150860821",
+      "name": "check (ubuntu-latest, Node 24)",
+      "startedAt": "2026-10-19T15:37:49Z",
+      "status": "QUEUED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "conclusion": "",
+      "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39279459762/job/118150861039",
+      "name": "check (macos-latest, Node 24)",
+      "startedAt": "2026-10-19T15:37:49Z",
+      "status": "QUEUED",
+      "workflowName": "CI"
+    }
+  ],
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "additions": 15,
+      "deletions": 0,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "package-lock.json",
+      "additions": 2,
+      "deletions": 2,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "package.json",
+      "additions": 1,
+      "deletions": 1,
+      "changeType": "MODIFIED"
+    },
+    {
+      "path": "src/version.ts",
+      "additions": 1,
+      "deletions": 1,
+      "changeType": "MODIFIED"
+    }
+  ],
+  "registryBefore": {
+    "dist-tags": {
+      "latest": "0.6.0"
+    },
+    "versions": [
+      "0.1.0",
+      "0.2.0",
+      "0.3.0",
+      "0.4.0",
+      "0.5.0",
+      "0.6.0"
+    ],
+    "version": "0.6.0",
+    "dist.integrity": "sha512-Y1G3DqlT7PodXMEuWBSfOGSn5P+2ARyYhmezJkCt9a99rbAJDafRSmWtvB3fzn242V5OKMCso3Y7nYGaEP569A==",
+    "dist.shasum": "341801fdba568917713a82827204d2a2ea6c2ca7",
+    "gitHead": "de137dedbd72d660657517251fe8a1051dd43465"
+  },
+  "registryFinal": {
+    "dist-tags": {
+      "latest": "0.6.0"
+    },
+    "versions": [
+      "0.1.0",
+      "0.2.0",
+      "0.3.0",
+      "0.4.0",
+      "0.5.0",
+      "0.6.0"
+    ],
+    "version": "0.6.0",
+    "dist.integrity": "sha512-Y1G3DqlT7PodXMEuWBSfOGSn5P+2ARyYhmezJkCt9a99rbAJDafRSmWtvB3fzn242V5OKMCso3Y7nYGaEP569A==",
+    "gitHead": "de137dedbd72d660657517251fe8a1051dd43465"
+  },
+  "versionFreeAtFinalCheck": true,
+  "tagPreflight": {
+    "localV061Absent": true,
+    "remoteV061Absent": true,
+    "tagCreated": false
+  },
+  "publishPrerequisiteMetadata": {
+    "NPM_TOKENExists": true,
+    "valueRead": false,
+    "metadata": [
+      {
+        "name": "NPM_TOKEN",
+        "updatedAt": "2026-10-08T17:44:35Z"
+      }
+    ]
+  },
+  "remoteHeads": [
+    "b8549643d5af3316d0b65d608b16fafc390e0287\trefs/heads/codex/release-future-model-fix",
+    "349fee7f808e2fa38b52af26e131fc044128e17f\trefs/heads/main"
+  ],
+  "releaseGuide": {
+    "path": ".release/RELEASE-FLOW.md",
+    "sha256": "78aaf483f642bf9fc9e0adf82f470472effb7bd36eb5031b67946965e9959621",
+    "releaseWorkflowUnchanged": true,
+    "releaseWorkflowSha256": "41060c8ff5a44ee24060cd3f729f317ea30cb30dd1c79fe5950d541a84eb54bf",
+    "localGate": "Original approved3ed has973 passing local full check; base update has fresh locked npmci, typecheck,6 version tests, clean build/tarball/install and guarded two-startup smoke. Unchanged full source suite was not repeated locally; current-head CI remains required.",
+    "cleanTreeLimit": "Tracked candidate tree is clean. Required preserved private artifacts remain untracked; an eventual release/tag action needs a fully clean release checkout as required by the guide."
+  },
+  "scope": {
+    "includedMergedFix": "PR86 at0e7b3df3b34847c06bc1679b0e8144c2363b89d7; its reviewed artifact differs from candidate only in package and compiled runtime version",
+    "excludedUnmergedPRs": [
+      81,
+      85,
+      87
+    ],
+    "originalStartupError": "Exact user configuration/error was not provided and startup rejection was not reproduced. This candidate makes no claim to solve that exact incident.",
+    "nativeSessionIncident": "No native client session acceptance or preservation claim. The separate cold-import continuity work is excluded.",
+    "providerAvailability": "Upstream model support/account access remains authoritative; no availability or capability certification.",
+    "includedMainUpdate": "Reviewed PR71 at349fee7 updates only three fields of dev-only @types/node lock entry22.20.1->22.20.5; public package byte-identical."
+  },
+  "preservedBranches": {
+    "futureModelImplementation": "codex/future-model-overrides at e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+    "continuity": "codex/proxy-restart-continuity at dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+    "privateArtifacts": "All prior review/QA/handoff artifacts retained; stale build and harness failure diagnostics preserved under this candidate artifact root."
+  },
+  "boundaries": {
+    "ownCloneOnly": true,
+    "actualNativeClients": 0,
+    "nativeCredentialOrHistoryReads": false,
+    "providerInference": 0,
+    "sharedProxyChanged": false,
+    "ClaudeOrOHFControls": false,
+    "goalsModelPermissionsChanged": false,
+    "otherBranchesModified": false,
+    "deniedNativeActionRerouted": false,
+    "ownBranchNormalMergePerformed": true,
+    "PRMergePerformed": false,
+    "tagPublishReleasePerformed": false,
+    "forcePush": false,
+    "releaseWorkflowOrProtectionChanged": false
+  },
+  "remainingGates": [
+    "Coordinator verifies current-head composition evidence and original exact-delta approval",
+    "Current-head required CI completion; current snapshot is a real pending merge gate",
+    "Dean sign-off before tag/publish/release",
+    "Recheck registry/tag/base and use a fully clean release checkout immediately before an authorized release"
+  ],
+  "nextAction": "Coordinator verifies exact b8549643d5af3316d0b65d608b16fafc390e0287 on main349fee7, unchanged approved release delta and byte-identical package, then current-head CI when it completes. PR89 remains draft; no PR merge/tag/publish/release. Worker stops this bounded update.",
+  "artifactHashes": {
+    "logs/version.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "logs/guide-smoke.stdout": "c2147aad1819893c90e61f311c43fde7d848deae60cf0b8768507c0786c2f931",
+    "logs/help.stdout": "98be7555d3ecfb2101326a8dcf42a19cd16e1a6239b39b8229652803bcc62ed3",
+    "logs/registry-current.json": "c83334b71925c73cc9044816a9ee0cefeb7cb084415ec92acf2dae3babdd3267",
+    "logs/models-text.stdout": "4813629d988927cfda005852720fd1f2835250e4ffda35c60c8a24bfe0eb5d12",
+    "logs/npm-ci.log": "df9a5f74f9c6f0091535a38eebca1116d6f116e043e5d52197da72f3a121bf8d",
+    "logs/models-text.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "logs/typecheck.log": "da26acfd2e7abead23a1e468953609faade1ffbdce62491d6e0ec8ddbeb81f48",
+    "logs/guide-smoke.stderr": "6e7c0a3d308de92b64f13d1ffb4ad6cbd20f6b570a6dfd5a166bfd09fac2a104",
+    "logs/help.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "logs/version.stdout": "87b241b275c591694846560e9879f50c9da3150f854efdabd782c539772f3033",
+    "logs/registry-current.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "logs/pr89-current.json": "cd93556e4e9195d3d4203c43de9d42cb3a23c1a2ddcfe4c36be610771e3b7fdb",
+    "logs/models-json.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "logs/pack.stderr": "1dbde109799b3e76e0913f85fd4b0a75f6f01825a49b94d32f92ada80abb49f8",
+    "logs/version-tests.log": "8709dd1a7357f102810babf6f3dfe934621abeb54abf0c866bf8e04e4a55cbbf",
+    "logs/install.stdout": "32f4f5de096f8b94c2c3260417f7fc9b1d4106774c57ac17b64336afb09ce6a8",
+    "logs/models-json.stdout": "192daf8542b5c18f5e42ccedb48a50b4255cb9f0588ff4a207ff672bb629ec48",
+    "logs/install.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "logs/pack.stdout": "1455f696da5fa8005340f42e676a7c1ef63b3d5eb792f19f9bf11b0bf981ba1f",
+    "logs/remote-heads.txt": "ed13ef09b9922501cb050d98d081ad47bb7e90f9fe4afbe9c0345980c17bd9c0",
+    "runtime-trace.jsonl": "6e3718c149964c37a6ad1a1c15bd60fd64026cfe93ee92bc3287e44775fbaa5a"
+  },
+  "baseUpdate": {
+    "status": "preparing",
+    "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k",
+    "originalReportBackup": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-before-main-update.json",
+    "oldHead": "3ed93e8b793eaeebadd9edacd3b9a5788b9cc498",
+    "expectedMain": "349fee7f808e2fa38b52af26e131fc044128e17f",
+    "head": "b8549643d5af3316d0b65d608b16fafc390e0287",
+    "base": "349fee7f808e2fa38b52af26e131fc044128e17f",
+    "parents": [
+      "3ed93e8b793eaeebadd9edacd3b9a5788b9cc498",
+      "349fee7f808e2fa38b52af26e131fc044128e17f"
+    ],
+    "releasePatchSemanticBytesIdentical": true,
+    "oldPatchSha256": "656eea6f698be4497294723702766b27c3e44a705b96206f79612ae239dbb1b9",
+    "currentPatchSha256": "f3a254db095d27ded4ce46b1d272621dc225a6fa313466848d8c055800a92bb6",
+    "semanticPatchSha256": "033c997ef7b19b2660079a9fdede2f976dea871501e37f5eb2d9ce879c157277",
+    "files": [
+      "CHANGELOG.md",
+      "package-lock.json",
+      "package.json",
+      "src/version.ts"
+    ],
+    "packageIdentity": {
+      "previousTarball": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs/subswitch-0.6.1.tgz",
+      "currentTarball": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/tarballs/subswitch-0.6.1.tgz",
+      "previousSha256": "ce2e0b261eb94856c55a38c24593f35a8c86b846d483d530aa6d6f27a59ad082",
+      "currentSha256": "ce2e0b261eb94856c55a38c24593f35a8c86b846d483d530aa6d6f27a59ad082",
+      "tarballBytesIdentical": true,
+      "inventoryAndFileBytesIdentical": true,
+      "fileCount": 60,
+      "added": [],
+      "removed": [],
+      "changed": []
+    },
+    "currentDevTypesVersion": "22.20.5",
+    "currentFullSuiteRerun": false,
+    "sourceFullSuiteEvidence": "Original3ed full local check973pass retained and approved; current-head full CI remains required. Current composition has fresh npmci/typecheck,6 focused version cases and clean package/smoke.",
+    "originalApproval": {
+      "path": "/Users/dean/Sandbox/subswitch-kimi/future-model-release-independent-review.json",
+      "preservedCopy": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/original-independent-review.json",
+      "sha256": "d9bed7b55f1211f84fe9901cd60a1c96ea2be132365cb606f25f31a916bf0a18",
+      "head": "3ed93e8b793eaeebadd9edacd3b9a5788b9cc498",
+      "recommendation": "approve_source_review",
+      "findings": [],
+      "scope": "Original exact3ed release delta approval only. Unchanged release hunks plus reviewed-main71 composition are evidenced here for coordinator verification; no independent new-head approval claimed."
+    },
+    "releasePatchEvidence": {
+      "oldPatch": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/old-release.patch",
+      "currentPatch": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/current-release.patch",
+      "oldSha256": "656eea6f698be4497294723702766b27c3e44a705b96206f79612ae239dbb1b9",
+      "currentSha256": "f3a254db095d27ded4ce46b1d272621dc225a6fa313466848d8c055800a92bb6",
+      "semanticBytesEqualExceptGitBlobIndexLines": true
+    }
+  },
+  "previousCandidate": {
+    "report": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-before-main-update.json",
+    "head": "3ed93e8b793eaeebadd9edacd3b9a5788b9cc498",
+    "base": "0e7b3df3b34847c06bc1679b0e8144c2363b89d7",
+    "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j",
+    "tarball": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs/subswitch-0.6.1.tgz",
+    "tarballSha256": "ce2e0b261eb94856c55a38c24593f35a8c86b846d483d530aa6d6f27a59ad082"
+  },
+  "packagedQA": {
+    "status": "pass",
+    "completedAt": "2026-10-19T15:36:27.301679+00:00",
+    "tarball": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/tarballs/subswitch-0.6.1.tgz",
+    "tarballSha256": "ce2e0b261eb94856c55a38c24593f35a8c86b846d483d530aa6d6f27a59ad082",
+    "npmIntegrity": "sha512-ZyP+yz10GQmuskEdwVUbo8fsVK3vuOGZ1ywua2t5OLterWOXFRq5ivEHHrPGMk9IexVF/403Op7PU6lcbK1IOw==",
+    "npmShasum": "8bf02b981d91a18051a96d0087be50cac42a0106",
+    "inventory": {
+      "id": "subswitch@0.6.1",
+      "name": "subswitch",
+      "version": "0.6.1",
+      "size": 152396,
+      "unpackedSize": 524710,
+      "shasum": "8bf02b981d91a18051a96d0087be50cac42a0106",
+      "integrity": "sha512-ZyP+yz10GQmuskEdwVUbo8fsVK3vuOGZ1ywua2t5OLterWOXFRq5ivEHHrPGMk9IexVF/403Op7PU6lcbK1IOw==",
+      "filename": "subswitch-0.6.1.tgz",
+      "files": [
+        {
+          "path": "LICENSE",
+          "size": 1063,
+          "mode": 420
+        },
+        {
+          "path": "README.md",
+          "size": 45466,
+          "mode": 420
+        },
+        {
+          "path": "dist/agent-scan.js",
+          "size": 7449,
+          "mode": 420
+        },
+        {
+          "path": "dist/anthropic-parse.js",
+          "size": 4131,
+          "mode": 420
+        },
+        {
+          "path": "dist/anthropic-passthrough.js",
+          "size": 510,
+          "mode": 420
+        },
+        {
+          "path": "dist/anthropic-wire-types.js",
+          "size": 1509,
+          "mode": 420
+        },
+        {
+          "path": "dist/claude-adapter.js",
+          "size": 20575,
+          "mode": 420
+        },
+        {
+          "path": "dist/claude-auth.js",
+          "size": 11810,
+          "mode": 420
+        },
+        {
+          "path": "dist/claude-cache.js",
+          "size": 1823,
+          "mode": 420
+        },
+        {
+          "path": "dist/claude-contract.js",
+          "size": 240,
+          "mode": 420
+        },
+        {
+          "path": "dist/claude-errors.js",
+          "size": 4813,
+          "mode": 420
+        },
+        {
+          "path": "dist/claude-handler.js",
+          "size": 7785,
+          "mode": 420
+        },
+        {
+          "path": "dist/claude-models.js",
+          "size": 10211,
+          "mode": 420
+        },
+        {
+          "path": "dist/claude-state.js",
+          "size": 5368,
+          "mode": 420
+        },
+        {
+          "path": "dist/claude-stream.js",
+          "size": 10718,
+          "mode": 420
+        },
+        {
+          "path": "dist/cli.js",
+          "size": 21947,
+          "mode": 420
+        },
+        {
+          "path": "dist/clients.js",
+          "size": 419,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-auth.js",
+          "size": 19707,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-body.js",
+          "size": 663,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-doctor.js",
+          "size": 7395,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-gateway.js",
+          "size": 15026,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-handler.js",
+          "size": 18219,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-health.js",
+          "size": 1017,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-ingress.js",
+          "size": 700,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-init.js",
+          "size": 10207,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-native-auth.js",
+          "size": 1409,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-request.js",
+          "size": 9564,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-response.js",
+          "size": 33252,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-route.js",
+          "size": 1693,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-upstream.js",
+          "size": 5941,
+          "mode": 420
+        },
+        {
+          "path": "dist/codex-ws.js",
+          "size": 11890,
+          "mode": 420
+        },
+        {
+          "path": "dist/collaboration-compat.js",
+          "size": 5594,
+          "mode": 420
+        },
+        {
+          "path": "dist/config.js",
+          "size": 35466,
+          "mode": 420
+        },
+        {
+          "path": "dist/content-encoding.js",
+          "size": 1013,
+          "mode": 420
+        },
+        {
+          "path": "dist/conversation-key.js",
+          "size": 2776,
+          "mode": 420
+        },
+        {
+          "path": "dist/doctor.js",
+          "size": 17312,
+          "mode": 420
+        },
+        {
+          "path": "dist/errors.js",
+          "size": 6713,
+          "mode": 420
+        },
+        {
+          "path": "dist/inbound-policy.js",
+          "size": 20191,
+          "mode": 420
+        },
+        {
+          "path": "dist/init.js",
+          "size": 21051,
+          "mode": 420
+        },
+        {
+          "path": "dist/logger.js",
+          "size": 5407,
+          "mode": 420
+        },
+        {
+          "path": "dist/models.js",
+          "size": 33551,
+          "mode": 420
+        },
+        {
+          "path": "dist/openai-passthrough.js",
+          "size": 7390,
+          "mode": 420
+        },
+        {
+          "path": "dist/plain-object.js",
+          "size": 458,
+          "mode": 420
+        },
+        {
+          "path": "dist/provider-auth.js",
+          "size": 11,
+          "mode": 420
+        },
+        {
+          "path": "dist/provider-events.js",
+          "size": 2176,
+          "mode": 420
+        },
+        {
+          "path": "dist/provider-handler.js",
+          "size": 11,
+          "mode": 420
+        },
+        {
+          "path": "dist/provider-transport.js",
+          "size": 8522,
+          "mode": 420
+        },
+        {
+          "path": "dist/raw-http-passthrough.js",
+          "size": 15874,
+          "mode": 420
+        },
+        {
+          "path": "dist/reasoning-cache.js",
+          "size": 2896,
+          "mode": 420
+        },
+        {
+          "path": "dist/result.js",
+          "size": 106,
+          "mode": 420
+        },
+        {
+          "path": "dist/router.js",
+          "size": 3124,
+          "mode": 420
+        },
+        {
+          "path": "dist/server.js",
+          "size": 32039,
+          "mode": 420
+        },
+        {
+          "path": "dist/tcp-connect.js",
+          "size": 837,
+          "mode": 420
+        },
+        {
+          "path": "dist/tty.js",
+          "size": 680,
+          "mode": 420
+        },
+        {
+          "path": "dist/upstream-policy.js",
+          "size": 988,
+          "mode": 420
+        },
+        {
+          "path": "dist/version.js",
+          "size": 168,
+          "mode": 420
+        },
+        {
+          "path": "dist/websocket-budget.js",
+          "size": 1304,
+          "mode": 420
+        },
+        {
+          "path": "dist/wire-types.js",
+          "size": 2986,
+          "mode": 420
+        },
+        {
+          "path": "package.json",
+          "size": 2008,
+          "mode": 420
+        },
+        {
+          "path": "subswitch.config.example.json",
+          "size": 1538,
+          "mode": 420
+        }
+      ],
+      "entryCount": 60,
+      "bundled": []
+    },
+    "commands": [
+      {
+        "name": "pack",
+        "argv": [
+          "npm",
+          "pack",
+          "--pack-destination",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/tarballs",
+          "--json"
+        ],
+        "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+        "exit": 0,
+        "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/pack.stdout",
+        "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/pack.stderr"
+      },
+      {
+        "name": "install",
+        "argv": [
+          "npm",
+          "--prefix",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/consumer",
+          "install",
+          "--save",
+          "--ignore-scripts",
+          "--no-audit",
+          "--no-fund",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/tarballs/subswitch-0.6.1.tgz"
+        ],
+        "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/consumer",
+        "exit": 0,
+        "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/install.stdout",
+        "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/install.stderr"
+      },
+      {
+        "name": "version",
+        "argv": [
+          "node",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/consumer/node_modules/subswitch/dist/cli.js",
+          "--version"
+        ],
+        "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+        "exit": 0,
+        "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/version.stdout",
+        "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/version.stderr"
+      },
+      {
+        "name": "help",
+        "argv": [
+          "node",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/consumer/node_modules/subswitch/dist/cli.js",
+          "--help"
+        ],
+        "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+        "exit": 0,
+        "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/help.stdout",
+        "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/help.stderr"
+      },
+      {
+        "name": "models-json",
+        "argv": [
+          "node",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/consumer/node_modules/subswitch/dist/cli.js",
+          "models",
+          "--json"
+        ],
+        "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+        "exit": 0,
+        "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/models-json.stdout",
+        "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/models-json.stderr"
+      },
+      {
+        "name": "models-text",
+        "argv": [
+          "node",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/consumer/node_modules/subswitch/dist/cli.js",
+          "models"
+        ],
+        "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+        "exit": 0,
+        "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/models-text.stdout",
+        "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/models-text.stderr"
+      },
+      {
+        "name": "guide-smoke",
+        "argv": [
+          "/usr/bin/lockf",
+          "-t",
+          "0",
+          "/Users/dean/Sandbox/.devflow/locks/heavy-tests.lock",
+          "bash",
+          "scripts/smoke-tarball.sh"
+        ],
+        "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+        "exit": 0,
+        "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/guide-smoke.stdout",
+        "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/logs/guide-smoke.stderr"
+      }
+    ],
+    "installedVersion": "0.6.1",
+    "configuredFutureAliasDisplayed": true,
+    "guideSmokeHealthChecks": 2,
+    "guideSmokeCleanupVerified": true,
+    "fixtureOrigin": "http://127.0.0.1:58456",
+    "fixtureOriginRequests": [],
+    "runtimeGuardBlocks": 0,
+    "runtimeGuardActivations": 9,
+    "runtimeTrace": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k/runtime-trace.jsonl",
+    "isolation": "Bash mktemp fixture helper pins temp installation under the owned artifact root; unchanged script source. CLI-only preload completes owned fixture endpoints/auth paths before config load, pins child homedir to owned fixture, blocks external reads/writes, outbound connections/TLS and spawned commands. No product source modification or fake success response. Npm dependency installation uses its separate owned cache/config and may access only registry dependencies. SUBSWITCH_CONFIG for init is explicitly fixture-owned.",
+    "limitations": [
+      "Metadata and health startup only; no inference or actual native clients/credentials.",
+      "Runtime fixture config enrichment and child-local homedir guard are QA isolation measures.",
+      "This candidate excludes unmerged PR81/85/87; no new Wave1 sample or runtime files."
+    ]
+  },
+  "ciObservation": {
+    "method": "Bounded status observations after normal branch push; no watch loop, retry or CI rerun.",
+    "snapshotAt": "2026-10-19T15:39:04.568473+00:00",
+    "allCurrentHeadChecksComplete": false,
+    "mergeStateStatus": "BLOCKED",
+    "gate": "Current-head CI remains required; queued/in-progress checks are not a pass."
+  },
+  "previousPreparationAttempts": [
+    {
+      "at": "2026-10-19T15:19:55.862593+00:00",
+      "result": "guard-stopped-before-install",
+      "reason": "Existing ignored dist from the earlier stacked branch retained unmerged routing outputs because tsc does not remove stale outputs. Preserved the entire previous dist and first tarball/logs; no source change. Final packaging starts from no dist.",
+      "record": {
+        "status": "failed",
+        "error": "",
+        "commands": [
+          {
+            "name": "pack",
+            "argv": [
+              "npm",
+              "pack",
+              "--pack-destination",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs",
+              "--json"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stderr"
+          }
+        ],
+        "fixtureOriginRequests": []
+      },
+      "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/rejected-stale-dist",
+      "tarballSha256": "7788a4a18381618eae9f16203a6933effd73c141fbf7f87ddae526f97bf2e623",
+      "inventory": {
+        "id": "subswitch@0.6.1",
+        "name": "subswitch",
+        "version": "0.6.1",
+        "size": 196400,
+        "unpackedSize": 704655,
+        "shasum": "87ec5035119c3dfca4eef1bc54eecca91e8cc508",
+        "integrity": "sha512-eMmxXuK3auCavzQiT1KmBqMpWijvjIDuh3O9IJWJXRNyU1+jeUowt5PJIdFBaj8atqSCYpsz0NOWKsyW6ke8xg==",
+        "filename": "subswitch-0.6.1.tgz",
+        "files": [
+          {
+            "path": "LICENSE",
+            "size": 1063,
+            "mode": 420
+          },
+          {
+            "path": "README.md",
+            "size": 45466,
+            "mode": 420
+          },
+          {
+            "path": "dist/abortable.js",
+            "size": 621,
+            "mode": 420
+          },
+          {
+            "path": "dist/agent-scan.js",
+            "size": 7449,
+            "mode": 420
+          },
+          {
+            "path": "dist/anthropic-parse.js",
+            "size": 4131,
+            "mode": 420
+          },
+          {
+            "path": "dist/anthropic-passthrough.js",
+            "size": 510,
+            "mode": 420
+          },
+          {
+            "path": "dist/anthropic-wire-types.js",
+            "size": 1509,
+            "mode": 420
+          },
+          {
+            "path": "dist/bounded-capture.js",
+            "size": 980,
+            "mode": 420
+          },
+          {
+            "path": "dist/claude-adapter.js",
+            "size": 20575,
+            "mode": 420
+          },
+          {
+            "path": "dist/claude-auth.js",
+            "size": 11810,
+            "mode": 420
+          },
+          {
+            "path": "dist/claude-cache.js",
+            "size": 1823,
+            "mode": 420
+          },
+          {
+            "path": "dist/claude-contract.js",
+            "size": 240,
+            "mode": 420
+          },
+          {
+            "path": "dist/claude-errors.js",
+            "size": 4813,
+            "mode": 420
+          },
+          {
+            "path": "dist/claude-handler.js",
+            "size": 7785,
+            "mode": 420
+          },
+          {
+            "path": "dist/claude-models.js",
+            "size": 10211,
+            "mode": 420
+          },
+          {
+            "path": "dist/claude-state.js",
+            "size": 5368,
+            "mode": 420
+          },
+          {
+            "path": "dist/claude-stream.js",
+            "size": 10718,
+            "mode": 420
+          },
+          {
+            "path": "dist/cli.js",
+            "size": 21947,
+            "mode": 420
+          },
+          {
+            "path": "dist/clients.js",
+            "size": 419,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-auth.js",
+            "size": 19707,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-body.js",
+            "size": 663,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-doctor.js",
+            "size": 7395,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-gateway.js",
+            "size": 15026,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-handler.js",
+            "size": 18219,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-health.js",
+            "size": 1017,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-ingress.js",
+            "size": 700,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-init.js",
+            "size": 10207,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-native-auth.js",
+            "size": 1409,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-request.js",
+            "size": 9564,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-response.js",
+            "size": 33252,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-route.js",
+            "size": 1693,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-upstream.js",
+            "size": 5941,
+            "mode": 420
+          },
+          {
+            "path": "dist/codex-ws.js",
+            "size": 11890,
+            "mode": 420
+          },
+          {
+            "path": "dist/collaboration-compat.js",
+            "size": 5594,
+            "mode": 420
+          },
+          {
+            "path": "dist/config.js",
+            "size": 35466,
+            "mode": 420
+          },
+          {
+            "path": "dist/content-encoding.js",
+            "size": 1013,
+            "mode": 420
+          },
+          {
+            "path": "dist/conversation-key.js",
+            "size": 2776,
+            "mode": 420
+          },
+          {
+            "path": "dist/doctor.js",
+            "size": 17312,
+            "mode": 420
+          },
+          {
+            "path": "dist/errors.js",
+            "size": 6713,
+            "mode": 420
+          },
+          {
+            "path": "dist/inbound-policy.js",
+            "size": 20191,
+            "mode": 420
+          },
+          {
+            "path": "dist/init.js",
+            "size": 21051,
+            "mode": 420
+          },
+          {
+            "path": "dist/limit-http-observer.js",
+            "size": 7240,
+            "mode": 420
+          },
+          {
+            "path": "dist/limit-observation.js",
+            "size": 9826,
+            "mode": 420
+          },
+          {
+            "path": "dist/limit-recorder.js",
+            "size": 5802,
+            "mode": 420
+          },
+          {
+            "path": "dist/limit-websocket-observer.js",
+            "size": 4516,
+            "mode": 420
+          },
+          {
+            "path": "dist/logger.js",
+            "size": 5407,
+            "mode": 420
+          },
+          {
+            "path": "dist/models.js",
+            "size": 33551,
+            "mode": 420
+          },
+          {
+            "path": "dist/native-auth-coordination.js",
+            "size": 1680,
+            "mode": 420
+          },
+          {
+            "path": "dist/openai-passthrough.js",
+            "size": 7390,
+            "mode": 420
+          },
+          {
+            "path": "dist/plain-object.js",
+            "size": 458,
+            "mode": 420
+          },
+          {
+            "path": "dist/provider-auth.js",
+            "size": 11,
+            "mode": 420
+          },
+          {
+            "path": "dist/provider-events.js",
+            "size": 2176,
+            "mode": 420
+          },
+          {
+            "path": "dist/provider-handler.js",
+            "size": 11,
+            "mode": 420
+          },
+          {
+            "path": "dist/provider-transport.js",
+            "size": 8522,
+            "mode": 420
+          },
+          {
+            "path": "dist/raw-http-passthrough.js",
+            "size": 15874,
+            "mode": 420
+          },
+          {
+            "path": "dist/reasoning-cache.js",
+            "size": 2896,
+            "mode": 420
+          },
+          {
+            "path": "dist/result.js",
+            "size": 106,
+            "mode": 420
+          },
+          {
+            "path": "dist/router.js",
+            "size": 3124,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/action-control.js",
+            "size": 2746,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/action-ingress.js",
+            "size": 4700,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/action-store.js",
+            "size": 4930,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/attempt-failure.js",
+            "size": 545,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/clock.js",
+            "size": 356,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/continuation-store.js",
+            "size": 2335,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/destination-catalog.js",
+            "size": 3200,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/http-ingress.js",
+            "size": 4543,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/portable-history.js",
+            "size": 7869,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/profile-auth.js",
+            "size": 11948,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/provider-failure.js",
+            "size": 5968,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/provider-stream.js",
+            "size": 20938,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/quota-store.js",
+            "size": 8483,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/replay-cache.js",
+            "size": 2459,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/request-adapter.js",
+            "size": 8011,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/request-history.js",
+            "size": 2122,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/response-delivery.js",
+            "size": 3470,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/routed-attempt.js",
+            "size": 12074,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/routing-config.js",
+            "size": 5688,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/routing-discovery.js",
+            "size": 1629,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/routing-types.js",
+            "size": 425,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/scoped-lifecycle.js",
+            "size": 3442,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/selection-queue.js",
+            "size": 995,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/shared-routing.js",
+            "size": 17465,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/signed-thinking.js",
+            "size": 2504,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/target-capabilities.js",
+            "size": 1918,
+            "mode": 420
+          },
+          {
+            "path": "dist/routing/usage-coordinator.js",
+            "size": 2248,
+            "mode": 420
+          },
+          {
+            "path": "dist/run-action.js",
+            "size": 6269,
+            "mode": 420
+          },
+          {
+            "path": "dist/server.js",
+            "size": 32039,
+            "mode": 420
+          },
+          {
+            "path": "dist/tcp-connect.js",
+            "size": 837,
+            "mode": 420
+          },
+          {
+            "path": "dist/tty.js",
+            "size": 680,
+            "mode": 420
+          },
+          {
+            "path": "dist/upstream-policy.js",
+            "size": 988,
+            "mode": 420
+          },
+          {
+            "path": "dist/version.js",
+            "size": 168,
+            "mode": 420
+          },
+          {
+            "path": "dist/websocket-budget.js",
+            "size": 1304,
+            "mode": 420
+          },
+          {
+            "path": "dist/wire-types.js",
+            "size": 2986,
+            "mode": 420
+          },
+          {
+            "path": "package.json",
+            "size": 2008,
+            "mode": 420
+          },
+          {
+            "path": "subswitch.config.example.json",
+            "size": 1538,
+            "mode": 420
+          }
+        ],
+        "entryCount": 95,
+        "bundled": []
+      },
+      "forbiddenRoutingFiles": [
+        "dist/routing/action-control.js",
+        "dist/routing/action-ingress.js",
+        "dist/routing/action-store.js",
+        "dist/routing/attempt-failure.js",
+        "dist/routing/clock.js",
+        "dist/routing/continuation-store.js",
+        "dist/routing/destination-catalog.js",
+        "dist/routing/http-ingress.js",
+        "dist/routing/portable-history.js",
+        "dist/routing/profile-auth.js",
+        "dist/routing/provider-failure.js",
+        "dist/routing/provider-stream.js",
+        "dist/routing/quota-store.js",
+        "dist/routing/replay-cache.js",
+        "dist/routing/request-adapter.js",
+        "dist/routing/request-history.js",
+        "dist/routing/response-delivery.js",
+        "dist/routing/routed-attempt.js",
+        "dist/routing/routing-config.js",
+        "dist/routing/routing-discovery.js",
+        "dist/routing/routing-types.js",
+        "dist/routing/scoped-lifecycle.js",
+        "dist/routing/selection-queue.js",
+        "dist/routing/shared-routing.js",
+        "dist/routing/signed-thinking.js",
+        "dist/routing/target-capabilities.js",
+        "dist/routing/usage-coordinator.js"
+      ]
+    },
+    {
+      "at": "2026-10-19T15:20:31.135476+00:00",
+      "result": "harness-error-before-cli-execution",
+      "reason": "The new private runtime trace used appendFileSync, which called the wrapped writeFileSync and recursively traced itself. Corrected trace writer to use the saved original writeFileSync; all isolation restrictions retained. Pack/build/install had passed and are reused rather than repeated.",
+      "record": {
+        "status": "failed",
+        "error": "version failed 1; /Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:13\n  const log = value => append(trace, JSON.stringify({pid:process.pid,...value})+'\\n');\n                                                         ^\n\nRangeError: Maximum call stack size exceeded\n    at log (/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:13:58)\n    at check (/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:37:22)\n    at fs.<computed> [as writeFileSync] (/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:40:125)\n    at appendFileSync (node:fs:2512:6)\n    at log (/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:13:24)\n    at check (/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:37:22)\n    at fs.<computed> [as writeFileSync] (/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:40:125)\n    at appendFileSync (node:fs:2512:6)\n    at log (/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:13:24)\n    at check (/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:37:22)\n\nNode.js v22.22.3\n",
+        "commands": [
+          {
+            "name": "pack",
+            "argv": [
+              "npm",
+              "pack",
+              "--pack-destination",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs",
+              "--json"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stderr"
+          },
+          {
+            "name": "install",
+            "argv": [
+              "npm",
+              "install",
+              "--save",
+              "--ignore-scripts",
+              "--no-audit",
+              "--no-fund",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs/subswitch-0.6.1.tgz"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/install.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/install.stderr"
+          },
+          {
+            "name": "version",
+            "argv": [
+              "node",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer/node_modules/subswitch/dist/cli.js",
+              "--version"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 1,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/version.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/version.stderr"
+          }
+        ],
+        "fixtureOriginRequests": []
+      },
+      "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/guard-logging-failure"
+    },
+    {
+      "at": "2026-10-19T15:21:17.955230+00:00",
+      "result": "harness-fixture-prefix-error",
+      "reason": "The empty consumer folder had no package.json, so npm selected the parent repository and added a local self dependency. Preserved affected files and that self install, restored package/lock exactly from base with intended version fields only, and reran npm ci. The corrected consumer now has an explicit private package.json and npm --prefix. No native auth/provider effects occurred.",
+      "record": {
+        "status": "failed",
+        "error": "version failed 1; node:internal/modules/cjs/loader:1433\n  throw err;\n  ^\n\nError: Cannot find module '/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer/node_modules/subswitch/dist/cli.js'\n    at Function._resolveFilename (node:internal/modules/cjs/loader:1430:15)\n    at defaultResolveImpl (node:internal/modules/cjs/loader:1040:19)\n    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1045:22)\n    at Function._load (node:internal/modules/cjs/loader:1216:25)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:254:19)\n    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)\n    at node:internal/main/run_main_module:36:49 {\n  code: 'MODULE_NOT_FOUND',\n  requireStack: []\n}\n\nNode.js v22.22.3\n",
+        "commands": [
+          {
+            "name": "pack",
+            "argv": [
+              "npm",
+              "pack",
+              "--pack-destination",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs",
+              "--json"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stderr"
+          },
+          {
+            "name": "install",
+            "argv": [
+              "npm",
+              "install",
+              "--save",
+              "--ignore-scripts",
+              "--no-audit",
+              "--no-fund",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs/subswitch-0.6.1.tgz"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/install.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/install.stderr"
+          },
+          {
+            "name": "version",
+            "argv": [
+              "node",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer/node_modules/subswitch/dist/cli.js",
+              "--version"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 1,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/version.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/version.stderr"
+          }
+        ],
+        "fixtureOriginRequests": []
+      },
+      "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer-prefix-failure"
+    },
+    {
+      "at": "2026-10-19T15:21:50.831425+00:00",
+      "result": "dependency-cache-miss",
+      "reason": "The fixture install needed npm package metadata absent from its owned fresh cache. Enable normal npm registry dependency fetching with empty owned npmrc files; runtime CLI guards remain unchanged. This was ENOTCACHED, not an authorization or security denial. No product source edit.",
+      "record": {
+        "status": "failed",
+        "error": "install failed 1; npm error code ENOTCACHED\nnpm error request to https://registry.npmjs.org/@clack%2fprompts failed: cache mode is 'only-if-cached' but no cached response is available.\nnpm error A complete log of this run can be found in: /Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/npm-logs/2026-10-19T15_21_35_079Z-debug-0.log\n",
+        "commands": [
+          {
+            "name": "pack",
+            "argv": [
+              "npm",
+              "pack",
+              "--pack-destination",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs",
+              "--json"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stderr"
+          },
+          {
+            "name": "install",
+            "argv": [
+              "npm",
+              "--prefix",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer",
+              "install",
+              "--save",
+              "--ignore-scripts",
+              "--no-audit",
+              "--no-fund",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs/subswitch-0.6.1.tgz"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer",
+            "exit": 1,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/install.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/install.stderr"
+          }
+        ],
+        "fixtureOriginRequests": []
+      },
+      "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/offline-cache-miss"
+    },
+    {
+      "at": "2026-10-19T15:23:26.718875+00:00",
+      "result": "fixture-location-guard-stop",
+      "reason": "On this macOS host, bare mktemp -d chose the OS per-user temp directory despite task TMPDIR. The child read guard stopped before the script-owned installed binary could load; script EXIT cleanup ran. Keep the guard unchanged and inject a Bash mktemp helper that requires the explicit task-owned template. This changes only fixture creation; no authorization denial was encountered or rerouted.",
+      "record": {
+        "status": "failed",
+        "error": "guide-smoke failed 1; /Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:15\n  const fail = value => { log({kind:'blocked',...value}); throw new Error('release fixture guard blocked '+JSON.stringify(value)); };\n                                                          ^\n\nError: release fixture guard blocked {\"operation\":\"read\",\"path\":\"/private/var/folders/fn/xhrkn4ys4d37t9fd8kfmd4rw0000gn/T/tmp.7uIvoOaiIE/node_modules/.bin/subswitch\"}\n    at fail (/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:15:65)\n    at check (/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:36:107)\n    at fs.<computed> [as realpathSync] (/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/runtime-guard.cjs:39:150)\n    at toRealPath (node:internal/modules/helpers:61:13)\n    at Function._findPath (node:internal/modules/cjs/loader:760:22)\n    at resolveMainPath (node:internal/modules/run_main:39:23)\n    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:163:20)\n    at node:internal/main/run_main_module:36:49\n\nNode.js v22.22.3\n",
+        "commands": [
+          {
+            "name": "pack",
+            "argv": [
+              "npm",
+              "pack",
+              "--pack-destination",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs",
+              "--json"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stderr"
+          },
+          {
+            "name": "install",
+            "argv": [
+              "npm",
+              "--prefix",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer",
+              "install",
+              "--save",
+              "--ignore-scripts",
+              "--no-audit",
+              "--no-fund",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs/subswitch-0.6.1.tgz"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/install.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/install.stderr"
+          },
+          {
+            "name": "version",
+            "argv": [
+              "node",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer/node_modules/subswitch/dist/cli.js",
+              "--version"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/version.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/version.stderr"
+          },
+          {
+            "name": "help",
+            "argv": [
+              "node",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer/node_modules/subswitch/dist/cli.js",
+              "--help"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/help.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/help.stderr"
+          },
+          {
+            "name": "models-json",
+            "argv": [
+              "node",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer/node_modules/subswitch/dist/cli.js",
+              "models",
+              "--json"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/models-json.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/models-json.stderr"
+          },
+          {
+            "name": "models-text",
+            "argv": [
+              "node",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer/node_modules/subswitch/dist/cli.js",
+              "models"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/models-text.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/models-text.stderr"
+          },
+          {
+            "name": "guide-smoke",
+            "argv": [
+              "/usr/bin/lockf",
+              "-t",
+              "0",
+              "/Users/dean/Sandbox/.devflow/locks/heavy-tests.lock",
+              "bash",
+              "scripts/smoke-tarball.sh"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 1,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/guide-smoke.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/guide-smoke.stderr"
+          }
+        ],
+        "fixtureOriginRequests": []
+      },
+      "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/default-mktemp-guard-stop"
+    },
+    {
+      "at": "2026-10-19T15:24:18.871218+00:00",
+      "result": "nested-smoke-fixture-prefix-error",
+      "reason": "Moving the unchanged smoke temp inside the artifact root also placed it below the repository package.json. Its own npm install selected the ancestor, as the earlier standalone fixture had. Preserved the transient self dependency/install and restored exact intended package/lock. The fixture helper now initializes a private package.json in every new smoke temp; no product source edit.",
+      "record": {
+        "status": "failed",
+        "error": "guide-smoke failed 127; scripts/smoke-tarball.sh: line 31: node_modules/.bin/subswitch: No such file or directory\n",
+        "commands": [
+          {
+            "name": "pack",
+            "argv": [
+              "npm",
+              "pack",
+              "--pack-destination",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs",
+              "--json"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/pack.stderr"
+          },
+          {
+            "name": "install",
+            "argv": [
+              "npm",
+              "--prefix",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer",
+              "install",
+              "--save",
+              "--ignore-scripts",
+              "--no-audit",
+              "--no-fund",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/tarballs/subswitch-0.6.1.tgz"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/install.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/install.stderr"
+          },
+          {
+            "name": "version",
+            "argv": [
+              "node",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer/node_modules/subswitch/dist/cli.js",
+              "--version"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/version.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/version.stderr"
+          },
+          {
+            "name": "help",
+            "argv": [
+              "node",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer/node_modules/subswitch/dist/cli.js",
+              "--help"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/help.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/help.stderr"
+          },
+          {
+            "name": "models-json",
+            "argv": [
+              "node",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer/node_modules/subswitch/dist/cli.js",
+              "models",
+              "--json"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/models-json.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/models-json.stderr"
+          },
+          {
+            "name": "models-text",
+            "argv": [
+              "node",
+              "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/consumer/node_modules/subswitch/dist/cli.js",
+              "models"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 0,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/models-text.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/models-text.stderr"
+          },
+          {
+            "name": "guide-smoke",
+            "argv": [
+              "/usr/bin/lockf",
+              "-t",
+              "0",
+              "/Users/dean/Sandbox/.devflow/locks/heavy-tests.lock",
+              "bash",
+              "scripts/smoke-tarball.sh"
+            ],
+            "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+            "exit": 127,
+            "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/guide-smoke.stdout",
+            "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/logs/guide-smoke.stderr"
+          }
+        ],
+        "fixtureOriginRequests": []
+      },
+      "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-artifacts-pj90ms1j/nested-smoke-prefix-failure"
+    }
+  ],
+  "qaAttempts": []
+}

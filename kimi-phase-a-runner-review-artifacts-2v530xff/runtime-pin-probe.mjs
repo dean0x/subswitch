@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import * as fsp from 'node:fs/promises';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { sourcePin, runnerPin, authorize, HEAD, REPO } from '/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/core.mjs';
+const before={sourceHash:await sourcePin(),runnerHash:await runnerPin()};
+const originalRead=fs.readFile; let runtimeReads=0;
+fs.readFile=function(file,...args){const name=String(file);if(name.startsWith(REPO+'/node_modules/')||name===REPO+'/tsconfig.json'){runtimeReads++;return Promise.resolve(Buffer.from('synthetic-unreviewed-runtime-change'));}return originalRead.call(this,file,...args);};
+syncBuiltinESMExports();
+const after={sourceHash:await sourcePin(),runnerHash:await runnerPin()};assert.deepEqual(after,before);assert.equal(runtimeReads,0);
+let fakeKeyReads=0;const approval={phase:'A',liveAuthorized:true,credentialBindingApproved:true,continuityPrerequisiteConfirmed:true,product:'kimi-code',region:'global',model:'kimi-for-coding',effort:'high',credentialKind:'coding-plan-key',head:HEAD,...before,expiresAt:new Date(Date.now()+60000).toISOString(),credentialEnvName:'REVIEW_FAKE_REFERENCE'};
+assert.equal(authorize(approval,'REVIEW_FAKE_REFERENCE',after.sourceHash,after.runnerHash,new Proxy({},{get(_target,name){assert.equal(name,'REVIEW_FAKE_REFERENCE');fakeKeyReads++;return 'fabricated-not-a-provider-key';}})),'fabricated-not-a-provider-key');
+process.stdout.write(JSON.stringify({case:'runtime-only-drift-unbound-by-preflight',sourceHashUnchanged:true,runnerHashUnchanged:true,runtimeFilesConsulted:runtimeReads,fakeCredentialLookupReached:fakeKeyReads===1,actualRuntimeFilesModified:false,vendorCalls:0})+'\n');

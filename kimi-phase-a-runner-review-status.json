@@ -1,0 +1,67 @@
+{
+  "status": "complete-request-changes-before-live",
+  "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff",
+  "sourceHead": "6528f3f602307cfdfba277b2047a18825c1407fb",
+  "sourceHash": "f1589b721f6ae6dbe1550497ebfff6c1366057ef7c910a42ecd4aa6790eed03d",
+  "runnerHash": "b3957b5bc0cf471ce44491b1b7767443454b00e0fbb494a4187b2b2c23a16c3e",
+  "targetedChecks": [
+    {
+      "name": "runtime-pin-probe",
+      "exit": 0,
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/offline-guard.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/runtime-pin-probe.mjs"
+      ],
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/runtime-pin-probe.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/runtime-pin-probe.stderr"
+    },
+    {
+      "name": "independent-offline-tests",
+      "exit": 0,
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/offline-guard.cjs",
+        "--import",
+        "/Users/dean/Sandbox/subswitch-kimi/node_modules/tsx/dist/loader.mjs",
+        "--test",
+        "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/offline.test.mjs"
+      ],
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/independent-offline-tests.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/independent-offline-tests.stderr"
+    }
+  ],
+  "controlledChildEnvironmentNames": [
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_KEY_0",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_OPTIONAL_LOCKS",
+    "PATH",
+    "REVIEW_ARTIFACT_ROOT",
+    "REVIEW_SYNTHETIC_CANARY",
+    "TMPDIR",
+    "XDG_CACHE_HOME"
+  ],
+  "authorGitMetadataUnchanged": true,
+  "checkedAt": "2026-10-19T21:13:06.246823+00:00",
+  "completedAt": "2026-10-19T21:17:37.133113+00:00",
+  "report": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-independent-review.json",
+  "reportSha256": "27e46a2cd00e706395b2c0d6fbb2735719f8892e25a0c993342f3b40171c1359",
+  "findings": [
+    {
+      "id": "KIMIA-R01",
+      "priority": "P1",
+      "title": "Bind the actual loader, dependencies and execution configuration before exposing credentials"
+    },
+    {
+      "id": "KIMIA-R02",
+      "priority": "P2",
+      "title": "Apply the positive environment boundary to the source-pin Git helpers"
+    }
+  ],
+  "nextAction": "Coordinator sends KIMIA-R01/R02 to the runner owner for scoped correction and fabricated regression controls; then independently review the fix diff and new pins. No live execution until resolution plus the existing candidate/credential/continuity/authority gates. Worker stops this bounded review."
+}

@@ -1,0 +1,573 @@
+diff --git a/README.md b/README.md
+index b40ac76..5fabd3a 100644
+--- a/README.md
++++ b/README.md
+@@ -329,6 +329,13 @@ broader content/tool support in [#48](https://github.com/dean0x/subswitch/issues
+ These are not included in the parity release. Missing reverse continuation state
+ produces an explicit error; keep the proxy running during active translated sessions.
+ 
++A single-target explicit Claude route can accept complete native Messages history
++created before proxy startup or replayed after a restart. Signed thinking and
++redacted-thinking blocks reach the configured Claude upstream unchanged for validation.
++This does not restore translated continuation handles or import signed history into
++fallback routes or another provider. Later system-role messages remain a separate
++unsupported case on explicit Messages routes.
++
+ ## Effort control
+ 
+ The optional `effort` frontmatter field works on the Codex leg too. Claude Code
+diff --git a/src/routing/request-adapter.ts b/src/routing/request-adapter.ts
+index 5b72a6f..947270d 100644
+--- a/src/routing/request-adapter.ts
++++ b/src/routing/request-adapter.ts
+@@ -7,6 +7,7 @@ import { ReverseState } from "../claude-state.js";
+ import { ReasoningCache } from "../reasoning-cache.js";
+ import { object } from "../plain-object.js";
+ import { validateTargetCapabilities } from "./target-capabilities.js";
++import { knownThinking, rememberThinking, sameThinking, thinkingSignature } from "./signed-thinking.js";
+ import {
+   renderResponsesHistory,
+   type PortableTranscript,
+@@ -32,6 +33,8 @@ interface RequestAdaptation {
+   conversation: string;
+   sessionId: string;
+   priorOwner?: string | undefined;
++  /** Only the dispatcher may authorize native imports on a single-target route. */
++  allowNativeThinkingReplay?: boolean | undefined;
+ }
+ 
+ /** Product parameters and ingress codecs; no auth, network, output, or route selection. */
+@@ -68,6 +71,9 @@ export function adaptRequest(request: RequestAdaptation): {
+   };
+   if (protocol === "messages" && ingress === "messages")
+     body = normalizeMessagesInstructions(body);
++  const switched = priorOwner !== undefined && priorOwner !== owner;
++  const nativeImport = request.allowNativeThinkingReplay === true &&
++    p.provider === "claude" && ingress === "messages" && protocol === "messages" && !switched;
+   if (ingress === "messages" && Array.isArray(body["messages"])) {
+     for (const message of body["messages"]) {
+       const m = object(message);
+@@ -75,7 +81,7 @@ export function adaptRequest(request: RequestAdaptation): {
+       for (const block of m["content"]) {
+         const b = object(block);
+         if (b?.["type"] === "thinking" || b?.["type"] === "redacted_thinking") {
+-          const signature = b[b["type"] === "thinking" ? "signature" : "data"];
++          const signature = thinkingSignature(b);
+           const recorded =
+             typeof signature === "string"
+               ? stage.get(
+@@ -83,24 +89,22 @@ export function adaptRequest(request: RequestAdaptation): {
+                   `signature:${owner}:${conversation}:${signature}`,
+                 )?.input[0]
+               : undefined;
+-          if (
+-            !recorded ||
+-            b["type"] !== recorded["type"] ||
+-            (b["type"] === "thinking"
+-              ? typeof b["thinking"] !== "string" ||
+-                b["thinking"] !== recorded["thinking"] ||
+-                b["signature"] !== recorded["signature"] ||
+-                b["data"] !== undefined
+-              : b["data"] !== recorded["data"] ||
+-                b["signature"] !== undefined ||
+-                b["thinking"] !== undefined)
+-          )
++          if (signature === undefined)
+             throw new RoutingError("foreign_opaque_state", 409);
++          if (recorded) {
++            if (!sameThinking(b, recorded))
++              throw new RoutingError("foreign_opaque_state", 409);
++          } else {
++            if (!nativeImport || knownThinking(stage, signature))
++              throw new RoutingError("foreign_opaque_state", 409);
++            // A cache miss is not proof that native Claude history is foreign. Preserve it
++            // for that upstream to validate; failed/cancelled attempts never commit this import.
++            rememberThinking(stage, owner, conversation, b);
++          }
+         }
+       }
+     }
+   }
+-  const switched = priorOwner !== undefined && priorOwner !== owner;
+   // Target-owned opaque history is separate from portable text/tools. Cross-target reasoning
+   // portability is disabled pending exact provider evidence.
+   if (switched && (transcript.hasOpaqueReasoning || transcript.hasThinking))
+diff --git a/src/routing/routed-attempt.ts b/src/routing/routed-attempt.ts
+index 75a39e2..5df3261 100644
+--- a/src/routing/routed-attempt.ts
++++ b/src/routing/routed-attempt.ts
+@@ -35,6 +35,7 @@ import { systemClock, type RoutingClock } from "./clock.js";
+ import { codexTransportConstants, buildHeaders } from "../codex-handler.js";
+ import { StagedCache } from "./replay-cache.js";
+ import { adaptRequest } from "./request-adapter.js";
++import { rememberThinking } from "./signed-thinking.js";
+ import { deriveConversationKey } from "../conversation-key.js";
+ import { recordLimitFailure, type LimitContext } from "../limit-observation.js";
+ 
+@@ -53,6 +54,7 @@ export interface AttemptRequest {
+   route?: string;
+   attempt?: number;
+   scopeHash?: string;
++  allowNativeThinkingReplay?: boolean;
+ }
+ export interface RoutedPrepared {
+   events: AsyncIterable<ClientEvent>;
+@@ -198,14 +200,8 @@ export class RoutedAttempts {
+       (final) => {
+         if (Array.isArray(final["content"]))
+           for (const value of final["content"]) {
+-            const item = object(value),
+-              signature = item?.["signature"] ?? item?.["data"];
+-            if (typeof signature === "string")
+-              stage.put(
+-                "snapshot",
+-                `signature:${owner}:${conversation}:${signature}`,
+-                { request: {}, input: [item!] },
+-              );
++            const item = object(value);
++            if (item) rememberThinking(stage, owner, conversation, item);
+           }
+         if (Array.isArray(final["output"])) {
+           const output = final["output"] as Item[],
+diff --git a/src/routing/shared-routing.ts b/src/routing/shared-routing.ts
+index 378ac7d..f6ebd32 100644
+--- a/src/routing/shared-routing.ts
++++ b/src/routing/shared-routing.ts
+@@ -331,6 +331,8 @@ export class SharedRouting {
+             route: routeName,
+             attempt: index,
+             scopeHash: scopeKey(scope),
++            // Import only native same-provider full history, never a fallback candidate.
++            allowNativeThinkingReplay: chain.length === 1 && index === 0,
+             ...(priorOwner ? { priorOwner } : {}),
+             ...(pinned && affinity?.selectedOwner
+               ? { expectedOwner: affinity.selectedOwner }
+diff --git a/src/routing/signed-thinking.ts b/src/routing/signed-thinking.ts
+new file mode 100644
+index 0000000..2e1f647
+--- /dev/null
++++ b/src/routing/signed-thinking.ts
+@@ -0,0 +1,45 @@
++import { createHash } from "node:crypto";
++import type { ClaudeCache } from "../claude-cache.js";
++import { RoutingError, type Item } from "./routing-types.js";
++
++/** Native signatures remain opaque; only their original upstream can authenticate imports. */
++export function thinkingSignature(block: Item): string | undefined {
++  const signature = block[block["type"] === "thinking" ? "signature" : "data"];
++  if (typeof signature !== "string" || !signature) return undefined;
++  if (block["type"] === "thinking")
++    return typeof block["thinking"] === "string" && block["data"] === undefined
++      ? signature : undefined;
++  return block["type"] === "redacted_thinking" &&
++    block["signature"] === undefined && block["thinking"] === undefined
++    ? signature : undefined;
++}
++
++export function sameThinking(block: Item, recorded: Item): boolean {
++  return thinkingSignature(block) !== undefined &&
++    block["type"] === recorded["type"] &&
++    block["thinking"] === recorded["thinking"] &&
++    block["signature"] === recorded["signature"] &&
++    block["data"] === recorded["data"];
++}
++
++const provenanceKey = (signature: string) =>
++  `thinking-origin:${createHash("sha256").update(signature).digest("hex")}`;
++
++/** Distinguish a cold cache from a signature already observed under another scope. */
++export const knownThinking = (cache: ClaudeCache, signature: string): boolean =>
++  cache.get("snapshot", provenanceKey(signature)) !== undefined;
++
++/** Staged callers publish imports only after a successful provider terminal. */
++export function rememberThinking(
++  cache: ClaudeCache, owner: string, conversation: string, block: Item,
++): void {
++  const signature = thinkingSignature(block);
++  if (signature === undefined) return;
++  const scoped = `signature:${owner}:${conversation}:${signature}`;
++  const recorded = cache.get("snapshot", scoped)?.input[0];
++  if (recorded && !sameThinking(block, recorded))
++    throw new RoutingError("foreign_opaque_state", 409);
++  cache.put("snapshot", scoped, { request: {}, input: [block] });
++  if (!knownThinking(cache, signature))
++    cache.put("snapshot", provenanceKey(signature), { request: {}, input: [] });
++}
+diff --git a/test/integration/native-thinking-continuity.test.ts b/test/integration/native-thinking-continuity.test.ts
+new file mode 100644
+index 0000000..f1c9f94
+--- /dev/null
++++ b/test/integration/native-thinking-continuity.test.ts
+@@ -0,0 +1,219 @@
++/** Offline regressions: fabricated native Claude history, credentials and upstreams. */
++import assert from "node:assert/strict";
++import { describe, it } from "node:test";
++import http from "node:http";
++import { loadConfig } from "../../src/config.js";
++import { noopLogger } from "../../src/logger.js";
++import { SharedRouting } from "../../src/routing/shared-routing.js";
++import type { Item } from "../../src/routing/routing-types.js";
++import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
++
++const thought = {
++  type: "thinking",
++  thinking: "Fabricated thought from before the proxy started",
++  signature: "fabricated-native-signature",
++};
++const hiddenThought = { type: "redacted_thinking", data: "fabricated-native-redacted" };
++const history: Item[] = [
++  { role: "user", content: "Read the fabricated fixture" },
++  {
++    role: "assistant",
++    content: [
++      thought,
++      hiddenThought,
++      { type: "tool_use", id: "toolu_original", name: "Read", input: { path: "fixture" } },
++    ],
++  },
++  {
++    role: "user",
++    content: [
++      { type: "tool_result", tool_use_id: "toolu_original", content: "fabricated result" },
++      { type: "text", text: "Continue" },
++    ],
++  },
++];
++
++function config() {
++  const loaded = loadConfig({
++    configPath: "/fabricated/continuity.json",
++    env: {},
++    readFile: () => JSON.stringify({
++      configVersion: 2,
++      accessProfiles: {
++        native: {
++          provider: "claude", product: "anthropic-api", billing: "api", account: "original",
++          credential: { kind: "env", name: "FABRICATED_CLAUDE_KEY" },
++        },
++        other: {
++          provider: "claude", product: "anthropic-api", billing: "api", account: "other",
++          credential: { kind: "env", name: "FABRICATED_OTHER_KEY" },
++        },
++      },
++      routes: {
++        work: { clients: ["claude-code"], primary: { profile: "native", model: "claude-sonnet-5", effort: "high" } },
++        other: { clients: ["claude-code"], primary: { profile: "other", model: "claude-sonnet-5", effort: "high" } },
++      },
++    }),
++  });
++  if (!loaded.ok) throw new Error(loaded.error.message);
++  return loaded.value.config;
++}
++
++function reply(): Response {
++  const events: Item[] = [
++    { type: "message_start", message: { id: "msg_fabricated", type: "message", role: "assistant", model: "claude-sonnet-5", content: [], usage: { input_tokens: 1, output_tokens: 0 } } },
++    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
++    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Fabricated answer" } },
++    { type: "content_block_stop", index: 0 },
++    { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } },
++    { type: "message_stop" },
++  ];
++  return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), {
++    headers: { "content-type": "text/event-stream" },
++  });
++}
++
++function rig(response: (request: Item, number: number) => Response = () => reply()) {
++  const requests: Item[] = [];
++  const auth: string[] = [];
++  const routing = new SharedRouting(config(), noopLogger, undefined, async (_url, init) => {
++    requests.push(JSON.parse(String(init?.body)));
++    auth.push(new Headers(init?.headers).get("x-api-key") ?? "");
++    return response(requests.at(-1)!, requests.length);
++  }, { FABRICATED_CLAUDE_KEY: "fabricated-original", FABRICATED_OTHER_KEY: "fabricated-other" });
++  return { routing, requests, auth };
++}
++
++async function run(routing: SharedRouting, messages: Item[] = history, route = "work") {
++  const events: Item[] = [];
++  for await (const event of routing.events(
++    { model: route, messages: structuredClone(messages) }, "claude-code", route, new AbortController().signal,
++  )) events.push(event);
++  assert.equal(events.at(-1)?.type, "message_stop");
++}
++
++describe("native Claude full-history continuity (offline)", () => {
++  it("imports an existing conversation before startup and follows up in the same process without changing signed history or tools", async () => {
++    const { routing, requests, auth } = rig();
++    try {
++      await run(routing);
++      const followup = [...history,
++        { role: "assistant", content: [{ type: "text", text: "Fabricated answer" }] },
++        { role: "user", content: "Continue again" },
++      ];
++      await run(routing, followup);
++      assert.equal(requests.length, 2);
++      assert.deepEqual(requests[0]?.messages, history);
++      assert.deepEqual(requests[1]?.messages, followup);
++      assert.deepEqual(auth, ["fabricated-original", "fabricated-original"]);
++    } finally { routing.close(); }
++  });
++
++  it("replays the same complete signed history after constructing a fresh proxy instance", async () => {
++    for (let restart = 0; restart < 2; restart++) {
++      const { routing, requests } = rig();
++      try {
++        await run(routing);
++        assert.deepEqual(requests[0]?.messages, history);
++      } finally { routing.close(); }
++    }
++  });
++
++  it("retains rejection of recorded tampering and known other-owner replay before upstream", async () => {
++    const { routing, requests } = rig();
++    try {
++      await run(routing);
++      const changed = structuredClone(history);
++      ((changed[1]!.content as Item[])[0]!).thinking = "tampered";
++      await assert.rejects(run(routing, changed), /foreign_opaque_state/);
++      await assert.rejects(run(routing, history, "other"), /foreign_opaque_state/);
++      assert.equal(requests.length, 1);
++    } finally { routing.close(); }
++  });
++
++  for (const failure of ["rejection", "missing terminal"] as const) {
++    it(`does not adopt unvalidated imports after an upstream ${failure}`, async () => {
++      const { routing, requests } = rig((_request, number) => {
++        if (number !== 1) return reply();
++        if (failure === "rejection") return new Response(
++          '{"error":{"type":"invalid_request_error","message":"fabricated invalid signature"}}', { status: 400 },
++        );
++        return new Response(
++          'event: message_start\ndata: {"type":"message_start","message":{"id":"fabricated-partial","type":"message","role":"assistant","content":[]}}\n\n',
++          { headers: { "content-type": "text/event-stream" } },
++        );
++      });
++      try {
++        await assert.rejects(run(routing), failure === "rejection" ? /invalid_request/ : /missing_provider_terminal/);
++        // Failed/unfinished attempts must not bind imported signatures to their owner.
++        await run(routing, history, "other");
++        assert.equal(requests.length, 2);
++      } finally { routing.close(); }
++    });
++  }
++
++  for (const streaming of [false, true]) {
++    it(`preserves native history through HTTP startup, follow-up and restart with stream=${streaming}`, async () => {
++      const received: { body: Item; key: string | undefined; authorization: string | undefined }[] = [];
++      const origin = http.createServer(async (req, res) => {
++        const chunks: Buffer[] = [];
++        for await (const chunk of req) chunks.push(chunk);
++        received.push({
++          body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
++          key: req.headers["x-api-key"] as string | undefined,
++          authorization: req.headers.authorization,
++        });
++        const response = reply();
++        res.writeHead(200, { "content-type": "text/event-stream" });
++        res.end(await response.text());
++      });
++      const listening = await listenServer(origin, 0, "127.0.0.1");
++      assert.ok(listening.ok, JSON.stringify(listening));
++      const address = origin.address();
++      assert.ok(address && typeof address !== "string");
++      try {
++        for (let restart = 0; restart < 2; restart++) {
++          const original = config();
++          const deps = buildDeps({
++            ...original,
++            accessProfiles: {
++              ...original.accessProfiles,
++              native: { ...original.accessProfiles!.native!, baseUrl: `http://127.0.0.1:${address.port}` },
++            },
++          }, noopLogger, { env: { FABRICATED_CLAUDE_KEY: "fabricated-original" } });
++          assert.ok(deps.ok);
++          const proxy = createProxyServer(deps.value);
++          const listening = await listenServer(proxy, 0, "127.0.0.1");
++          assert.ok(listening.ok, JSON.stringify(listening));
++          const proxyAddress = proxy.address();
++          assert.ok(proxyAddress && typeof proxyAddress !== "string");
++          try {
++            for (const messages of [history, [...history,
++              { role: "assistant", content: "Fabricated answer" },
++              { role: "user", content: "Continue again" },
++            ]]) {
++              const response = await fetch(`http://127.0.0.1:${proxyAddress.port}/v1/messages`, {
++                method: "POST",
++                headers: { "content-type": "application/json", authorization: "Bearer fabricated-incoming-not-for-upstream" },
++                body: JSON.stringify({ model: "work", stream: streaming, messages }),
++              });
++              assert.equal(response.status, 200);
++              if (streaming) assert.match(await response.text(), /event: message_stop/);
++              else assert.equal((await response.json() as Item).stop_reason, "end_turn");
++              assert.deepEqual(received.at(-1)?.body.messages, messages);
++              assert.equal(received.at(-1)?.key, "fabricated-original");
++              assert.equal(received.at(-1)?.authorization, undefined);
++            }
++          } finally {
++            proxy.closeAllConnections();
++            await new Promise<void>(resolve => proxy.close(() => resolve()));
++          }
++        }
++        assert.equal(received.length, 4, "one upstream call per turn, with no retries or fallback");
++      } finally {
++        origin.closeAllConnections();
++        await new Promise<void>(resolve => origin.close(() => resolve()));
++      }
++    });
++  }
++});
+diff --git a/test/unit/native-thinking-replay.test.ts b/test/unit/native-thinking-replay.test.ts
+new file mode 100644
+index 0000000..23cc997
+--- /dev/null
++++ b/test/unit/native-thinking-replay.test.ts
+@@ -0,0 +1,66 @@
++import assert from "node:assert/strict";
++import { describe, it } from "node:test";
++import { ClaudeCache } from "../../src/claude-cache.js";
++import { ReverseState } from "../../src/claude-state.js";
++import { adaptRequest } from "../../src/routing/request-adapter.js";
++import { decodePortableHistory } from "../../src/routing/portable-history.js";
++import { rememberThinking } from "../../src/routing/signed-thinking.js";
++import type { AccessProfile, Item, WireProtocol } from "../../src/routing/routing-types.js";
++
++const profile: AccessProfile = {
++  provider: "claude", product: "anthropic-api", billing: "api", account: "fabricated",
++  credential: { kind: "env", name: "FABRICATED_KEY" },
++};
++const thinking = { type: "thinking", thinking: "fabricated thought", signature: "fabricated-signature" };
++
++function adapt(options: {
++  block?: Item; stage?: ClaudeCache; allow?: boolean; profile?: AccessProfile;
++  destination?: WireProtocol; priorOwner?: string; conversation?: string;
++} = {}) {
++  const body = { model: "work", messages: [
++    { role: "assistant", content: [options.block ?? thinking] }, { role: "user", content: "continue" },
++  ] };
++  return adaptRequest({
++    body, profile: options.profile ?? profile,
++    target: { profile: "fabricated", model: "claude-sonnet-5", effort: "high" },
++    ingress: "messages", protocol: options.destination ?? "messages",
++    transcript: decodePortableHistory(body, "messages"),
++    stage: options.stage ?? new ClaudeCache(), state: new ReverseState(),
++    owner: "original-owner", conversation: options.conversation ?? "original-conversation",
++    sessionId: "fabricated", allowNativeThinkingReplay: options.allow ?? true,
++    ...(options.priorOwner ? { priorOwner: options.priorOwner } : {}),
++  });
++}
++
++describe("native thinking import boundary", () => {
++  it("requires the dispatcher's authorization and native Claude Messages on both sides", () => {
++    assert.throws(() => adapt({ allow: false }), /foreign_opaque_state/);
++    assert.throws(() => adapt({ destination: "responses" }), /foreign_opaque_state/);
++    assert.throws(() => adapt({ profile: { ...profile, provider: "kimi", product: "kimi-platform", region: "global" } }), /foreign_opaque_state/);
++    assert.throws(() => adapt({ priorOwner: "different-owner" }), /foreign_opaque_state/);
++    const { outbound } = adapt();
++    assert.deepEqual((outbound.messages as Item[])[0]?.content, [thinking]);
++    assert.doesNotThrow(() => adapt({ profile: {
++      ...profile, product: "claude-code", billing: "subscription",
++      credential: { kind: "native-oauth", authFile: "/fabricated/never-read.json" },
++    } }));
++  });
++
++  it("does not mistake malformed native blocks for cache misses that can be imported", () => {
++    for (const block of [
++      { ...thinking, signature: "" }, { ...thinking, signature: undefined },
++      { ...thinking, thinking: undefined }, { ...thinking, data: "extra" },
++      { type: "redacted_thinking", data: "" },
++      { type: "redacted_thinking", data: "fabricated-redacted", thinking: "extra" },
++      { type: "redacted_thinking", data: "fabricated-redacted", signature: "extra" },
++    ]) assert.throws(() => adapt({ block }), /foreign_opaque_state/);
++  });
++
++  it("preserves known conversation ownership while accepting a recorded exact replay", () => {
++    const stage = new ClaudeCache();
++    rememberThinking(stage, "original-owner", "original-conversation", thinking);
++    assert.doesNotThrow(() => adapt({ stage }));
++    assert.throws(() => adapt({ stage, conversation: "another-conversation" }), /foreign_opaque_state/);
++    assert.throws(() => adapt({ stage, block: { ...thinking, thinking: "tampered" } }), /foreign_opaque_state/);
++  });
++});
+diff --git a/e2e/gates/native-thinking-continuity-offline-2026-10-19.json b/e2e/gates/native-thinking-continuity-offline-2026-10-19.json
+new file mode 100644
+index 0000000..2e5b6c0
+--- /dev/null
++++ b/e2e/gates/native-thinking-continuity-offline-2026-10-19.json
+@@ -0,0 +1,75 @@
++{
++  "schemaVersion": 1,
++  "kind": "native-thinking-continuity-offline",
++  "date": "2026-10-19",
++  "base": "0183d6de0edfc6229cbd54c932f76e2d136c5ffa",
++  "scope": "Single-target explicit native Claude Messages full-history replay; no live provider inference or real client/profile/history/auth access.",
++  "confirmedMechanism": "An otherwise valid full native signed history is refused by the explicit-route local signature cache before upstream contact on a cold instance. Released ordinary Claude passthrough bypasses the adapter; the reported released-user incident remains unproven.",
++  "red": {
++    "command": "node --import tsx --test --test-timeout=30000 test/integration/native-thinking-continuity.test.ts",
++    "baseResult": "Original three regressions all failed with foreign_opaque_state at request-adapter.ts:98 before fetch."
++  },
++  "checks": [
++    {
++      "command": "node --import tsx --test --test-name-pattern='imports an|replays the|retains rejection|does not adopt' --test-timeout=30000 test/integration/native-thinking-continuity.test.ts",
++      "exitCode": 0,
++      "passed": 5,
++      "coverage": [
++        "before-startup import",
++        "same-process follow-up",
++        "fresh-instance restart",
++        "unchanged thinking/redacted blocks and tool history",
++        "recorded tampering",
++        "known other-owner rejection",
++        "rejected/unfinished imports are not committed"
++      ]
++    },
++    {
++      "command": "node --import tsx --test --test-reporter=dot --test-timeout=30000 test/unit/native-thinking-replay.test.ts test/unit/wave1-codec-review.test.ts test/unit/wave1-reliability.test.ts test/unit/codex-request.test.ts test/unit/reverse-adapter.test.ts test/unit/claude-stream.test.ts",
++      "exitCode": 0
++    },
++    {
++      "command": "npm run typecheck",
++      "exitCode": 0
++    },
++    {
++      "command": "npm run build",
++      "exitCode": 0
++    },
++    {
++      "command": "git diff --check",
++      "exitCode": 0
++    }
++  ],
++  "blocked": [
++    {
++      "gate": "Production HTTP ephemeral fake origin/proxy, stream=false and stream=true",
++      "reason": "Native sandbox denies listen(127.0.0.1, port=0): EPERM. Tests retained, not skipped or bypassed."
++    },
++    {
++      "gate": "Full npm test under shared nonblocking heavy-test lock",
++      "reason": "Not attempted after confirmed listener denial; the suite requires those listeners. Must remain incomplete."
++    },
++    {
++      "gate": "Native disposable Claude session and real provider validation",
++      "reason": "Outside this bounded offline assignment; no real clients or state touched."
++    },
++    {
++      "gate": "Commit, push and dependent draft PR",
++      "reason": "Native sandbox denies git add: Unable to create .git/index.lock: Operation not permitted. No retry through another session or alternate Git metadata."
++    }
++  ],
++  "selfReview": [
++    "Dispatcher opt-in is limited to a one-target route; adapter independently requires Claude provider, Messages on both sides and no known prior-owner switch.",
++    "Existing scoped exact-field comparisons remain. A bounded provenance marker rejects known foreign owner/conversation use instead of treating it as a cold miss.",
++    "Imported blocks use attempt-local staged writes; only successful provider-terminal publication commits them. Rejection and missing-terminal rollback regressions pass.",
++    "Thinking blocks, signatures, tools and chronological history are preserved. No normalization, auth selection, fallback selection or persistent state changes.",
++    "Provenance uses the existing bounded cache and adds one small marker per unique signature, so entry/byte limits still apply."
++  ],
++  "separateFollowups": [
++    "Later system-role Messages normalization",
++    "Durable translated/native Responses continuation handles",
++    "Verification of the original released-user incident",
++    "Kimi testing"
++  ]
++}

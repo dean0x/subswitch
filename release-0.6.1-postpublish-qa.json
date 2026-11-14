@@ -1,0 +1,610 @@
+{
+  "status": "pass",
+  "commands": [
+    {
+      "name": "registry-install",
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/npm",
+        "--prefix",
+        "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer",
+        "install",
+        "--save-exact",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "subswitch@0.6.1"
+      ],
+      "cwd": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer",
+      "exitCode": 0,
+      "stdout": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/registry-install.stdout",
+      "stderr": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/registry-install.stderr"
+    },
+    {
+      "name": "npm-audit-signatures",
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/npm",
+        "audit",
+        "signatures",
+        "--registry=https://registry.npmjs.org/"
+      ],
+      "cwd": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer",
+      "exitCode": 0,
+      "stdout": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/npm-audit-signatures.stdout",
+      "stderr": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/npm-audit-signatures.stderr"
+    },
+    {
+      "name": "version",
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+        "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer/node_modules/.bin/subswitch",
+        "--version"
+      ],
+      "cwd": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer",
+      "exitCode": 0,
+      "stdout": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/version.stdout",
+      "stderr": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/version.stderr"
+    },
+    {
+      "name": "help",
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+        "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer/node_modules/.bin/subswitch",
+        "--help"
+      ],
+      "cwd": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer",
+      "exitCode": 0,
+      "stdout": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/help.stdout",
+      "stderr": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/help.stderr"
+    },
+    {
+      "name": "models-json",
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+        "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer/node_modules/.bin/subswitch",
+        "models",
+        "--json"
+      ],
+      "cwd": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer",
+      "exitCode": 0,
+      "stdout": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/models-json.stdout",
+      "stderr": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/models-json.stderr"
+    },
+    {
+      "name": "models-text",
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+        "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer/node_modules/.bin/subswitch",
+        "models"
+      ],
+      "cwd": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer",
+      "exitCode": 0,
+      "stdout": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/models-text.stdout",
+      "stderr": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/models-text.stderr"
+    },
+    {
+      "name": "forward-startup",
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+        "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer/node_modules/.bin/subswitch",
+        "serve"
+      ],
+      "pid": 5705,
+      "stdout": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/forward-startup.stdout",
+      "stderr": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/forward-startup.stderr",
+      "exitCode": 0
+    },
+    {
+      "name": "init-both",
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+        "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer/node_modules/.bin/subswitch",
+        "init",
+        "--client",
+        "both",
+        "--yes",
+        "--port",
+        "58128"
+      ],
+      "cwd": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer",
+      "exitCode": 0,
+      "stdout": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/init-both.stdout",
+      "stderr": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/init-both.stderr"
+    },
+    {
+      "name": "reverse-models-json",
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+        "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer/node_modules/.bin/subswitch",
+        "models",
+        "--client",
+        "codex",
+        "--json"
+      ],
+      "cwd": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer",
+      "exitCode": 0,
+      "stdout": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/reverse-models-json.stdout",
+      "stderr": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/reverse-models-json.stderr"
+    },
+    {
+      "name": "reverse-restart",
+      "argv": [
+        "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+        "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer/node_modules/.bin/subswitch",
+        "serve"
+      ],
+      "pid": 5708,
+      "stdout": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/reverse-restart.stdout",
+      "stderr": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/reverse-restart.stderr",
+      "exitCode": 0
+    }
+  ],
+  "health": [
+    {
+      "label": "forward-startup",
+      "body": {
+        "name": "subswitch",
+        "version": "0.6.1",
+        "providers": [
+          {
+            "id": "anthropic",
+            "configured": true,
+            "modelCount": 0
+          },
+          {
+            "id": "codex",
+            "configured": false,
+            "modelCount": 7
+          }
+        ]
+      },
+      "pidAliveAtResponse": true,
+      "port": 58128
+    },
+    {
+      "label": "reverse-restart",
+      "body": {
+        "name": "subswitch",
+        "version": "0.6.1",
+        "codexIngress": {
+          "schemaVersion": 1,
+          "enabled": true,
+          "mode": "model-routing",
+          "translationAvailable": true,
+          "credentials": "client",
+          "transports": [
+            "http",
+            "websocket"
+          ],
+          "subscriptionAuth": "native-store",
+          "claudeModelCount": 7
+        },
+        "providers": [
+          {
+            "id": "anthropic",
+            "configured": true,
+            "modelCount": 0
+          },
+          {
+            "id": "codex",
+            "configured": false,
+            "modelCount": 7
+          }
+        ]
+      },
+      "pidAliveAtResponse": true,
+      "port": 58128
+    }
+  ],
+  "providerRequests": [],
+  "startedAt": "2026-10-20T14:26:23.326758+00:00",
+  "environment": {
+    "PATH": "/Users/dean/.nvm/versions/node/v22.22.3/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/home",
+    "XDG_CONFIG_HOME": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/xdg-config",
+    "XDG_CACHE_HOME": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/xdg-cache",
+    "XDG_DATA_HOME": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/xdg-data",
+    "TMPDIR": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/tmp",
+    "CODEX_HOME": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/native-codex",
+    "CLAUDE_CONFIG_DIR": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/native-claude",
+    "CI": "1",
+    "NO_COLOR": "1",
+    "SUBSWITCH_LIMIT_RECORDING": "0",
+    "npm_config_cache": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/npm-cache",
+    "npm_config_logs_dir": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/npm-logs",
+    "npm_config_userconfig": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/empty-npmrc",
+    "npm_config_globalconfig": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/empty-global-npmrc",
+    "npm_config_registry": "https://registry.npmjs.org/",
+    "npm_config_update_notifier": "false",
+    "npm_config_audit": "false",
+    "npm_config_fund": "false"
+  },
+  "artifact": {
+    "url": "https://registry.npmjs.org/subswitch/-/subswitch-0.6.1.tgz",
+    "path": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/subswitch-0.6.1-published.tgz",
+    "sha256": "ce2e0b261eb94856c55a38c24593f35a8c86b846d483d530aa6d6f27a59ad082",
+    "sha1": "8bf02b981d91a18051a96d0087be50cac42a0106",
+    "integrity": "sha512-ZyP+yz10GQmuskEdwVUbo8fsVK3vuOGZ1ywua2t5OLterWOXFRq5ivEHHrPGMk9IexVF/403Op7PU6lcbK1IOw==",
+    "gitHead": "00a85771c71996f70bcce2f0d019942c735d49cc",
+    "inventoryMatchesApproved": true,
+    "inventory": {
+      "package/LICENSE": {
+        "sha256": "b1303ae3764158052861e706a46ee23cacaeca2d3cc27f6f2420616896fec875",
+        "size": 1063,
+        "mode": 420
+      },
+      "package/dist/agent-scan.js": {
+        "sha256": "d0e02f48d507f93cb45639cc0b99a88370c37028118fc257fa617a8d9fd1570a",
+        "size": 7449,
+        "mode": 420
+      },
+      "package/dist/anthropic-parse.js": {
+        "sha256": "a6044a1efc6eeaac4ef1000dafc21b0349ebce5c41f1c41e97b347832e5109ba",
+        "size": 4131,
+        "mode": 420
+      },
+      "package/dist/anthropic-passthrough.js": {
+        "sha256": "335e29476955aabc0abe9b13c65662701151e3fb32eb109c80d12ae402b49d89",
+        "size": 510,
+        "mode": 420
+      },
+      "package/dist/anthropic-wire-types.js": {
+        "sha256": "719807847d19c7241c8e8da934ba696bc4c40d98ec07ab39e74cd6275c4dad51",
+        "size": 1509,
+        "mode": 420
+      },
+      "package/dist/claude-adapter.js": {
+        "sha256": "769f9a524dd0b4c06dba4521ff2c957552100fe873cf784a50b44eb3484934f2",
+        "size": 20575,
+        "mode": 420
+      },
+      "package/dist/claude-auth.js": {
+        "sha256": "02e8bd3ab8588a9e1ad385c0c3b8a2628d2e186d44140754bfcd274bd87ba91c",
+        "size": 11810,
+        "mode": 420
+      },
+      "package/dist/claude-cache.js": {
+        "sha256": "46df4542cf69b61dda0af87afa682638814b7b1d9e13bc1136fe4f26514a6347",
+        "size": 1823,
+        "mode": 420
+      },
+      "package/dist/claude-contract.js": {
+        "sha256": "5e6c4ee41543005acaf0fcfb104955439cd0e784bc9ad2300a148bc3a53a09db",
+        "size": 240,
+        "mode": 420
+      },
+      "package/dist/claude-errors.js": {
+        "sha256": "9b2b90ff01acfd306effff8ba0fea12b362e91e5a5423e4de41b12326f2bbcd7",
+        "size": 4813,
+        "mode": 420
+      },
+      "package/dist/claude-handler.js": {
+        "sha256": "758ab463494b3cdb2d0c909e3155bf1a609eae923fbaa42ead9215d51a23c0c6",
+        "size": 7785,
+        "mode": 420
+      },
+      "package/dist/claude-models.js": {
+        "sha256": "694ad8878c3bdbcd99cbd9bde1c7da4650f99cc9882b2e686e44d46f188e3364",
+        "size": 10211,
+        "mode": 420
+      },
+      "package/dist/claude-state.js": {
+        "sha256": "998e44c5186b4abd94c69d198686818c99e9f38e390434656677034445081792",
+        "size": 5368,
+        "mode": 420
+      },
+      "package/dist/claude-stream.js": {
+        "sha256": "a7ee2cf8719a82f7f99c48316331a105d62a82b0cbf6496ebebb506bd4d3cae1",
+        "size": 10718,
+        "mode": 420
+      },
+      "package/dist/cli.js": {
+        "sha256": "7d3976cf306eadd90c5af84246cfddb5c104a7ebc82344d8f391f11e564e1fee",
+        "size": 21947,
+        "mode": 420
+      },
+      "package/dist/clients.js": {
+        "sha256": "c3a91dbc3f06a0e29a5c40828e1e5493f878c31ebc4f2254fdc31a7b5a5e014c",
+        "size": 419,
+        "mode": 420
+      },
+      "package/dist/codex-auth.js": {
+        "sha256": "4983c7d1b005359b9b200587b9c649fdbcf2c40e159b9555bb498c83a9a4d388",
+        "size": 19707,
+        "mode": 420
+      },
+      "package/dist/codex-body.js": {
+        "sha256": "ec64eca0ddd94dc535e7c49d8e23e73233c337d9d9d6e9204ee2bd6ff908d010",
+        "size": 663,
+        "mode": 420
+      },
+      "package/dist/codex-doctor.js": {
+        "sha256": "80800866de9655ce57ae3743adf83303075a882183b052dce9273a04e8f1d8e8",
+        "size": 7395,
+        "mode": 420
+      },
+      "package/dist/codex-gateway.js": {
+        "sha256": "2750b61526620645a7f47d73995283f798c6a49e7d5605bdf9c113af132df5cf",
+        "size": 15026,
+        "mode": 420
+      },
+      "package/dist/codex-handler.js": {
+        "sha256": "7575a0da27ad22da9a94daedc2b36109d29315ba69cc5ab1070891d10a928b02",
+        "size": 18219,
+        "mode": 420
+      },
+      "package/dist/codex-health.js": {
+        "sha256": "90d06efdc251bc5baf74314b27ce0a70ca2a7e79cd39ecd152c90dfc0070e995",
+        "size": 1017,
+        "mode": 420
+      },
+      "package/dist/codex-ingress.js": {
+        "sha256": "9f767688c80b066bca5550ffece4e6d796d9d8f0511e3c97ceb87fdf5ca3ab7a",
+        "size": 700,
+        "mode": 420
+      },
+      "package/dist/codex-init.js": {
+        "sha256": "5c339c7abdbe185d749416b0ccb66ce62f3dbc15cb62ac694be5687aa68c9890",
+        "size": 10207,
+        "mode": 420
+      },
+      "package/dist/codex-native-auth.js": {
+        "sha256": "a3c14d1cdcf5f27b135fac65950cee0778c0fe98d8947a56e30c2c679b1e399f",
+        "size": 1409,
+        "mode": 420
+      },
+      "package/dist/codex-request.js": {
+        "sha256": "659b6a04af7d00e0ec3a9e5224880782606b79117a7a61895954d01a78911568",
+        "size": 9564,
+        "mode": 420
+      },
+      "package/dist/codex-response.js": {
+        "sha256": "f99d4b39daf5d40243315abd05943b2a8cf0cf90174095819425497600c3b8d9",
+        "size": 33252,
+        "mode": 420
+      },
+      "package/dist/codex-route.js": {
+        "sha256": "8376fe9e009c0c57442811d6114dea55404478d68060c9b069c667cef85ddcb3",
+        "size": 1693,
+        "mode": 420
+      },
+      "package/dist/codex-upstream.js": {
+        "sha256": "1a675eb689736103a15e1d46c5ab60c687a767bb1fc89d262601a59a793d208f",
+        "size": 5941,
+        "mode": 420
+      },
+      "package/dist/codex-ws.js": {
+        "sha256": "5b3739288bd57887dfdbea35a5bdb5ed872cf268eb0e36ccaebddc5ece9de591",
+        "size": 11890,
+        "mode": 420
+      },
+      "package/dist/collaboration-compat.js": {
+        "sha256": "9ac4ef221c80ee3d1cd189b646fac9a91071caafbc164c5cd451cd87b675dac8",
+        "size": 5594,
+        "mode": 420
+      },
+      "package/dist/config.js": {
+        "sha256": "ca823cc02f27cb41d1dde1722c54384efdf4df5eb9baa7477f89b920b8f3f3b9",
+        "size": 35466,
+        "mode": 420
+      },
+      "package/dist/content-encoding.js": {
+        "sha256": "878b09071a1f111275a9040648ec381fc0ee1922103711dc42dfa5c2580ddfde",
+        "size": 1013,
+        "mode": 420
+      },
+      "package/dist/conversation-key.js": {
+        "sha256": "1fc57095027585cf6241aa4f9fedfffe264fc865424985a2d743d02a6d0c1dfc",
+        "size": 2776,
+        "mode": 420
+      },
+      "package/dist/doctor.js": {
+        "sha256": "d353540f7521875a94926b4dd17c52a3ce05c435b4e40a5c4625abb754fd73f4",
+        "size": 17312,
+        "mode": 420
+      },
+      "package/dist/errors.js": {
+        "sha256": "9f7b6f2b3cb3f0f3bcaa2d18031fed13ce9be7b993e2ab9739c30fd8af80e33e",
+        "size": 6713,
+        "mode": 420
+      },
+      "package/dist/inbound-policy.js": {
+        "sha256": "74b44422049918c169460a5dd281548b4e5798f3d4f5a93daab26dc4f08b80c9",
+        "size": 20191,
+        "mode": 420
+      },
+      "package/dist/init.js": {
+        "sha256": "77574f6f12b0bde13b685f8c9a7cc5986489792ce4775879b7ba55e913bcf1e4",
+        "size": 21051,
+        "mode": 420
+      },
+      "package/dist/logger.js": {
+        "sha256": "e8f9e53b1829cf857055f6bf13384ab7d469a87945fd6838b3c74f5b26d851af",
+        "size": 5407,
+        "mode": 420
+      },
+      "package/dist/models.js": {
+        "sha256": "229e8d47676ee5223d918c8c7af8bc4511068a56841d76f5175c8c52f5dd7a9b",
+        "size": 33551,
+        "mode": 420
+      },
+      "package/dist/openai-passthrough.js": {
+        "sha256": "1af2f037504b54e0d9a3c74134a23da0f5f0f63927f0a99a48ceb4a47f9436ed",
+        "size": 7390,
+        "mode": 420
+      },
+      "package/dist/plain-object.js": {
+        "sha256": "486069bc00c5fac9153df16d4227ae8f1d17a62e7ade1df115cb1eb34fe22c68",
+        "size": 458,
+        "mode": 420
+      },
+      "package/dist/provider-auth.js": {
+        "sha256": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
+        "size": 11,
+        "mode": 420
+      },
+      "package/dist/provider-events.js": {
+        "sha256": "00122deed459511d2c99521d79add20c6bf42484a3177ef268965ef81d7d945f",
+        "size": 2176,
+        "mode": 420
+      },
+      "package/dist/provider-handler.js": {
+        "sha256": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
+        "size": 11,
+        "mode": 420
+      },
+      "package/dist/provider-transport.js": {
+        "sha256": "a2a50d4fc3ae0a80e9e1a1c48e75a7e05a90e8e1d8fa0e421ae44351baca0db6",
+        "size": 8522,
+        "mode": 420
+      },
+      "package/dist/raw-http-passthrough.js": {
+        "sha256": "0e9c0397b8bdbcabd301a7a9fa08a1e462c2d2d994d89aa9ca8163a2b2288197",
+        "size": 15874,
+        "mode": 420
+      },
+      "package/dist/reasoning-cache.js": {
+        "sha256": "8a549092a6f6f61a3818b4a04098c3b6155fe1fdf61b62a16eb75e93187128d0",
+        "size": 2896,
+        "mode": 420
+      },
+      "package/dist/result.js": {
+        "sha256": "8d92753b35deb4acfb8fa04754906d9c74080f962c1a4a93bc883bf17a4c5e38",
+        "size": 106,
+        "mode": 420
+      },
+      "package/dist/router.js": {
+        "sha256": "c94bcde6b0fec6f63ea6e3a6a8ff9e5baf0b6ef309e3aad6023c6afd610da72d",
+        "size": 3124,
+        "mode": 420
+      },
+      "package/dist/server.js": {
+        "sha256": "05f03c9697c9c7ca0164d2cc5defd8f125abc9a7cde7681a1cc826e6a15f8113",
+        "size": 32039,
+        "mode": 420
+      },
+      "package/dist/tcp-connect.js": {
+        "sha256": "d656c0637ee9d05ba97e9b9028dad62108de7b3417995924c648c830ca341158",
+        "size": 837,
+        "mode": 420
+      },
+      "package/dist/tty.js": {
+        "sha256": "aacb141cb734bde319148e19db3f1936189a2fb26b2087ddf498256903bef5e3",
+        "size": 680,
+        "mode": 420
+      },
+      "package/dist/upstream-policy.js": {
+        "sha256": "93455dd4b3f12ae34aa4698fb1f5e97a1b20f90211ab4067b06a72254344f2c2",
+        "size": 988,
+        "mode": 420
+      },
+      "package/dist/version.js": {
+        "sha256": "3b5938aae10b607e6e9939ad6f5fb81edda8b82546cdc35996cdecb6cc5dc49e",
+        "size": 168,
+        "mode": 420
+      },
+      "package/dist/websocket-budget.js": {
+        "sha256": "3840ffcf0cb6e95a826800ac1452eb07b85de83eab9a90ec6735fef8755fe0b7",
+        "size": 1304,
+        "mode": 420
+      },
+      "package/dist/wire-types.js": {
+        "sha256": "bdb7421eca8b6143b90c5cb3f2d0965758bc9a9edaa5d2ba42e59a209abfaff5",
+        "size": 2986,
+        "mode": 420
+      },
+      "package/package.json": {
+        "sha256": "3f87885a71a81b6f155234eb4f1a263ab96bd5d3831d183a6acf029a0e56a7e6",
+        "size": 2008,
+        "mode": 420
+      },
+      "package/subswitch.config.example.json": {
+        "sha256": "14fc72910f014819334aed3fe5450121fb5541b7ffe30b33a184fa7aaaefb884",
+        "size": 1538,
+        "mode": 420
+      },
+      "package/README.md": {
+        "sha256": "ec22f5b40628d745ec13f84ea84272e149cde72680c375cedb7e1f75b89986f1",
+        "size": 45466,
+        "mode": 420
+      }
+    },
+    "dist": {
+      "shasum": "8bf02b981d91a18051a96d0087be50cac42a0106",
+      "tarball": "https://registry.npmjs.org/subswitch/-/subswitch-0.6.1.tgz",
+      "fileCount": 60,
+      "integrity": "sha512-ZyP+yz10GQmuskEdwVUbo8fsVK3vuOGZ1ywua2t5OLterWOXFRq5ivEHHrPGMk9IexVF/403Op7PU6lcbK1IOw==",
+      "signatures": [
+        {
+          "sig": "MEUCIDvvZsc9BnoH6/xo3g/w/Ua2hRk3hhyO6gTk3J6ikPnmAiEAyKZ20r/sO8qPlJNENDQ6rtPRVsOYo37hwenuLYgGx8o=",
+          "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+        },
+        {
+          "sig": "MEQCIFDMxnwUF14kmiAxeWeWnA0nHSvXDtB5owob/B25lj+eAiAs6zJ3au5Tu/i3BZPWoARk6hA6HYhLsdN/MS8MNiIm3Q==",
+          "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+        }
+      ],
+      "attestations": {
+        "url": "https://registry.npmjs.org/-/npm/v1/attestations/subswitch@0.6.1",
+        "provenance": {
+          "predicateType": "https://slsa.dev/provenance/v1"
+        }
+      },
+      "unpackedSize": 524710
+    }
+  },
+  "installed": {
+    "path": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/consumer/node_modules/subswitch",
+    "version": "0.6.1",
+    "allPackageBytesMatchPublishedTarball": true,
+    "lockEntry": {
+      "version": "0.6.1",
+      "resolved": "https://registry.npmjs.org/subswitch/-/subswitch-0.6.1.tgz",
+      "integrity": "sha512-ZyP+yz10GQmuskEdwVUbo8fsVK3vuOGZ1ywua2t5OLterWOXFRq5ivEHHrPGMk9IexVF/403Op7PU6lcbK1IOw==",
+      "license": "MIT",
+      "dependencies": {
+        "@clack/prompts": "^1.7.0",
+        "picocolors": "^1.1.1",
+        "toml-eslint-parser": "^1.0.3",
+        "ws": "^8.21.3",
+        "zod": "^4.4.3"
+      },
+      "bin": {
+        "subswitch": "dist/cli.js"
+      },
+      "engines": {
+        "node": "^22.15.0 || >=24"
+      }
+    }
+  },
+  "runtimeGuard": {
+    "sourceSha256": "f3ca3f20c6d00355210875f78f177806af5492ceb610d91da9b09f7baaca026c",
+    "activations": 8,
+    "blocked": [],
+    "trace": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/runtime-trace.jsonl"
+  },
+  "limitations": [
+    "No actual native clients, upstream inference, real credentials, shared proxy or user history used.",
+    "Runtime guard pins child homedir and owned config endpoints; real product version, config, models, init, server, health and graceful shutdown paths execute.",
+    "This validates the future-model release and startup behavior; it does not establish native Claude session continuity or availability of any upstream model."
+  ],
+  "cleanup": {
+    "allOwnedServersStopped": true,
+    "originClosed": true
+  },
+  "completedAt": "2026-10-20T14:26:29.393562+00:00",
+  "toolVersions": {
+    "node": "v22.22.3",
+    "npm": "10.9.8"
+  },
+  "signatureVerification": {
+    "command": "npm audit signatures --registry=https://registry.npmjs.org/",
+    "exitCode": 0,
+    "verifiedRegistrySignatures": 12,
+    "verifiedAttestations": 7,
+    "stdout": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/npm-audit-signatures.stdout",
+    "stderr": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-evidence/clean-install/npm-audit-signatures.stderr"
+  },
+  "deliveryReport": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-retry-delivery.json",
+  "githubRelease": "https://github.com/dean0x/subswitch/releases/tag/v0.6.1",
+  "workflowAttempt": "https://github.com/dean0x/subswitch/actions/runs/39320963566/attempts/2"
+}

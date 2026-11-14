@@ -1,0 +1,94 @@
+{
+  "checkedAt": "2026-10-19T15:11:54.725746+00:00",
+  "head": "84cf8bed6db669968228c109497031f04d685164",
+  "run": 39275048700,
+  "runConclusion": "success",
+  "records": [
+    {
+      "job": "check (macos-latest)",
+      "jobId": 118137045146,
+      "url": "https://github.com/dean0x/subswitch/actions/runs/39275048700/job/118137045146",
+      "smokeStep": {
+        "completedAt": "2026-10-19T15:07:54Z",
+        "conclusion": "success",
+        "name": "Smoke test tarball",
+        "number": 8,
+        "startedAt": "2026-10-19T15:07:49Z",
+        "status": "completed"
+      },
+      "fullLogSha256": "7aaf2148f3e71c2c189f74b4bb40bad10f7786aefa29a0a5cfdc0ac2550fddb8",
+      "excerpts": [
+        "check (macos-latest)\tSmoke test tarball\t2026-10-19T15:07:51.6798050Z Smoke: installing subswitch-0.6.0.tgz into /var/folders/n6/hn37q6pj7sj_9dmqqc2113800000gn/T/tmp.Cc46Xsy18I",
+        "check (macos-latest)\tSmoke test tarball\t2026-10-19T15:07:53.2063100Z   subswitch version: 0.6.0",
+        "check (macos-latest)\tSmoke test tarball\t2026-10-19T15:07:53.5397170Z   packaged Wave1 example: valid config and route discovery (live-unverified)",
+        "check (macos-latest)\tSmoke test tarball\t2026-10-19T15:07:53.9897740Z Smoke: OK \u2014 {\"name\":\"subswitch\",\"version\":\"0.6.0\",\"providers\":[{\"id\":\"anthropic\",\"configured\":true,\"modelCount\":0},{\"id\":\"codex\",\"configured\":false,\"modelCount\":7}]}",
+        "check (macos-latest)\tSmoke test tarball\t2026-10-19T15:07:54.7896390Z Smoke: OK \u2014 {\"name\":\"subswitch\",\"version\":\"0.6.0\",\"codexIngress\":{\"schemaVersion\":1,\"enabled\":true,\"mode\":\"model-routing\",\"translationAvailable\":true,\"credentials\":\"client\",\"transports\":[\"http\",\"websocket\"],\"subscriptionAuth\":\"native-store\",\"claudeModelCount\":7},\"providers\":[{\"id\":\"anthropic\",\"configured\":true,\"modelCount\":0},{\"id\":\"codex\",\"configured\":false,\"modelCount\":7}]}"
+      ]
+    },
+    {
+      "job": "check (macos-latest, Node 24)",
+      "jobId": 118137045378,
+      "url": "https://github.com/dean0x/subswitch/actions/runs/39275048700/job/118137045378",
+      "smokeStep": {
+        "completedAt": "2026-10-19T15:07:31Z",
+        "conclusion": "success",
+        "name": "Smoke test tarball",
+        "number": 8,
+        "startedAt": "2026-10-19T15:07:27Z",
+        "status": "completed"
+      },
+      "fullLogSha256": "18bbf09874af4485a8c043aae072da5994e330e1cfe56f9db171471d4eaae026",
+      "excerpts": [
+        "check (macos-latest, Node 24)\tSmoke test tarball\t2026-10-19T15:07:28.8965800Z Smoke: installing subswitch-0.6.0.tgz into /var/folders/n6/hn37q6pj7sj_9dmqqc2113800000gn/T/tmp.wA89cgYqFO",
+        "check (macos-latest, Node 24)\tSmoke test tarball\t2026-10-19T15:07:30.0843090Z   subswitch version: 0.6.0",
+        "check (macos-latest, Node 24)\tSmoke test tarball\t2026-10-19T15:07:30.2771780Z   packaged Wave1 example: valid config and route discovery (live-unverified)",
+        "check (macos-latest, Node 24)\tSmoke test tarball\t2026-10-19T15:07:30.6873740Z Smoke: OK \u2014 {\"name\":\"subswitch\",\"version\":\"0.6.0\",\"providers\":[{\"id\":\"anthropic\",\"configured\":true,\"modelCount\":0},{\"id\":\"codex\",\"configured\":false,\"modelCount\":7}]}",
+        "check (macos-latest, Node 24)\tSmoke test tarball\t2026-10-19T15:07:31.3931000Z Smoke: OK \u2014 {\"name\":\"subswitch\",\"version\":\"0.6.0\",\"codexIngress\":{\"schemaVersion\":1,\"enabled\":true,\"mode\":\"model-routing\",\"translationAvailable\":true,\"credentials\":\"client\",\"transports\":[\"http\",\"websocket\"],\"subscriptionAuth\":\"native-store\",\"claudeModelCount\":7},\"providers\":[{\"id\":\"anthropic\",\"configured\":true,\"modelCount\":0},{\"id\":\"codex\",\"configured\":false,\"modelCount\":7}]}"
+      ]
+    },
+    {
+      "job": "check (ubuntu-latest)",
+      "jobId": 118137045600,
+      "url": "https://github.com/dean0x/subswitch/actions/runs/39275048700/job/118137045600",
+      "smokeStep": {
+        "completedAt": "2026-10-19T15:07:25Z",
+        "conclusion": "success",
+        "name": "Smoke test tarball",
+        "number": 8,
+        "startedAt": "2026-10-19T15:07:22Z",
+        "status": "completed"
+      },
+      "fullLogSha256": "9c33c59fefae4a6a5c691ceb988a3a9ae17fb547da662cb79d5887e202bb012e",
+      "excerpts": [
+        "check (ubuntu-latest)\tSmoke test tarball\t2026-10-19T15:07:23.1788310Z Smoke: installing subswitch-0.6.0.tgz into /tmp/tmp.qgtoXNO27N",
+        "check (ubuntu-latest)\tSmoke test tarball\t2026-10-19T15:07:24.4081838Z   subswitch version: 0.6.0",
+        "check (ubuntu-latest)\tSmoke test tarball\t2026-10-19T15:07:24.5818544Z   packaged Wave1 example: valid config and route discovery (live-unverified)",
+        "check (ubuntu-latest)\tSmoke test tarball\t2026-10-19T15:07:24.8461306Z Smoke: OK \u2014 {\"name\":\"subswitch\",\"version\":\"0.6.0\",\"providers\":[{\"id\":\"anthropic\",\"configured\":true,\"modelCount\":0},{\"id\":\"codex\",\"configured\":false,\"modelCount\":7}]}",
+        "check (ubuntu-latest)\tSmoke test tarball\t2026-10-19T15:07:25.4081091Z Smoke: OK \u2014 {\"name\":\"subswitch\",\"version\":\"0.6.0\",\"codexIngress\":{\"schemaVersion\":1,\"enabled\":true,\"mode\":\"model-routing\",\"translationAvailable\":true,\"credentials\":\"client\",\"transports\":[\"http\",\"websocket\"],\"subscriptionAuth\":\"native-store\",\"claudeModelCount\":7},\"providers\":[{\"id\":\"anthropic\",\"configured\":true,\"modelCount\":0},{\"id\":\"codex\",\"configured\":false,\"modelCount\":7}]}"
+      ]
+    },
+    {
+      "job": "check (ubuntu-latest, Node 24)",
+      "jobId": 118137046127,
+      "url": "https://github.com/dean0x/subswitch/actions/runs/39275048700/job/118137046127",
+      "smokeStep": {
+        "completedAt": "2026-10-19T15:07:24Z",
+        "conclusion": "success",
+        "name": "Smoke test tarball",
+        "number": 8,
+        "startedAt": "2026-10-19T15:07:20Z",
+        "status": "completed"
+      },
+      "fullLogSha256": "e029eda43bd1ea50803f05e6876276f01d9a993973664795c77055edb1a4be5d",
+      "excerpts": [
+        "check (ubuntu-latest, Node 24)\tSmoke test tarball\t2026-10-19T15:07:21.9924881Z Smoke: installing subswitch-0.6.0.tgz into /tmp/tmp.loPGIwEom7",
+        "check (ubuntu-latest, Node 24)\tSmoke test tarball\t2026-10-19T15:07:23.4116740Z   subswitch version: 0.6.0",
+        "check (ubuntu-latest, Node 24)\tSmoke test tarball\t2026-10-19T15:07:23.6446114Z   packaged Wave1 example: valid config and route discovery (live-unverified)",
+        "check (ubuntu-latest, Node 24)\tSmoke test tarball\t2026-10-19T15:07:23.9502059Z Smoke: OK \u2014 {\"name\":\"subswitch\",\"version\":\"0.6.0\",\"providers\":[{\"id\":\"anthropic\",\"configured\":true,\"modelCount\":0},{\"id\":\"codex\",\"configured\":false,\"modelCount\":7}]}",
+        "check (ubuntu-latest, Node 24)\tSmoke test tarball\t2026-10-19T15:07:24.6448691Z Smoke: OK \u2014 {\"name\":\"subswitch\",\"version\":\"0.6.0\",\"codexIngress\":{\"schemaVersion\":1,\"enabled\":true,\"mode\":\"model-routing\",\"translationAvailable\":true,\"credentials\":\"client\",\"transports\":[\"http\",\"websocket\"],\"subscriptionAuth\":\"native-store\",\"claudeModelCount\":7},\"providers\":[{\"id\":\"anthropic\",\"configured\":true,\"modelCount\":0},{\"id\":\"codex\",\"configured\":false,\"modelCount\":7}]}"
+      ]
+    }
+  ],
+  "bashSyntaxExit": 0,
+  "testsRerun": false
+}

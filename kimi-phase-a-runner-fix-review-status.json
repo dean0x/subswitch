@@ -1,0 +1,15 @@
+{
+  "status": "complete",
+  "recommendation": "approve_reviewed_phase_a_runner_preparation_only",
+  "report": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-fix-independent-review.json",
+  "reportSha256": "0bb6ad91cfbf388657ff3a9a2091f22f8454f5b78d4bd305eec6fdb87c315d8e",
+  "runnerHash": "8085782448a74a8f3e87893b9948611b116988f9e6f8abca510ec23f46455198",
+  "runtimeHash": "9a746b7b4720025228f5c13e607911184d1aaed47c18b14e18dcfe6bc130a9b1",
+  "findings": 0,
+  "resolved": [
+    "KIMIA-R01",
+    "KIMIA-R02"
+  ],
+  "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-fix-review-artifacts-mjzqvxd6",
+  "next": "Stop and await coordinator assignment; no live authorization."
+}

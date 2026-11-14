@@ -1,0 +1,183 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-19",
+  "checkout": "/Users/dean/Sandbox/subswitch-continuity",
+  "branch": "codex/future-model-overrides",
+  "base": "de137dedbd72d660657517251fe8a1051dd43465",
+  "baseBranch": "main",
+  "head": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+  "pr": {
+    "number": 86,
+    "url": "https://github.com/dean0x/subswitch/pull/86",
+    "draft": true,
+    "base": "main"
+  },
+  "pushed": true,
+  "trackedWorkingTreeClean": true,
+  "publicFileSetVerified": true,
+  "sourceFileSha256": {
+    "src/models.ts": "969d675522339432d6ad48e9f785c0328390457ca7bfe856cf0ad2e0753676db",
+    "src/doctor.ts": "5978c4e2f04a30997f4fbf245fa0e1aab44e50d26b53ffc343cac86b546a6f29",
+    "README.md": "ec22f5b40628d745ec13f84ea84272e149cde72680c375cedb7e1f75b89986f1",
+    "test/unit/future-model-overrides.test.ts": "e1e71c0aa548ac09ff23afe7403dfbd85f94d0610ac168ab19394249f4841e7f",
+    "test/integration/future-model-overrides.test.ts": "2c3391d5f20ebf6e7683782089086350d863b3564665beebdb89b859efd25000",
+    "e2e/gates/future-model-overrides-offline-2026-10-19.json": "df381ee7640c7a8dd38a3c6df6cb72b7a9b0c1521a78a2f2589624ea08452db4"
+  },
+  "patch": {
+    "path": "future-model-review.patch",
+    "sha256": "0fd6cd0873c0933100ee9c8c8741b8e028b096818cacb5b0c35fb3aa47ad9a39"
+  },
+  "checks": [
+    {
+      "command": "node --import tsx --test --test-timeout=30000 test/unit/future-model-overrides.test.ts test/integration/future-model-overrides.test.ts",
+      "exitCode": 0,
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "coverage": [
+        "six requested spellings across config/buildDeps selection",
+        "injected doctor warning and genuine unknown-agent failure",
+        "canonical pins, family/qualified-name collision protection and one-hop aliases",
+        "malformed/reserved aliases and unsupported configured providers remain invalid",
+        "production HTTP stream=false/true, fabricated credential selection and local unmatched-model rejection",
+        "provider rejection remains authoritative"
+      ]
+    },
+    {
+      "command": "node --import tsx --test --test-reporter=dot --test-timeout=30000 test/unit/future-model-overrides.test.ts test/unit/routing-table.test.ts test/unit/models.test.ts test/unit/doctor.test.ts test/unit/agent-scan.test.ts",
+      "exitCode": 0,
+      "note": "Focused baseline/model/doctor suites passed before the final collision guard; the final full check covers all later changes."
+    },
+    {
+      "command": "/usr/bin/lockf -t 0 /Users/dean/Sandbox/.devflow/locks/heavy-tests.lock npm run check",
+      "exitCode": 0,
+      "tests": 973,
+      "passed": 973,
+      "failed": 0,
+      "skipped": 0,
+      "durationMs": 11057.049459,
+      "scope": "Typecheck and full unit/integration suite under the acquired shared nonblocking heavy-test lock."
+    },
+    {
+      "command": "npm run build",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    }
+  ],
+  "fullCheckLog": {
+    "path": "future-model-full-check.log",
+    "sha256": "41930f9637b169cd1a6f8071e0cc5ab514269e151b600b7b659c527828f89915"
+  },
+  "review": {
+    "status": "complete; independent review pending with coordinator",
+    "findingsResolved": [
+      "Target-only expansion cannot shadow existing family, exact registry or qualified alias/registry names. Regression included."
+    ],
+    "surfaceAssessment": "Configuration schema, registry data, model JSON format, credentials/endpoints, dependencies, effort validation and release version are unchanged. Intentional behavior changes are explicit declared-model request selection and doctor warning severity."
+  },
+  "ci": {
+    "state": "success",
+    "head": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+    "runUrl": "https://github.com/dean0x/subswitch/actions/runs/39266322367",
+    "checks": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-19T14:09:37Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39266322367/job/118106725053",
+        "name": "check (ubuntu-latest)",
+        "startedAt": "2026-10-19T14:08:58Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-19T14:10:01Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39266322367/job/118106725549",
+        "name": "check (macos-latest)",
+        "startedAt": "2026-10-19T14:09:04Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-19T14:09:36Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39266322367/job/118106725538",
+        "name": "check (ubuntu-latest, Node 24)",
+        "startedAt": "2026-10-19T14:08:58Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-19T14:09:54Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39266322367/job/118106725417",
+        "name": "check (macos-latest, Node 24)",
+        "startedAt": "2026-10-19T14:09:06Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ]
+  },
+  "confirmed": [
+    "loadConfig/buildDeps already accept an unregistered alias target. A local startup validation error was not reproduced on current main.",
+    "A qualified family spelling such as codex:sol ignores its configured sol override and selects the built-in family winner.",
+    "A configured full future target ID and its qualified spelling are unresolved, so the production HTTP handler falls through to Anthropic.",
+    "doctor increments its failure count for every configured target absent from the built-in registry."
+  ],
+  "remainingUnverified": [
+    {
+      "scope": "PR81 configVersion=2 explicit route targets",
+      "head": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+      "source": [
+        "src/routing/routing-config.ts:139",
+        "src/routing/destination-catalog.ts:51"
+      ],
+      "status": "Static source still requires built-in modelEfforts metadata and emits invalid_target_model for unknown explicit target IDs. This independent released-path fix does not relax that validator. A separate capability-declaration design/review is needed."
+    },
+    {
+      "scope": "Original user-specific startup error",
+      "status": "No exact error/config was supplied; current published/main legacy alias loading succeeds. These reproduced doctor/selection defects do not establish that specific error source."
+    },
+    {
+      "scope": "Live provider availability and native-client behavior",
+      "status": "Unverified; no actual provider calls or existing clients/auth/history accessed."
+    }
+  ],
+  "preservedContinuityBranch": {
+    "branch": "codex/proxy-restart-continuity",
+    "head": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+    "pr": 85
+  },
+  "boundaries": {
+    "realProviderCalls": 0,
+    "realClientAuthOrHistoryTouched": false,
+    "sharedProxyOrOHFChanged": false,
+    "otherCheckoutWrites": false,
+    "fixtures": "Every configured API/subscription/refresh endpoint uses a fixture origin. Native auth/config paths are owned temporary paths; only fabricated Codex OAuth material is written/read. Unexpected upstream paths reject locally. Doctor I/O is fully injected."
+  },
+  "next": "Packaged QA passes on exact e582cd0 with no new source findings. Coordinator to verify this report/artifacts, update existing PR86 evidence, process draft/readiness and standing merge gates. Worker stops; no release/native/live actions.",
+  "gitTree": "88b364065cb3db7908a488c986f7ea6a7f802add",
+  "stage": "source-approved-ci-green-packaged-qa-passed-awaiting-coordinator-gates",
+  "sourceReview": {
+    "decision": "approve_source_review",
+    "findings": [],
+    "report": "/Users/dean/Sandbox/subswitch-kimi/future-model-independent-review.json",
+    "exactHead": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca"
+  },
+  "packagedQA": {
+    "status": "pass",
+    "report": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa.json",
+    "reportSha256": "99c020a14a3e0a21676af75ba9c1a2d57abf36c57aaa8eb7b13a551c275e8908",
+    "groupsPassed": 14,
+    "groupsFailed": 0,
+    "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA",
+    "sourceChanges": 0
+  }
+}

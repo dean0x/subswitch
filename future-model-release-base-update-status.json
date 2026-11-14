@@ -1,0 +1,69 @@
+{
+  "status": "draft-candidate-updated-local-gates-pass-ci-pending",
+  "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-base-update-artifacts-kom7mx9k",
+  "originalReportBackup": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-before-main-update.json",
+  "oldHead": "3ed93e8b793eaeebadd9edacd3b9a5788b9cc498",
+  "expectedMain": "349fee7f808e2fa38b52af26e131fc044128e17f",
+  "head": "b8549643d5af3316d0b65d608b16fafc390e0287",
+  "base": "349fee7f808e2fa38b52af26e131fc044128e17f",
+  "parents": [
+    "3ed93e8b793eaeebadd9edacd3b9a5788b9cc498",
+    "349fee7f808e2fa38b52af26e131fc044128e17f"
+  ],
+  "releasePatchSemanticBytesIdentical": true,
+  "oldPatchSha256": "656eea6f698be4497294723702766b27c3e44a705b96206f79612ae239dbb1b9",
+  "currentPatchSha256": "f3a254db095d27ded4ce46b1d272621dc225a6fa313466848d8c055800a92bb6",
+  "semanticPatchSha256": "033c997ef7b19b2660079a9fdede2f976dea871501e37f5eb2d9ce879c157277",
+  "files": [
+    "CHANGELOG.md",
+    "package-lock.json",
+    "package.json",
+    "src/version.ts"
+  ],
+  "completedAt": "2026-10-19T15:39:04.568473+00:00",
+  "report": "/Users/dean/Sandbox/subswitch-continuity/future-model-release-candidate.json",
+  "reportSha256": "02a8f0438589441a28484e3b7862473d6427b2775bec60e7024189e4b746642a",
+  "ciSnapshot": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "conclusion": "",
+      "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39279459762/job/118150861066",
+      "name": "check (ubuntu-latest)",
+      "startedAt": "2026-10-19T15:37:49Z",
+      "status": "QUEUED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "conclusion": "",
+      "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39279459762/job/118150861202",
+      "name": "check (macos-latest)",
+      "startedAt": "2026-10-19T15:37:49Z",
+      "status": "QUEUED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "conclusion": "",
+      "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39279459762/job/118150860821",
+      "name": "check (ubuntu-latest, Node 24)",
+      "startedAt": "2026-10-19T15:37:49Z",
+      "status": "QUEUED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "0001-01-01T00:00:00Z",
+      "conclusion": "",
+      "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39279459762/job/118150861039",
+      "name": "check (macos-latest, Node 24)",
+      "startedAt": "2026-10-19T15:37:49Z",
+      "status": "QUEUED",
+      "workflowName": "CI"
+    }
+  ],
+  "nextAction": "Coordinator verifies exact b8549643d5af3316d0b65d608b16fafc390e0287 on main349fee7, unchanged approved release delta and byte-identical package, then current-head CI when it completes. PR89 remains draft; no PR merge/tag/publish/release. Worker stops this bounded update."
+}

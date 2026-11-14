@@ -1,0 +1,1162 @@
+{
+  "schemaVersion": 1,
+  "head": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+  "base": "de137dedbd72d660657517251fe8a1051dd43465",
+  "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA",
+  "runtime": {
+    "node": "v22.22.3",
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "commands": [
+    {
+      "command": "git",
+      "args": [
+        "rev-parse",
+        "HEAD"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/01-git.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/01-git.stderr",
+      "startedAt": "2026-10-19T15:03:21.840Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:21.857Z",
+      "stdoutSha256": "f5550be10f65d0210062f588ac7347a3403fb3608cc1fa0bda376ff42e0aa9ab",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "git",
+      "args": [
+        "archive",
+        "--format=tar",
+        "--output=/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/source.tar",
+        "de137dedbd72d660657517251fe8a1051dd43465",
+        "--",
+        "src",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
+        "tsconfig.build.json",
+        "README.md",
+        "LICENSE",
+        "subswitch.config.example.json"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/02-baseline-archive.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/02-baseline-archive.stderr",
+      "startedAt": "2026-10-19T15:03:21.858Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:21.895Z",
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "tar",
+      "args": [
+        "-xf",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/source.tar",
+        "-C",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/source"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/03-baseline-extract-source.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/03-baseline-extract-source.stderr",
+      "startedAt": "2026-10-19T15:03:21.896Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:21.919Z",
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "build"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/source",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/04-baseline-build.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/04-baseline-build.stderr",
+      "startedAt": "2026-10-19T15:03:21.920Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:22.656Z",
+      "stdoutSha256": "6dd6aa9d59b27ae3c30a1105b2d1f8ed8e5466acbd2eaaa6a65288f714a82e2d",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "pack",
+        "--ignore-scripts",
+        "--pack-destination",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/tarballs",
+        "--json"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/source",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/05-baseline-pack.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/05-baseline-pack.stderr",
+      "startedAt": "2026-10-19T15:03:22.657Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:23.125Z",
+      "stdoutSha256": "92b8975f99723d593ac392ca8f02e134537deef2b040357a2ef2753b5950becf",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "tar",
+      "args": [
+        "-xzf",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/tarballs/subswitch-0.6.0.tgz",
+        "-C",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/extracted"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/06-baseline-extract-package.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/06-baseline-extract-package.stderr",
+      "startedAt": "2026-10-19T15:03:23.125Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:23.140Z",
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "git",
+      "args": [
+        "archive",
+        "--format=tar",
+        "--output=/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/source.tar",
+        "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+        "--",
+        "src",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
+        "tsconfig.build.json",
+        "README.md",
+        "LICENSE",
+        "subswitch.config.example.json"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/07-head-archive.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/07-head-archive.stderr",
+      "startedAt": "2026-10-19T15:03:23.144Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:23.168Z",
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "tar",
+      "args": [
+        "-xf",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/source.tar",
+        "-C",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/source"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/08-head-extract-source.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/08-head-extract-source.stderr",
+      "startedAt": "2026-10-19T15:03:23.169Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:23.185Z",
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "run",
+        "build"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/source",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/09-head-build.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/09-head-build.stderr",
+      "startedAt": "2026-10-19T15:03:23.185Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:23.948Z",
+      "stdoutSha256": "6dd6aa9d59b27ae3c30a1105b2d1f8ed8e5466acbd2eaaa6a65288f714a82e2d",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "npm",
+      "args": [
+        "pack",
+        "--ignore-scripts",
+        "--pack-destination",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/tarballs",
+        "--json"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/source",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/10-head-pack.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/10-head-pack.stderr",
+      "startedAt": "2026-10-19T15:03:23.948Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:24.338Z",
+      "stdoutSha256": "53397042d321d23cd854338fc9e08d0ae220dbc5675b59169c64ca9f359e53e4",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "tar",
+      "args": [
+        "-xzf",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/tarballs/subswitch-0.6.0.tgz",
+        "-C",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/extracted"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/11-head-extract-package.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/11-head-extract-package.stderr",
+      "startedAt": "2026-10-19T15:03:24.338Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:24.357Z",
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/extracted/package/dist/cli.js",
+        "serve"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/12-baseline-serve.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/12-baseline-serve.stderr",
+      "startedAt": "2026-10-19T15:03:24.367Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:25.283Z",
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "44697483da0e4db4a0cb7e5b17fc865babf76ed535202fe12f0a87e811e55468"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/extracted/package/dist/cli.js",
+        "--help"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/13-baseline-help.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/13-baseline-help.stderr",
+      "startedAt": "2026-10-19T15:03:24.592Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:24.708Z",
+      "stdoutSha256": "98be7555d3ecfb2101326a8dcf42a19cd16e1a6239b39b8229652803bcc62ed3",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/extracted/package/dist/cli.js",
+        "--version"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/14-baseline-version.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/14-baseline-version.stderr",
+      "startedAt": "2026-10-19T15:03:24.708Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:24.825Z",
+      "stdoutSha256": "97a5d6e540a6120d09c39ddb667e0e8e2bac7fcc2ffef813b82e08fd60365bce",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/extracted/package/dist/cli.js",
+        "models"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/15-baseline-models.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/15-baseline-models.stderr",
+      "startedAt": "2026-10-19T15:03:24.825Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:24.947Z",
+      "stdoutSha256": "b5e4b97563d03edbee1fa3e3bd5f662444a85792a7d5ee6a9cfad68aa13f2dfe",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/extracted/package/dist/cli.js",
+        "models",
+        "--json"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/16-baseline-models.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/16-baseline-models.stderr",
+      "startedAt": "2026-10-19T15:03:24.948Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:25.070Z",
+      "stdoutSha256": "713328250135a41832b3e63454e7c7ad46f9cdd3cbc696e9ce69e98ded1bedff",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/extracted/package/dist/cli.js",
+        "doctor",
+        "--client",
+        "claude-code"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/17-baseline-doctor.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/17-baseline-doctor.stderr",
+      "startedAt": "2026-10-19T15:03:25.071Z",
+      "exitCode": 1,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:25.202Z",
+      "stdoutSha256": "4a79052527bdc8fa494dccee499ce8dc30f91096569e451ac17b319bbcc327e7",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/extracted/package/dist/cli.js",
+        "serve"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/18-head-serve.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/18-head-serve.stderr",
+      "startedAt": "2026-10-19T15:03:25.286Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:26.276Z",
+      "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrSha256": "06e27adc71b2418b759431ab1001eb71476dfe9d55728e319365e173069c13ee"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/extracted/package/dist/cli.js",
+        "--help"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/19-head-help.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/19-head-help.stderr",
+      "startedAt": "2026-10-19T15:03:25.451Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:25.571Z",
+      "stdoutSha256": "98be7555d3ecfb2101326a8dcf42a19cd16e1a6239b39b8229652803bcc62ed3",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/extracted/package/dist/cli.js",
+        "--version"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/20-head-version.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/20-head-version.stderr",
+      "startedAt": "2026-10-19T15:03:25.572Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:25.687Z",
+      "stdoutSha256": "97a5d6e540a6120d09c39ddb667e0e8e2bac7fcc2ffef813b82e08fd60365bce",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/extracted/package/dist/cli.js",
+        "models"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/21-head-models.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/21-head-models.stderr",
+      "startedAt": "2026-10-19T15:03:25.687Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:25.807Z",
+      "stdoutSha256": "b5e4b97563d03edbee1fa3e3bd5f662444a85792a7d5ee6a9cfad68aa13f2dfe",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/extracted/package/dist/cli.js",
+        "models",
+        "--json"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/22-head-models.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/22-head-models.stderr",
+      "startedAt": "2026-10-19T15:03:25.807Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:25.931Z",
+      "stdoutSha256": "9f4c728a65939e75adb9d7f5ef11ae2a46144469ba8a603d95412c573429e396",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/extracted/package/dist/cli.js",
+        "doctor",
+        "--client",
+        "claude-code"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/23-head-doctor.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/23-head-doctor.stderr",
+      "startedAt": "2026-10-19T15:03:25.934Z",
+      "exitCode": 0,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:26.074Z",
+      "stdoutSha256": "9daa0349ef75ca6a88ea65bb8e83a8b292e37d36a25497293400b985c03c98d3",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "args": [
+        "--require",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+        "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/extracted/package/dist/cli.js",
+        "doctor",
+        "--client",
+        "claude-code"
+      ],
+      "cwd": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project",
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/24-head-doctor.stdout",
+      "stderr": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/24-head-doctor.stderr",
+      "startedAt": "2026-10-19T15:03:26.079Z",
+      "exitCode": 1,
+      "signal": null,
+      "completedAt": "2026-10-19T15:03:26.209Z",
+      "stdoutSha256": "93181016b1207f9c30419a10a0ed0abb3e0a2204b7f086038c8c9ec9871e5f49",
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "packages": {
+    "baseline": {
+      "commit": "de137dedbd72d660657517251fe8a1051dd43465",
+      "sourceArchive": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/source.tar",
+      "sourceArchiveSha256": "de858a422d0da14e47882421b74abc773a0648ad89e8e1441e7126f21a329d18",
+      "tarball": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/tarballs/subswitch-0.6.0.tgz",
+      "tarballSha256": "ead8e2b2ee99d83c9a0d7e8f20e19cf6087a5ccdbc5007830e22df9519ecd3de",
+      "integrity": "sha512-Y1G3DqlT7PodXMEuWBSfOGSn5P+2ARyYhmezJkCt9a99rbAJDafRSmWtvB3fzn242V5OKMCso3Y7nYGaEP569A==",
+      "npmShasum": "341801fdba568917713a82827204d2a2ea6c2ca7",
+      "entry": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/baseline/extracted/package/dist/cli.js",
+      "entrySha256": "7d3976cf306eadd90c5af84246cfddb5c104a7ebc82344d8f391f11e564e1fee",
+      "files": [
+        "LICENSE",
+        "README.md",
+        "dist/agent-scan.js",
+        "dist/anthropic-parse.js",
+        "dist/anthropic-passthrough.js",
+        "dist/anthropic-wire-types.js",
+        "dist/claude-adapter.js",
+        "dist/claude-auth.js",
+        "dist/claude-cache.js",
+        "dist/claude-contract.js",
+        "dist/claude-errors.js",
+        "dist/claude-handler.js",
+        "dist/claude-models.js",
+        "dist/claude-state.js",
+        "dist/claude-stream.js",
+        "dist/cli.js",
+        "dist/clients.js",
+        "dist/codex-auth.js",
+        "dist/codex-body.js",
+        "dist/codex-doctor.js",
+        "dist/codex-gateway.js",
+        "dist/codex-handler.js",
+        "dist/codex-health.js",
+        "dist/codex-ingress.js",
+        "dist/codex-init.js",
+        "dist/codex-native-auth.js",
+        "dist/codex-request.js",
+        "dist/codex-response.js",
+        "dist/codex-route.js",
+        "dist/codex-upstream.js",
+        "dist/codex-ws.js",
+        "dist/collaboration-compat.js",
+        "dist/config.js",
+        "dist/content-encoding.js",
+        "dist/conversation-key.js",
+        "dist/doctor.js",
+        "dist/errors.js",
+        "dist/inbound-policy.js",
+        "dist/init.js",
+        "dist/logger.js",
+        "dist/models.js",
+        "dist/openai-passthrough.js",
+        "dist/plain-object.js",
+        "dist/provider-auth.js",
+        "dist/provider-events.js",
+        "dist/provider-handler.js",
+        "dist/provider-transport.js",
+        "dist/raw-http-passthrough.js",
+        "dist/reasoning-cache.js",
+        "dist/result.js",
+        "dist/router.js",
+        "dist/server.js",
+        "dist/tcp-connect.js",
+        "dist/tty.js",
+        "dist/upstream-policy.js",
+        "dist/version.js",
+        "dist/websocket-budget.js",
+        "dist/wire-types.js",
+        "package.json",
+        "subswitch.config.example.json"
+      ],
+      "dependencyMode": "Existing author-clone lockfile dependency tree, symlinked into a freshly extracted tarball. No registry install/network or new dependency resolution.",
+      "runtimeGuard": {
+        "blocked": [],
+        "fixtureConnections": 3,
+        "TLSStubs": 2,
+        "fixtureReads": [
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/config.json",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/fabricated-auth.json",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/project/.claude/agents",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/home/.claude/agents",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/project/.claude/agents/known-0.md"
+        ]
+      },
+      "cleanup": {
+        "serverStopped": true,
+        "originClosed": true,
+        "fabricatedAuthAndNonceRemoved": true
+      }
+    },
+    "head": {
+      "commit": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+      "sourceArchive": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/source.tar",
+      "sourceArchiveSha256": "7a433d1ec5540d1b2dae0a7f0e2a4583fb644bb794d914e60e4e35c0346776bb",
+      "tarball": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/tarballs/subswitch-0.6.0.tgz",
+      "tarballSha256": "ae3b48b9a6727e1849f3c49a22391401d5c768a0dc1bc4ba3978eee92cf01b20",
+      "integrity": "sha512-GTgF3h/FTyqMJlDLWEAUYY4TNrF5uoKMHc33qszTKSQATikA7eCY0m42qmcgx6c8YzMADzzoJB68RoSNxosroA==",
+      "npmShasum": "3624b6130b6d4dbea5a3d250f6dbf1bf44e82587",
+      "entry": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/head/extracted/package/dist/cli.js",
+      "entrySha256": "7d3976cf306eadd90c5af84246cfddb5c104a7ebc82344d8f391f11e564e1fee",
+      "files": [
+        "LICENSE",
+        "README.md",
+        "dist/agent-scan.js",
+        "dist/anthropic-parse.js",
+        "dist/anthropic-passthrough.js",
+        "dist/anthropic-wire-types.js",
+        "dist/claude-adapter.js",
+        "dist/claude-auth.js",
+        "dist/claude-cache.js",
+        "dist/claude-contract.js",
+        "dist/claude-errors.js",
+        "dist/claude-handler.js",
+        "dist/claude-models.js",
+        "dist/claude-state.js",
+        "dist/claude-stream.js",
+        "dist/cli.js",
+        "dist/clients.js",
+        "dist/codex-auth.js",
+        "dist/codex-body.js",
+        "dist/codex-doctor.js",
+        "dist/codex-gateway.js",
+        "dist/codex-handler.js",
+        "dist/codex-health.js",
+        "dist/codex-ingress.js",
+        "dist/codex-init.js",
+        "dist/codex-native-auth.js",
+        "dist/codex-request.js",
+        "dist/codex-response.js",
+        "dist/codex-route.js",
+        "dist/codex-upstream.js",
+        "dist/codex-ws.js",
+        "dist/collaboration-compat.js",
+        "dist/config.js",
+        "dist/content-encoding.js",
+        "dist/conversation-key.js",
+        "dist/doctor.js",
+        "dist/errors.js",
+        "dist/inbound-policy.js",
+        "dist/init.js",
+        "dist/logger.js",
+        "dist/models.js",
+        "dist/openai-passthrough.js",
+        "dist/plain-object.js",
+        "dist/provider-auth.js",
+        "dist/provider-events.js",
+        "dist/provider-handler.js",
+        "dist/provider-transport.js",
+        "dist/raw-http-passthrough.js",
+        "dist/reasoning-cache.js",
+        "dist/result.js",
+        "dist/router.js",
+        "dist/server.js",
+        "dist/tcp-connect.js",
+        "dist/tty.js",
+        "dist/upstream-policy.js",
+        "dist/version.js",
+        "dist/websocket-budget.js",
+        "dist/wire-types.js",
+        "package.json",
+        "subswitch.config.example.json"
+      ],
+      "dependencyMode": "Existing author-clone lockfile dependency tree, symlinked into a freshly extracted tarball. No registry install/network or new dependency resolution.",
+      "runtimeGuard": {
+        "blocked": [],
+        "fixtureConnections": 3,
+        "TLSStubs": 4,
+        "fixtureReads": [
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/config.json",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/fabricated-auth.json",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project/.claude/agents",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/home/.claude/agents",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project/.claude/agents/known-0.md",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project/.claude/agents/known-1.md",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project/.claude/agents/known-2.md",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/project/.claude/agents/known-3.md",
+          "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/home/.claude/agents/unknown.md"
+        ]
+      },
+      "cleanup": {
+        "serverStopped": true,
+        "originClosed": true,
+        "fabricatedAuthAndNonceRemoved": true
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "baseline: packaged CLI startup and health",
+      "status": "pass",
+      "result": {
+        "port": 55053,
+        "childPid": 71779,
+        "configPath": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/baseline/config.json",
+        "configSha256": "ea98bde65a69166e219b73772f53c7fa15c1cc54d329c6761a0a5b7d29a039dd",
+        "endpoints": "All seven endpoint roots point to this owned origin.",
+        "nativePaths": "Explicit fixture-owned files; no native user path."
+      }
+    },
+    {
+      "name": "baseline: packaged help, version and effective alias table",
+      "status": "pass",
+      "result": {
+        "commands": [
+          "--help",
+          "--version",
+          "models",
+          "models --json"
+        ],
+        "futureIsRegistryEntry": false
+      }
+    },
+    {
+      "name": "baseline: real packaged doctor discovery, auth-file and warning severity (TLS stubbed)",
+      "status": "pass",
+      "result": {
+        "knownAliasExitCode": 1,
+        "differential": "Baseline treats the supported unknown target alias as a doctor failure.",
+        "TLS": "Fixture secureConnect stub only."
+      }
+    },
+    {
+      "name": "baseline: configured model spelling differential through packaged server",
+      "status": "pass",
+      "result": [
+        {
+          "requested": "sol",
+          "status": 200,
+          "path": "/codex/responses",
+          "selectedModel": "gpt-fixture-packaged-sol"
+        },
+        {
+          "requested": "codex:sol",
+          "status": 200,
+          "path": "/codex/responses",
+          "selectedModel": "gpt-6.1-sol"
+        },
+        {
+          "requested": "gpt-fixture-packaged-sol",
+          "status": 400,
+          "path": "/anthropic/v1/messages",
+          "selectedModel": "gpt-fixture-packaged-sol"
+        },
+        {
+          "requested": "codex:gpt-fixture-packaged-sol",
+          "status": 400,
+          "path": "/anthropic/v1/messages",
+          "selectedModel": "codex:gpt-fixture-packaged-sol"
+        }
+      ]
+    },
+    {
+      "name": "baseline: packaged tool/result continuation stream=false",
+      "status": "pass",
+      "result": {
+        "turns": 2,
+        "firstModel": "sol",
+        "followupModel": "sol",
+        "exactOwnedNonceRoundTrip": true,
+        "stableCanonicalSessionId": "eab8d94a-aecf-7c05-b56f-c6e2807ea0a2",
+        "nativeClientUsed": false
+      }
+    },
+    {
+      "name": "baseline: packaged tool/result continuation stream=true",
+      "status": "pass",
+      "result": {
+        "turns": 2,
+        "firstModel": "sol",
+        "followupModel": "sol",
+        "exactOwnedNonceRoundTrip": true,
+        "stableCanonicalSessionId": "70063273-71aa-7261-951a-0e89681100b5",
+        "nativeClientUsed": false
+      }
+    },
+    {
+      "name": "baseline: selected provider rejection is authoritative",
+      "status": "pass",
+      "result": {
+        "streamModes": [
+          false
+        ],
+        "retries": 0,
+        "fallbackCalls": 0
+      }
+    },
+    {
+      "name": "head: packaged CLI startup and health",
+      "status": "pass",
+      "result": {
+        "port": 55064,
+        "childPid": 71803,
+        "configPath": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/runtime/head/config.json",
+        "configSha256": "ee6e7e52db575303ec7e5bc1b90e909b93e063c6b6f412d6c4e7179fb4f2220a",
+        "endpoints": "All seven endpoint roots point to this owned origin.",
+        "nativePaths": "Explicit fixture-owned files; no native user path."
+      }
+    },
+    {
+      "name": "head: packaged help, version and effective alias table",
+      "status": "pass",
+      "result": {
+        "commands": [
+          "--help",
+          "--version",
+          "models",
+          "models --json"
+        ],
+        "futureIsRegistryEntry": false
+      }
+    },
+    {
+      "name": "head: real packaged doctor discovery, auth-file and warning severity (TLS stubbed)",
+      "status": "pass",
+      "result": {
+        "knownExitCode": 0,
+        "unknownAgentExitCode": 1,
+        "discovery": "Actual packaged CLI filesystem discovery in isolated project and child-local homedir.",
+        "TLS": "Fixture secureConnect stub only."
+      }
+    },
+    {
+      "name": "head: configured model spelling differential through packaged server",
+      "status": "pass",
+      "result": [
+        {
+          "requested": "sol",
+          "status": 200,
+          "path": "/codex/responses",
+          "selectedModel": "gpt-fixture-packaged-sol"
+        },
+        {
+          "requested": "worker",
+          "status": 200,
+          "path": "/codex/responses",
+          "selectedModel": "gpt-fixture-packaged-sol"
+        },
+        {
+          "requested": "codex:sol",
+          "status": 200,
+          "path": "/codex/responses",
+          "selectedModel": "gpt-fixture-packaged-sol"
+        },
+        {
+          "requested": "codex:worker",
+          "status": 200,
+          "path": "/codex/responses",
+          "selectedModel": "gpt-fixture-packaged-sol"
+        },
+        {
+          "requested": "gpt-fixture-packaged-sol",
+          "status": 200,
+          "path": "/codex/responses",
+          "selectedModel": "gpt-fixture-packaged-sol"
+        },
+        {
+          "requested": "codex:gpt-fixture-packaged-sol",
+          "status": 200,
+          "path": "/codex/responses",
+          "selectedModel": "gpt-fixture-packaged-sol"
+        }
+      ]
+    },
+    {
+      "name": "head: packaged tool/result continuation stream=false",
+      "status": "pass",
+      "result": {
+        "turns": 2,
+        "firstModel": "codex:sol",
+        "followupModel": "codex:gpt-fixture-packaged-sol",
+        "exactOwnedNonceRoundTrip": true,
+        "stableCanonicalSessionId": "eab8d94a-aecf-7c05-b56f-c6e2807ea0a2",
+        "nativeClientUsed": false
+      }
+    },
+    {
+      "name": "head: packaged tool/result continuation stream=true",
+      "status": "pass",
+      "result": {
+        "turns": 2,
+        "firstModel": "codex:sol",
+        "followupModel": "codex:gpt-fixture-packaged-sol",
+        "exactOwnedNonceRoundTrip": true,
+        "stableCanonicalSessionId": "70063273-71aa-7261-951a-0e89681100b5",
+        "nativeClientUsed": false
+      }
+    },
+    {
+      "name": "head: selected provider rejection is authoritative",
+      "status": "pass",
+      "result": {
+        "streamModes": [
+          false,
+          true
+        ],
+        "retries": 0,
+        "fallbackCalls": 0
+      }
+    }
+  ],
+  "findings": [],
+  "limits": [
+    "No actual native Codex/Claude clients or live provider calls. Tool execution is a QA-owned file read driven by the packaged proxy tool event.",
+    "Doctor TLS probes are explicitly stubbed in the child runtime; no external reachability claim. Packaged config loading, auth-file read, health probe, filesystem agent discovery, output and exit codes run normally.",
+    "Tarballs are freshly built from pinned git archives; dependencies reuse the author clone lockfile tree via symlink. Four-green CI separately covers fresh npm install/tarball smoke on Node 22/24 and both platforms.",
+    "No full suite rerun; unchanged source retains previously green 973-case check/build and independent source approval.",
+    "PR81 v2 target restriction, original user-specific startup error and actual provider availability remain separate."
+  ],
+  "startedAt": "2026-10-19T15:03:21.837Z",
+  "harness": {
+    "script": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa.mjs",
+    "scriptSha256": "6f6d5cff54fd8ee6e92d1f96ee61ecc1897f72492c88faab572d7c19db112508",
+    "runtimeShim": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/hermetic-runtime.cjs",
+    "runtimeShimSha256": "e2e26f6f75a614b7161751c345644529400001da329e8a6e6981ab6e060cfe62",
+    "scope": "Unmodified packaged CLI entry point; child-local homedir/read/network/process guard. Doctor TLS is an explicitly simulated secureConnect event, not a real external TLS handshake."
+  },
+  "status": "pass",
+  "completedAt": "2026-10-19T15:03:26.278Z",
+  "sourceFileSha256": {
+    "README.md": "ec22f5b40628d745ec13f84ea84272e149cde72680c375cedb7e1f75b89986f1",
+    "e2e/gates/future-model-overrides-offline-2026-10-19.json": "df381ee7640c7a8dd38a3c6df6cb72b7a9b0c1521a78a2f2589624ea08452db4",
+    "src/doctor.ts": "5978c4e2f04a30997f4fbf245fa0e1aab44e50d26b53ffc343cac86b546a6f29",
+    "src/models.ts": "969d675522339432d6ad48e9f785c0328390457ca7bfe856cf0ad2e0753676db",
+    "test/integration/future-model-overrides.test.ts": "2c3391d5f20ebf6e7683782089086350d863b3564665beebdb89b859efd25000",
+    "test/unit/future-model-overrides.test.ts": "e1e71c0aa548ac09ff23afe7403dfbd85f94d0610ac168ab19394249f4841e7f"
+  },
+  "sourceReview": {
+    "report": "/Users/dean/Sandbox/subswitch-kimi/future-model-independent-review.json",
+    "sha256": "678aaf7445234bc36fcb071b87815d7e35d6b52a56c5a6925a4a76845a3e7aa0",
+    "decision": "approve_source_review",
+    "findings": [],
+    "allSixCommittedAndWorkingFileHashesMatch": true
+  },
+  "trackedTreeClean": true,
+  "gateAudit": {
+    "checkedAt": "2026-10-19T15:05:44.251576+00:00",
+    "snapshots": {
+      "pr86": {
+        "command": [
+          "gh",
+          "pr",
+          "view",
+          "86",
+          "--json",
+          "number,url,state,isDraft,headRefOid,baseRefOid,baseRefName,mergeStateStatus,statusCheckRollup,reviewDecision"
+        ],
+        "exitCode": 0,
+        "artifact": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/audit-pr86.json",
+        "sha256": "9976352861b859edf5bc5ae49df374ad5e616a7cd0db9bcee3ae89274d59eda2",
+        "value": {
+          "baseRefName": "main",
+          "baseRefOid": "de137dedbd72d660657517251fe8a1051dd43465",
+          "headRefOid": "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+          "isDraft": true,
+          "mergeStateStatus": "CLEAN",
+          "number": 86,
+          "reviewDecision": "",
+          "state": "OPEN",
+          "statusCheckRollup": [
+            {
+              "__typename": "CheckRun",
+              "completedAt": "2026-10-19T14:09:37Z",
+              "conclusion": "SUCCESS",
+              "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39266322367/job/118106725053",
+              "name": "check (ubuntu-latest)",
+              "startedAt": "2026-10-19T14:08:58Z",
+              "status": "COMPLETED",
+              "workflowName": "CI"
+            },
+            {
+              "__typename": "CheckRun",
+              "completedAt": "2026-10-19T14:10:01Z",
+              "conclusion": "SUCCESS",
+              "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39266322367/job/118106725549",
+              "name": "check (macos-latest)",
+              "startedAt": "2026-10-19T14:09:04Z",
+              "status": "COMPLETED",
+              "workflowName": "CI"
+            },
+            {
+              "__typename": "CheckRun",
+              "completedAt": "2026-10-19T14:09:36Z",
+              "conclusion": "SUCCESS",
+              "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39266322367/job/118106725538",
+              "name": "check (ubuntu-latest, Node 24)",
+              "startedAt": "2026-10-19T14:08:58Z",
+              "status": "COMPLETED",
+              "workflowName": "CI"
+            },
+            {
+              "__typename": "CheckRun",
+              "completedAt": "2026-10-19T14:09:54Z",
+              "conclusion": "SUCCESS",
+              "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39266322367/job/118106725417",
+              "name": "check (macos-latest, Node 24)",
+              "startedAt": "2026-10-19T14:09:06Z",
+              "status": "COMPLETED",
+              "workflowName": "CI"
+            }
+          ],
+          "url": "https://github.com/dean0x/subswitch/pull/86"
+        }
+      },
+      "protection": {
+        "command": [
+          "gh",
+          "api",
+          "repos/dean0x/subswitch/branches/main/protection"
+        ],
+        "exitCode": 0,
+        "artifact": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/audit-protection.json",
+        "sha256": "2366aa521fa3e15c7f2cb097b1a3931820f56891e11cca5bafd95988107f3b62",
+        "value": {
+          "url": "https://api.github.com/repos/dean0x/subswitch/branches/main/protection",
+          "required_status_checks": {
+            "url": "https://api.github.com/repos/dean0x/subswitch/branches/main/protection/required_status_checks",
+            "strict": true,
+            "contexts": [
+              "check (ubuntu-latest)",
+              "check (macos-latest)"
+            ],
+            "contexts_url": "https://api.github.com/repos/dean0x/subswitch/branches/main/protection/required_status_checks/contexts",
+            "checks": [
+              {
+                "context": "check (ubuntu-latest)",
+                "app_id": null
+              },
+              {
+                "context": "check (macos-latest)",
+                "app_id": null
+              }
+            ]
+          },
+          "required_pull_request_reviews": {
+            "url": "https://api.github.com/repos/dean0x/subswitch/branches/main/protection/required_pull_request_reviews",
+            "dismiss_stale_reviews": true,
+            "require_code_owner_reviews": false,
+            "require_last_push_approval": false,
+            "required_approving_review_count": 0
+          },
+          "required_signatures": {
+            "url": "https://api.github.com/repos/dean0x/subswitch/branches/main/protection/required_signatures",
+            "enabled": false
+          },
+          "enforce_admins": {
+            "url": "https://api.github.com/repos/dean0x/subswitch/branches/main/protection/enforce_admins",
+            "enabled": false
+          },
+          "required_linear_history": {
+            "enabled": true
+          },
+          "allow_force_pushes": {
+            "enabled": false
+          },
+          "allow_deletions": {
+            "enabled": false
+          },
+          "block_creations": {
+            "enabled": false
+          },
+          "required_conversation_resolution": {
+            "enabled": false
+          },
+          "lock_branch": {
+            "enabled": false
+          },
+          "allow_fork_syncing": {
+            "enabled": false
+          }
+        }
+      },
+      "repoSettings": {
+        "command": [
+          "gh",
+          "api",
+          "repos/dean0x/subswitch",
+          "--jq",
+          "{allow_squash_merge,allow_rebase_merge,allow_merge_commit,default_branch}"
+        ],
+        "exitCode": 0,
+        "artifact": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/audit-repoSettings.json",
+        "sha256": "f9433ca4114cbbfb5ec33a9e47317e4c2538e8256d7cb4fe62652850a302630f",
+        "value": {
+          "allow_merge_commit": false,
+          "allow_rebase_merge": true,
+          "allow_squash_merge": true,
+          "default_branch": "main"
+        }
+      },
+      "threads": {
+        "command": [
+          "gh",
+          "api",
+          "graphql",
+          "-f",
+          "query=query { repository(owner: \"dean0x\", name: \"subswitch\") { pullRequest(number: 86) { reviewThreads(first: 100) { nodes { isResolved isOutdated } } } } }"
+        ],
+        "exitCode": 0,
+        "artifact": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/audit-threads.json",
+        "sha256": "62cf4a2a96701dd234684b3ab49f9a68f28dd80998835f4866a381eeb07210c6",
+        "value": {
+          "data": {
+            "repository": {
+              "pullRequest": {
+                "reviewThreads": {
+                  "nodes": []
+                }
+              }
+            }
+          }
+        }
+      },
+      "remoteHeads": {
+        "command": [
+          "git",
+          "ls-remote",
+          "--heads",
+          "origin",
+          "main",
+          "codex/proxy-restart-continuity",
+          "codex/wave1-kimi-failover"
+        ],
+        "exitCode": 0,
+        "artifact": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/audit-remoteHeads.json",
+        "sha256": "7c308c484731eeabe626efd7d986910ec1f0dcbae6af5858b428ecd7c04cccac",
+        "value": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717\trefs/heads/codex/proxy-restart-continuity\n7e6962c177b679bb2cbd55d8334df071bee262ad\trefs/heads/codex/wave1-kimi-failover\nde137dedbd72d660657517251fe8a1051dd43465\trefs/heads/main\n"
+      }
+    },
+    "allFourCIGreen": true,
+    "mainCurrent": true,
+    "requiredStatusContexts": [
+      "check (ubuntu-latest)",
+      "check (macos-latest)"
+    ],
+    "strictUpToDateRequired": true,
+    "requiredFormalApprovals": 0,
+    "unresolvedReviewThreads": 0,
+    "sourceReviewApproved": true,
+    "evidenceComment": "https://github.com/dean0x/subswitch/pull/86#issuecomment-6269326208",
+    "mergeDecisionOwner": "coordinator",
+    "workerDidNotMergeOrRelease": true,
+    "remainingProcessing": [
+      "PR86 remains draft; coordinator must attach/process packaged QA evidence and make the final readiness/merge decision.",
+      "PR86 is independent of PR81 and can be processed first; refresh PR81 from the resulting main before strict-base qualification, then retain PR85 after PR81.",
+      "Keep PR81 v2 catalog/capability policy and unreproduced original startup/native/live gates tracked separately; this QA does not resolve those scopes."
+    ],
+    "PR81TextMergePreview": {
+      "command": [
+        "git",
+        "merge-tree",
+        "de137dedbd72d660657517251fe8a1051dd43465",
+        "e582cd0cce239eb6eeeb9debcb4fe3664d6609ca",
+        "7e6962c177b679bb2cbd55d8334df071bee262ad"
+      ],
+      "exitCode": 0,
+      "conflictMarkers": false,
+      "artifact": "/Users/dean/Sandbox/subswitch-continuity/future-model-packaged-qa-artifacts-cZHBWA/logs/pr86-pr81-text-merge-preview.txt",
+      "sha256": "7aafd663acef8d76eaa0593b9e9af7f9df7e0b4eda69fe374a510f9b8e898128",
+      "scope": "Read-only textual preview; no branch/index writes, no qualification of combined runtime behavior."
+    }
+  },
+  "packagedSurfaceAudit": {
+    "fileSetUnchanged": true,
+    "changedPackagedFiles": [
+      {
+        "path": "README.md",
+        "baselineSha256": "7df27e3e4251e206f79efb0ad3ff67e33df6d20c2fd891a95160683bc4e2b7ca",
+        "headSha256": "ec22f5b40628d745ec13f84ea84272e149cde72680c375cedb7e1f75b89986f1"
+      },
+      {
+        "path": "dist/doctor.js",
+        "baselineSha256": "250bc5760b27350737d63e4bde8e4b1424f11bb563e001438ed6f62b93862b1a",
+        "headSha256": "d353540f7521875a94926b4dd17c52a3ce05c435b4e40a5c4625abb754fd73f4"
+      },
+      {
+        "path": "dist/models.js",
+        "baselineSha256": "1228e235f3d9afe2393adcc9495a4557dfeb9b0b3d415e6fe3730d7520067dd2",
+        "headSha256": "229e8d47676ee5223d918c8c7af8bc4511068a56841d76f5175c8c52f5dd7a9b"
+      }
+    ],
+    "manifestUnchanged": true,
+    "exampleConfigUnchanged": true,
+    "baselineMatchesPublishedIntegrityRecordedInCommittedEvidence": true
+  },
+  "counts": {
+    "groupsPassed": 14,
+    "groupsFailed": 0,
+    "fullSuiteRepeated": false,
+    "commandsRecorded": 24,
+    "sourceChanges": 0,
+    "guardBlocks": 0
+  },
+  "nextAction": "Packaged QA passes on exact e582cd0 with no new source findings. Coordinator to verify this report/artifacts, update existing PR86 evidence, process draft/readiness and standing merge gates. Worker stops; no release/native/live actions."
+}

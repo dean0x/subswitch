@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "base": "0183d6de0edfc6229cbd54c932f76e2d136c5ffa",
+  "checkout": "/Users/dean/Sandbox/subswitch-continuity",
+  "head": "0183d6de0edfc6229cbd54c932f76e2d136c5ffa",
+  "scope": "Native Claude Messages full-history import on a single-target route only. Later system entries, cross-provider translation, durable local Responses IDs, Kimi live inference excluded.",
+  "findings": [
+    {
+      "id": "CONT-01",
+      "status": "implemented; awaiting independent fix-diff review",
+      "resolution": "Cold imports now reserve a provenance entry in the existing bounded shared cache before dispatch. Provenance stores owner and conversation. Other overlapping imports reject before upstream contact. Staged commit revalidates exclusive reservation identity synchronously with atomic batch publication. Preparation failures, signal abort, consumer cancellation and failed publication release only their own pending entries; successful commits replace pending entries with permanent scoped provenance.",
+      "files": [
+        "src/claude-cache.ts",
+        "src/routing/replay-cache.ts",
+        "src/routing/signed-thinking.ts",
+        "src/routing/routed-attempt.ts",
+        "test/integration/native-thinking-continuity.test.ts",
+        "test/unit/native-thinking-replay.test.ts"
+      ],
+      "behavior": "An overlapping cold import of an already pending signature is rejected, including the same scope, until the first attempt commits or releases. After successful commit only exact replay in the recorded owner/conversation is accepted."
+    },
+    {
+      "id": "CONT-02",
+      "status": "implemented; in-memory isolation checks pass; HTTP behavior remains blocked",
+      "resolution": "Every configured legacy/API/subscription/refresh endpoint and both routed profiles use the fixture origin. Native auth/config paths point to absent files/directories inside an owned temporary directory. All profiles use fabricated env credentials. A fail-closed exact-URL/redirect allowlist wraps routed fetch. HTTP origins reject every path except the expected native Messages path, and both stream-mode gates now deliberately exercise route-miss passthrough against that local rejection path.",
+      "files": [
+        "test/integration/native-thinking-continuity.test.ts"
+      ],
+      "runtimeLimit": "No listener or HTTP gate was rerun. The local route-miss HTTP assertions remain unexecuted."
+    }
+  ],
+  "checks": [
+    {
+      "command": "node --import tsx --test --test-name-pattern='isolates every|imports an|replays the|retains rejection|does not adopt|reserves cold|releases concurrent|releases partially|releases imports' --test-timeout=30000 test/integration/native-thinking-continuity.test.ts",
+      "exitCode": 0,
+      "passed": 12,
+      "coverage": [
+        "before-startup import and same-process follow-up",
+        "fresh-instance restart",
+        "exact signed/redacted blocks and tool history",
+        "recorded tamper and known foreign owner rejection",
+        "deferred overlapping different owners and conversations reject before second dispatch",
+        "ownership stays exclusive after successful publication",
+        "release after rejection, missing terminal, aborted fetch, partial adaptation and streaming-consumer cancellation",
+        "all fixture endpoints local, all native auth paths isolated and nonexistent",
+        "fetch URL allowlist rejects unexpected vendor/local paths and redirects before implementation",
+        "isolated buildDeps constructs and closes without listeners"
+      ]
+    },
+    {
+      "command": "node --import tsx --test --test-reporter=dot --test-timeout=30000 test/unit/claude-cache.test.ts test/unit/native-thinking-replay.test.ts test/unit/wave1-codec-review.test.ts test/unit/wave1-reliability.test.ts test/unit/codex-request.test.ts test/unit/reverse-adapter.test.ts test/unit/claude-stream.test.ts",
+      "exitCode": 0,
+      "coverage": [
+        "native-only import authorization and exact field checks",
+        "publication revalidates reservation ownership before any scoped writes",
+        "rollback does not delete a replacement foreign claim",
+        "shared entry/byte budget bounds pending imports and failed batch publication releases claims",
+        "existing cache, codec, reliability, translation and stream regressions"
+      ]
+    },
+    {
+      "command": "npm run typecheck",
+      "exitCode": 0
+    },
+    {
+      "command": "npm run build",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    }
+  ],
+  "blocked": [
+    {
+      "gate": "Production HTTP ephemeral fake origin/proxy, stream=false and stream=true",
+      "reason": "Native sandbox denies listen(127.0.0.1, port=0): EPERM. Tests retained, not skipped or bypassed."
+    },
+    {
+      "gate": "Full npm test under shared nonblocking heavy-test lock",
+      "reason": "Not attempted after confirmed listener denial; the suite requires those listeners. Must remain incomplete."
+    },
+    {
+      "gate": "Native disposable Claude session and real provider validation",
+      "reason": "Outside this bounded offline assignment; no real clients or state touched."
+    },
+    {
+      "gate": "Commit, push and dependent draft PR",
+      "reason": "Native sandbox denies git add: Unable to create .git/index.lock: Operation not permitted. No retry through another session or alternate Git metadata."
+    }
+  ],
+  "independentFixDiffReview": "pending",
+  "permissionsPreserved": {
+    "httpListenersRetried": false,
+    "fullSuiteRetried": false,
+    "gitMutationsRetried": false,
+    "realAuthClientOrHistoryTouched": false,
+    "otherSessionRerouting": false,
+    "sharedProxyOrOHFChanged": false
+  },
+  "next": "Coordinator to arrange independent read-only fix-diff review using continuity-review.patch, continuity-fix-diff.patch and continuity-peer-resolution.json. No listener, full-suite or Git-mutation retries under current policy.",
+  "artifacts": {
+    "continuity-reviewed-before-fixes.patch": {
+      "sha256": "c2bfdbeaef3f6f5fc575e2b5a96de78253f9b2ea5aa78a45bda11568130b3601",
+      "bytes": 27872
+    },
+    "continuity-review.patch": {
+      "sha256": "de379c1f5128118b0227d744db1f45da4135dd71b4efc6bf2584988f0172185d",
+      "bytes": 61079
+    },
+    "continuity-fix-diff.patch": {
+      "sha256": "d0bbcd096682b34a026b94d753b7c9cf2228f0fb1316a2ea99b972174c162ade",
+      "bytes": 47905
+    }
+  },
+  "sourceFileSha256": {
+    "README.md": "2456d18239b6125b0b9e5760f9b13f05978e6932d90f124f2f128ea5a0ba58f4",
+    "src/claude-cache.ts": "42f12a297ec743b5faf1f04315c2789beab4201aec12d8c92fd756ab57a350a8",
+    "src/routing/replay-cache.ts": "545b91913daa38a51655f371a61375604679710033052ec597d7faa75155ebe1",
+    "src/routing/signed-thinking.ts": "df0661d6669d8c4cc2c11488c242f253bc29b976c9d59d044700d917f2ea3268",
+    "src/routing/request-adapter.ts": "4fb8297c883f8b538f06574e00eeb17d3f9664937863b5f430e00b7f7751a0f6",
+    "src/routing/routed-attempt.ts": "f6a32f887c323366eb043c80b25cb977d22c6fdd82d8d1404e45178efe5ee56d",
+    "src/routing/shared-routing.ts": "aad684e2b523d0fea7464f14cd73af28670e5e09a924535843bb4c14a520836f",
+    "test/integration/native-thinking-continuity.test.ts": "a854aba6e26cd395e81cc95e670cd1b73fafb22380e3fe9b4a74a474f5aa457e",
+    "test/unit/native-thinking-replay.test.ts": "dd7c8d435231bc52ec5f9ed10f2e9e783a81689a88dc1ccb6cfb8c384bbd6988",
+    "e2e/gates/native-thinking-continuity-offline-2026-10-19.json": "779e0b2dd89c365f070b54e426fa731f8ada6945134c876c54bae984b5efd9a0"
+  }
+}

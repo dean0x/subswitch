@@ -1,0 +1,369 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-10-19T21:32:01.633317+00:00",
+  "reviewerThread": "01a12c0e-8830-72e1-9ffa-3cf694a094f5",
+  "assignment": "/Users/dean/Sandbox/.codex-orchestrator/kimi-phase-a-runner-second-review-assignment.json",
+  "checkpoint": "/Users/dean/Sandbox/.codex-orchestrator/checkpoints/sol-issues-before-kimi-runner-fix-review.json",
+  "authorFixDelivery": "/Users/dean/Sandbox/subswitch-kimi/kimi-phase-a-runner-fix-delivery.json",
+  "originalReview": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-independent-review.json",
+  "ownClone": "/Users/dean/Sandbox/subswitch-continuity",
+  "ownBranch": "codex/release-future-model-fix",
+  "ownHead": "b8549643d5af3316d0b65d608b16fafc390e0287",
+  "authorCloneReadOnly": "/Users/dean/Sandbox/subswitch-kimi",
+  "targetHead": "6528f3f602307cfdfba277b2047a18825c1407fb",
+  "sourceHash": "f1589b721f6ae6dbe1550497ebfff6c1366057ef7c910a42ecd4aa6790eed03d",
+  "oldRunnerHash": "b3957b5bc0cf471ce44491b1b7767443454b00e0fbb494a4187b2b2c23a16c3e",
+  "runnerHash": "8085782448a74a8f3e87893b9948611b116988f9e6f8abca510ec23f46455198",
+  "runtimeHash": "9a746b7b4720025228f5c13e607911184d1aaed47c18b14e18dcfe6bc130a9b1",
+  "runtimeDetails": {
+    "node": {
+      "version": "v22.22.3",
+      "versions": {
+        "acorn": "8.16.0",
+        "ada": "2.9.2",
+        "amaro": "1.1.8",
+        "ares": "1.34.6",
+        "brotli": "1.1.0",
+        "cjs_module_lexer": "2.2.0",
+        "cldr": "48.0",
+        "icu": "78.2",
+        "llhttp": "9.3.1",
+        "modules": "127",
+        "napi": "10",
+        "nbytes": "0.1.3",
+        "ncrypto": "0.0.1",
+        "nghttp2": "1.64.0",
+        "node": "22.22.3",
+        "openssl": "3.5.6",
+        "simdjson": "4.5.0",
+        "simdutf": "6.4.2",
+        "sqlite": "3.51.3",
+        "tz": "2026a",
+        "undici": "6.24.1",
+        "unicode": "17.0",
+        "uv": "1.51.0",
+        "uvwasi": "0.0.23",
+        "v8": "12.4.254.21-node.56",
+        "zlib": "1.3.1-e00f703",
+        "zstd": "1.5.7"
+      },
+      "platform": "darwin",
+      "arch": "arm64",
+      "executable": "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+      "executableSha256": "5d9d3872911e2340a43b707962e68143de8a4e8d54628845c0c4f2de1fb7cd5c"
+    },
+    "configuration": {
+      "path": "tsconfig.json",
+      "sha256": "346f74850279f0ae172d16b34b9e93d7439998ffb7d87b41a0cbd7d6033665c7",
+      "loaderEntry": "node_modules/tsx/dist/esm/api/index.mjs",
+      "cache": false
+    },
+    "dependencies": {
+      "treeSha256": "0fb1f5d6803554b52dfabc1b155c1e1c62255a68a560d72da697b7cdb374e3b9",
+      "files": 1511,
+      "links": 3
+    }
+  },
+  "recommendation": "approve_reviewed_phase_a_runner_preparation_only",
+  "findings": [],
+  "newLiveAuthorizationGranted": false,
+  "resolution": [
+    {
+      "id": "KIMIA-R01",
+      "priorPriority": "P1",
+      "status": "resolved",
+      "locations": [
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/pins.mjs",
+          "lines": [
+            28,
+            38,
+            61,
+            65,
+            71,
+            75
+          ]
+        },
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/runner.mjs",
+          "lines": [
+            8,
+            17,
+            35,
+            46,
+            47,
+            58,
+            69
+          ]
+        },
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/core.mjs",
+          "lines": [
+            23,
+            29,
+            33,
+            37
+          ]
+        }
+      ],
+      "evidence": "The controller imports only built-in JavaScript and reviewed private QA modules. It refuses Node arguments and ambient Node/tsx/esbuild/dynamic-loader selectors by name. sourcePin, runnerPin and runtimePin precede approvedKey. runtimePin binds the actual Node version/component versions/platform/arch, canonical executable path and SHA256, selected root tsconfig bytes, and the installed dependency tree including file bytes/modes, directories and internal link targets. External links and extra configuration mechanisms are refused. Approval requires equal runtime hash and full details before its sole named credential getter. Worker recomputes source/runner/runtime, checks controller pins and single-use claim, repeats approval before its key getter, then rechecks runtime immediately before absolute installed-loader import. tsx receives the absolute selected config and caching is disabled. Approval template and outputs contain full runtime details.",
+      "independentControls": [
+        "Actual source/runner/runtime pins reproduce assigned values; matching fabricated approval reaches one fabricated getter.",
+        "Owned byte copy matches the actual runtime; changing only tsconfig target, tsx entry bytes or zod package bytes changes runtime pin while author HEAD, source, lock and QA stay unchanged; all refuse before fabricated getter/sequential worker/transport counters.",
+        "Executable mode and internal symlink changes alter the pin; an external owned symlink refuses; extends refuses.",
+        "Coherently wrong Node version and binary pins refuse; same hash with different component details also refuses.",
+        "Preload argument and six ambient selector names refuse without reading their getter values.",
+        "Preserved old authorize reaches a fabricated getter with mismatched runtime, demonstrating the original gap."
+      ],
+      "limits": "Trusted plain invocation and ordinary trusted runtime/local filesystem are assumed. A check cannot undo code already preloaded before entry and these checks are not an immutable snapshot against a concurrent malicious filesystem writer. Independent worker/transport counters model sequential reachability; no real worker, loader or provider transport was launched by these focused controls."
+    },
+    {
+      "id": "KIMIA-R02",
+      "priorPriority": "P2",
+      "status": "resolved",
+      "locations": [
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/pins.mjs",
+          "lines": [
+            12,
+            14,
+            16,
+            19,
+            21,
+            22
+          ]
+        },
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/git-env-probe.mjs",
+          "lines": [
+            7,
+            11,
+            20
+          ]
+        }
+      ],
+      "evidence": "All source-pin Git execution passes the same frozen literal environment. No parent environment spread occurs. Global/system config and attributes are disabled; per-command settings disable hooks, fsmonitor, external diff and pager, and diff also uses --no-ext-diff/--no-textconv. Helpers use absolute Git, bounded execution/output, exact HEAD, tracked cleanliness and the prior source digest. No host or repository Git settings are changed. The worker key is therefore excluded from these helper environments as well.",
+      "independentControls": [
+        "Real three Git helper calls from actual pins.mjs receive explicit environments; unrelated synthetic sentinel, fake provider key and four synthetic Git selectors are absent in actual /usr/bin/env observations.",
+        "Same instrumentation against preserved old core sees omitted env and all six synthetic canaries inherited. Both clean source pins are identical. Only environment names are retained; the entire review process environment is explicitly fabricated/minimal."
+      ]
+    }
+  ],
+  "fullSecondReview": {
+    "fixDiff": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/runner-fix.patch",
+    "fixDiffExact": true,
+    "fullFilesRead": [
+      "pins.mjs",
+      "runner.mjs",
+      "core.mjs",
+      "offline.test.mjs",
+      "preflight.test.mjs",
+      "git-env-probe.mjs",
+      "README.md",
+      "live-approval.template.json",
+      "cap-mutation-test.mjs",
+      "runtime-before-fix-red.mjs"
+    ],
+    "mutationSpecimen": "Compared complete cap-disabled-control against core: exactly the output-cap refusal line is deleted. Not imported by the execution runner.",
+    "sourceBinding": "92 tracked source/manifest/lock files reproduce f1589b7; source HEAD remains6528f3f. Existing production-source review remains applicable; relevant production relay/auth/admission dispatch call sites re-read against unchanged bytes.",
+    "productionWiring": "Production loadConfig/buildDeps/createProxyServer; Messages explicit route reaches SharedRouting.http, Responses through a replacement production CodexGateway into the same owned SharedRouting/actions. Original built routing/gateway are closed. SharedRouting passes the injected Guard transport and supplied environment to RoutedAttempts/ProfileAuth. Env credentials take no native-OAuth refresh retry. Both legacy endpoints/auth-file paths are explicitly owned loopback/absent fixtures; unexpected native auth is refused. No shared relay discovery, control-file access or native process start.",
+    "loader": "Read actual installed tsx API and relevant registration/cache implementation. It accepts the explicit tsconfig path; TSX_DISABLE_CACHE selects memory cache and is set before loading installed modules.",
+    "approvalAndCrash": "Approval must be a private owner-controlled regular file under the owned QA directory, with current pins, product/region/model/effort/key kind, exact reference, unexpired expiry and explicit live/credential/continuity booleans. Exclusive wx consumed claim is synced before worker launch and binds parent/id/head/source/runner/runtime. Worker verifies it. Journal created exclusively and sanitized admission appended synchronously before each vendor dispatch. A failed/crashed run stays consumed and requires coordinator reconciliation; no automatic reset/retry. No power-loss durability qualification is claimed.",
+    "bounds": {
+      "phase": "A",
+      "attempts": 6,
+      "perProtocol": 3,
+      "requestedOutputTokens": 1536,
+      "perCall": 256,
+      "requestMs": 30000,
+      "phaseMs": 180000,
+      "phaseBAndCUsed": false,
+      "automaticRetry": false,
+      "externalDestinations": [
+        "https://api.kimi.ai/coding/v1/messages",
+        "https://api.kimi.ai/coding/v1/responses"
+      ]
+    },
+    "admission": "Exact origin/path, POST, redirect:error, bearer binding, model, effort, stream and output cap validated before transport. Counts and token sums increment before any dispatch, including error attempts; admission ledger happens first. Fourth same-protocol/seventh total refused. No cap rewrite, reallocation, other product/model/region/auth/metadata transport.",
+    "deadlines": "Guard uses real monotonic phase time, independent real timeout and per-request signal retained through response body; production cancellation signal combined. Synthetic routing clock alone advances61000ms for fake recovery. Controller has bounded TERM/KILL cleanup backstops and 2MiB output ceiling.",
+    "flowAndSanitization": "One actual read per protocol of newly owned unpredictable nonce after exact path/name/argument/tool-count checks; result returns through production Messages history or Responses reconstruction; final exact nonce and no duplicate tool checked. New action recovers synthetic primary; parked action remains Kimi. Logs no-op; runPhase failures mapped to structural codes; live raw worker stderr not persisted. Keys, provider bodies/headers, nonce, prompts/history excluded from reports/journal.",
+    "isolationCleanup": "Fresh0700 root and home/tmp/XDG/Codex/Claude/Kimi/work paths; positive worker env only, no parent spread. New127.0.0.1:0 listener/action capability only. Cleanup cancels/completes captured owned actions, closes routing/gateway/forwarder/listeners/connections, terminates only owned process group, removes owned fixture. Controlled parked-tool failure remains covered.",
+    "authorityCalibration": "Template all three authority booleans remain false, reference and expiry null. Review does not approve live execution. Previous native Kimi CLI pass is separate from Phase A and cannot satisfy pending native phases B/C, original stuck-session reproduction, transport/instruction-history or restart gates."
+  },
+  "evidence": {
+    "authorOfflineControls": {
+      "pass": 21,
+      "fail": 0,
+      "skip": 0,
+      "log": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/offline-tests.log",
+      "result": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/offline-tests-result.json",
+      "independentlyRerunAll21": false
+    },
+    "authorStandaloneOfflineFlow": {
+      "result": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/offline-result.json",
+      "passed": true,
+      "messages": 3,
+      "responses": 3,
+      "requestedOutputTokens": 1536,
+      "bothOwnedReads": true,
+      "syntheticRecoveryAndParkedContinuation": true,
+      "cleanup": {
+        "actionsClosed": true,
+        "listenersClosed": true,
+        "directoryRemoved": true
+      }
+    },
+    "independentFocusedControls": {
+      "pass": 16,
+      "fail": 0,
+      "execution": {
+        "argv": [
+          "/usr/bin/lockf",
+          "-t",
+          "0",
+          "/Users/dean/Sandbox/.devflow/locks/heavy-tests.lock",
+          "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+          "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-fix-review-artifacts-mjzqvxd6/independent-preflight.mjs"
+        ],
+        "exit": 0,
+        "environmentNames": [
+          "FAKE_PROVIDER_KEY",
+          "GIT_CONFIG_COUNT",
+          "GIT_CONFIG_KEY_0",
+          "GIT_CONFIG_VALUE_0",
+          "GIT_EXTERNAL_DIFF",
+          "HOME",
+          "PATH",
+          "TMPDIR",
+          "UNRELATED_FAKE_SENTINEL",
+          "XDG_CONFIG_HOME"
+        ],
+        "stdout": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-fix-review-artifacts-mjzqvxd6/independent-preflight.stdout",
+        "stderr": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-fix-review-artifacts-mjzqvxd6/independent-preflight.stderr"
+      },
+      "result": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-fix-review-artifacts-mjzqvxd6/independent-preflight.stdout",
+      "actualRuntimeMatched": true,
+      "networkAttempts": 0,
+      "thirdPartyLoaderImported": false,
+      "realWorkerStarted": false,
+      "realCredentialsRead": false,
+      "fullProductSuiteRepeated": false,
+      "testScope": "Sixteen focused preflight observations in one new direct built-in-JS script under nonblocking shared lock. Author tests would write author evidence, so they were reviewed/hash-verified rather than rerun in place. No declined action or guard was rerouted."
+    },
+    "independentRuntimeTree": {
+      "treeSha256": "0fb1f5d6803554b52dfabc1b155c1e1c62255a68a560d72da697b7cdb374e3b9",
+      "files": 1511,
+      "links": 3,
+      "directories": 99,
+      "runtimeHash": "9a746b7b4720025228f5c13e607911184d1aaed47c18b14e18dcfe6bc130a9b1",
+      "completePinsIndependentlyReproduced": true
+    },
+    "newArtifactHashesVerified": {
+      "README.md": "30f13122d844a55300c08ee6b0c4dd5aa52a1a247800a4db9905fba1accc4e2f",
+      "before-fix-artifact-hashes.json": "943a7c0b8e6c006f08ef60cfce1ce50c6c77c4e733929b94bcb4303397a312aa",
+      "cap-disabled-control.mjs": "4b4beadee1e67b72a55787159af96dc4a34dd2c9b6af9d23853e9d0916a3a502",
+      "cap-mutation-test.mjs": "9cf6891abfd8053370d429434d2fc58a32a0b2fdae1f0e21edd7ac16e824c23d",
+      "cap-red-fix.log": "7870c5282b2f1b039d766b61491fa4a5372521a1ac5b2c5ba2d96129d280f573",
+      "cap-red.log": "7870c5282b2f1b039d766b61491fa4a5372521a1ac5b2c5ba2d96129d280f573",
+      "check-final.log": "a99800a575b22df060c1607d756eb0452e34f52ec6def44c10322c73d830793c",
+      "check-first.log": "8c04174a642dad6aeb8c1ed84ae096f665fd28de65d4ea17d3a769a9aef72844",
+      "check-fix.log": "ab3c21550653d5db63a8b9171ec97cda0b44d6190cf05ac3f753b77fe74d1f9d",
+      "cli-fix-refusal.log": "3bd99af4fa08eb27fdc7f166e1d086cdee6c5032a44047e8795d597ea7cffa5e",
+      "cli-refusal.log": "80d83e09037e937154229841b1b6299a698f1024db135585c13722466ff48d86",
+      "core.mjs": "b91b96811ce8bd12a136ed7802b5a53bd3c01f91a1f5cd95d1c409f84ec0bf97",
+      "final-workspace-verification.json": "76f3cf1c8c9997636a36f390495354492fc9bb0b9d12eafa99927ccc283a2ed3",
+      "first-fix-code/core.mjs": "b91b96811ce8bd12a136ed7802b5a53bd3c01f91a1f5cd95d1c409f84ec0bf97",
+      "first-fix-code/git-env-probe.mjs": "f3b8d64479bebdf7be0f367519bea7645cc0c214b336580da027e4168e6eb8b8",
+      "first-fix-code/offline.test.mjs": "384a714be79f3852e23f97d94d4a403c8716730805fd263d4e71e061198462f5",
+      "first-fix-code/pins.mjs": "cc533eccf34e2f913b677b7ec43b85749afb114e9338bc1a687e1fae4d7cee70",
+      "first-fix-code/preflight.test.mjs": "c1fa592bb2bc7fe5ea4bb44176eae4d2935a84d3111939d3b9e37b3d59970725",
+      "first-fix-code/runner.mjs": "cd1fb96d1ac0b608388cc27f22b0b196b55f5214270809f53ba7e1ed778babe8",
+      "first-offline.log": "b5e8eed04ae4644fba7543be7223abe9d7e05e7fa7051979f9cacf1cbc31b523",
+      "git-env-probe.mjs": "f3b8d64479bebdf7be0f367519bea7645cc0c214b336580da027e4168e6eb8b8",
+      "git-env-red.log": "2a1bcd009982d0b09fc4ea0c9fe4664ee8c3ed8b8a990f85f7abae070973e776",
+      "git-helper-env-green.json": "cf51b95e256956b2e36d5df6b98591ebcec50e825100bad3ff684dae230ebfe9",
+      "live-approval.template.json": "008fcdd3d9ea50005e2064623672598d605a86748a87e0df8965230e8fba8d81",
+      "offline-final.log": "023b86835caf14ce1a8929296d45b8f3b398693c70b17fe82af459219a7cd25c",
+      "offline-result.json": "391e68873016361e7193bb50e975831517afbac53a00a21ad97f4e041317a4af",
+      "offline-tests-fix-first-result.json": "6557e6f5e6e83d0f9098f88d7e4d71898a7a4a9c371a4baf7a2722cbdd3120f4",
+      "offline-tests-fix-first.log": "bfae973b925142a2fdbbaca4bee4ab51d2766a4cd2449e5514e722372ae715b3",
+      "offline-tests-result.json": "fe77b45e9524a810374e78fbcbdb3d76cdaca95a54d18d7ccb68a3313a574f40",
+      "offline-tests.log": "7fda44a0e056180cd852a2b53cff5cd17bbe4b36d4116b94adb8a4623013c68a",
+      "offline.test.mjs": "384a714be79f3852e23f97d94d4a403c8716730805fd263d4e71e061198462f5",
+      "pins.mjs": "898a9bde41f352df720ba938bf76eac85fa52aecdc6b16846cbc7750337dfbc9",
+      "preflight.test.mjs": "c1fa592bb2bc7fe5ea4bb44176eae4d2935a84d3111939d3b9e37b3d59970725",
+      "preload-flag-fix-refusal.log": "03173337542ac3cfcb03989bd3016c9e4e1cff668d986d5dfc4a3879a616993f",
+      "runner-fix.patch": "f0af4ab1428b0843e18a252ca8840cd27bc73473ac470f9cb122ef5d2878486b",
+      "runner.mjs": "cd1fb96d1ac0b608388cc27f22b0b196b55f5214270809f53ba7e1ed778babe8",
+      "runtime-before-fix-red.mjs": "f06f189a150ea0419cf2d32f5475e7b5d0f4d62cc1a5617bdc5be05cec47ce50",
+      "runtime-red.log": "a97e10f0a6789524227a6fe19e874b8a5268fcdb5b3994130e18eb11595b08cb"
+    },
+    "preservedBeforeFixHashesVerified": {
+      "README.md": "ff3fccb6f270b9c913b186e7e96cc3a7267a14081e13e3530b1769f86b391f53",
+      "cap-disabled-control.mjs": "090dab0ad653286469aa9c44f79ea42e73595589f8d434c3a5b588a1a9f183a8",
+      "cap-mutation-test.mjs": "9cf6891abfd8053370d429434d2fc58a32a0b2fdae1f0e21edd7ac16e824c23d",
+      "cap-red.log": "7870c5282b2f1b039d766b61491fa4a5372521a1ac5b2c5ba2d96129d280f573",
+      "check-final.log": "a99800a575b22df060c1607d756eb0452e34f52ec6def44c10322c73d830793c",
+      "check-first.log": "8c04174a642dad6aeb8c1ed84ae096f665fd28de65d4ea17d3a769a9aef72844",
+      "cli-refusal.log": "80d83e09037e937154229841b1b6299a698f1024db135585c13722466ff48d86",
+      "core.mjs": "07b27f78cef02cdc560151aab0a235d078616e088151cfcf6e95f5f4efd2e1e9",
+      "first-offline.log": "b5e8eed04ae4644fba7543be7223abe9d7e05e7fa7051979f9cacf1cbc31b523",
+      "live-approval.template.json": "19f95f484f601faa54bb57fbb0cd9c0e117c6449c4a2002f4627ccc306dce332",
+      "offline-final.log": "023b86835caf14ce1a8929296d45b8f3b398693c70b17fe82af459219a7cd25c",
+      "offline-result.json": "0f1b96bad6fb539f7431b6a68a15b53b1bfbbbecb0f1abc312fbda4756af1b65",
+      "offline-tests-result.json": "02fa4b184d76796da5678527e0df889a939e278cfaa9972d596f43a3bd92ac33",
+      "offline-tests.log": "e0bb7db8c2dc31133063cb6bd17ad404a16b7114f531f0d90d1e863aad58ebea",
+      "offline.test.mjs": "d4561c03ee96fd4e6bb657a27a647d4e7ea48cd664cbda344d7d3ae0449e6de9",
+      "runner.mjs": "c32b00cb263ab8e32744fe658e7c2343b4f4a0a88d2da536006eb0613915d0f6"
+    },
+    "developmentFailurePreserved": "First fix passed20/failed1 because macOS /var to /private/var canonicalization falsely rejected an internal copied symlink. Preserved first-fix code reconstructs ccb1664; final pins canonicalize repo first. Actual source/dependencies were unchanged. Original cap/runtime/Git red controls remain preserved and appropriately fail.",
+    "readCompleteness": "Initial combined document output was truncated; all relevant file contents were subsequently read in bounded chunks and exact diff reconstructed from preserved/current files."
+  },
+  "remainingGates": [
+    "Coordinator confirms exact candidate, continuity prerequisites and the finite-plan live execution phase.",
+    "Approved Kimi Code/global coding-plan key environment NAME and credential binding confirmation; no value requested/read.",
+    "Native B/C disposable-state, supported output-token caps, transport/instruction-history and original existing-session startup/restart acceptance remain separate.",
+    "No live inference, native-client, quota/recovery or release validation follows from this preparation approval."
+  ],
+  "preservation": {
+    "authorHead": "6528f3f602307cfdfba277b2047a18825c1407fb",
+    "ownHead": "b8549643d5af3316d0b65d608b16fafc390e0287",
+    "ownBranch": "codex/release-future-model-fix",
+    "bothTrackedTreesUnchanged": true,
+    "authorMetadataHashesUnchanged": true,
+    "all38AuthorArtifactsUnchanged": true,
+    "all16PreservedArtifactsUnchanged": true,
+    "ownedRuntimeCopyRemoved": true,
+    "currentIndependentNetworkAttempts": 0
+  },
+  "boundaries": {
+    "actualProviderCalls": 0,
+    "actualNativeClients": 0,
+    "actualSavedCredentialOrHistoryReads": false,
+    "actualParentSecretValuesRead": false,
+    "authorWrites": false,
+    "trackedEdits": false,
+    "installBuildFullProductSuite": false,
+    "sharedProxyClaudeOHFControls": false,
+    "goalModelPermissionChanges": false,
+    "publishMergeTagReleaseControls": false,
+    "deniedActionReroutes": false
+  },
+  "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-fix-review-artifacts-mjzqvxd6",
+  "inputHashes": {
+    "/Users/dean/Sandbox/.codex-orchestrator/kimi-phase-a-runner-second-review-assignment.json": "e1762050a86c755f42521234a840e8c2bff98dd54e9218cf2bc26f39ded83834",
+    "/Users/dean/Sandbox/subswitch-kimi/kimi-phase-a-runner-fix-delivery.json": "194be107d47b12ddde7173d14cc106965f67a2666642745cfd36dd84a6b8e499"
+  },
+  "reviewArtifactHashes": {
+    "baseline.json": "9ba51155b850e001622968f65dc8b5c7ef5b8f6b494957fdf3a15def75bdd8fd",
+    "final-verification.json": "e5696daba8ebb6f351b36bf515ddf88950a70181fb94867f5877c8b7fc4a6b41",
+    "independent-preflight-execution.json": "5e5e83f532b29ae67b63e6d297a0711ba71963804c4e0705b4449d7a106ca7d1",
+    "independent-preflight.mjs": "b0a594ec45a72374ef7a7ca4704c62fa2b27770d2a8b9f187b736897f30eb8de",
+    "independent-preflight.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "independent-preflight.stdout": "a12f051a4c1fdfa72b8866359921d9a0a8c16f7db945a41fa93473c18d368572",
+    "independent-runtime-tree.json": "1e447f751b82f64d418a4deb160570b642c98170f7dce9a5fb835428e2532f1d",
+    "outside-dependency": "077d027e2141b66a6a056a9648352ffb497c6a23690197833ff0ccaf27f2e7ab",
+    "patch-verification.json": "4ef60f958e12e3fe5137bc9a61a97ea3c96e838a5c031d2d8eeaf665a1ceff78"
+  },
+  "nextAction": "Stop finite independent review. Coordinator checks report/evidence and owns any next execution decision. No further work dispatched or live authority inferred."
+}

@@ -1,0 +1,206 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-10-19T20:45:07.028554+00:00",
+  "assignment": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-publish-diagnosis-assignment.json",
+  "scope": "Read-only diagnosis of the real npm publish failure; no retry or alternate authentication route.",
+  "run": {
+    "id": 39320963566,
+    "url": "https://github.com/dean0x/subswitch/actions/runs/39320963566",
+    "head": "00a85771c71996f70bcce2f0d019942c735d49cc",
+    "tag": "v0.6.1",
+    "conclusion": "failure",
+    "failedJob": 118294577364,
+    "failedStep": "Publish",
+    "failureAt": "2026-10-19T20:39:27Z"
+  },
+  "conclusion": {
+    "confirmed": "The release passed its package gates and signed provenance, then the real npm registry rejected PUT /subswitch with E404. Version0.6.1 is still not published.",
+    "leadingInference": "A publisher credential/account/package-authorization problem is the leading explanation for an existing public package rejecting this write. The visible E404 is not specific enough to identify expired token, revocation, wrong token identity/scope or 2FA policy. No exact cause is proven.",
+    "confidence": "High for failure boundary and unpublished status; moderate for authentication/authorization category; unknown for exact credential or policy defect.",
+    "codeOrVersionFixIndicated": false,
+    "remainingBlocker": "Dean must inspect the publisher-side credential metadata/package policy or have npm support explain this rejection. The current denied write must not be bypassed."
+  },
+  "confirmedFacts": [
+    {
+      "fact": "Release workflow at the exact tag equals current-main workflow. It uses the expected registry, npm publish --provenance --access public, and NODE_AUTH_TOKEN from repository NPM_TOKEN. The pinned official setup-node source supports this wiring.",
+      "evidence": [
+        "tagged-release-workflow.yml",
+        "current-main-release-workflow.yml",
+        "pinned-setup-node-authutil.ts"
+      ]
+    },
+    {
+      "fact": "Install, tag/package version guard, lockfile version guard, Check, Build and Smoke all succeeded. The publish hook also ran973 tests with0fail before prepack.",
+      "evidence": [
+        "run.json",
+        "github-job.log"
+      ]
+    },
+    {
+      "fact": "Published-attempt package metadata is subswitch@0.6.1,60files,SHA1 8bf02b981d91a18051a96d0087be50cac42a0106, matching the reviewed release candidate. Repository points to dean0x/subswitch and private is false; no publishConfig override.",
+      "evidence": [
+        "publish-tail.txt",
+        "tagged-package.json"
+      ],
+      "candidatePackageSha256": "ce2e0b261eb94856c55a38c24593f35a8c86b846d483d530aa6d6f27a59ad082"
+    },
+    {
+      "fact": "Log reports provenance signed and placed in Sigstore transparency log before the registry PUT failed. That does not establish npm package-write authorization.",
+      "evidence": [
+        "publish-tail.txt"
+      ],
+      "transparencyLogUrl": "https://search.sigstore.dev/?logIndex=3326194667"
+    },
+    {
+      "fact": "Actual registry response is E404,404 Not Found,PUT https://registry.npmjs.org/subswitch. No explicit expired/revoked token message, E401, E403 or EOTP appears in this failed publish-step log.",
+      "evidence": [
+        "publish-tail.txt"
+      ]
+    },
+    {
+      "fact": "Public unauthenticated registry GET returns200 for subswitch; latest remains0.6.0 and0.6.1 is absent. Public maintainer and last successful publisher names are dean0x. This does not identify the principal of the current CI token.",
+      "evidence": [
+        "public-registry-summary.json"
+      ]
+    },
+    {
+      "fact": "Repository secret name NPM_TOKEN exists, last metadata update2026-10-08T17:44:35Z. Its existence/date and masked run variable do not establish token type, identity, expiry, scope, IP allowance or 2FA capability. Secret values were not read.",
+      "evidence": [
+        "secret-metadata.json",
+        "github-job.log"
+      ]
+    },
+    {
+      "fact": "Runner used Node22.23.3/npm10.9.9. The npm docs require CLI11.5.1+ for trusted publishing, so success of GitHub OIDC/Sigstore does not make this old CLI a trusted npm publisher.",
+      "evidence": [
+        "job-diagnostic-excerpts.txt"
+      ],
+      "source": "https://docs.npmjs.com/trusted-publishers/"
+    }
+  ],
+  "hypotheses": [
+    {
+      "cause": "Expired, revoked, malformed or otherwise invalid NPM_TOKEN",
+      "status": "Plausible, unproven",
+      "whyNotConfirmed": "No token metadata/value inspected and no explicit expiration/revocation notice. The GitHub secret update date is not the token expiration date."
+    },
+    {
+      "cause": "Token belongs to a different account, lacks package write access, omits subswitch, or account lost publishing permission",
+      "status": "Plausible, unproven",
+      "whyNotConfirmed": "Public package ownership does not reveal CI token identity or grant. No authenticated permission probe was made."
+    },
+    {
+      "cause": "Publishing 2FA/package policy, token automation capability, stage-only or IP restrictions",
+      "status": "Plausible checks, unproven",
+      "whyNotConfirmed": "Private policy/credential metadata is unknown. No specific OTP/forbidden error is shown; stage-only tokens are documented to produce E_STAGE_REQUIRED, which was not observed."
+    },
+    {
+      "cause": "Wrong package/version/registry or failed build",
+      "status": "No supporting evidence",
+      "whyNotConfirmed": "Tagged metadata, guards, public package URL and successful package gates match. A new version being absent before publication is expected and does not justify renaming it or moving registries."
+    },
+    {
+      "cause": "Trusted-publisher trust mismatch",
+      "status": "Not demonstrated as current failure",
+      "whyNotConfirmed": "This workflow uses the token path on npm10.9.9, below documented OIDC publishing minimum. No trusted-publisher configuration was inspected; automatically switching authentication would be outside this assignment."
+    },
+    {
+      "cause": "Registry-side transient problem or undocumented rejection",
+      "status": "Cannot exclude from one generic response",
+      "whyNotConfirmed": "Only the visible404 body is available, without server-side diagnostics. If credential metadata and policy are correct, npm support is the supported next diagnostic step, not repeated blind publishes."
+    }
+  ],
+  "minimalSupportedRemedy": {
+    "recommendation": "First inspect existing publisher-side metadata. If the token is unusable or has the wrong authorized grant, replace it within the existing permitted token publishing method; no source/version/tag/workflow change is indicated by current evidence.",
+    "userActions": [
+      "Dean signs in to npm as the authorized subswitch publisher and checks Access Tokens metadata plus the package publishing-access policy: validity, selected package, publish permission, required automation 2FA capability and any IP restrictions. Do not paste or reveal token values.",
+      "If replacement is needed and package policy permits token publishing, create a supported granular token limited to subswitch, with Read and write (publish and stage), a suitable short expiration, and Bypass 2FA for this noninteractive release where permitted. Do not broaden package/account policies or runner IP grants automatically.",
+      "Dean updates the existing NPM_TOKEN repository Actions secret directly in GitHub Settings > Secrets and variables > Actions. Tell the coordinator only that it is updated; never send its value through chat or diagnostic output.",
+      "If the package forbids tokens or valid metadata does not explain the rejection, stop and tell the coordinator. Do not weaken 2FA policy. A separately authorized trusted-publishing migration or npm support investigation is required."
+    ],
+    "repoSecretSettings": "https://github.com/dean0x/subswitch/settings/secrets/actions",
+    "retryBoundary": "Only after the publisher-side issue is resolved and the coordinator has authority for another real write should it recheck the registry and decide whether to rerun the existing tagged workflow. No new version/tag deletion is indicated while0.6.1 remains absent. No rerun or publish was performed here.",
+    "longTerm": "npm recommends OIDC trusted publishing and documents direct bypass-2FA token publishing retirement in January2027. That migration is separately tracked; it is not authorization to route around this rejected token publish."
+  },
+  "officialSources": [
+    {
+      "title": "npm: About access tokens",
+      "url": "https://docs.npmjs.com/about-access-tokens/",
+      "supports": "Only granular tokens are currently supported; token rights are bounded by account permissions and may be scoped, expiring, IP-limited or stage-only. Direct token publishing remains supported now but is documented to end in January2027."
+    },
+    {
+      "title": "npm: Creating and viewing access tokens",
+      "url": "https://docs.npmjs.com/creating-and-viewing-access-tokens/",
+      "supports": "The npm website lets the publisher create a package-scoped granular token, select publishing rights, expiration and automation 2FA behavior. Organization-management access alone does not grant package publishing rights."
+    },
+    {
+      "title": "npm: CI/CD authentication",
+      "url": "https://docs.npmjs.com/using-private-packages-in-a-ci-cd-workflow/",
+      "supports": "npm recommends trusted publishing for CI/CD. The existing token method uses a minimally scoped publishing credential and may require automation 2FA capability; store its value in CI secrets."
+    },
+    {
+      "title": "npm: Publishing 2FA requirements",
+      "url": "https://docs.npmjs.com/requiring-2fa-for-package-publishing-and-settings-modification/",
+      "supports": "Package policy may forbid all tokens. A permitted noninteractive token publisher requires the appropriate 2FA capability. Do not change a strict package policy to get past this failure."
+    },
+    {
+      "title": "npm: Generating provenance statements",
+      "url": "https://docs.npmjs.com/generating-provenance-statements/",
+      "supports": "The official token/provenance workflow uses id-token permission, registry setup and NODE_AUTH_TOKEN from an npm secret. Signing provenance is separate from an accepted registry publish."
+    },
+    {
+      "title": "npm: Trusted publishing",
+      "url": "https://docs.npmjs.com/trusted-publishers/",
+      "supports": "Trusted publishing needs npm CLI>=11.5.1 and an explicitly authorized package/workflow trust relationship; id-token permission alone is insufficient. Current npm10.9.9 is below that minimum."
+    },
+    {
+      "title": "GitHub: Using secrets in Actions",
+      "url": "https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets",
+      "supports": "Repository Actions secrets are managed under Settings, Secrets and variables, Actions; workflows receive them through the secrets context."
+    },
+    {
+      "title": "Pinned official actions/setup-node authentication implementation",
+      "url": "https://github.com/actions/setup-node/blob/820762786026740c76f36085b0efc47a31fe5020/src/authutil.ts",
+      "supports": "Pinned action writes a registry auth reference to NODE_AUTH_TOKEN and exports NPM_CONFIG_USERCONFIG. The tagged workflow supplies that variable at the publish step."
+    }
+  ],
+  "evidence": {
+    "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/release-0.6.1-publish-diagnosis-artifacts-8xttjk_w",
+    "sourceLog": "/Users/dean/Sandbox/.codex-orchestrator/release-0.6.1-publish-failure.log",
+    "sourceLogSha256": "a9de28d35a9b486cbf33e0f098014d2c45c0a511552868847aaf1b752c4b32d5",
+    "workflowSha256": "41060c8ff5a44ee24060cd3f729f317ea30cb30dd1c79fe5950d541a84eb54bf",
+    "artifactSha256": {
+      "public-registry-summary.json": "e8b4b3f061dde88f28644b901c84f1ef41b5242303af8ae23ebbb6ca38bc78f0",
+      "github-job.log": "0e81a0ec03e1f166a29135c789576ad1679352bff74f552f86bd1d536d6833b5",
+      "publish-tail.txt": "4a1e3702ae04b9c45d354bb6654a7279c907cce4adc937f272a979474c09df8d",
+      "tagged-package.json": "3f87885a71a81b6f155234eb4f1a263ab96bd5d3831d183a6acf029a0e56a7e6",
+      "tagged-release-workflow.yml": "41060c8ff5a44ee24060cd3f729f317ea30cb30dd1c79fe5950d541a84eb54bf",
+      "current-main-release-workflow.yml": "41060c8ff5a44ee24060cd3f729f317ea30cb30dd1c79fe5950d541a84eb54bf",
+      "pinned-setup-node-authutil.ts": "295e125e7c37ffcace774dfb3e39ced341506d7c09c91c29576a9a36c58ca4ed",
+      "run.json": "467fa2d663405a77c9497f8fce767664f7183f6ee1c97251131b6c851f0f2e34",
+      "secret-metadata.json": "326ac51a379f89949671eb4ddf036e8d4c30a9796e431b8892d7536481e235b3",
+      "job-diagnostic-excerpts.txt": "b8214e6865a2b296eceaf4cf0171e1736922b079fa346bb15490e547f2ab6212"
+    }
+  },
+  "workspace": {
+    "clone": "/Users/dean/Sandbox/subswitch-continuity",
+    "branchUnchanged": "codex/release-future-model-fix",
+    "headUnchanged": "b8549643d5af3316d0b65d608b16fafc390e0287",
+    "trackedTreeClean": true
+  },
+  "boundaries": {
+    "sourceWorkflowConfigAuthSettingsEdits": false,
+    "secretTokenOrLocalNpmrcReads": false,
+    "nativeAuthHistoryReads": false,
+    "alternateAccountOrCredentialProbes": false,
+    "publishOrWorkflowRerun": false,
+    "tagDeletePushOrMerge": false,
+    "npmOrGithubPermissionWrites": false,
+    "providerInferenceOrSharedProxyClaudeOHFControls": false,
+    "goalModelPermissionChanges": false,
+    "realRegistryBoundaryRerouted": false,
+    "onlyWrites": "Owned local diagnostic artifacts and report"
+  },
+  "postpublishQA": "Deferred. No0.6.1 package is available from the registry, so published-version installation/provenance validation cannot yet run.",
+  "nextAction": "Coordinator reviews this report and gives Dean the publisher-side metadata/credential action. Stop until that external state or an authorized follow-up changes; do not retry the rejected publish automatically."
+}

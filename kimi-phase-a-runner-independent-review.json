@@ -1,0 +1,287 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-10-19T21:17:37.133113+00:00",
+  "reviewerThread": "01a12c0e-8830-72e1-9ffa-3cf694a094f5",
+  "assignment": "/Users/dean/Sandbox/.codex-orchestrator/kimi-phase-a-runner-review-assignment.json",
+  "assignmentSha256": "5553008ba260cb52b659c5801885662a3ea2751eda08fbf54888dacaae6f8b9e",
+  "authorDelivery": "/Users/dean/Sandbox/subswitch-kimi/kimi-phase-a-runner-delivery.json",
+  "authorDeliverySha256": "9e9ebf9697da7dcf6265e8ea15a62cdea1c1403f7b3ae71cf85d3efe7b9aa5b3",
+  "ownClone": "/Users/dean/Sandbox/subswitch-continuity",
+  "authorCloneReadOnly": "/Users/dean/Sandbox/subswitch-kimi",
+  "targetHead": "6528f3f602307cfdfba277b2047a18825c1407fb",
+  "sourceHash": "f1589b721f6ae6dbe1550497ebfff6c1366057ef7c910a42ecd4aa6790eed03d",
+  "runnerHash": "b3957b5bc0cf471ce44491b1b7767443454b00e0fbb494a4187b2b2c23a16c3e",
+  "recommendation": "request_changes_before_live",
+  "findings": [
+    {
+      "id": "KIMIA-R01",
+      "priority": "P1",
+      "severity": "high",
+      "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/core.mjs",
+      "line": 25,
+      "relatedLocations": [
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/core.mjs",
+          "line": 31
+        },
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/runner.mjs",
+          "line": 14
+        },
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/runner.mjs",
+          "line": 46
+        },
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/README.md",
+          "line": 12
+        }
+      ],
+      "title": "Bind the actual loader, dependencies and execution configuration before exposing credentials",
+      "problem": "sourcePin checks/digests only tracked src plus package.json/package-lock.json, and runnerPin covers only three QA files. Neither consults installed node_modules bytes, tsconfig.json or the executing runtime version. The documented controller invocation preloads tsx before these checks. A loader/dependency or tsconfig change can therefore retain every approved source/runner hash and reach credential lookup despite changing the executable runtime. The delivery contains a dependency-tree hash, but no runtime check or approval binding uses it.",
+      "impact": "The advertised reviewed-runtime boundary is not enforced for a future live run. Unreviewed loader/config/dependency code can execute before or with the approved key, and reports would still carry the original approved source/runner pins.",
+      "reproduction": {
+        "kind": "Read-only synthetic preflight probe, not an actual tamper or live execution",
+        "path": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/runtime-pin-probe.mjs",
+        "result": {
+          "case": "runtime-only-drift-unbound-by-preflight",
+          "sourceHashUnchanged": true,
+          "runnerHashUnchanged": true,
+          "runtimeFilesConsulted": 0,
+          "fakeCredentialLookupReached": true,
+          "actualRuntimeFilesModified": false,
+          "vendorCalls": 0
+        },
+        "details": "The real sourcePin/runnerPin functions were called while a read shim would return changed bytes for installed dependencies or tsconfig if queried. They never queried those runtime files, retained identical hashes, and authorize proceeded to a fabricated credential getter. No author files or dependency bytes were changed."
+      },
+      "requiredFix": "Make the bootstrap plain JS without preloading an unchecked loader. Bind a deterministic installed-loader/dependency/config fingerprint and runtime version to the approval/result; verify it before loading those components or resolving the approved key. Recheck in the worker or execute an immutable verified runtime snapshot. Include the tsx configuration actually selected; keep limits/authority unchanged.",
+      "regressionExpectation": "In an owned copy, change only tsconfig or one installed loader/dependency file with the same Git HEAD, lockfile and runner files. A valid fabricated approval must be rejected before a credential getter, worker execution with the key, or any transport. A matching verified runtime must retain the normal offline pass."
+    },
+    {
+      "id": "KIMIA-R02",
+      "priority": "P2",
+      "severity": "medium",
+      "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/core.mjs",
+      "line": 26,
+      "relatedLocations": [
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/core.mjs",
+          "line": 27
+        },
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/core.mjs",
+          "line": 28
+        },
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/runner.mjs",
+          "line": 14
+        },
+        {
+          "file": "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/runner.mjs",
+          "line": 55
+        }
+      ],
+      "title": "Apply the positive environment boundary to the source-pin Git helpers",
+      "problem": "All three execFileSync calls omit env, so they inherit the caller environment. The controller calls sourcePin before the isolated Node worker exists and before approval validation. Thus unrelated parent environment values and credential variables can be exported to helper processes, outside the dedicated worker allowlist. The worker repeats these calls with its approved key in its own environment as well.",
+      "impact": "The positive environment/key-isolation claim covers the Node spawn but not the Git subprocesses used by preflight. Git also receives host configuration selectors by default; those helpers do not need any provider keys or unrelated session environment.",
+      "reproduction": {
+        "kind": "Actual Git helper calls from the real sourcePin under an explicitly constructed fake environment",
+        "trace": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/trace.jsonl",
+        "observations": 13,
+        "allOmitExplicitEnvironment": true,
+        "allInheritedSyntheticCanary": true,
+        "details": "An unrelated fabricated sentinel was present only in the controlled review child environment. Instrumentation recorded missing env options on each actual Git invocation and the resulting inherited sentinel. No host secret/environment value was inspected or exported in this review."
+      },
+      "requiredFix": "Give every source-pin Git invocation an explicit minimal environment, with isolated or disabled global/system configuration and no provider credential/unrelated parent variables. Disable unnecessary external diff/fsmonitor helpers per invocation; do not change host Git settings. Preserve the exact repository/HEAD checks.",
+      "regressionExpectation": "Run preflight with an unrelated synthetic parent sentinel and fake provider-key variable. Capture helper environments and prove both are absent while the clean source pin still succeeds; never use real credentials in this control."
+    }
+  ],
+  "newLiveAuthorizationGranted": false,
+  "fullQaFileReview": {
+    "files": [
+      "runner.mjs",
+      "core.mjs",
+      "offline.test.mjs",
+      "README.md",
+      "live-approval.template.json",
+      "cap-mutation-test.mjs"
+    ],
+    "allContentsRead": true,
+    "capDisabledControl": "Verified exact one-line deletion from full core; the unsafe specimen is not imported by the runner.",
+    "artifactHashesVerified": {
+      "README.md": "ff3fccb6f270b9c913b186e7e96cc3a7267a14081e13e3530b1769f86b391f53",
+      "cap-disabled-control.mjs": "090dab0ad653286469aa9c44f79ea42e73595589f8d434c3a5b588a1a9f183a8",
+      "cap-mutation-test.mjs": "9cf6891abfd8053370d429434d2fc58a32a0b2fdae1f0e21edd7ac16e824c23d",
+      "cap-red.log": "7870c5282b2f1b039d766b61491fa4a5372521a1ac5b2c5ba2d96129d280f573",
+      "check-final.log": "a99800a575b22df060c1607d756eb0452e34f52ec6def44c10322c73d830793c",
+      "check-first.log": "8c04174a642dad6aeb8c1ed84ae096f665fd28de65d4ea17d3a769a9aef72844",
+      "cli-refusal.log": "80d83e09037e937154229841b1b6299a698f1024db135585c13722466ff48d86",
+      "core.mjs": "07b27f78cef02cdc560151aab0a235d078616e088151cfcf6e95f5f4efd2e1e9",
+      "first-offline.log": "b5e8eed04ae4644fba7543be7223abe9d7e05e7fa7051979f9cacf1cbc31b523",
+      "live-approval.template.json": "19f95f484f601faa54bb57fbb0cd9c0e117c6449c4a2002f4627ccc306dce332",
+      "offline-final.log": "023b86835caf14ce1a8929296d45b8f3b398693c70b17fe82af459219a7cd25c",
+      "offline-result.json": "0f1b96bad6fb539f7431b6a68a15b53b1bfbbbecb0f1abc312fbda4756af1b65",
+      "offline-tests-result.json": "02fa4b184d76796da5678527e0df889a939e278cfaa9972d596f43a3bd92ac33",
+      "offline-tests.log": "e0bb7db8c2dc31133063cb6bd17ad404a16b7114f531f0d90d1e863aad58ebea",
+      "offline.test.mjs": "d4561c03ee96fd4e6bb657a27a647d4e7ea48cd664cbda344d7d3ae0449e6de9",
+      "runner.mjs": "c32b00cb263ab8e32744fe658e7c2343b4f4a0a88d2da536006eb0613915d0f6"
+    }
+  },
+  "productionWiringReview": {
+    "sourcePin": "92 tracked source/manifest/lock paths currently match the assigned digest and author HEAD; author tracked source remains clean.",
+    "routePath": "Production loadConfig/buildDeps/createProxyServer; Messages named routes reach SharedRouting.http from server, Responses named routes through the replacement production CodexGateway. Both use the same owned routing/action store. Default constructed routing/gateway are closed first.",
+    "providerPath": "SharedRouting -> RoutedAttempts -> adaptRequest/destinationProtocol/destinationUrl -> injected Guard -> transport. Env-profile credentials are explicitly supplied; Kimi is not native OAuth and cannot take the401 refresh loop. No same-target retry exists for these env-key routes; synthetic primary429 advances to its configured fallback.",
+    "continuation": "Production response validation withholds executable tools until terminal; actual owned Read result traverses production Messages history or Responses continuation reconstruction. New recovery action and parked original action retain separate affinities. The test-owned routing clock alone advances61000ms; Guard deadlines use real monotonic time.",
+    "actionCleanup": "HTTP action controls use only the new relay capability and OS-assigned loopback ports. Complete/cancel operates on captured action IDs; server/gateway/routing close paths and owned directory removal are used. No shared control-file discovery or native CLI launch.",
+    "legacyPaths": "All legacy transport/auth endpoints and absent auth-file paths are explicitly fixture-owned; noAuth rejects unexpected native manager use. Public provider origins are available only through the guarded Kimi target in a separately approved live mode.",
+    "productionFilesRead": [
+      "src/server.ts",
+      "src/codex-gateway.ts",
+      "src/routing/shared-routing.ts",
+      "src/routing/routed-attempt.ts",
+      "src/routing/profile-auth.ts",
+      "src/routing/action-ingress.ts",
+      "src/routing/action-store.ts",
+      "src/routing/provider-stream.ts",
+      "src/routing/http-ingress.ts",
+      "src/routing/request-adapter.ts",
+      "src/routing/target-capabilities.ts",
+      "src/routing/destination-catalog.ts"
+    ]
+  },
+  "boundsAndAuthorityReview": {
+    "limits": {
+      "attempts": 6,
+      "perProtocol": 3,
+      "requestedOutputTokens": 1536,
+      "perCall": 256,
+      "requestMs": 30000,
+      "phaseMs": 180000
+    },
+    "admission": "Exact allowed Kimi origin and two paths, POST/redirect:error, bearer binding, model, effort, stream and output cap checked before counters/transport. Attempts are counted and admission callback is synchronous before transport, including failed calls. Inputs carry their caps; guard does not lower them. No native-phase allowance is reused.",
+    "deadlines": "Fetch signal combines real phase deadline, per-request timeout and production cancellation; direct loopback delayed-header/stalled-body controls exercise body lifetime. Controller TERM/KILL bounds are only cleanup backstops.",
+    "approval": "Template is explicitly unauthorized. Entrypoint checks private owned regular approval path, explicit phase/product/region/model/effort/key-kind/head/source/runner/reference/expiry before the one named key lookup. Root confirmation/credential binding/continuity evidence remain external gates; a worker delivery report is not approval.",
+    "singleUseAndCrash": "Exclusive consumed claim with synced contents precedes worker launch. Worker rechecks parent/claim/head/source/runner and approval. Private live journal is created exclusively; sanitized admission appends happen before dispatch. A crashed run leaves the approval consumed; do not clear it or reset the finite allowance automatically. These statements concern process crashes, not an independently qualified power-loss guarantee.",
+    "sanitization": "Provider logger is a no-op; runPhase maps failures to allowlisted structural codes. Results/ledgers omit provider bodies, headers, nonce, prompt/history and key values. The nonce path is matched exactly before one fixture read. Live stdout parse failures are replaced by a generic code rather than persisted raw output.",
+    "limitations": "Runtime/dependency binding and Git helper environment findings above prevent live readiness despite correct current caps and positive Node-worker environment."
+  },
+  "evidenceVerification": {
+    "sourceFileCount": 92,
+    "currentInstalledPackagesMatchLock": 20,
+    "currentInstalledRegularFiles": 1511,
+    "currentDependencyTreeSha256": "6f8a6f5244870a4760e0c4c3dd2ad946d5705fedbc5c3e2a05d461731d7f6687",
+    "dependencyDigestMethod": "Sort regular non-symlink files relative to node_modules, hash each file, then hash path+NUL+fileSHA256+newline concatenation. This reproduces the delivery hash; runtime does not enforce it.",
+    "authorOfflineResult": "Both protocols3fake Kimi attempts each,1536requested tokens; six actions, ten total fake-upstream calls, one owned read per protocol, recovered fake primary and parked continuation, cleanup success. Original logs/results and all16declared artifact hashes verified.",
+    "redMutation": "Only cap refusal line removed; retained red log has1fabricated dispatch and exit1, proving cap control is sensitive. No vendor transport was present.",
+    "coverageCalibration": "The18top-level controls are meaningful, including cap/count/accounting/redirect and real-loopback deadlines/cleanup. Approval getter controls exercise missing prerequisites, missing fabricated key, runner-hash drift and product mismatch; do not infer an independent negative case for every other approval field."
+  },
+  "targetedIndependentChecks": {
+    "checks": [
+      {
+        "name": "runtime-pin-probe",
+        "exit": 0,
+        "argv": [
+          "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+          "--require",
+          "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/offline-guard.cjs",
+          "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/runtime-pin-probe.mjs"
+        ],
+        "stdout": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/runtime-pin-probe.stdout",
+        "stderr": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/runtime-pin-probe.stderr"
+      },
+      {
+        "name": "independent-offline-tests",
+        "exit": 0,
+        "argv": [
+          "/Users/dean/.nvm/versions/node/v22.22.3/bin/node",
+          "--require",
+          "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/offline-guard.cjs",
+          "--import",
+          "/Users/dean/Sandbox/subswitch-kimi/node_modules/tsx/dist/loader.mjs",
+          "--test",
+          "/Users/dean/Sandbox/subswitch-kimi/.git/kimi-phase-a/offline.test.mjs"
+        ],
+        "stdout": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/independent-offline-tests.stdout",
+        "stderr": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/independent-offline-tests.stderr"
+      }
+    ],
+    "runtimeProbe": {
+      "case": "runtime-only-drift-unbound-by-preflight",
+      "sourceHashUnchanged": true,
+      "runnerHashUnchanged": true,
+      "runtimeFilesConsulted": 0,
+      "fakeCredentialLookupReached": true,
+      "actualRuntimeFilesModified": false,
+      "vendorCalls": 0
+    },
+    "offlineTests": {
+      "pass": 18,
+      "fail": 0,
+      "skip": 0,
+      "stdout": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff/independent-offline-tests.stdout"
+    },
+    "isolation": "Absolute known Node binary, explicitly constructed environment containing only test/runtime selectors and a fabricated sentinel; no host environment spread or credential lookup. Read-only production source imported through the current verified installed loader. Provider network disabled by review preload; only test-created loopback listeners could receive fetches. File mutations restricted to reviewer-owned artifacts; compiler/helper subprocesses bounded.",
+    "strictOverlayLimit": {
+      "blockedSocketAttempts": [
+        {
+          "kind": "blocked",
+          "operation": "outbound-socket",
+          "port": null
+        },
+        {
+          "kind": "blocked",
+          "operation": "outbound-socket",
+          "port": null
+        },
+        {
+          "kind": "blocked",
+          "operation": "outbound-socket",
+          "host": "127.0.0.1",
+          "port": 64196
+        }
+      ],
+      "meaning": "The extra reviewer overlay rejected two socket attempts without a TCP port and one unregistered loopback port. They were not followed or used as provider evidence. The18tests still passed; do not describe this overlay run as zero auxiliary socket refusals or native/live network qualification. Author original offline logs were separately verified."
+    },
+    "helperEnvironmentEvidence": {
+      "gitObservations": 13,
+      "explicitEnvMissingForAll": true,
+      "onlySyntheticCanaryUsed": true
+    },
+    "actualVendorCalls": 0,
+    "actualNativeClients": 0,
+    "realCredentialOrHostEnvValueReads": false,
+    "authorIndexAndConfigBytesUnchanged": true,
+    "privateQaArtifactsUnchanged": true,
+    "fixtureDirectoriesRemaining": [],
+    "fullProductSuiteRepeated": false
+  },
+  "scopeLimits": [
+    "No live Kimi entitlement/auth/model/protocol/billing/quota/recovery acceptance.",
+    "No native-client transport/tool/instruction-history or restart/session continuity acceptance.",
+    "Exact approved key name/binding, coordinator execution authorization and separate continuity prerequisites remain required after runner fixes.",
+    "No unmerged-feature release or published-package qualification is established by this source runner."
+  ],
+  "artifactRoot": "/Users/dean/Sandbox/subswitch-continuity/kimi-phase-a-runner-review-artifacts-2v530xff",
+  "reviewArtifactSha256": {
+    "independent-offline-tests.stdout": "1210b233f461321cb8902d87b8919eebb07a538061e2bcc25e00153d57801be3",
+    "runtime-pin-probe.mjs": "21c4c64246828335a245da9b79b1e51d62276bcc0a41af11071da1e78f5fa694",
+    "independent-offline-tests.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "offline-guard.cjs": "b18242eea2ba8eb1b1cd4cdf5aa06b777e73e1a9777e4640e47f7e05e140e1cf",
+    "runtime-pin-probe.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "trace.jsonl": "169a8dbdc91afc296b0a4442de522f2503c325cfff20a41c6bdafaab83dd8a45",
+    "runtime-pin-probe.stdout": "2f383177c2a69e3a9c5602861fbe7ea3e17b01cd857f3a432853b945543cdb51",
+    "targeted-check-summary.json": "48262665b03a5087306146057a8e5191791f69172e99aaf3e1b491fb4d51e6b4"
+  },
+  "workspacePreservation": {
+    "ownBranch": "codex/release-future-model-fix",
+    "ownHead": "b8549643d5af3316d0b65d608b16fafc390e0287",
+    "authorHead": "6528f3f602307cfdfba277b2047a18825c1407fb",
+    "authorAll16QaArtifactsUnchanged": true,
+    "authorIndexConfigUnchanged": true,
+    "productionOrDependencyChanges": false,
+    "branchesSettingsGoalsModelsPermissionsChanged": false,
+    "publisherOrSharedProxyClaudeOHFControls": false,
+    "deniedRealActionRerouted": false
+  },
+  "nextAction": "Coordinator sends KIMIA-R01/R02 to the runner owner for scoped correction and fabricated regression controls; then independently review the fix diff and new pins. No live execution until resolution plus the existing candidate/credential/continuity/authority gates. Worker stops this bounded review."
+}

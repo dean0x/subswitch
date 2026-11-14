@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "reviewDate": "2026-10-19",
+  "reviewerThread": "01a12c0e-8830-72e1-9ffa-3cf694a094f5",
+  "targetCheckoutReadOnly": "/Users/dean/Sandbox/subswitch-kimi",
+  "targetHead": "264dab7f31f62d7cc34149b3d0b26caeadd0b4c9",
+  "reviewType": "Independent full read-only source/diff review of all nine changed files and relevant auth/routing callers; no execution.",
+  "recommendation": "request_changes",
+  "findings": [
+    {
+      "id": "KIMI-REVIEW-1",
+      "priority": "P2",
+      "title": "Validate native OAuth support before reusing a pending refresh",
+      "file": "src/routing/profile-auth.ts",
+      "lineStart": 323,
+      "lineEnd": 334,
+      "relatedLines": [
+        "src/routing/profile-auth.ts:201-202",
+        "test/unit/kimi-auth.test.ts:29-44",
+        "e2e/gates/kimi-offline-2026-10-19.json:29"
+      ],
+      "mechanism": "refresh() verifies only credential.kind before reading this.refreshes. If an existing programmatic profile id has a pending supported-provider refresh and is replaced by an unsupported Kimi native-oauth profile, refresh() returns that pending promise without calling get(), so the new supportsNativeOAuth check in get() and manager() is bypassed. Even the fresh unsupported refresh path consults the pending cache before provider/product validation.",
+      "impact": "The stated unsupported-OAuth fail-closed boundary remains incomplete at the public refresh API: it can return a supported provider credential for an unsupported current profile. Later validate() checks protect routed dispatch, so this review does not claim demonstrated credential exfiltration.",
+      "evidenceClass": "source-inspected; not executed",
+      "requestedChange": "Check supportsNativeOAuth(p) at refresh entry before this.refreshes.get(id), preserving the promised rejection API for unsupported profiles. Add a warm pending-cache regression, not only the current cold-path getter test, and retain supported refresh deduplication/cancellation behavior.",
+      "suggestedRegression": "Use fabricated profiles and a controlled get() override/subclass returning a deferred fabricated BoundCredential. Start a supported refresh, replace that profile id with Kimi native-oauth containing a throwing authFile getter, and require the second refresh to reject credential_product_mismatch without returning the cached credential or inspecting the path. No native auth files or live fetch are necessary."
+    }
+  ],
+  "reviewedFiles": [
+    "package.json",
+    "src/routing/destination-catalog.ts",
+    "src/routing/profile-auth.ts",
+    "src/routing/routing-config.ts",
+    "test/unit/kimi-auth.test.ts",
+    "test/integration/kimi-qualification.test.ts",
+    "e2e/gates/kimi-readiness.md",
+    "e2e/gates/kimi-offline-2026-10-19.json",
+    "e2e/gates/wave1.md"
+  ],
+  "positiveEvidence": [
+    "has(), get() and manager() now validate exact native provider/product support before authFile path reads or manager reuse; Kimi environment credentials and supported native pairs keep their existing selection behavior.",
+    "Loopback fixtures pin explicit product/region/protocol paths, fabricated environment credentials, temporary native-auth paths, origin allowlisting, no redirects, no hidden auth/unknown-error fallback, committed-stream isolation and client-disconnect cancellation.",
+    "The reports clearly label clients/providers as simulated and retain live/native-client/tool/history/entitlement gates; no new live qualification is claimed.",
+    "Prepared live plan is finite: 18 attempts, 4608 requested output tokens, 256 tokens per attempt, 420 seconds overall, with pre-dispatch counting, no retries and a stop when native token caps or isolation are unsupported. This is a plan, not an implemented/verified live runner.",
+    "package.json only adds a repository offline-test script; package files, dependencies, version and installed CLI bin surfaces are unchanged.",
+    "All seven sourceBlobs pinned by kimi-offline-2026-10-19.json match the target commit objects."
+  ],
+  "unexecutedGates": [
+    "Independent unit/integration/typecheck/build/package execution was prohibited by this review assignment.",
+    "Author-reported 23 qualification and 1154 full-suite passes were read as claims; this review verifies source blob identity, not those runtime results.",
+    "Live Kimi protocol/tool/native-client acceptance and the separate continuity/Codex HTTP history gates remain pending as documented."
+  ],
+  "boundaries": {
+    "targetEdits": false,
+    "testsOrListenersExecuted": false,
+    "gitMutations": false,
+    "nativeAuthOrHistoryAccess": false,
+    "liveInference": false,
+    "sharedProxyChanges": false,
+    "existingContinuityPatchPreserved": true
+  },
+  "nextAction": "Kimi author resolves KIMI-REVIEW-1 and supplies the fix diff plus offline regression evidence. Coordinator rechecks the resulting head and remaining merge/live gates. This worker stops with this review result."
+}

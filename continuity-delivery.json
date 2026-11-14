@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-19",
+  "checkout": "/Users/dean/Sandbox/subswitch-continuity",
+  "branch": "codex/proxy-restart-continuity",
+  "base": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+  "dependencyPR": 81,
+  "validatedSourceCommit": "a1e2471710609ca3522026bb22317c4960460096",
+  "head": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+  "pr": {
+    "number": 85,
+    "url": "https://github.com/dean0x/subswitch/pull/85",
+    "draft": true,
+    "base": "codex/wave1-kimi-failover"
+  },
+  "pushed": true,
+  "trackedWorkingTreeClean": true,
+  "sourceFilesChangedAfterIndependentApproval": [],
+  "evidenceOnlyChangesAfterIndependentApproval": [
+    "e2e/gates/native-thinking-continuity-offline-2026-10-19.json"
+  ],
+  "independentSourceReview": {
+    "decision": "approve_source_review",
+    "findings": [],
+    "resolved": [
+      "CONT-01",
+      "CONT-02"
+    ],
+    "report": "/Users/dean/Sandbox/subswitch-kimi/peer-review-continuity-resolution.json",
+    "approvedPatchSha256": "de379c1f5128118b0227d744db1f45da4135dd71b4efc6bf2584988f0172185d"
+  },
+  "sourceFileSha256": {
+    "README.md": "2456d18239b6125b0b9e5760f9b13f05978e6932d90f124f2f128ea5a0ba58f4",
+    "src/claude-cache.ts": "42f12a297ec743b5faf1f04315c2789beab4201aec12d8c92fd756ab57a350a8",
+    "src/routing/replay-cache.ts": "545b91913daa38a51655f371a61375604679710033052ec597d7faa75155ebe1",
+    "src/routing/signed-thinking.ts": "df0661d6669d8c4cc2c11488c242f253bc29b976c9d59d044700d917f2ea3268",
+    "src/routing/request-adapter.ts": "4fb8297c883f8b538f06574e00eeb17d3f9664937863b5f430e00b7f7751a0f6",
+    "src/routing/routed-attempt.ts": "f6a32f887c323366eb043c80b25cb977d22c6fdd82d8d1404e45178efe5ee56d",
+    "src/routing/shared-routing.ts": "aad684e2b523d0fea7464f14cd73af28670e5e09a924535843bb4c14a520836f",
+    "test/integration/native-thinking-continuity.test.ts": "a854aba6e26cd395e81cc95e670cd1b73fafb22380e3fe9b4a74a474f5aa457e",
+    "test/unit/native-thinking-replay.test.ts": "dd7c8d435231bc52ec5f9ed10f2e9e783a81689a88dc1ccb6cfb8c384bbd6988",
+    "e2e/gates/native-thinking-continuity-offline-2026-10-19.json": "0388863a6352b9abe9abf619b08bd317b7cd4977c5c297f30a3b35fb74cbb294"
+  },
+  "patch": {
+    "path": "continuity-delivery.patch",
+    "sha256": "309e39fd0c0d0ba3c805add0e8d0202b3b4e3470aa028f36939961c9a71138b8"
+  },
+  "checks": [
+    {
+      "command": "node --import tsx --test --test-timeout=30000 test/integration/native-thinking-continuity.test.ts",
+      "exitCode": 0,
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "coverage": [
+        "all twelve injected-fetch continuity/isolation cases",
+        "production HTTP stream=false and stream=true startup/follow-up/fresh-instance restart",
+        "exact signed/redacted thinking and tool history preservation",
+        "fixture-only upstream key and incoming authorization isolation",
+        "one upstream request per turn; no retries or fallback",
+        "unmatched-model production passthrough reaches the owned local rejection fixture"
+      ]
+    },
+    {
+      "command": "/usr/bin/lockf -t 0 /Users/dean/Sandbox/.devflow/locks/heavy-tests.lock npm run check",
+      "exitCode": 0,
+      "tests": 1177,
+      "passed": 1177,
+      "failed": 0,
+      "skipped": 0,
+      "durationMs": 25082.890542,
+      "scope": "Typecheck and full unit/integration suite; shared nonblocking heavy-test lock acquired."
+    },
+    {
+      "command": "npm run build",
+      "exitCode": 0
+    },
+    {
+      "command": "git diff --check",
+      "exitCode": 0
+    }
+  ],
+  "fullCheckLog": {
+    "path": "continuity-full-check.log",
+    "sha256": "8c9fa15ac18e4f132c902247f3bf93574ee061d171f4e8bc4ea808b59006c810"
+  },
+  "ci": {
+    "state": "success",
+    "head": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+    "runUrl": "https://github.com/dean0x/subswitch/actions/runs/39239116548",
+    "checks": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-19T10:41:02Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39239116548/job/118015345897",
+        "name": "check (ubuntu-latest)",
+        "startedAt": "2026-10-19T10:40:24Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-19T10:41:36Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39239116548/job/118015345880",
+        "name": "check (macos-latest)",
+        "startedAt": "2026-10-19T10:40:31Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-19T10:41:06Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39239116548/job/118015345776",
+        "name": "check (ubuntu-latest, Node 24)",
+        "startedAt": "2026-10-19T10:40:24Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-19T10:41:35Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/dean0x/subswitch/actions/runs/39239116548/job/118015345417",
+        "name": "check (macos-latest, Node 24)",
+        "startedAt": "2026-10-19T10:40:28Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ]
+  },
+  "remainingUnverified": [
+    {
+      "gate": "Real disposable native Claude client and provider signature validation",
+      "reason": "Outside this fake-only assignment; no real client, profile, history, credential or live-provider access."
+    },
+    {
+      "gate": "Original released-user startup/restart incident",
+      "reason": "The fix covers explicit singleton Claude Messages cold history. Released ordinary Claude passthrough bypasses this adapter; the original incident remains unproven."
+    }
+  ],
+  "boundaries": {
+    "realProviderCalls": 0,
+    "realClientAuthOrHistoryTouched": false,
+    "sharedProxyOrOHFChanged": false,
+    "otherCheckoutWrites": false,
+    "forcePushMergeOrRelease": false
+  },
+  "next": "No worker action pending. Coordinator owns dependency sequencing. Keep PR85 and PR81 draft; real native/provider validation and the original released-user incident remain unverified.",
+  "publicFileSetVerified": true,
+  "gitTree": "0092524fb6337a10942bc82b13647b40347ab93b",
+  "coordinatorVerification": {
+    "date": "2026-10-19",
+    "coordinatorThread": "01a1410b-3d0d-7b60-84f1-c24494a81bba",
+    "head": "dfe7429756e89be123f2b6d1e1d4689b6c1fa717",
+    "dependencyHead": "7e6962c177b679bb2cbd55d8334df071bee262ad",
+    "pr": 85,
+    "confirmed": [
+      "PR85 remains draft on PR81 dependency branch",
+      "all four CI checks SUCCESS",
+      "all nine committed source/test/README hashes match independently approved files",
+      "full-check log: 1177 passed, zero failed, zero skipped"
+    ],
+    "instruction": "Finalize saved checkpoint and stop bounded delivery; no further tests, probes, native or live actions. Keep PR85 and PR81 draft."
+  },
+  "boundedDelivery": "complete; stopped"
+}

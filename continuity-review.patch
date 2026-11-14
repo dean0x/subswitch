@@ -1,0 +1,1279 @@
+diff --git a/README.md b/README.md
+index b40ac76..77d8157 100644
+--- a/README.md
++++ b/README.md
+@@ -329,6 +329,15 @@ broader content/tool support in [#48](https://github.com/dean0x/subswitch/issues
+ These are not included in the parity release. Missing reverse continuation state
+ produces an explicit error; keep the proxy running during active translated sessions.
+ 
++A single-target explicit Claude route can accept complete native Messages history
++created before proxy startup or replayed after a restart. Signed thinking and
++redacted-thinking blocks reach the configured Claude upstream unchanged for validation.
++An in-flight cold import reserves its signatures; overlapping imports of those
++signatures fail until that attempt completes or releases its reservation.
++This does not restore translated continuation handles or import signed history into
++fallback routes or another provider. Later system-role messages remain a separate
++unsupported case on explicit Messages routes.
++
+ ## Effort control
+ 
+ The optional `effort` frontmatter field works on the Codex leg too. Claude Code
+diff --git a/src/claude-cache.ts b/src/claude-cache.ts
+index 87ee206..577752d 100644
+--- a/src/claude-cache.ts
++++ b/src/claude-cache.ts
+@@ -72,6 +72,12 @@ export class ClaudeCache {
+     // Only put<K> writes this namespaced key, and the discriminant is checked above.
+     return entry.value as Values[K];
+   }
++  delete(kind: keyof Values, id: string): void {
++    const key = `${kind}:${id}`, entry = this.entries.get(key);
++    if (!entry) return;
++    this.bytes -= entry.bytes;
++    this.entries.delete(key);
++  }
+   get byteSize(): number {
+     return this.bytes;
+   }
+diff --git a/src/routing/replay-cache.ts b/src/routing/replay-cache.ts
+index 3d86ad6..a38d8e6 100644
+--- a/src/routing/replay-cache.ts
++++ b/src/routing/replay-cache.ts
+@@ -2,12 +2,15 @@ import {
+   ClaudeCache,
+   type CacheWrite,
+   type ClaudeCacheValues,
++  type Snapshot,
+ } from "../claude-cache.js";
+ import { RoutingError } from "./routing-types.js";
+ 
+-/** Attempt-local replay writes. Abandoned attempts never publish to the shared cache. */
++/** Attempt-local replay writes; exclusive pending claims roll back on abandonment. */
+ export class StagedCache extends ClaudeCache {
+   private writes = new Map<string, CacheWrite>();
++  private reservations = new Map<string, Snapshot>();
++  private closed = false;
+   constructor(private shared: ClaudeCache) {
+     super({ maxEntries: 2048, maxBytes: 32 * 1024 * 1024 }, true);
+   }
+@@ -22,15 +25,48 @@ export class StagedCache extends ClaudeCache {
+     id: string,
+     value: ClaudeCacheValues[K],
+   ): void {
++    if (this.closed) throw new RoutingError("request_cancelled", 499);
+     super.put(kind, id, value);
+     this.writes.set(`${kind}:${id}`, { kind, id, value } as CacheWrite);
+   }
+-  commit(): void {
++  /** Exclusive claims use the existing shared byte/entry budget before dispatch. */
++  reserveSnapshot(id: string, value: Snapshot): void {
++    if (this.shared.get("snapshot", id))
++      throw new RoutingError("foreign_opaque_state", 409);
++    this.put("snapshot", id, value);
++    const reservation = {
++      request: { ...value.request, pending: true }, input: value.input,
++    };
+     try {
+-      this.shared.putBatch([...this.writes.values()]);
++      this.shared.put("snapshot", id, reservation);
+     } catch {
+       throw new RoutingError("continuation_store_full", 503);
+     }
++    this.reservations.set(id, reservation);
++  }
++  commit(): void {
++    try {
++      if (this.closed) throw new RoutingError("request_cancelled", 499);
++      // Validation and publication are synchronous. A foreign attempt cannot acquire
++      // this signature between the ownership check and the atomic batch write.
++      for (const [id, reservation] of this.reservations)
++        if (this.shared.get("snapshot", id) !== reservation)
++          throw new RoutingError("foreign_opaque_state", 409);
++      try {
++        this.shared.putBatch([...this.writes.values()]);
++      } catch {
++        throw new RoutingError("continuation_store_full", 503);
++      }
++    } finally {
++      this.discard();
++    }
++  }
++  discard(): void {
++    for (const [id, reservation] of this.reservations)
++      if (this.shared.get("snapshot", id) === reservation)
++        this.shared.delete("snapshot", id);
++    this.reservations.clear();
+     this.writes.clear();
++    this.closed = true;
+   }
+ }
+diff --git a/src/routing/request-adapter.ts b/src/routing/request-adapter.ts
+index 5b72a6f..947270d 100644
+--- a/src/routing/request-adapter.ts
++++ b/src/routing/request-adapter.ts
+@@ -7,6 +7,7 @@ import { ReverseState } from "../claude-state.js";
+ import { ReasoningCache } from "../reasoning-cache.js";
+ import { object } from "../plain-object.js";
+ import { validateTargetCapabilities } from "./target-capabilities.js";
++import { knownThinking, rememberThinking, sameThinking, thinkingSignature } from "./signed-thinking.js";
+ import {
+   renderResponsesHistory,
+   type PortableTranscript,
+@@ -32,6 +33,8 @@ interface RequestAdaptation {
+   conversation: string;
+   sessionId: string;
+   priorOwner?: string | undefined;
++  /** Only the dispatcher may authorize native imports on a single-target route. */
++  allowNativeThinkingReplay?: boolean | undefined;
+ }
+ 
+ /** Product parameters and ingress codecs; no auth, network, output, or route selection. */
+@@ -68,6 +71,9 @@ export function adaptRequest(request: RequestAdaptation): {
+   };
+   if (protocol === "messages" && ingress === "messages")
+     body = normalizeMessagesInstructions(body);
++  const switched = priorOwner !== undefined && priorOwner !== owner;
++  const nativeImport = request.allowNativeThinkingReplay === true &&
++    p.provider === "claude" && ingress === "messages" && protocol === "messages" && !switched;
+   if (ingress === "messages" && Array.isArray(body["messages"])) {
+     for (const message of body["messages"]) {
+       const m = object(message);
+@@ -75,7 +81,7 @@ export function adaptRequest(request: RequestAdaptation): {
+       for (const block of m["content"]) {
+         const b = object(block);
+         if (b?.["type"] === "thinking" || b?.["type"] === "redacted_thinking") {
+-          const signature = b[b["type"] === "thinking" ? "signature" : "data"];
++          const signature = thinkingSignature(b);
+           const recorded =
+             typeof signature === "string"
+               ? stage.get(
+@@ -83,24 +89,22 @@ export function adaptRequest(request: RequestAdaptation): {
+                   `signature:${owner}:${conversation}:${signature}`,
+                 )?.input[0]
+               : undefined;
+-          if (
+-            !recorded ||
+-            b["type"] !== recorded["type"] ||
+-            (b["type"] === "thinking"
+-              ? typeof b["thinking"] !== "string" ||
+-                b["thinking"] !== recorded["thinking"] ||
+-                b["signature"] !== recorded["signature"] ||
+-                b["data"] !== undefined
+-              : b["data"] !== recorded["data"] ||
+-                b["signature"] !== undefined ||
+-                b["thinking"] !== undefined)
+-          )
++          if (signature === undefined)
+             throw new RoutingError("foreign_opaque_state", 409);
++          if (recorded) {
++            if (!sameThinking(b, recorded))
++              throw new RoutingError("foreign_opaque_state", 409);
++          } else {
++            if (!nativeImport || knownThinking(stage, signature))
++              throw new RoutingError("foreign_opaque_state", 409);
++            // A cache miss is not proof that native Claude history is foreign. Preserve it
++            // for that upstream to validate; failed/cancelled attempts never commit this import.
++            rememberThinking(stage, owner, conversation, b);
++          }
+         }
+       }
+     }
+   }
+-  const switched = priorOwner !== undefined && priorOwner !== owner;
+   // Target-owned opaque history is separate from portable text/tools. Cross-target reasoning
+   // portability is disabled pending exact provider evidence.
+   if (switched && (transcript.hasOpaqueReasoning || transcript.hasThinking))
+diff --git a/src/routing/routed-attempt.ts b/src/routing/routed-attempt.ts
+index 75a39e2..6271b8f 100644
+--- a/src/routing/routed-attempt.ts
++++ b/src/routing/routed-attempt.ts
+@@ -35,6 +35,7 @@ import { systemClock, type RoutingClock } from "./clock.js";
+ import { codexTransportConstants, buildHeaders } from "../codex-handler.js";
+ import { StagedCache } from "./replay-cache.js";
+ import { adaptRequest } from "./request-adapter.js";
++import { rememberThinking } from "./signed-thinking.js";
+ import { deriveConversationKey } from "../conversation-key.js";
+ import { recordLimitFailure, type LimitContext } from "../limit-observation.js";
+ 
+@@ -53,6 +54,7 @@ export interface AttemptRequest {
+   route?: string;
+   attempt?: number;
+   scopeHash?: string;
++  allowNativeThinkingReplay?: boolean;
+ }
+ export interface RoutedPrepared {
+   events: AsyncIterable<ClientEvent>;
+@@ -98,191 +100,199 @@ export class RoutedAttempts {
+     const transcript =
+       request.transcript ?? decodePortableHistory(request.body, ingress);
+     const stage = new StagedCache(this.replay);
+-    const replayKey = createHmac("sha256", this.key)
+-      .update(owner + conversation)
+-      .digest();
+-    const state = new ReverseState(replayKey, undefined, stage);
+-    const { outbound, reverse } = adaptRequest({
+-      ...request,
+-      ingress,
+-      protocol,
+-      transcript,
+-      stage,
+-      state,
+-      owner,
+-      sessionId,
+-    });
+-    const controller = new AbortController(),
+-      combined = AbortSignal.any([signal, controller.signal]);
+-    const encodedRequest = JSON.stringify(outbound);
+-    let response: Response;
++    const abandon = () => stage.discard();
++    signal.addEventListener("abort", abandon, { once: true });
++    const finish = () => signal.removeEventListener("abort", abandon);
+     try {
+-      while (true) {
+-        combined.throwIfAborted();
+-        this.auth.validate(credential);
+-        let headers: Record<string, string> = {
+-          ...credential.authHeaders,
+-          "content-type": "application/json",
+-          accept: "text/event-stream",
+-        };
+-        if (protocol === "messages")
+-          headers["anthropic-version"] = "2023-06-01";
+-        if (p.product === "claude-code")
+-          headers["anthropic-beta"] = "claude-code-20250219,oauth-2025-04-20";
+-        if (p.product === "chatgpt-codex") {
+-          if (credential.provider !== "codex")
+-            throw new RoutingError("credential_binding_mismatch", 503);
+-          headers = buildHeaders(
+-            { provider: "codex", authHeaders: credential.authHeaders },
+-            sessionId,
+-            codexTransportConstants(this.codexUserAgent),
+-          );
++      signal.throwIfAborted();
++      const replayKey = createHmac("sha256", this.key)
++        .update(owner + conversation)
++        .digest();
++      const state = new ReverseState(replayKey, undefined, stage);
++      const { outbound, reverse } = adaptRequest({
++        ...request,
++        ingress,
++        protocol,
++        transcript,
++        stage,
++        state,
++        owner,
++        sessionId,
++      });
++      const controller = new AbortController(),
++        combined = AbortSignal.any([signal, controller.signal]);
++      const encodedRequest = JSON.stringify(outbound);
++      let response: Response;
++      try {
++        while (true) {
++          combined.throwIfAborted();
++          this.auth.validate(credential);
++          let headers: Record<string, string> = {
++            ...credential.authHeaders,
++            "content-type": "application/json",
++            accept: "text/event-stream",
++          };
++          if (protocol === "messages")
++            headers["anthropic-version"] = "2023-06-01";
++          if (p.product === "claude-code")
++            headers["anthropic-beta"] = "claude-code-20250219,oauth-2025-04-20";
++          if (p.product === "chatgpt-codex") {
++            if (credential.provider !== "codex")
++              throw new RoutingError("credential_binding_mismatch", 503);
++            headers = buildHeaders(
++              { provider: "codex", authHeaders: credential.authHeaders },
++              sessionId,
++              codexTransportConstants(this.codexUserAgent),
++            );
++          }
++          response = await this.fetchImpl(destinationUrl(p, protocol), {
++            method: "POST",
++            headers,
++            body: encodedRequest,
++            redirect: "error",
++            signal: combined,
++          });
++          if (
++            response.status !== 401 ||
++            p.credential.kind !== "native-oauth" ||
++            request.refreshes.has(t.profile)
++          )
++            break;
++          request.refreshes.add(t.profile);
++          await readBoundedBody(response.body, 64 * 1024, combined);
++          const refreshed = await this.auth.refresh(t.profile, combined);
++          if (refreshed.generation !== credential.generation)
++            throw new RoutingError("credential_owner_changed", 409);
++          credential = refreshed;
+         }
+-        response = await this.fetchImpl(destinationUrl(p, protocol), {
+-          method: "POST",
+-          headers,
+-          body: encodedRequest,
+-          redirect: "error",
+-          signal: combined,
++      } catch (error) {
++        if (error instanceof RoutingError) throw error;
++        if (combined.aborted) throw new RoutingError("request_cancelled", 499);
++        throw new AttemptFailure({
++          kind: "transport",
++          evidence: "unknown",
++          windows: [],
++          bodyTruncated: false,
++          responseCommitted: false,
+         });
+-        if (
+-          response.status !== 401 ||
+-          p.credential.kind !== "native-oauth" ||
+-          request.refreshes.has(t.profile)
+-        )
+-          break;
+-        request.refreshes.add(t.profile);
+-        await readBoundedBody(response.body, 64 * 1024, combined);
+-        const refreshed = await this.auth.refresh(t.profile, combined);
+-        if (refreshed.generation !== credential.generation)
+-          throw new RoutingError("credential_owner_changed", 409);
+-        credential = refreshed;
+       }
+-    } catch (error) {
+-      if (error instanceof RoutingError) throw error;
+-      if (combined.aborted) throw new RoutingError("request_cancelled", 499);
+-      throw new AttemptFailure({
+-        kind: "transport",
+-        evidence: "unknown",
+-        windows: [],
+-        bodyTruncated: false,
+-        responseCommitted: false,
+-      });
+-    }
+-    const limitContext: LimitContext = { provider: p.provider, product: p.product, protocol, profile: t.profile, model: t.model,
+-      ingress, configuredCredentialKind: p.credential.kind === "native-oauth" ? "native-oauth" : p.product === "kimi-code" ? "coding-plan-key" : "api-key",
+-      ...(request.scopeHash ? { scopeHash: request.scopeHash } : {}),
+-      ...(p.region ? { region: p.region } : {}),
+-      ...(request.route ? { route: request.route } : {}), ...(request.attempt !== undefined ? { attempt: request.attempt } : {}) };
+-    if (!response.ok) {
+-      const body = await readBoundedBody(response.body, 64 * 1024, combined);
+-      recordLimitFailure(this.logger, limitContext, { transport: "http", status: response.status, committed: false,
+-        headers: response.headers, text: body.text, truncated: body.truncated || !body.complete });
+-      throw new AttemptFailure(
+-        classifyFailure(
+-          p,
+-          response.status,
+-          body,
+-          this.clock.now(),
+-          response.headers.get("retry-after"),
+-        ),
+-      );
+-    }
+-    const raw = validatedProviderEvents(
+-      response,
+-      p,
+-      protocol,
+-      combined,
+-      controller,
+-      this.clock,
+-      (final) => {
+-        if (Array.isArray(final["content"]))
+-          for (const value of final["content"]) {
+-            const item = object(value),
+-              signature = item?.["signature"] ?? item?.["data"];
+-            if (typeof signature === "string")
+-              stage.put(
+-                "snapshot",
+-                `signature:${owner}:${conversation}:${signature}`,
+-                { request: {}, input: [item!] },
+-              );
+-          }
+-        if (Array.isArray(final["output"])) {
+-          const output = final["output"] as Item[],
+-            reasoning = output.filter((i) => i["type"] === "reasoning");
+-          for (const item of output) {
+-            if (
+-              item["type"] === "function_call" &&
+-              typeof item["call_id"] === "string"
+-            )
+-              stage.put(
+-                "snapshot",
+-                `reasoning:${owner}:${conversation}:${item["call_id"]}`,
+-                { request: {}, input: reasoning },
+-              );
+-            if (
+-              item["type"] === "reasoning" &&
+-              typeof item["encrypted_content"] === "string"
+-            )
+-              stage.put(
+-                "snapshot",
+-                `opaque:${owner}:${conversation}:${item["encrypted_content"]}`,
+-                { request: {}, input: [item] },
+-              );
++      const limitContext: LimitContext = { provider: p.provider, product: p.product, protocol, profile: t.profile, model: t.model,
++        ingress, configuredCredentialKind: p.credential.kind === "native-oauth" ? "native-oauth" : p.product === "kimi-code" ? "coding-plan-key" : "api-key",
++        ...(request.scopeHash ? { scopeHash: request.scopeHash } : {}),
++        ...(p.region ? { region: p.region } : {}),
++        ...(request.route ? { route: request.route } : {}), ...(request.attempt !== undefined ? { attempt: request.attempt } : {}) };
++      if (!response.ok) {
++        const body = await readBoundedBody(response.body, 64 * 1024, combined);
++        recordLimitFailure(this.logger, limitContext, { transport: "http", status: response.status, committed: false,
++          headers: response.headers, text: body.text, truncated: body.truncated || !body.complete });
++        throw new AttemptFailure(
++          classifyFailure(
++            p,
++            response.status,
++            body,
++            this.clock.now(),
++            response.headers.get("retry-after"),
++          ),
++        );
++      }
++      const raw = validatedProviderEvents(
++        response,
++        p,
++        protocol,
++        combined,
++        controller,
++        this.clock,
++        (final) => {
++          if (Array.isArray(final["content"]))
++            for (const value of final["content"]) {
++              const item = object(value);
++              if (item) rememberThinking(stage, owner, conversation, item);
++            }
++          if (Array.isArray(final["output"])) {
++            const output = final["output"] as Item[],
++              reasoning = output.filter((i) => i["type"] === "reasoning");
++            for (const item of output) {
++              if (
++                item["type"] === "function_call" &&
++                typeof item["call_id"] === "string"
++              )
++                stage.put(
++                  "snapshot",
++                  `reasoning:${owner}:${conversation}:${item["call_id"]}`,
++                  { request: {}, input: reasoning },
++                );
++              if (
++                item["type"] === "reasoning" &&
++                typeof item["encrypted_content"] === "string"
++              )
++                stage.put(
++                  "snapshot",
++                  `opaque:${owner}:${conversation}:${item["encrypted_content"]}`,
++                  { request: {}, input: [item] },
++                );
++            }
+           }
+-        }
+-      },
+-      this.logger,
+-      limitContext,
+-    );
+-    let converted: AsyncIterable<ClientEvent>;
+-    if (protocol === ingress) converted = this.identity(raw, protocol);
+-    else if (ingress === "responses") {
+-      if (!reverse) throw new RoutingError("adapter_missing", 500);
+-      converted = this.identity(
+-        translateClaudeStream(raw, {
+-          id: `resp_subswitch_${randomUUID()}`,
+-          model: t.model,
+-          request: reverse,
+-          state,
+-          maxBytes: 64 * 1024 * 1024,
+-        }),
+-        "responses",
+-      );
+-    } else {
+-      converted = this.forward(raw, t.model, (id, items) =>
+-        stage.put("snapshot", `reasoning:${owner}:${conversation}:${id}`, {
+-          request: {},
+-          input: items as Item[],
+-        }),
++        },
++        this.logger,
++        limitContext,
+       );
+-    }
+-    const iterator = converted[Symbol.asyncIterator]();
+-    return {
+-      events: { [Symbol.asyncIterator]: () => iterator },
+-      owner,
+-      protocol: ingress,
+-      commit: () => stage.commit(),
+-      cancel: async () => {
+-        controller.abort();
+-        // Returning the generator clears idle timers and pipeline listeners even when
+-        // cancellation arrives while downstream is parked at a delivered event.
+-        let timer: ReturnType<typeof setTimeout> | undefined;
+-        const closing = Promise.allSettled([
+-          iterator.return?.(),
+-          response.body && !response.body.locked
+-            ? response.body.cancel()
+-            : undefined,
+-        ]);
+-        await Promise.race([
+-          closing,
+-          new Promise<void>((resolve) => {
+-            timer = setTimeout(resolve, 100);
++      let converted: AsyncIterable<ClientEvent>;
++      if (protocol === ingress) converted = this.identity(raw, protocol);
++      else if (ingress === "responses") {
++        if (!reverse) throw new RoutingError("adapter_missing", 500);
++        converted = this.identity(
++          translateClaudeStream(raw, {
++            id: `resp_subswitch_${randomUUID()}`,
++            model: t.model,
++            request: reverse,
++            state,
++            maxBytes: 64 * 1024 * 1024,
+           }),
+-        ]);
+-        clearTimeout(timer);
+-      },
+-    };
++          "responses",
++        );
++      } else {
++        converted = this.forward(raw, t.model, (id, items) =>
++          stage.put("snapshot", `reasoning:${owner}:${conversation}:${id}`, {
++            request: {},
++            input: items as Item[],
++          }),
++        );
++      }
++      const iterator = converted[Symbol.asyncIterator]();
++      return {
++        events: { [Symbol.asyncIterator]: () => iterator },
++        owner,
++        protocol: ingress,
++        commit: () => {
++          try { stage.commit(); } finally { finish(); }
++        },
++        cancel: async () => {
++          finish();
++          stage.discard();
++          controller.abort();
++          // Returning the generator clears idle timers and pipeline listeners even when
++          // cancellation arrives while downstream is parked at a delivered event.
++          let timer: ReturnType<typeof setTimeout> | undefined;
++          const closing = Promise.allSettled([
++            iterator.return?.(),
++            response.body && !response.body.locked
++              ? response.body.cancel()
++              : undefined,
++          ]);
++          await Promise.race([
++            closing,
++            new Promise<void>((resolve) => {
++              timer = setTimeout(resolve, 100);
++            }),
++          ]);
++          clearTimeout(timer);
++        },
++      };
++    } catch (error) {
++      finish();
++      stage.discard();
++      throw error;
++    }
+   }
+   private async *identity(
+     raw: AsyncIterable<Item | SseEvent>,
+diff --git a/src/routing/shared-routing.ts b/src/routing/shared-routing.ts
+index 378ac7d..f6ebd32 100644
+--- a/src/routing/shared-routing.ts
++++ b/src/routing/shared-routing.ts
+@@ -331,6 +331,8 @@ export class SharedRouting {
+             route: routeName,
+             attempt: index,
+             scopeHash: scopeKey(scope),
++            // Import only native same-provider full history, never a fallback candidate.
++            allowNativeThinkingReplay: chain.length === 1 && index === 0,
+             ...(priorOwner ? { priorOwner } : {}),
+             ...(pinned && affinity?.selectedOwner
+               ? { expectedOwner: affinity.selectedOwner }
+diff --git a/src/routing/signed-thinking.ts b/src/routing/signed-thinking.ts
+new file mode 100644
+index 0000000..f3a9b69
+--- /dev/null
++++ b/src/routing/signed-thinking.ts
+@@ -0,0 +1,54 @@
++import { createHash } from "node:crypto";
++import type { ClaudeCache } from "../claude-cache.js";
++import { StagedCache } from "./replay-cache.js";
++import { RoutingError, type Item } from "./routing-types.js";
++
++/** Native signatures remain opaque; only their original upstream can authenticate imports. */
++export function thinkingSignature(block: Item): string | undefined {
++  const signature = block[block["type"] === "thinking" ? "signature" : "data"];
++  if (typeof signature !== "string" || !signature) return undefined;
++  if (block["type"] === "thinking")
++    return typeof block["thinking"] === "string" && block["data"] === undefined
++      ? signature : undefined;
++  return block["type"] === "redacted_thinking" &&
++    block["signature"] === undefined && block["thinking"] === undefined
++    ? signature : undefined;
++}
++
++export function sameThinking(block: Item, recorded: Item): boolean {
++  return thinkingSignature(block) !== undefined &&
++    block["type"] === recorded["type"] &&
++    block["thinking"] === recorded["thinking"] &&
++    block["signature"] === recorded["signature"] &&
++    block["data"] === recorded["data"];
++}
++
++const provenanceKey = (signature: string) =>
++  `thinking-origin:${createHash("sha256").update(signature).digest("hex")}`;
++
++/** Distinguish a cold cache from a signature already observed under another scope. */
++export const knownThinking = (cache: ClaudeCache, signature: string): boolean =>
++  cache.get("snapshot", provenanceKey(signature)) !== undefined;
++
++/** Staged callers publish imports only after a successful provider terminal. */
++export function rememberThinking(
++  cache: ClaudeCache, owner: string, conversation: string, block: Item,
++): void {
++  const signature = thinkingSignature(block);
++  if (signature === undefined) return;
++  const scoped = `signature:${owner}:${conversation}:${signature}`;
++  const key = provenanceKey(signature);
++  const provenance = cache.get("snapshot", key);
++  if (provenance && (provenance.request["owner"] !== owner ||
++      provenance.request["conversation"] !== conversation || provenance.request["pending"]))
++    throw new RoutingError("foreign_opaque_state", 409);
++  const recorded = cache.get("snapshot", scoped)?.input[0];
++  if (recorded && !sameThinking(block, recorded))
++    throw new RoutingError("foreign_opaque_state", 409);
++  if (!provenance) {
++    const value = { request: { owner, conversation }, input: [] };
++    if (cache instanceof StagedCache) cache.reserveSnapshot(key, value);
++    else cache.put("snapshot", key, value);
++  }
++  cache.put("snapshot", scoped, { request: {}, input: [block] });
++}
+diff --git a/test/integration/native-thinking-continuity.test.ts b/test/integration/native-thinking-continuity.test.ts
+new file mode 100644
+index 0000000..9376b45
+--- /dev/null
++++ b/test/integration/native-thinking-continuity.test.ts
+@@ -0,0 +1,385 @@
++/** Offline regressions: fabricated native Claude history, credentials and upstreams. */
++import assert from "node:assert/strict";
++import { describe, it } from "node:test";
++import http from "node:http";
++import { existsSync, mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { loadConfig } from "../../src/config.js";
++import { noopLogger } from "../../src/logger.js";
++import { SharedRouting } from "../../src/routing/shared-routing.js";
++import type { Item } from "../../src/routing/routing-types.js";
++import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
++
++const thought = {
++  type: "thinking",
++  thinking: "Fabricated thought from before the proxy started",
++  signature: "fabricated-native-signature",
++};
++const hiddenThought = { type: "redacted_thinking", data: "fabricated-native-redacted" };
++const history: Item[] = [
++  { role: "user", content: "Read the fabricated fixture" },
++  {
++    role: "assistant",
++    content: [
++      thought,
++      hiddenThought,
++      { type: "tool_use", id: "toolu_original", name: "Read", input: { path: "fixture" } },
++    ],
++  },
++  {
++    role: "user",
++    content: [
++      { type: "tool_result", tool_use_id: "toolu_original", content: "fabricated result" },
++      { type: "text", text: "Continue" },
++    ],
++  },
++];
++
++const injectedOrigin = "http://127.0.0.1:1"; // No socket is used by the injected-fetch tests.
++
++function config(root: string, origin = injectedOrigin) {
++  const loaded = loadConfig({
++    configPath: join(root, "continuity.json"),
++    env: {},
++    readFile: () => JSON.stringify({
++      configVersion: 2,
++      anthropic: { baseUrl: `${origin}/unexpected/anthropic` },
++      providers: { codex: {
++        kind: "codex", baseUrl: `${origin}/unexpected/codex`,
++        oauthTokenUrl: `${origin}/unexpected/codex-refresh`, authFile: join(root, "absent-codex.json"),
++      } },
++      codexIngress: {
++        subscriptionBaseUrl: `${origin}/unexpected/subscription`, apiBaseUrl: `${origin}/unexpected/openai-api`,
++        claude: {
++          baseUrl: `${origin}/unexpected/claude`, oauthTokenUrl: `${origin}/unexpected/claude-refresh`,
++          authFile: join(root, "absent-claude.json"), configDir: join(root, "absent-claude-config"),
++        },
++      },
++      accessProfiles: {
++        native: {
++          provider: "claude", product: "anthropic-api", billing: "api", account: "original",
++          baseUrl: `${origin}/native`,
++          credential: { kind: "env", name: "FABRICATED_CLAUDE_KEY" },
++        },
++        other: {
++          provider: "claude", product: "anthropic-api", billing: "api", account: "other",
++          baseUrl: `${origin}/other`,
++          credential: { kind: "env", name: "FABRICATED_OTHER_KEY" },
++        },
++      },
++      routes: {
++        work: { clients: ["claude-code"], primary: { profile: "native", model: "claude-sonnet-5", effort: "high" } },
++        other: { clients: ["claude-code"], primary: { profile: "other", model: "claude-sonnet-5", effort: "high" } },
++      },
++    }),
++  });
++  if (!loaded.ok) throw new Error(loaded.error.message);
++  return loaded.value.config;
++}
++
++function restrictedFetch(origin: string, implementation: typeof fetch): typeof fetch {
++  const allowed = new Set([`${origin}/native/v1/messages`, `${origin}/other/v1/messages`]);
++  return async (input, init) => {
++    const url = input instanceof Request ? input.url : String(input);
++    assert.ok(allowed.has(url), `offline fixture blocked unexpected fetch: ${url}`);
++    assert.equal(init?.redirect, "error", "offline fixture must not follow redirects");
++    return implementation(input, init);
++  };
++}
++
++function deferred<T>() {
++  let resolve!: (value: T | PromiseLike<T>) => void;
++  let reject!: (reason?: unknown) => void;
++  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
++  return { promise, resolve, reject };
++}
++
++function reply(): Response {
++  const events: Item[] = [
++    { type: "message_start", message: { id: "msg_fabricated", type: "message", role: "assistant", model: "claude-sonnet-5", content: [], usage: { input_tokens: 1, output_tokens: 0 } } },
++    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
++    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Fabricated answer" } },
++    { type: "content_block_stop", index: 0 },
++    { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } },
++    { type: "message_stop" },
++  ];
++  return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), {
++    headers: { "content-type": "text/event-stream" },
++  });
++}
++
++function rig(response: (request: Item, number: number, signal: AbortSignal) => Response | Promise<Response> = () => reply()) {
++  const root = mkdtempSync(join(tmpdir(), "subswitch-continuity-"));
++  const requests: Item[] = [];
++  const auth: string[] = [];
++  const routing = new SharedRouting(config(root), noopLogger, undefined, restrictedFetch(injectedOrigin, async (_url, init) => {
++    requests.push(JSON.parse(String(init?.body)));
++    auth.push(new Headers(init?.headers).get("x-api-key") ?? "");
++    return response(requests.at(-1)!, requests.length, init!.signal!);
++  }), { FABRICATED_CLAUDE_KEY: "fabricated-original", FABRICATED_OTHER_KEY: "fabricated-other" });
++  return { routing, requests, auth, close() { routing.close(); rmSync(root, { recursive: true, force: true }); } };
++}
++
++async function run(routing: SharedRouting, messages: Item[] = history, route = "work", signal = new AbortController().signal) {
++  const events: Item[] = [];
++  for await (const event of routing.events(
++    { model: route, messages: structuredClone(messages) }, "claude-code", route, signal,
++  )) events.push(event);
++  assert.equal(events.at(-1)?.type, "message_stop");
++}
++
++describe("native Claude full-history continuity (offline)", () => {
++  it("isolates every configured endpoint and native auth path and blocks unexpected injected fetches", async () => {
++    const root = mkdtempSync(join(tmpdir(), "subswitch-continuity-isolation-"));
++    try {
++      const fixture = config(root);
++      const claude = fixture.codexIngress.claude;
++      for (const endpoint of [
++        fixture.anthropic.baseUrl, fixture.providers.codex.baseUrl, fixture.providers.codex.oauthTokenUrl,
++        fixture.codexIngress.subscriptionBaseUrl, fixture.codexIngress.apiBaseUrl,
++        claude.baseUrl, claude.oauthTokenUrl,
++        ...Object.values(fixture.accessProfiles!).map(profile => profile.baseUrl!),
++      ]) assert.equal(new URL(endpoint).origin, injectedOrigin);
++      for (const path of [fixture.providers.codex.authFile, claude.authFile!, claude.configDir!]) {
++        assert.equal(path.startsWith(`${root}/`), true);
++        assert.equal(existsSync(path), false);
++      }
++      for (const profile of Object.values(fixture.accessProfiles!)) assert.equal(profile.credential.kind, "env");
++      let calls = 0;
++      const allowed = restrictedFetch(injectedOrigin, async () => { calls++; return reply(); });
++      for (const url of ["https://api.anthropic.com/v1/messages", `${injectedOrigin}/unexpected/anthropic/v1/messages`])
++        await assert.rejects(allowed(url, { redirect: "error" }), /blocked unexpected fetch/);
++      await assert.rejects(allowed(`${injectedOrigin}/native/v1/messages`, { redirect: "follow" }), /must not follow redirects/);
++      assert.equal(calls, 0);
++      await allowed(`${injectedOrigin}/native/v1/messages`, { redirect: "error" });
++      assert.equal(calls, 1);
++      const deps = buildDeps(fixture, noopLogger, { fetchImpl: allowed, env: {} });
++      assert.ok(deps.ok);
++      deps.value.sharedRouting?.close();
++      deps.value.forwardOpenai?.close();
++      deps.value.forwardAnthropic.close?.();
++    } finally { rmSync(root, { recursive: true, force: true }); }
++  });
++
++  it("imports an existing conversation before startup and follows up in the same process without changing signed history or tools", async () => {
++    const { routing, requests, auth, close } = rig();
++    try {
++      await run(routing);
++      const followup = [...history,
++        { role: "assistant", content: [{ type: "text", text: "Fabricated answer" }] },
++        { role: "user", content: "Continue again" },
++      ];
++      await run(routing, followup);
++      assert.equal(requests.length, 2);
++      assert.deepEqual(requests[0]?.messages, history);
++      assert.deepEqual(requests[1]?.messages, followup);
++      assert.deepEqual(auth, ["fabricated-original", "fabricated-original"]);
++    } finally { close(); }
++  });
++
++  it("replays the same complete signed history after constructing a fresh proxy instance", async () => {
++    for (let restart = 0; restart < 2; restart++) {
++      const { routing, requests, close } = rig();
++      try {
++        await run(routing);
++        assert.deepEqual(requests[0]?.messages, history);
++      } finally { close(); }
++    }
++  });
++
++  it("retains rejection of recorded tampering and known other-owner replay before upstream", async () => {
++    const { routing, requests, close } = rig();
++    try {
++      await run(routing);
++      const changed = structuredClone(history);
++      ((changed[1]!.content as Item[])[0]!).thinking = "tampered";
++      await assert.rejects(run(routing, changed), /foreign_opaque_state/);
++      await assert.rejects(run(routing, history, "other"), /foreign_opaque_state/);
++      assert.equal(requests.length, 1);
++    } finally { close(); }
++  });
++
++  for (const failure of ["rejection", "missing terminal"] as const) {
++    it(`does not adopt unvalidated imports after an upstream ${failure}`, async () => {
++      const { routing, requests, close } = rig((_request, number) => {
++        if (number !== 1) return reply();
++        if (failure === "rejection") return new Response(
++          '{"error":{"type":"invalid_request_error","message":"fabricated invalid signature"}}', { status: 400 },
++        );
++        return new Response(
++          'event: message_start\ndata: {"type":"message_start","message":{"id":"fabricated-partial","type":"message","role":"assistant","content":[]}}\n\n',
++          { headers: { "content-type": "text/event-stream" } },
++        );
++      });
++      try {
++        await assert.rejects(run(routing), failure === "rejection" ? /invalid_request/ : /missing_provider_terminal/);
++        // Failed/unfinished attempts must not bind imported signatures to their owner.
++        await run(routing, history, "other");
++        assert.equal(requests.length, 2);
++      } finally { close(); }
++    });
++  }
++
++  for (const scope of ["owner", "conversation"] as const) {
++    it(`reserves cold imports against a concurrent different ${scope} before dispatch and after publication`, async () => {
++      const entered = deferred<void>();
++      const upstream = deferred<Response>();
++      const { routing, requests, close } = rig((_request, number) => {
++        if (number !== 1) return reply();
++        entered.resolve();
++        return upstream.promise;
++      });
++      const competingHistory = scope === "conversation"
++        ? [{ role: "user", content: "Different fabricated conversation" }, ...history.slice(1)] : history;
++      const competingRoute = scope === "owner" ? "other" : "work";
++      const first = run(routing);
++      try {
++        await entered.promise;
++        await assert.rejects(run(routing, competingHistory, competingRoute), /foreign_opaque_state/);
++        assert.equal(requests.length, 1, "conflicting history must not reach another upstream");
++        upstream.resolve(reply());
++        await first;
++        await assert.rejects(run(routing, competingHistory, competingRoute), /foreign_opaque_state/);
++        assert.equal(requests.length, 1);
++        await run(routing);
++        assert.equal(requests.length, 2, "successful original scope keeps exact replay");
++      } finally { upstream.resolve(reply()); await first.catch(() => {}); close(); }
++    });
++  }
++
++  for (const ending of ["rejection", "cancellation"] as const) {
++    it(`releases concurrent import reservations after ${ending}`, async () => {
++      const entered = deferred<void>();
++      const upstream = deferred<Response>();
++      const { routing, requests, close } = rig((_request, number, signal) => {
++        if (number !== 1) return reply();
++        entered.resolve();
++        signal.addEventListener("abort", () => upstream.reject(signal.reason), { once: true });
++        return upstream.promise;
++      });
++      const abort = new AbortController();
++      const first = assert.rejects(run(routing, history, "work", abort.signal),
++        ending === "rejection" ? /invalid_request/ : /request_cancelled/);
++      try {
++        await entered.promise;
++        await assert.rejects(run(routing, history, "other"), /foreign_opaque_state/);
++        assert.equal(requests.length, 1);
++        if (ending === "rejection") upstream.resolve(new Response('{"error":{"type":"invalid_request_error"}}', { status: 400 }));
++        else abort.abort();
++        await first;
++        await run(routing, history, "other");
++        await assert.rejects(run(routing), /foreign_opaque_state/);
++        assert.equal(requests.length, 2, "only the released reservation may be adopted by another scope");
++      } finally { abort.abort(); await first; close(); }
++    });
++  }
++
++  it("releases partially adapted imports before any upstream dispatch", async () => {
++    const { routing, requests, close } = rig();
++    try {
++      const malformed = structuredClone(history);
++      ((malformed[1]!.content as Item[])[1]!).data = "";
++      await assert.rejects(run(routing, malformed), /foreign_opaque_state/);
++      assert.equal(requests.length, 0);
++      await run(routing, history, "other");
++      assert.equal(requests.length, 1);
++    } finally { close(); }
++  });
++
++  it("releases imports when the consumer cancels after the provider starts streaming", async () => {
++    const { routing, requests, close } = rig();
++    const events = routing.events({ model: "work", messages: structuredClone(history) },
++      "claude-code", "work", new AbortController().signal);
++    try {
++      assert.equal((await events.next()).value?.type, "message_start");
++      await assert.rejects(run(routing, history, "other"), /foreign_opaque_state/);
++      await events.return(undefined);
++      await run(routing, history, "other");
++      assert.equal(requests.length, 2);
++    } finally { await events.return(undefined); close(); }
++  });
++
++  for (const streaming of [false, true]) {
++    it(`preserves native history through HTTP startup, follow-up and restart with stream=${streaming}`, async (t) => {
++      const root = mkdtempSync(join(tmpdir(), "subswitch-continuity-http-"));
++      t.after(() => rmSync(root, { recursive: true, force: true }));
++      const received: { body: Item; key: string | undefined; authorization: string | undefined }[] = [];
++      const rejected: string[] = [];
++      const origin = http.createServer(async (req, res) => {
++        if (req.url !== "/native/v1/messages") {
++          rejected.push(req.url ?? "");
++          req.resume();
++          res.writeHead(502, { "content-type": "application/json" });
++          res.end('{"error":{"type":"offline_unexpected_upstream"}}');
++          return;
++        }
++        const chunks: Buffer[] = [];
++        for await (const chunk of req) chunks.push(chunk);
++        received.push({
++          body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
++          key: req.headers["x-api-key"] as string | undefined,
++          authorization: req.headers.authorization,
++        });
++        const response = reply();
++        res.writeHead(200, { "content-type": "text/event-stream" });
++        res.end(await response.text());
++      });
++      const listening = await listenServer(origin, 0, "127.0.0.1");
++      assert.ok(listening.ok, JSON.stringify(listening));
++      const address = origin.address();
++      assert.ok(address && typeof address !== "string");
++      const originUrl = `http://127.0.0.1:${address.port}`;
++      try {
++        for (let restart = 0; restart < 2; restart++) {
++          const deps = buildDeps(config(root, originUrl), noopLogger, {
++            env: { FABRICATED_CLAUDE_KEY: "fabricated-original" },
++            fetchImpl: restrictedFetch(originUrl, fetch),
++          });
++          assert.ok(deps.ok);
++          const proxy = createProxyServer(deps.value);
++          const listening = await listenServer(proxy, 0, "127.0.0.1");
++          assert.ok(listening.ok, JSON.stringify(listening));
++          const proxyAddress = proxy.address();
++          assert.ok(proxyAddress && typeof proxyAddress !== "string");
++          try {
++            for (const messages of [history, [...history,
++              { role: "assistant", content: "Fabricated answer" },
++              { role: "user", content: "Continue again" },
++            ]]) {
++              const response = await fetch(`http://127.0.0.1:${proxyAddress.port}/v1/messages`, {
++                method: "POST",
++                headers: { "content-type": "application/json", authorization: "Bearer fabricated-incoming-not-for-upstream" },
++                body: JSON.stringify({ model: "work", stream: streaming, messages }),
++              });
++              assert.equal(response.status, 200);
++              if (streaming) assert.match(await response.text(), /event: message_stop/);
++              else assert.equal((await response.json() as Item).stop_reason, "end_turn");
++              assert.deepEqual(received.at(-1)?.body.messages, messages);
++              assert.equal(received.at(-1)?.key, "fabricated-original");
++              assert.equal(received.at(-1)?.authorization, undefined);
++            }
++            assert.equal(rejected.length, restart, "explicit routes never reach legacy endpoints");
++            // Deliberately exercise the production route-miss branch. It must reject
++            // at the owned fixture, even if explicit matching regresses in the future.
++            const unmatched = await fetch(`http://127.0.0.1:${proxyAddress.port}/v1/messages`, {
++              method: "POST", headers: { "content-type": "application/json" },
++              body: JSON.stringify({ model: "fabricated-unmatched", stream: streaming, messages: history }),
++            });
++            assert.equal(unmatched.status, 502);
++            assert.match(await unmatched.text(), /offline_unexpected_upstream/);
++            assert.equal(rejected.at(-1), "/unexpected/anthropic/v1/messages");
++          } finally {
++            proxy.closeAllConnections();
++            await new Promise<void>(resolve => proxy.close(() => resolve()));
++          }
++        }
++        assert.equal(received.length, 4, "one upstream call per turn, with no retries or fallback");
++        assert.deepEqual(rejected, Array(2).fill("/unexpected/anthropic/v1/messages"));
++      } finally {
++        origin.closeAllConnections();
++        await new Promise<void>(resolve => origin.close(() => resolve()));
++      }
++    });
++  }
++});
+diff --git a/test/unit/native-thinking-replay.test.ts b/test/unit/native-thinking-replay.test.ts
+new file mode 100644
+index 0000000..69eb6ea
+--- /dev/null
++++ b/test/unit/native-thinking-replay.test.ts
+@@ -0,0 +1,97 @@
++import assert from "node:assert/strict";
++import { describe, it } from "node:test";
++import { ClaudeCache } from "../../src/claude-cache.js";
++import { ReverseState } from "../../src/claude-state.js";
++import { adaptRequest } from "../../src/routing/request-adapter.js";
++import { decodePortableHistory } from "../../src/routing/portable-history.js";
++import { rememberThinking } from "../../src/routing/signed-thinking.js";
++import { StagedCache } from "../../src/routing/replay-cache.js";
++import type { AccessProfile, Item, WireProtocol } from "../../src/routing/routing-types.js";
++
++const profile: AccessProfile = {
++  provider: "claude", product: "anthropic-api", billing: "api", account: "fabricated",
++  credential: { kind: "env", name: "FABRICATED_KEY" },
++};
++const thinking = { type: "thinking", thinking: "fabricated thought", signature: "fabricated-signature" };
++
++function adapt(options: {
++  block?: Item; stage?: ClaudeCache; allow?: boolean; profile?: AccessProfile;
++  destination?: WireProtocol; priorOwner?: string; conversation?: string;
++} = {}) {
++  const body = { model: "work", messages: [
++    { role: "assistant", content: [options.block ?? thinking] }, { role: "user", content: "continue" },
++  ] };
++  return adaptRequest({
++    body, profile: options.profile ?? profile,
++    target: { profile: "fabricated", model: "claude-sonnet-5", effort: "high" },
++    ingress: "messages", protocol: options.destination ?? "messages",
++    transcript: decodePortableHistory(body, "messages"),
++    stage: options.stage ?? new ClaudeCache(), state: new ReverseState(),
++    owner: "original-owner", conversation: options.conversation ?? "original-conversation",
++    sessionId: "fabricated", allowNativeThinkingReplay: options.allow ?? true,
++    ...(options.priorOwner ? { priorOwner: options.priorOwner } : {}),
++  });
++}
++
++describe("native thinking import boundary", () => {
++  it("requires the dispatcher's authorization and native Claude Messages on both sides", () => {
++    assert.throws(() => adapt({ allow: false }), /foreign_opaque_state/);
++    assert.throws(() => adapt({ destination: "responses" }), /foreign_opaque_state/);
++    assert.throws(() => adapt({ profile: { ...profile, provider: "kimi", product: "kimi-platform", region: "global" } }), /foreign_opaque_state/);
++    assert.throws(() => adapt({ priorOwner: "different-owner" }), /foreign_opaque_state/);
++    const { outbound } = adapt();
++    assert.deepEqual((outbound.messages as Item[])[0]?.content, [thinking]);
++    assert.doesNotThrow(() => adapt({ profile: {
++      ...profile, product: "claude-code", billing: "subscription",
++      credential: { kind: "native-oauth", authFile: "/fabricated/never-read.json" },
++    } }));
++  });
++
++  it("does not mistake malformed native blocks for cache misses that can be imported", () => {
++    for (const block of [
++      { ...thinking, signature: "" }, { ...thinking, signature: undefined },
++      { ...thinking, thinking: undefined }, { ...thinking, data: "extra" },
++      { type: "redacted_thinking", data: "" },
++      { type: "redacted_thinking", data: "fabricated-redacted", thinking: "extra" },
++      { type: "redacted_thinking", data: "fabricated-redacted", signature: "extra" },
++    ]) assert.throws(() => adapt({ block }), /foreign_opaque_state/);
++  });
++
++  it("preserves known conversation ownership while accepting a recorded exact replay", () => {
++    const stage = new ClaudeCache();
++    rememberThinking(stage, "original-owner", "original-conversation", thinking);
++    assert.doesNotThrow(() => adapt({ stage }));
++    assert.throws(() => adapt({ stage, conversation: "another-conversation" }), /foreign_opaque_state/);
++    assert.throws(() => adapt({ stage, block: { ...thinking, thinking: "tampered" } }), /foreign_opaque_state/);
++  });
++
++  it("revalidates exclusive ownership before atomically publishing replay state", () => {
++    const shared = new ClaudeCache(), stage = new StagedCache(shared);
++    stage.reserveSnapshot("claim", { request: { owner: "original" }, input: [] });
++    stage.put("snapshot", "scoped-block", { request: {}, input: [thinking] });
++    const foreign = { request: { owner: "foreign" }, input: [] };
++    shared.put("snapshot", "claim", foreign);
++    assert.throws(() => stage.commit(), /foreign_opaque_state/);
++    assert.equal(shared.get("snapshot", "scoped-block"), undefined);
++    assert.equal(shared.get("snapshot", "claim"), foreign, "rollback cannot delete another scope's claim");
++  });
++
++  it("bounds pending claims and releases them without partial publication when the shared budget is full", () => {
++    const shared = new ClaudeCache({ maxEntries: 1, maxBytes: 4096 }, true);
++    const stage = new StagedCache(shared);
++    stage.reserveSnapshot("claim", { request: { owner: "original" }, input: [] });
++    assert.equal(shared.size, 1);
++    const competing = new StagedCache(shared);
++    assert.throws(() => competing.reserveSnapshot("other-claim", { request: {}, input: [] }), /continuation_store_full/);
++    competing.discard();
++    stage.put("snapshot", "scoped-block", { request: {}, input: [thinking] });
++    assert.throws(() => stage.commit(), /continuation_store_full/);
++    assert.equal(shared.size, 0);
++    assert.equal(shared.byteSize, 0);
++    assert.equal(shared.get("snapshot", "scoped-block"), undefined);
++    const retry = new StagedCache(shared);
++    assert.doesNotThrow(() => retry.reserveSnapshot("claim", { request: { owner: "other" }, input: [] }));
++    retry.discard();
++    assert.equal(shared.size, 0);
++  });
++});
+diff --git a/e2e/gates/native-thinking-continuity-offline-2026-10-19.json b/e2e/gates/native-thinking-continuity-offline-2026-10-19.json
+new file mode 100644
+index 0000000..81016ad
+--- /dev/null
++++ b/e2e/gates/native-thinking-continuity-offline-2026-10-19.json
+@@ -0,0 +1,123 @@
++{
++  "schemaVersion": 1,
++  "kind": "native-thinking-continuity-offline",
++  "date": "2026-10-19",
++  "base": "0183d6de0edfc6229cbd54c932f76e2d136c5ffa",
++  "scope": "Single-target explicit native Claude Messages full-history replay; no live provider inference or real client/profile/history/auth access.",
++  "confirmedMechanism": "An otherwise valid full native signed history is refused by the explicit-route local signature cache before upstream contact on a cold instance. Released ordinary Claude passthrough bypasses the adapter; the reported released-user incident remains unproven.",
++  "red": {
++    "command": "node --import tsx --test --test-timeout=30000 test/integration/native-thinking-continuity.test.ts",
++    "baseResult": "Original three regressions all failed with foreign_opaque_state at request-adapter.ts:98 before fetch."
++  },
++  "checks": [
++    {
++      "command": "node --import tsx --test --test-name-pattern='isolates every|imports an|replays the|retains rejection|does not adopt|reserves cold|releases concurrent|releases partially|releases imports' --test-timeout=30000 test/integration/native-thinking-continuity.test.ts",
++      "exitCode": 0,
++      "passed": 12,
++      "coverage": [
++        "before-startup import and same-process follow-up",
++        "fresh-instance restart",
++        "exact signed/redacted blocks and tool history",
++        "recorded tamper and known foreign owner rejection",
++        "deferred overlapping different owners and conversations reject before second dispatch",
++        "ownership stays exclusive after successful publication",
++        "release after rejection, missing terminal, aborted fetch, partial adaptation and streaming-consumer cancellation",
++        "all fixture endpoints local, all native auth paths isolated and nonexistent",
++        "fetch URL allowlist rejects unexpected vendor/local paths and redirects before implementation",
++        "isolated buildDeps constructs and closes without listeners"
++      ]
++    },
++    {
++      "command": "node --import tsx --test --test-reporter=dot --test-timeout=30000 test/unit/claude-cache.test.ts test/unit/native-thinking-replay.test.ts test/unit/wave1-codec-review.test.ts test/unit/wave1-reliability.test.ts test/unit/codex-request.test.ts test/unit/reverse-adapter.test.ts test/unit/claude-stream.test.ts",
++      "exitCode": 0,
++      "coverage": [
++        "native-only import authorization and exact field checks",
++        "publication revalidates reservation ownership before any scoped writes",
++        "rollback does not delete a replacement foreign claim",
++        "shared entry/byte budget bounds pending imports and failed batch publication releases claims",
++        "existing cache, codec, reliability, translation and stream regressions"
++      ]
++    },
++    {
++      "command": "npm run typecheck",
++      "exitCode": 0
++    },
++    {
++      "command": "npm run build",
++      "exitCode": 0
++    },
++    {
++      "command": "git diff --check",
++      "exitCode": 0
++    }
++  ],
++  "blocked": [
++    {
++      "gate": "Production HTTP ephemeral fake origin/proxy, stream=false and stream=true",
++      "reason": "Native sandbox denies listen(127.0.0.1, port=0): EPERM. Tests retained, not skipped or bypassed."
++    },
++    {
++      "gate": "Full npm test under shared nonblocking heavy-test lock",
++      "reason": "Not attempted after confirmed listener denial; the suite requires those listeners. Must remain incomplete."
++    },
++    {
++      "gate": "Native disposable Claude session and real provider validation",
++      "reason": "Outside this bounded offline assignment; no real clients or state touched."
++    },
++    {
++      "gate": "Commit, push and dependent draft PR",
++      "reason": "Native sandbox denies git add: Unable to create .git/index.lock: Operation not permitted. No retry through another session or alternate Git metadata."
++    }
++  ],
++  "selfReview": [
++    "Singleton dispatch authorization and same-native-Claude-Messages adapter guards remain; no prior-owner switches or cross-provider imports.",
++    "Exact scoped signed-field checks remain. Bounded provenance now records owner/conversation and reserves cold signatures before dispatch.",
++    "Reservation acquisition and publication are synchronous. Commit checks every held reservation before atomic shared publication. Failed/cancelled imports publish no scoped blocks; conditional rollback never removes another claim.",
++    "Reservations consume the existing shared byte/entry limits, with no unbounded side store. Failed capacity checks and failed publication leave no adopted history.",
++    "New signal listener and cleanup cover preparation errors, upstream rejection, cancellation before headers and cancellation while streaming is parked. Provider timeout/stream errors reach dispatcher finally cleanup.",
++    "All configured fixture endpoints share an owned origin; legacy fallthrough rejects locally. Env-only profiles and owned absent auth paths prevent native credential reads in this fixture. Injected fetch blocks unexpected URLs and redirect following.",
++    "Signed blocks, signatures and tool history remain unchanged; no auth selection, fallback policy, translated continuation persistence, later-system normalization or real-state change.",
++    "HTTP stream-mode and route-miss assertions are retained but unexecuted. In-memory checks do not establish native or live-provider acceptance."
++  ],
++  "separateFollowups": [
++    "Later system-role Messages normalization",
++    "Durable translated/native Responses continuation handles",
++    "Verification of the original released-user incident",
++    "Kimi testing"
++  ],
++  "peerReview": {
++    "report": "/Users/dean/Sandbox/subswitch-kimi/peer-review-continuity.json",
++    "originalRecommendation": "request_changes",
++    "findings": [
++      {
++        "id": "CONT-01",
++        "status": "implemented; awaiting independent fix-diff review",
++        "resolution": "Cold imports now reserve a provenance entry in the existing bounded shared cache before dispatch. Provenance stores owner and conversation. Other overlapping imports reject before upstream contact. Staged commit revalidates exclusive reservation identity synchronously with atomic batch publication. Preparation failures, signal abort, consumer cancellation and failed publication release only their own pending entries; successful commits replace pending entries with permanent scoped provenance.",
++        "files": [
++          "src/claude-cache.ts",
++          "src/routing/replay-cache.ts",
++          "src/routing/signed-thinking.ts",
++          "src/routing/routed-attempt.ts",
++          "test/integration/native-thinking-continuity.test.ts",
++          "test/unit/native-thinking-replay.test.ts"
++        ],
++        "behavior": "An overlapping cold import of an already pending signature is rejected, including the same scope, until the first attempt commits or releases. After successful commit only exact replay in the recorded owner/conversation is accepted."
++      },
++      {
++        "id": "CONT-02",
++        "status": "implemented; in-memory isolation checks pass; HTTP behavior remains blocked",
++        "resolution": "Every configured legacy/API/subscription/refresh endpoint and both routed profiles use the fixture origin. Native auth/config paths point to absent files/directories inside an owned temporary directory. All profiles use fabricated env credentials. A fail-closed exact-URL/redirect allowlist wraps routed fetch. HTTP origins reject every path except the expected native Messages path, and both stream-mode gates now deliberately exercise route-miss passthrough against that local rejection path.",
++        "files": [
++          "test/integration/native-thinking-continuity.test.ts"
++        ],
++        "runtimeLimit": "No listener or HTTP gate was rerun. The local route-miss HTTP assertions remain unexecuted."
++      }
++    ],
++    "next": "Independent read-only review of the fix diff; no claim of peer approval."
++  },
++  "transientCheckFailure": {
++    "command": "npm run typecheck",
++    "cause": "New deferred helper initially used Promise.withResolvers outside the configured TypeScript library target.",
++    "resolution": "Replaced with an ES-target-compatible Promise helper; subsequent typecheck passed."
++  }
++}
