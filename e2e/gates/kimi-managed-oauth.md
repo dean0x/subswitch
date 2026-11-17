@@ -375,8 +375,9 @@ those remain separate validation gates.
 Synthetic tests cover grants, rotation/cancellation, secure storage and caller
 tool IDs/results. Every inference dispatch, including a 401 retry, invokes the relay's
 injected qualification budget hook with the serialized output cap. Normal serving
-has no validation budget. The managed relay uses one 30 second deadline through
-headers, refresh/retry and stream consumption. Auth never performs inference.
+has no validation budget. Native Kimi attempts use the shared 600 second total bound.
+Headers, refresh and retry have a 300 second phase bound. Stream idle time has a
+300 second bound that resets on each data chunk. Auth never performs inference.
 
 Native-store and refresh safety tests use fabricated private files. A bounded
 manual native Claude Code → Agent → Read → Subswitch → Kimi flow has verified a

@@ -4,7 +4,7 @@ import { createSseParser, isParserComment, isValidNativeSignedBlock, type SseEve
 import { object } from "../plain-object.js";
 import { classifyFailure, logProviderFailure } from "./provider-failure.js";
 import { AttemptFailure } from "./attempt-failure.js";
-import { scheduleRoutingTimer, type RoutingClock } from "./clock.js";
+import { ROUTING_IDLE_TIMEOUT_MS, scheduleRoutingTimer, type RoutingClock } from "./clock.js";
 import {
   RoutingError,
   type AccessProfile,
@@ -78,7 +78,7 @@ export async function* validatedProviderEvents(
   let cancelIdle: (() => void) | undefined;
   const reset = () => {
     cancelIdle?.();
-    cancelIdle = scheduleRoutingTimer(clock, () => controller.abort(), 300000);
+    cancelIdle = scheduleRoutingTimer(clock, () => controller.abort(), ROUTING_IDLE_TIMEOUT_MS);
   };
   source?.on("data", reset);
   reset();

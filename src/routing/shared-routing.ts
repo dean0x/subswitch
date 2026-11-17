@@ -13,6 +13,7 @@ import { QuotaStore, scopeKey } from "./quota-store.js";
 import {
   systemClock,
   scheduleRoutingTimer,
+  ROUTING_TOTAL_TIMEOUT_MS,
   type RoutingClock,
 } from "./clock.js";
 import { ProfileAuth } from "./profile-auth.js";
@@ -192,10 +193,10 @@ export class SharedRouting {
     if (chain.length > 1 && !context)
       throw new RoutingError("action_identity_required", 409);
     const controller = new AbortController(),
-      deadline = this.clock.monotonic() + 600000;
+      deadline = this.clock.monotonic() + ROUTING_TOTAL_TIMEOUT_MS;
     const timeout = () =>
       controller.abort(new RoutingError("request_timeout", 504));
-    const cancelTotal = scheduleRoutingTimer(this.clock, timeout, 600000);
+    const cancelTotal = scheduleRoutingTimer(this.clock, timeout, ROUTING_TOTAL_TIMEOUT_MS);
     const combined = AbortSignal.any([
       signal,
       controller.signal,

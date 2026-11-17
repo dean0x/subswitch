@@ -35,7 +35,7 @@ import {
   decodePortableHistory,
   type PortableTranscript,
 } from "./portable-history.js";
-import { systemClock, type RoutingClock } from "./clock.js";
+import { ROUTING_IDLE_TIMEOUT_MS, ROUTING_TOTAL_TIMEOUT_MS, scheduleRoutingTimer, systemClock, type RoutingClock } from "./clock.js";
 import { codexTransportConstants, buildHeaders } from "../codex-handler.js";
 import { StagedCache, type OrderedReplayDiagnostics } from "./replay-cache.js";
 import { adaptRequest } from "./request-adapter.js";
@@ -161,7 +161,8 @@ export class RoutedAttempts {
     let completionLease: KimiExecReservation | undefined;
     let publicationReady = false, disposed = false, orderedReady = false, stageClosed = false;
     const controller = new AbortController(),
-      combined = AbortSignal.any([signal, controller.signal, ...(admissionSignal ? [admissionSignal] : []), ...(p.provider === "kimi" && p.credential.kind === "native-oauth" ? [AbortSignal.timeout(30000)] : [])]);
+      combined = AbortSignal.any([signal, controller.signal, ...(admissionSignal ? [admissionSignal] : [])]);
+    let cancelTotal: (() => void) | undefined, cancelHeaders: (() => void) | undefined;
     const clearCompletion = () => {
       completion = undefined;
       completionLease?.release(); completionLease = undefined;
@@ -170,6 +171,7 @@ export class RoutedAttempts {
       if (disposed) return;
       disposed = true;
       combined.removeEventListener("abort", dispose);
+      cancelTotal?.(); cancelHeaders?.();
       clearCompletion();
       ordered = undefined; outbound = {};
       if (!stageClosed) {
@@ -183,6 +185,13 @@ export class RoutedAttempts {
     // All attempts close their stage, including ordinary native imports and pre-dispatch refusal.
     try {
     combined.throwIfAborted();
+    if (p.provider === "kimi" && p.credential.kind === "native-oauth") {
+      const timeout = () => controller.abort(new RoutingError("request_timeout", 504));
+      // Bound headers, refresh and retry before the provider stream owns its idle timer.
+      // Healthy data resets stream idle time, but never extends the shared total bound.
+      cancelHeaders = scheduleRoutingTimer(this.clock, timeout, ROUTING_IDLE_TIMEOUT_MS);
+      cancelTotal = scheduleRoutingTimer(this.clock, timeout, ROUTING_TOTAL_TIMEOUT_MS);
+    }
     if (orderedPending) {
       stage.attachPending(orderedPending);
       holdOrderedJson(request.body, orderedPending, orderedLeases); // retained original controls/history
@@ -288,6 +297,7 @@ export class RoutedAttempts {
           throw new RoutingError("credential_owner_changed", 409);
         credential = refreshed;
       }
+      cancelHeaders?.(); cancelHeaders = undefined;
     } catch (error) {
       if (error instanceof RoutingError) throw error;
       if (combined.aborted) throw new RoutingError("request_cancelled", 499);
