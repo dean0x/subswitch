@@ -9,10 +9,11 @@ import { noopLogger } from "../../src/logger.js";
 import type { Item } from "../../src/routing/routing-types.js";
 import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
 import { invalidSignedCases, invalidSignedEvents, messageFrames, nativeContent, nativeEvents } from "../fixtures/native-messages.js";
+import { nativeCredential } from "../fixtures/native-profile.js";
 
 async function fixture(
   output = nativeEvents(),
-  destination: "anthropic" | "custom" | "kimi" = "anthropic",
+  destination: "anthropic" | "custom" = "anthropic",
   followup?: (request: Item) => Response,
 ) {
   const root = mkdtempSync(join(tmpdir(), "subswitch-native-aggregate-"));
@@ -24,34 +25,27 @@ async function fixture(
     codexIngress: { subscriptionBaseUrl: `${origin}/unexpected-subscription`, apiBaseUrl: `${origin}/unexpected-api`,
       claude: { baseUrl: `${origin}/unexpected-claude`, oauthTokenUrl: `${origin}/unexpected-claude-refresh`,
         authFile: join(root, "absent-claude.json"), configDir: join(root, "absent-claude") } },
-    accessProfiles: Object.fromEntries(["native", "other", "origin"].map(account => {
-      const kimi = destination === "kimi" && account !== "origin";
-      return [account, {
-        provider: kimi ? "kimi" : "claude", product: kimi ? "kimi-code" : "anthropic-api",
-        billing: kimi ? "subscription" : "api", account,
-        ...(kimi ? { region: "global" } : {}),
-        baseUrl: destination === "anthropic" || account === "origin" ? "https://api.anthropic.com" : `${origin}/${account}`,
-        credential: { kind: "env", name: "FABRICATED_KEY" },
-      }];
-    })),
+    accessProfiles: Object.fromEntries(["native", "other", "origin"].map(account => [account, {
+      provider: "claude", product: "claude-code", billing: "subscription", account,
+      baseUrl: destination === "anthropic" || account === "origin" ? "https://api.anthropic.com" : `${origin}/${account}`,
+      credential: nativeCredential("claude", "fabricated-profile-token"),
+    }])),
     routes: Object.fromEntries(["native", "other", "origin"].map(profile => [profile, {
-      clients: ["claude-code"], primary: { profile,
-        model: destination === "kimi" && profile !== "origin" ? "k3" : "claude-sonnet-5", effort: "high" },
+      clients: ["claude-code"], primary: { profile, model: "claude-sonnet-5", effort: "high" },
     }])),
   }) });
   assert.ok(loaded.ok);
   const requests: Item[] = [];
   const upstreams: string[] = [];
-  const deps = buildDeps(loaded.value.config, noopLogger, { env: { FABRICATED_KEY: "fabricated-profile-key" }, fetchImpl: async (url, init) => {
+  const deps = buildDeps(loaded.value.config, noopLogger, { fetchImpl: async (url, init) => {
     assert.ok(["https://api.anthropic.com/v1/messages",
       ...(destination === "anthropic" ? [] : [`${origin}/native/v1/messages`, `${origin}/other/v1/messages`])].includes(String(url)),
       "unexpected upstream blocked before any socket");
     upstreams.push(String(url));
     assert.equal(init?.redirect, "error");
     const headers = new Headers(init?.headers);
-    const kimi = destination === "kimi" && String(url) !== "https://api.anthropic.com/v1/messages";
-    assert.equal(headers.get("authorization"), kimi ? "Bearer fabricated-profile-key" : null);
-    assert.equal(headers.get("x-api-key"), kimi ? null : "fabricated-profile-key");
+    assert.equal(headers.get("authorization"), "Bearer fabricated-profile-token");
+    assert.equal(headers.get("x-api-key"), null);
     const request = JSON.parse(String(init?.body)) as Item;
     requests.push(request);
     if (requests.length > 1 && followup) return followup(request);
@@ -144,30 +138,28 @@ describe("native Messages HTTP aggregation", () => {
     });
   }
 
-  for (const destination of ["custom", "kimi"] as const) {
-    it(`keeps exact same-scope ${destination} continuation and rejects another scope before dispatch`, async () => {
-      const rig = await fixture(nativeEvents(), destination);
-      try {
-        const messages: Item[] = [{ role: "user", content: "Read fixture.txt" }];
-        const content = await contentOf(await rig.send(messages), false);
-        messages.push({ role: "assistant", content }, { role: "user", content: [
-          { type: "tool_result", tool_use_id: "toolu_fixture", content: "fabricated file content" },
-        ] });
-        const foreign = await rig.send(messages, false, "other");
-        assert.equal(foreign.status, 409);
-        assert.match(await foreign.text(), /foreign_opaque_state/);
-        assert.equal(rig.requests.length, 1);
-        assert.deepEqual(await contentOf(await rig.send(messages), false), [{ type: "text", text: "Complete" }]);
-        assert.deepEqual(rig.requests[1]!.messages, messages);
-        assert.deepEqual(rig.upstreams, Array(2).fill(`${rig.origin}/native/v1/messages`));
-        // Unvalidated output has no native ownership claim, even at an Anthropic destination.
-        const nativeImport = await rig.send(messages, false, "origin");
-        assert.equal(nativeImport.status, 409);
-        assert.match(await nativeImport.text(), /foreign_opaque_state/);
-        assert.equal(rig.requests.length, 2, "unvalidated cross-scope history must not dispatch");
-      } finally { await rig.close(); }
-    });
-  }
+  it("keeps exact same-scope custom continuation and rejects another scope before dispatch", async () => {
+    const rig = await fixture(nativeEvents(), "custom");
+    try {
+      const messages: Item[] = [{ role: "user", content: "Read fixture.txt" }];
+      const content = await contentOf(await rig.send(messages), false);
+      messages.push({ role: "assistant", content }, { role: "user", content: [
+        { type: "tool_result", tool_use_id: "toolu_fixture", content: "fabricated file content" },
+      ] });
+      const foreign = await rig.send(messages, false, "other");
+      assert.equal(foreign.status, 409);
+      assert.match(await foreign.text(), /foreign_opaque_state/);
+      assert.equal(rig.requests.length, 1);
+      assert.deepEqual(await contentOf(await rig.send(messages), false), [{ type: "text", text: "Complete" }]);
+      assert.deepEqual(rig.requests[1]!.messages, messages);
+      assert.deepEqual(rig.upstreams, Array(2).fill(`${rig.origin}/native/v1/messages`));
+      // Unvalidated output has no native ownership claim, even at an Anthropic destination.
+      const nativeImport = await rig.send(messages, false, "origin");
+      assert.equal(nativeImport.status, 409);
+      assert.match(await nativeImport.text(), /foreign_opaque_state/);
+      assert.equal(rig.requests.length, 2, "unvalidated cross-scope history must not dispatch");
+    } finally { await rig.close(); }
+  });
 
   for (const stream of [false, true]) {
     it(`preserves an empty thought with a delta-only signature with stream=${stream}`, async () => {

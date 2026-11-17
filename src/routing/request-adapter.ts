@@ -163,8 +163,6 @@ export function adaptRequest(request: RequestAdaptation): {
     )
       throw new RoutingError("continuity_unavailable", 409);
     outbound = translated.value.body;
-    if (p.product === "openai-api" && body["max_tokens"] !== undefined)
-      outbound = { ...outbound, max_output_tokens: body["max_tokens"] };
     if (transcript?.toolErrors.size && Array.isArray(outbound["input"])) {
       outbound["input"] = outbound["input"].map((value) => {
         const entry = object(value);

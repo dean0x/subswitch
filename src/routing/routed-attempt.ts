@@ -177,7 +177,7 @@ export class RoutedAttempts {
         });
       }
       const limitContext: LimitContext = { provider: p.provider, product: p.product, protocol, profile: t.profile, model: t.model,
-        ingress, configuredCredentialKind: p.credential.kind === "native-oauth" ? "native-oauth" : p.product === "kimi-code" ? "coding-plan-key" : "api-key",
+        ingress, configuredCredentialKind: "native-oauth",
         ...(request.scopeHash ? { scopeHash: request.scopeHash } : {}),
         ...(p.region ? { region: p.region } : {}),
         ...(request.route ? { route: request.route } : {}), ...(request.attempt !== undefined ? { attempt: request.attempt } : {}) };

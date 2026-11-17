@@ -2,7 +2,7 @@ import { object } from "../plain-object.js";
 import type { BoundedText } from "../provider-transport.js";
 import {
   allowanceScope,
-  type AccessProfile,
+  type AllowanceScope,
   type ClassifiedFailure,
   type FailureKind,
 } from "./routing-types.js";
@@ -24,7 +24,7 @@ export function validatedRetryAt(
 }
 /** Classify the original envelope, before any ingress error translation. Never echo it. */
 export function classifyFailure(
-  profile: AccessProfile,
+  profile: Pick<AllowanceScope, "provider" | "product" | "region" | "account">,
   status: number,
   body: BoundedText,
   now: number,
@@ -116,7 +116,7 @@ export function classifyFailure(
         window = matches[0]![3];
         providerCode = `kimi_code_${kind}`;
       }
-      // A conflicting code must not activate paid fallback.
+      // A conflicting code must not activate fallback.
       if (candidates.some((c) => platform[c] && platform[c]!.kind !== kind))
         kind = "unknown";
     } else {

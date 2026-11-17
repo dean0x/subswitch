@@ -1,3 +1,4 @@
+import { nativeCredential } from "../fixtures/native-profile.js";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
@@ -611,14 +612,14 @@ describe("native file store aliases", () => {
 
 describe("own configuration declaration lookup", () => {
   const profile: AccessProfile = {
-    provider: "kimi",
-    product: "kimi-platform",
-    region: "global",
-    billing: "api",
+    provider: "codex",
+    product: "chatgpt-codex",
+
+    billing: "subscription",
     account: "synthetic-platform",
-    credential: { kind: "env", name: "SYNTHETIC_KEY" },
+    credential: nativeCredential("codex", "synthetic-key"),
   };
-  const policy = (id: string, model = "kimi-k3"): RoutePolicy => ({
+  const policy = (id: string, model = "gpt-6-sol"): RoutePolicy => ({
     clients: ["codex"],
     primary: { profile: id, model, effort: "high" },
     fallbacks: [],
@@ -669,9 +670,7 @@ describe("own configuration declaration lookup", () => {
       ),
       ["work: unknown_profile"],
     );
-    const hidden = new ProfileAuth(inherited, logger, {
-      SYNTHETIC_KEY: "synthetic-key",
-    });
+    const hidden = new ProfileAuth(inherited, logger);
     assert.equal(hidden.has("hidden"), false);
     await assert.rejects(hidden.get("hidden", signal()), /unknown_profile/);
   });
@@ -683,9 +682,7 @@ describe("own configuration declaration lookup", () => {
       routes: { toString: policy("constructor") },
     });
     if (!loaded.ok) throw new Error(loaded.error.message);
-    const auth = new ProfileAuth(loaded.value.config.accessProfiles!, logger, {
-      SYNTHETIC_KEY: "synthetic-key",
-    });
+    const auth = new ProfileAuth(loaded.value.config.accessProfiles!, logger);
     assert.equal(auth.has("constructor"), true);
     const credential = await auth.get("constructor", signal());
     assert.equal(credential.profile, "constructor");
@@ -696,10 +693,10 @@ describe("own configuration declaration lookup", () => {
   it("resolves declared constructor aliases, without interpreting inherited aliases as chains", () => {
     const api: AccessProfile = {
       provider: "codex",
-      product: "openai-api",
-      billing: "api",
+      product: "chatgpt-codex",
+      billing: "subscription",
       account: "synthetic-api",
-      credential: { kind: "env", name: "SYNTHETIC_KEY" },
+      credential: nativeCredential("codex", "synthetic-key"),
     };
     const loaded = load({
       configVersion: 2,
@@ -722,15 +719,5 @@ describe("own configuration declaration lookup", () => {
     }
   });
 
-  it("does not resolve a declared key from inherited environment values", async () => {
-    const inheritedEnv = Object.create({
-      SYNTHETIC_KEY: "synthetic-hidden-key",
-    }) as NodeJS.ProcessEnv;
-    const auth = new ProfileAuth({ platform: profile }, logger, inheritedEnv);
-    assert.equal(auth.has("platform"), false);
-    await assert.rejects(
-      auth.get("platform", signal()),
-      /profile_credentials_missing/,
-    );
-  });
+
 });

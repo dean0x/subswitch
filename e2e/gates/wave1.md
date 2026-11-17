@@ -1,12 +1,15 @@
-# Wave 1 implementation and gates — 2026-10-11
+# Wave 1 implementation and gates
 
 Explicit configuration is opt-in with `configVersion: 2`. Existing configuration is
 accepted without rewriting files. Both ingresses share the explicit route dispatcher,
 profile authentication, quota store and continuation ownership. Legacy routes retain
 their existing provider handlers and passthrough behavior.
 
-This branch is not ready to merge: Kimi live acceptance is pending, and the current
-Codex HTTP same-child follow-up control exposes unsupported instruction history.
+Explicit routes use only Claude and Codex subscription sign-ins.
+Kimi needs the subscription sign-in; it is not available in this version.
+A Kimi profile fails config load. A later change adds that sign-in.
+The recorded Codex HTTP same-child follow-up control exposes unsupported instruction history.
+That existing limitation remains separate from Claude Code route qualification.
 
 Use `subswitch.wave1.example.json` as a starting point.
 Put `accessProfiles` and `routes` in the user configuration, or select a file with `SUBSWITCH_CONFIG`.
@@ -14,17 +17,11 @@ Project files cannot declare these keys, including profile endpoint opt-ins.
 A declaration fails the load even when its value is empty.
 Model aliases resolve at config load; route references and alias chains are rejected. Each target pins its effort.
 Identical targets are deduplicated, with a maximum of eight unique targets. Different
-profiles remain distinct. Subscription and billed API credentials are separate profiles.
-The `baseUrl` override is a product root, before `/v1/responses` or `/v1/messages` (or
-`/anthropic/v1/messages` for Kimi Platform), subject to HTTPS/loopback and host opt-in checks.
-
-`sameModelApi` deliberately fails with `unverified_model_equivalence` until exact
-product/region/model/capability equivalence has live evidence. The example lists K3 API
-access as an explicit fallback and does not assert equivalence. Mutable coding aliases
-receive no inferred equivalence. OpenAI and Claude API profiles use `openai-api` and
-`anthropic-api`, API billing, and an explicitly named environment credential. API
-requests carry no subscription identity headers or preamble. Kimi OAuth inference is
-not enabled.
+profiles remain distinct. Each profile uses `native-oauth` and `billing: "subscription"`.
+The supported products are `claude-code` and `chatgpt-codex`.
+Fallback may select another subscription profile. No explicit route uses a provider key.
+The `baseUrl` override is a product root. Claude appends `/v1/messages`; Codex appends `/responses`.
+HTTPS, loopback and host opt-in checks still apply. Unknown config keys fail the load.
 
 ## Code structure and reliability review
 
@@ -44,7 +41,7 @@ content validation and setup-failure cleanup for the invocation wrapper. Quota b
 accounting now updates one scope rather than serializing the entire store. Regression
 coverage is in the repository's flat test directories. `npm run bench:routing` compares
 fixed update work at 512, 1,024, 2,048 and 4,096 scopes; `npm run bench:sse` checks the
-existing incremental parser. The final review check passes 1,089 tests with no failures
+existing incremental parser. An earlier review check passed 1,089 tests with no failures
 or skipped tests; the build and both benchmarks pass. These checks do not establish
 live Kimi compatibility.
 A preceding live explicit-profile run rejected an inconsistent tool terminal; the exact
@@ -81,7 +78,7 @@ instead of copying the entire cache, while preserving atomic budgets and evictio
 order. Recovery reservations are released even when a consumer stops before the
 provider terminal. Regression coverage also preserves pinned fallback credentials,
 cancelled selection waiters and Claude tool terminals with output-limit/refusal stops.
-The latest typecheck and full suite pass 1,131 tests with no failures or skips; the
+An earlier typecheck and full suite passed 1,131 tests with no failures or skips; the
 production build, packaged-install smoke check, and routing, limit-observation and
 replay benchmarks pass. `npm run bench:replay` checks fixed commit work as cached
 history grows. These synthetic checks do not resolve the live acceptance gates below.
@@ -94,8 +91,7 @@ It ignores the project port. Set a custom port in the user file or `SUBSWITCH_CO
 Run one native invocation as an action:
 
 ```sh
-subswitch run-action --client claude-code --conversation my-thread -- claude --model kimi-work
-subswitch run-action --client codex --conversation my-thread -- codex -m kimi-work
+subswitch run-action --client claude-code --conversation my-thread -- claude --model subscription-work
 ```
 
 The immutable prefix includes the native tool loop and children. Separate prompts in
@@ -149,16 +145,14 @@ probe changes subsequent-action preference; active fallback affinities remain pi
 Independent quota observations survive success as historical blockers with a
 serviceability overlay. Reset timestamps are never manufactured from window names.
 
-Coding-key access to cloud `/usages` is unverified, so the automatic metadata driver
-stays disabled. Recovery uses normal requests. The optional metadata coordinator
+The automatic metadata driver stays disabled. Recovery uses normal requests. The optional metadata coordinator
 supports single-flight queries with 60-second minimum spacing, 8-second timeout and
 four concurrent queries. Local CLI-server usage is a separate interface. No background
 inference, credit purchase, extra-usage enablement or spending-setting mutation occurs.
 
 Discovery is `subswitch models --schema-version 3 --client all --json`. Schemas 1/2
 are unchanged. Listing does not read credentials, refresh auth or query usage. Account
-availability is reported as unknown. Kimi token counting reports a local estimate in
-`x-subswitch-token-count: estimated`.
+availability is reported as unknown. Kimi is not a routable destination in this version.
 
 ## Natural limit-response recording — 2026-10-12
 
@@ -198,12 +192,13 @@ Automatic re-entry selects a recovered subscription for a subsequent eligible
 explicit action, keeping active fallback actions pinned and completed tools intact.
 Queued-job/session auto-resume after exhaustion, interrupted-stream restart and
 durable relay restart/resume remain outside Wave 1. Direct Kimi CLI traffic is
-outside the recorder; its OAuth integration and provider live gates remain pending.
+outside the recorder; its subscription integration belongs to a later change.
 
 ## Evidence and unresolved acceptance
 
-`wave1-evidence.json` records product, region, protocol, credential kind, date, version
-and evidence class. Unit fixtures are **synthetic**; Kimi documentation is not a live
+`wave1-evidence.json` records past product, region, protocol, credential kind, date, version
+and evidence class. It is historical evidence, not current route qualification.
+The dated JSON evidence files retain their original facts. Unit fixtures are **synthetic**; Kimi documentation is not a live
 pass. The repaired Codex simulated control passes HTTP and WebSocket tool execution,
 child delivery, same-child follow-up and parent delivery on 0.162.1. The current live
 Claude subscription control and Claude → OpenAI subscription tool control also pass
@@ -221,12 +216,7 @@ no retry events in the unscoped, non-explicit control. All rejected upgrades pre
 inference; tool execution and parent delivery still pass. Bare native passthrough
 retains its original connection-phase fallback. This limitation is not a Kimi live pass.
 
-`npm run probe:kimi -- --product kimi-code --region global --protocol messages`
-is an opt-in basic live protocol probe. Repeat with `responses` and `--non-stream`.
-`--usage` observes only the bounded cloud envelope; it does not enable a usage driver
-or establish coding-key API stability. API accounts use `--product kimi-platform` and
-a separate `SUBSWITCH_KIMI_PLATFORM_KEY`. Reports omit prompts, responses and secrets.
-Missing credentials produce an unresolved result, not success. The latest Codex
+The recorded Codex
 production WebSocket control passes with real OpenAI/Claude subscriptions, including
 a second native read on the same child. The latest forced HTTP control passes the
 first child read but rejects its follow-up with `mid_history_instructions_unimplemented`.
@@ -234,37 +224,11 @@ The initial failure is retained in `native-codex-http-review-failure-2026-10-11.
 two bounded, sanitized diagnostic runs reproduce an unrecognized new developer
 instruction after the first child answer. It does not match initial instructions or
 the pinned source's factual clock markers. Arbitrary instructions remain rejected;
-none were hoisted, dropped or downgraded to make the gate pass. This required native
-control remains a merge blocker. Older successful runs do not replace the failed
+none were hoisted, dropped or downgraded to make the gate pass. This native control retains its documented limitation. Older successful runs do not replace the failed
 review evidence. The HTTP gate injects WebSocket 426;
 upstream inference is real. Basic protocol probes
 do not certify tools, replay, native orchestration, quota exhaustion or model equivalence.
 
-Live Kimi Code/Platform access, tool/reasoning replay, both native clients, exact K3
-equivalence, usage contracts, ordinary API-profile live gates and full Wave 1
-acceptance remain required. DeepSeek remains blocked on those gates.
-
-Kimi live gates are required before merge. On 2026-10-12, installed Kimi CLI 2.1.1
-completed a headless text request and read an unpredictable value from an isolated
-file through its native tool, then returned that value in its final answer. The
-configured default is `kimi-for-coding`, provider type `kimi`, OAuth access, endpoint
-host `api.kimi.ai`. The sanitized report is
-`native-kimi-headless-live-2026-10-12.json`. This establishes native CLI access and
-tool use. It does not establish K3 entitlement, regional endpoint equivalence, either
-Messages/Responses contract, or Subswitch destination compatibility.
-
-Use `kimi -p '<prompt>' --output-format stream-json` for headless native output.
-Version 2.1.1 rejects combining `--prompt` with `--auto`; the corrected probe used
-prompt mode alone. Working directories were isolated and native authenticated storage
-was reused without exposing credentials or copying them into probe files.
-
-Subswitch currently accepts a region-matched coding-plan key for Kimi Code and a
-separate billed API key for Kimi Platform. Native Kimi CLI OAuth is available on this
-machine, but its Subswitch profile/auth contract remains unimplemented. The CLI pass
-does not replace the required relay, continuation, fallback and recovery live gates.
-
-The [2026-10-19 offline readiness audit](kimi-readiness.md) adds an executable
-27-case isolated qualification command, rejects unsupported programmatic Kimi OAuth
-before inspecting credential paths, and prepares a finite live acceptance plan.
-Its fixtures use loopback servers, fabricated keys and disposable client state.
-No new live Kimi or native-client acceptance is claimed by that audit.
+Kimi route acceptance belongs to the later subscription sign-in change.
+The native CLI evidence does not certify a Subswitch destination.
+See [Kimi route status](kimi-readiness.md) for the current boundary and retained evidence.

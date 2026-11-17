@@ -1,3 +1,4 @@
+import { nativeCredential } from "../fixtures/native-profile.js";
 /** Synthetic review fixtures: no inference or credentials. */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -21,10 +22,10 @@ import type { AccessProfile, Item } from "../../src/routing/routing-types.js";
 
 const profile: AccessProfile = {
   provider: "claude",
-  product: "anthropic-api",
-  billing: "api",
+  product: "claude-code",
+  billing: "subscription",
   account: "synthetic",
-  credential: { kind: "env", name: "SYNTHETIC_KEY" },
+  credential: nativeCredential("claude", "synthetic-key"),
 };
 
 const history = (custom: boolean, isError: boolean): Item => ({
@@ -123,18 +124,18 @@ const adapt = (
 
 const api: AccessProfile = {
   provider: "codex",
-  product: "openai-api",
-  billing: "api",
-  account: "synthetic",
-  credential: { kind: "env", name: "SYNTHETIC_API_KEY" },
-};
-const kimi: AccessProfile = {
-  provider: "kimi",
-  product: "kimi-code",
-  region: "global",
+  product: "chatgpt-codex",
   billing: "subscription",
   account: "synthetic",
-  credential: { kind: "env", name: "SYNTHETIC_CODE_KEY" },
+  credential: nativeCredential("codex", "synthetic-api"),
+};
+const primarySubscription: AccessProfile = {
+  provider: "codex",
+  product: "chatgpt-codex",
+
+  billing: "subscription",
+  account: "synthetic",
+  credential: nativeCredential("codex", "synthetic-code"),
 };
 
 describe("reviewed target capability preflight", () => {
@@ -163,7 +164,7 @@ describe("reviewed target capability preflight", () => {
     );
   });
 
-  it("preserves API output limits and refuses unsupported subscription output parameters", () => {
+  it("omits Messages output limits and refuses unsupported subscription Responses limits", () => {
     const body = {
       model: "work",
       messages: [{ role: "user", content: "read" }],
@@ -171,7 +172,7 @@ describe("reviewed target capability preflight", () => {
     };
     assert.equal(
       adapt(body, "messages", api, "gpt-6-sol")["max_output_tokens"],
-      8192,
+      undefined,
     );
     assert.throws(
       () =>
@@ -199,7 +200,13 @@ describe("reviewed target capability preflight", () => {
           JSON.stringify({
             configVersion: 2,
             codexIngress: { enabled: true },
-            accessProfiles: { kimi, claude: profile, api },
+            accessProfiles: {
+              primarySubscription, api,
+              claude: primary === "claude" ? profile : {
+                ...profile,
+                credential: { kind: "native-oauth", authFile: "/synthetic/missing-ineligible.json" },
+              },
+            },
             routes: {
               work: {
                 clients: ["codex"],
@@ -210,7 +217,7 @@ describe("reviewed target capability preflight", () => {
                         model: "claude-sonnet-5-5",
                         effort: "high",
                       }
-                    : { profile: "kimi", model: "k3", effort: "high" },
+                    : { profile: "primarySubscription", model: "gpt-6-sol", effort: "high" },
                 fallbacks:
                   primary === "claude"
                     ? []
@@ -230,17 +237,16 @@ describe("reviewed target capability preflight", () => {
       return loaded.value.config;
     };
     const calls: string[] = [];
-    const fetcher: typeof fetch = async (url) => {
-      calls.push(String(url));
-      if (String(url).includes("kimi"))
+    const fetcher: typeof fetch = async (_url, init) => {
+      calls.push(new Headers(init?.headers).get("chatgpt-account-id") ?? "claude");
+      if (new Headers(init?.headers).get("chatgpt-account-id") === "synthetic-code")
         return new Response(
           JSON.stringify({
             error: {
-              message:
-                "You've reached your 5-hour usage limit. Synthetic review fixture.",
+              code: "insufficient_quota", message: "private",
             },
           }),
-          { status: 403 },
+          { status: 429 },
         );
       return new Response(
         [
@@ -257,11 +263,6 @@ describe("reviewed target capability preflight", () => {
           .join(""),
         { headers: { "content-type": "text/event-stream" } },
       );
-    };
-    const env = {
-      SYNTHETIC_CODE_KEY: "synthetic",
-      SYNTHETIC_KEY: "synthetic",
-      SYNTHETIC_API_KEY: "synthetic",
     };
     const body = {
       model: "work",
@@ -280,9 +281,7 @@ describe("reviewed target capability preflight", () => {
       config("claude"),
       noopLogger,
       systemClock,
-      fetcher,
-      env,
-    );
+      fetcher);
     try {
       await assert.rejects(async () => {
         for await (const _ of primary.events(
@@ -318,14 +317,12 @@ describe("reviewed target capability preflight", () => {
       primary.close();
     }
     // Capability rejection precedes authentication: an ineligible target must not
-    // refresh or validate its credential before the eligible API fallback is tried.
+    // refresh or validate its credential before the eligible subscription fallback is tried.
     const fallback = new SharedRouting(
-      config("kimi"),
+      config("primarySubscription"),
       noopLogger,
       systemClock,
-      fetcher,
-      { ...env, SYNTHETIC_KEY: "synthetic\ninvalid" },
-    );
+      fetcher);
     const action = fallback.actions.create("codex", "synthetic-thread");
     try {
       const events: Item[] = [];
@@ -339,8 +336,7 @@ describe("reviewed target capability preflight", () => {
         events.push(event);
       assert.equal(events.at(-1)?.["type"], "response.completed");
       assert.equal(calls.length, 2);
-      assert.match(calls[0]!, /kimi/);
-      assert.match(calls[1]!, /openai/);
+      assert.deepEqual(calls, ["synthetic-code", "synthetic-api"]);
     } finally {
       fallback.close();
     }
@@ -364,12 +360,12 @@ const stream = (tools: Item[], pending: Item[]) =>
       .join(""),
     { headers: { "content-type": "text/event-stream" } },
   );
-const consume = async (response: Response) => {
+const consume = async (response: Response, targetProfile = api) => {
   const controller = new AbortController();
   let events = 0;
   for await (const _ of validatedProviderEvents(
     response,
-    api,
+    targetProfile,
     "responses",
     controller.signal,
     controller,
@@ -626,9 +622,9 @@ describe("reviewed source transport classification", () => {
         { headers: { "content-type": "text/event-stream" } },
       ),
     ];
-    for (const response of responses)
+    for (const [index, response] of responses.entries())
       await assert.rejects(
-        consume(response),
+        consume(response, index === 0 ? profile : api),
         (error: unknown) =>
           !(error instanceof AttemptFailure) &&
           error instanceof Error &&
@@ -686,11 +682,11 @@ describe("reviewed source transport classification", () => {
           JSON.stringify({
             configVersion: 2,
             codexIngress: { enabled: true },
-            accessProfiles: { kimi, api },
+            accessProfiles: { primarySubscription, api },
             routes: {
               work: {
                 clients: ["codex"],
-                primary: { profile: "kimi", model: "k3", effort: "high" },
+                primary: { profile: "primarySubscription", model: "gpt-6-sol", effort: "high" },
                 fallbacks: [
                   { profile: "api", model: "gpt-6-sol", effort: "high" },
                 ],
@@ -701,9 +697,9 @@ describe("reviewed source transport classification", () => {
       });
       assert.ok(loaded.ok);
       const calls: string[] = [];
-      const fetcher: typeof fetch = async (url) => {
+      const fetcher: typeof fetch = async (url, init) => {
         calls.push(String(url));
-        if (String(url).includes("openai")) return stream([], []);
+        if (new Headers(init?.headers).get("chatgpt-account-id") === "synthetic-api") return stream([], []);
         if (!commitFirst) return failedBody();
         return new Response(
           new ReadableStream({
@@ -729,9 +725,7 @@ describe("reviewed source transport classification", () => {
         loaded.value.config,
         noopLogger,
         systemClock,
-        fetcher,
-        { SYNTHETIC_CODE_KEY: "synthetic", SYNTHETIC_API_KEY: "synthetic" },
-      );
+        fetcher);
       const action = routing.actions.create("codex", "synthetic-thread");
       const events: Item[] = [];
       const run = async () => {
@@ -872,9 +866,7 @@ describe("reviewed refusal text and terminals", () => {
             },
           }),
           { headers: { "content-type": "text/event-stream" } },
-        ),
-      { SYNTHETIC_API_KEY: "synthetic" },
-    );
+        ));
     const iterator = routing.events(
       {
         model: "work",
@@ -949,9 +941,7 @@ describe("reviewed refusal text and terminals", () => {
         return calls.length === 1
           ? responseFor(refusalEvents())
           : stream([], []);
-      },
-      { SYNTHETIC_API_KEY: "synthetic" },
-    );
+      });
     try {
       let previous = "";
       for await (const event of routing.events(
@@ -1044,9 +1034,7 @@ describe("reviewed refusal text and terminals", () => {
         configured(),
         noopLogger,
         systemClock,
-        async () => responseFor(events),
-        { SYNTHETIC_API_KEY: "synthetic" },
-      );
+        async () => responseFor(events));
       try {
         const received: Item[] = [];
         for await (const event of routing.events(
@@ -1151,9 +1139,7 @@ describe("reviewed refusal text and terminals", () => {
               events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
               { headers: { "content-type": "text/event-stream" } },
             );
-          },
-          { SYNTHETIC_KEY: "synthetic" },
-        );
+          });
         try {
           const action = routing.actions.create("codex", "thread");
           const received: Item[] = [];

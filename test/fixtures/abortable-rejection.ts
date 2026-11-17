@@ -55,7 +55,7 @@ switch (scenario) {
         provider: "claude", product: "claude-code", billing: "subscription", account: "synthetic",
         credential: { kind: "native-oauth", authFile: "/fabricated/never-read.json" },
       },
-    }, noopLogger, {});
+    }, noopLogger);
     await assert.rejects(async () => auth.refresh("native", signal), error => error === reason);
     break;
   }

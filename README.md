@@ -19,8 +19,9 @@ permissions, and execution loop.
   Messages. OpenAI models continue to OpenAI. Reverse-enabled sessions adapt the
   collaboration namespace so cross-provider task messages are readable.
 
-SubSwitch does not switch models or billing modes after a failure. Unknown models
-retain their originating provider's fallback behavior, except that an unregistered
+Default routing does not switch models or billing modes after a failure.
+Opt-in explicit routes can select another subscription profile before response commitment.
+Unknown models retain their originating provider's fallback behavior, except that an unregistered
 `claude-*` or `claude:*` name sent by Codex is refused rather than forwarded to OpenAI. Native
 settings and client binaries are not patched or downgraded.
 
@@ -335,9 +336,11 @@ complete native Messages history from before proxy startup, after a restart, or 
 cache eviction. Signed blocks reach Anthropic unchanged for validation. An active
 cold import reserves its signatures until that attempt completes or releases them.
 Emitted signatures retain their provenance through a failed or cancelled response.
-SubSwitch records signature ownership only for first-party destinations that validate signatures. Other destinations get no ownership claim, so replay from another scope fails with 409.
-Kimi and custom endpoints retain exact same-scope continuation after a successful
-response. Cross-scope replay returns 409 without an upstream request.
+SubSwitch records signature ownership only for first-party destinations that validate signatures.
+Other destinations get no ownership claim, so replay from another scope fails with 409.
+Claude subscription routes with custom endpoints retain exact same-scope continuation after a successful response.
+Cross-scope replay returns 409 without an upstream request.
+Kimi routes need the subscription sign-in, which this version does not provide.
 This does not restore translated continuation handles or import signed history into
 fallback routes. Later system-role messages remain a separate unsupported case on
 explicit Messages routes.
@@ -864,4 +867,8 @@ local development.
 
 Version 2 access profiles, action-scoped failover, recovery behavior, configuration examples
 and current evidence gates are described in [the Wave 1 notes](e2e/gates/wave1.md).
-Kimi live compatibility is pending; see [the evidence manifest](e2e/gates/wave1-evidence.json).
+Explicit routes use Claude and Codex subscription sign-ins only.
+Fallback between subscription profiles remains available.
+Kimi needs the subscription sign-in; this version does not provide it.
+A Kimi profile fails config load. See [Kimi route status](e2e/gates/kimi-readiness.md).
+The [evidence manifest](e2e/gates/wave1-evidence.json) contains past runs, not current Kimi qualification.

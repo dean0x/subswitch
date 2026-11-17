@@ -5,6 +5,7 @@ import { validatedProviderEvents } from "../../src/routing/provider-stream.js";
 import { systemClock } from "../../src/routing/clock.js";
 import { RoutingError, type AccessProfile, type Item } from "../../src/routing/routing-types.js";
 import { invalidSignedCases, invalidSignedEvents, messageFrames, nativeContent, nativeEvents } from "../fixtures/native-messages.js";
+import { nativeCredential } from "../fixtures/native-profile.js";
 
 describe("native Messages aggregation", () => {
   it("preserves thinking/signature fragments, redacted payloads and original text/tool order", () => {
@@ -93,8 +94,8 @@ describe("native Messages aggregation", () => {
     });
 
     it(`does not publish replay or release completed tools for ${testCase.name}`, async () => {
-      const profile: AccessProfile = { provider: "claude", product: "anthropic-api", billing: "api", account: "fixture",
-        credential: { kind: "env", name: "FABRICATED_KEY" } };
+      const profile: AccessProfile = { provider: "claude", product: "claude-code", billing: "subscription", account: "fixture",
+        credential: nativeCredential("claude", "fabricated-profile-token") };
       const controller = new AbortController(), completed: Item[] = [], emitted: Item[] = [];
       const response = new Response(messageFrames(invalidSignedEvents(testCase)).join(""), {
         headers: { "content-type": "text/event-stream" },

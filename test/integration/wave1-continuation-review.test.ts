@@ -1,3 +1,4 @@
+import { nativeCredential } from "../fixtures/native-profile.js";
 /** Synthetic upstreams and credentials; review gates use the production HTTP/WS wiring. */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -27,10 +28,10 @@ function config() {
         accessProfiles: {
           api: {
             provider: "codex",
-            product: "openai-api",
-            billing: "api",
+            product: "chatgpt-codex",
+            billing: "subscription",
             account: "review",
-            credential: { kind: "env", name: "REVIEW_KEY" },
+            credential: nativeCredential("codex", "synthetic-review"),
           },
         },
         routes: {
@@ -44,7 +45,6 @@ function config() {
   if (!loaded.ok) throw new Error(loaded.error.message);
   return loaded.value.config;
 }
-const env = { REVIEW_KEY: "synthetic-review" };
 const text = {
   type: "message",
   id: "message",
@@ -85,9 +85,7 @@ describe("reviewed local continuation isolation", () => {
       base,
       noopLogger,
       undefined,
-      async () => response(),
-      env,
-    );
+      async () => response());
     try {
       for (const model of [
         "constructor",
@@ -115,9 +113,7 @@ describe("reviewed local continuation isolation", () => {
       { ...base, routes: { constructor: base.routes!["work"]! } },
       noopLogger,
       undefined,
-      async () => response(),
-      env,
-    );
+      async () => response());
     try {
       assert.equal(
         declared.match({ model: "constructor" }, "codex"),
@@ -130,7 +126,6 @@ describe("reviewed local continuation isolation", () => {
   it("continues bare single-target HTTP history using the returned actual model and a model-less follow-up", async () => {
     const requests: Item[] = [];
     const deps = buildDeps(config(), noopLogger, {
-      env,
       fetchImpl: async (_url, init) => {
         requests.push(JSON.parse(String(init?.body)));
         return response();
@@ -176,7 +171,6 @@ describe("reviewed local continuation isolation", () => {
   it("continues bare WebSocket responses without native authentication or action scope", async () => {
     const requests: Item[] = [];
     const deps = buildDeps(config(), noopLogger, {
-      env,
       fetchImpl: async (_url, init) => {
         requests.push(JSON.parse(String(init?.body)));
         return response();
@@ -236,9 +230,7 @@ describe("reviewed local continuation isolation", () => {
       async () => {
         requests++;
         return response();
-      },
-      env,
-    );
+      });
     const action = router.actions.create("codex", "thread");
     const context = router.actions.context(action.id, "codex");
     try {
@@ -343,9 +335,7 @@ describe("reviewed local continuation isolation", () => {
       async (_url, init) => {
         requests.push(JSON.parse(String(init?.body)));
         return response();
-      },
-      env,
-    );
+      });
     try {
       const initial = await collect(
         router.events(
@@ -401,9 +391,7 @@ describe("reviewed local continuation isolation", () => {
         config(),
         noopLogger,
         undefined,
-        async () => response([tool]),
-        env,
-      );
+        async () => response([tool]));
       const prepare = router.attempts.prepare.bind(router.attempts);
       router.attempts.prepare = async (request) => {
         const prepared = await prepare(request);

@@ -1,3 +1,4 @@
+import { nativeCredential } from "../fixtures/native-profile.js";
 /** SYNTHETIC production wiring gates. Every upstream response and credential is fabricated. */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -31,7 +32,7 @@ const message = (content = "ready") => [
       type: "message",
       role: "assistant",
       content: [],
-      model: "k3",
+      model: "gpt-6-sol",
       usage: { input_tokens: 1, output_tokens: 0 },
     },
   },
@@ -126,25 +127,25 @@ function config() {
         },
         accessProfiles: {
           code: {
-            provider: "kimi",
-            product: "kimi-code",
-            region: "global",
+            provider: "codex",
+            product: "chatgpt-codex",
+
             billing: "subscription",
             account: "one",
-            credential: { kind: "env", name: "CODE_KEY" },
+            credential: nativeCredential("codex", "synthetic-code"),
           },
           api: {
             provider: "codex",
-            product: "openai-api",
-            billing: "api",
+            product: "chatgpt-codex",
+            billing: "subscription",
             account: "two",
-            credential: { kind: "env", name: "API_KEY" },
+            credential: nativeCredential("codex", "synthetic-api"),
           },
         },
         routes: {
           work: {
             clients: ["codex", "claude-code"],
-            primary: { profile: "code", model: "k3", effort: "high" },
+            primary: { profile: "code", model: "gpt-6-sol", effort: "high" },
             fallbacks: [{ profile: "api", model: "gpt-6-sol", effort: "high" }],
           },
         },
@@ -153,12 +154,10 @@ function config() {
   if (!result.ok) throw new Error(result.error.message);
   return result.value.config;
 }
-const env = { CODE_KEY: "synthetic-code", API_KEY: "synthetic-api" };
 describe("Wave 1 production ingress (synthetic)", () => {
   it("routes HTTP for both clients, strips the action prefix and isolates outbound credentials", async () => {
     const calls: { url: string; headers: Headers; body: Item }[] = [];
     const deps = buildDeps(config(), noopLogger, {
-      env,
       fetchImpl: async (url, init) => {
         calls.push({
           url: String(url),
@@ -214,7 +213,7 @@ describe("Wave 1 production ingress (synthetic)", () => {
           call.headers.get("authorization"),
           "Bearer synthetic-code",
         );
-        assert.equal(call.headers.get("chatgpt-account-id"), null);
+        assert.equal(call.headers.get("chatgpt-account-id"), "synthetic-code");
         assert.equal(call.headers.get("x-subswitch-capability"), null);
         assert.equal(call.headers.get("anthropic-beta"), null);
         assert.doesNotMatch(call.url, /__subswitch/);
@@ -227,7 +226,6 @@ describe("Wave 1 production ingress (synthetic)", () => {
   it("bridges routed WS to HTTP without an OpenAI connection or incoming key", async () => {
     let calls = 0;
     const deps = buildDeps(config(), noopLogger, {
-      env,
       fetchImpl: async () => {
         calls++;
         return sse(completed());
@@ -277,7 +275,6 @@ describe("Wave 1 production ingress (synthetic)", () => {
   it("preserves the final classified failure over routed WebSocket", async () => {
     let calls = 0;
     const deps = buildDeps(config(), noopLogger, {
-      env,
       fetchImpl: async () => {
         calls++;
         return new Response(
@@ -315,7 +312,7 @@ describe("Wave 1 production ingress (synthetic)", () => {
         }),
       );
       const event = await failed;
-      assert.equal(event.code, "route_unknown");
+      assert.equal(event.code, "route_invalid_request");
       assert.equal(event.status, 400);
       assert.equal(calls, 1);
     } finally {
@@ -333,25 +330,22 @@ describe("Wave 1 production ingress (synthetic)", () => {
       config(),
       noopLogger,
       { now: () => now, monotonic: () => now, random: () => 0.5 },
-      async (url, init) => {
+      async (_url, init) => {
         calls.push(JSON.parse(String(init?.body)));
-        if (String(url).includes("kimi")) {
+        if (new Headers(init?.headers).get("chatgpt-account-id") === "synthetic-code") {
           if (++primary === 1)
             return new Response(
               JSON.stringify({
                 error: {
-                  message:
-                    "You've reached your 5-hour usage limit. Synthetic gate.",
+                  code: "insufficient_quota", message: "private",
                 },
               }),
-              { status: 403 },
+              { status: 429 },
             );
-          return sse(message("primary-B"));
+          return sse(completed());
         }
         return sse(completed(++fallback === 1));
-      },
-      env,
-    );
+      });
     const a = router.actions.create("claude-code", "thread"),
       ac = router.actions.context(a.id, "claude-code");
     const initial = {

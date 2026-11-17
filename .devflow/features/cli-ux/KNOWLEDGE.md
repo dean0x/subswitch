@@ -362,6 +362,10 @@ Configuration precedence is explicit `SUBSWITCH_CONFIG` (no merge), otherwise pe
 settings over `$XDG_CONFIG_HOME/subswitch/config.json` over defaults.
 `accessProfiles` and `routes`, including profile endpoint opt-ins, require a user or explicit file.
 Project declarations fail the load, even for empty values.
+Explicit profiles use only Claude or Codex subscription sign-ins with `native-oauth`.
+Unknown fields and unsupported product or credential values fail the load; the error names the value.
+Kimi profiles fail the load because this version does not provide the subscription sign-in.
+The removed branch-only settings never formed part of main; strict schemas reject them without a legacy migration row.
 `run-action` ignores the project port and uses the user or explicit port, then the built-in default.
 `LoadConfigResult.configPaths` lists every loaded source; legacy/unknown-provider errors
 name the source containing the offending key. `configuredProviders` reflects all sources.
