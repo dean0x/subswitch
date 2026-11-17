@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] - 2026-11-18
+
+### Added
+
+- Shared routing with configuration version 2. You can set access profiles for
+  your Claude and Codex subscription sign ins. You can also set named routes
+  with an ordered list of fallback targets. When one subscription reaches its
+  limit, the route uses the next target.
+- Kimi Code subscription routing. Use `subswitch kimi-login` to sign in, or
+  name an existing Kimi credential file in the config. Claude Code keeps control
+  of its tools and their results.
+- The `run-action` command starts a native client action and stops it cleanly.
+- Subswitch records upstream limit errors in a private local store. The
+  `subswitch limits --json` command shows them. Set
+  `SUBSWITCH_LIMIT_RECORDING=0` to stop the recording.
+
+### Changed
+
+- Subswitch accepts only subscription sign ins. A config that names an API key
+  account, an environment credential, API billing or `sameModelApi` fails at
+  load. The error names the setting.
+- Access profiles and routes load only from your user config or from the file
+  that `SUBSWITCH_CONFIG` names. A project config file that sets them fails at
+  load.
+- The package dependencies `tsx`, `zod`, `ws` and `@clack/prompts` are
+  updated.
+
+### Fixed
+
+- A native Claude Messages response that is not streamed keeps its signed
+  thinking blocks, in the correct order, with complete usage.
+- A native Claude conversation with signed history continues after the proxy
+  starts or restarts.
+
 ## [0.6.1] - 2026-10-19
 
 ### Fixed
