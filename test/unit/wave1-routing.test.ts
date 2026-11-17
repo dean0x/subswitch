@@ -10,6 +10,8 @@ import { QuotaStore } from "../../src/routing/quota-store.js";
 import { classifyFailure } from "../../src/routing/provider-failure.js";
 import { readBoundedBody } from "../../src/provider-transport.js";
 import { routeChain } from "../../src/routing/routing-config.js";
+import { AttemptFailure } from "../../src/routing/attempt-failure.js";
+import { RoutingError } from "../../src/routing/routing-types.js";
 import {
   allowanceScope,
   type AccessProfile,
@@ -109,16 +111,22 @@ const full = (
 describe("Wave 1 configuration and failures (synthetic)", () => {
   it("rejects billing/key mismatches, unsafe endpoints, missing regions and alias chains", () => {
     const invalid = [
-      { ...code, billing: "api" },
-      { ...code, region: undefined },
-      {
-        ...code,
-        credential: { kind: "native-oauth", authFile: "/synthetic/auth.json" },
-      },
-      { ...code, baseUrl: "http://example.invalid" },
-      { ...code, baseUrl: "https://example.invalid" },
-    ];
-    for (const profile of invalid) {
+      [{ ...code, billing: "api" }, /billing_product_mismatch/],
+      [{ ...code, region: undefined }, /region_product_mismatch/],
+      [
+        {
+          ...code,
+          credential: { kind: "native-oauth", authFile: "/synthetic/auth.json" },
+        },
+        /credential_product_mismatch/,
+      ],
+      [{ ...code, baseUrl: "http://example.invalid" }, /unsafe_endpoint/],
+      [
+        { ...code, baseUrl: "https://example.invalid" },
+        /endpoint_host_opt_in_required/,
+      ],
+    ] as const;
+    for (const [profile, expected] of invalid) {
       const loaded = loadConfig({
         configPath: "/synthetic/config.json",
         env: {},
@@ -129,6 +137,7 @@ describe("Wave 1 configuration and failures (synthetic)", () => {
           }),
       });
       assert.equal(loaded.ok, false);
+      if (!loaded.ok) assert.match(loaded.error.message, expected);
     }
     const chain = loadConfig({
       configPath: "/synthetic/config.json",
@@ -319,12 +328,13 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
     router.close();
   });
   it("never routes unknown or auth/permission errors into paid fallback", async () => {
-    for (const [status, body] of [
-      [429, "<html>quota</html>"],
-      [401, '{"error":{"message":"bad key"}}'],
+    for (const [status, body, kind] of [
+      [429, "<html>quota</html>", "unknown"],
+      [401, '{"error":{"message":"bad key"}}', "unknown"],
       [
         401,
         '{"error":{"message":"Your current subscription does not have access to k3. Synthetic gate."}}',
+        "permission",
       ],
     ] as const) {
       let attempts = 0;
@@ -349,6 +359,10 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
             router.actions.context(a.id, "codex"),
           ),
         ),
+        (error: unknown) =>
+          error instanceof AttemptFailure &&
+          error.failure.kind === kind &&
+          error.failure.status === status,
       );
       assert.equal(attempts, 1);
       router.close();
@@ -427,6 +441,10 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
           router.actions.context(a.id, "codex"),
         ),
       ),
+      (error: unknown) =>
+        error instanceof RoutingError &&
+        error.code === "request_cancelled" &&
+        error.status === 499,
     );
     assert.equal(attempts, 1);
     router.close();
@@ -526,10 +544,13 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
     }
   });
   it("rejects excessive comments and oversized single-chunk SSE events before commitment", async () => {
-    for (const raw of [
-      ": comment\n\n".repeat(17),
-      `data: ${"x".repeat(4 * 1024 * 1024 + 1)}\n\n`,
-    ]) {
+    for (const [raw, expected] of [
+      [": comment\n\n".repeat(17), { code: "provider_prefix_limit", status: 502 }],
+      [
+        `data: ${"x".repeat(4 * 1024 * 1024 + 1)}\n\n`,
+        { name: "Error", message: "sse_event_too_large" },
+      ],
+    ] as const) {
       let attempts = 0;
       const router = new SharedRouting(
         full(),
@@ -556,6 +577,7 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
           ))
             events++;
         })(),
+        expected,
       );
       assert.equal(events, 0);
       assert.equal(attempts, 1);
@@ -649,6 +671,10 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
         ))
           seen.push(e);
       })(),
+      (error: unknown) =>
+        error instanceof RoutingError &&
+        error.code === "incomplete_provider_tools" &&
+        error.status === 502,
     );
     assert.equal(
       seen.filter((e) => e.type === "response.output_item.done").length,

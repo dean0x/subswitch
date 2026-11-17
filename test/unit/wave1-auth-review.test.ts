@@ -652,8 +652,8 @@ describe("own configuration declaration lookup", () => {
       if (!loaded.ok) assert.match(loaded.error.message, /unknown_profile/);
       assert.equal(auth.has(label), false);
       await assert.rejects(auth.get(label, signal()), /unknown_profile/);
-      assert.throws(
-        () => auth.refresh(label, signal()),
+      await assert.rejects(
+        auth.refresh(label, signal()),
         /profile_not_refreshable/,
       );
     }

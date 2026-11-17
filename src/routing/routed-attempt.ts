@@ -69,7 +69,6 @@ export class RoutedAttempts {
   private readonly key = randomBytes(32);
   private readonly replay = new ClaudeCache(
     { maxEntries: 2048, maxBytes: 32 * 1024 * 1024 },
-    true,
   );
   constructor(
     readonly auth: ProfileAuth,
@@ -119,6 +118,7 @@ export class RoutedAttempts {
         owner,
         sessionId,
       });
+      stage.preflight();
       const controller = new AbortController(),
         combined = AbortSignal.any([signal, controller.signal]);
       const encodedRequest = JSON.stringify(outbound);

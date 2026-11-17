@@ -220,6 +220,16 @@ export class SharedRouting {
         : undefined;
       if (Buffer.byteLength(JSON.stringify(full)) > 32 * 1024 * 1024)
         throw new RoutingError("reconstructed_request_too_large", 413);
+      if (protocol === "responses")
+        this.continuations.preparePut({
+          conversation,
+          route: routeName,
+          request: full,
+          output: [],
+          owner: "0".repeat(64),
+          protocol,
+          scope: context ? "explicit" : "single-target",
+        }, `resp_subswitch_route_${randomUUID()}`);
       const transcript = decodePortableHistory(full, protocol);
       const refreshes = new Set<string>();
       let failure: ClassifiedFailure | undefined,

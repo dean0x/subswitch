@@ -105,7 +105,7 @@ describe("Kimi authentication support boundary", () => {
       assert.equal(credential.provider, "kimi");
       assert.deepEqual(credential.authHeaders, { authorization: "Bearer fabricated-kimi-key" });
       assert.equal(auth.scope(credential).product, product);
-      assert.throws(() => auth.refresh("kimi", new AbortController().signal), /profile_not_refreshable/);
+      await assert.rejects(auth.refresh("kimi", new AbortController().signal), /profile_not_refreshable/);
     });
   }
 

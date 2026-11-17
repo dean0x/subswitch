@@ -330,7 +330,7 @@ describe("Kimi qualification through isolated loopback Subswitch (synthetic)", (
       try {
         const action = await rig.action("codex");
         const response = await rig.request("codex", action.ingressPrefix, initial("codex"));
-        assert.ok(response.status >= 400);
+        assert.equal(response.status, status);
         await response.text();
         assert.equal(rig.calls.length, 1);
         assert.ok(rig.calls[0]!.path.startsWith("/primary/"));
@@ -347,7 +347,7 @@ describe("Kimi qualification through isolated loopback Subswitch (synthetic)", (
       rig = await fixture({}, (_call, res) => res.writeHead(307, { location: target }).end());
       const action = await rig.action("codex");
       const response = await rig.request("codex", action.ingressPrefix, initial("codex"));
-      assert.ok(response.status >= 400);
+      assert.equal(response.status, 502);
       await response.text();
       assert.equal(rig.calls.length, 1);
       assert.equal(redirected, 0);

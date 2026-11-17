@@ -41,22 +41,25 @@ export function nativeEvents(content: Item[] = nativeContent, options: { signatu
   return events;
 }
 
-export const invalidSignedCases: readonly { name: string; block: Item; delta?: Item }[] = [
-  { name: "missing thinking", block: { type: "thinking", signature: "fabricated-invalid" } },
-  { name: "numeric thinking before a delta", block: { type: "thinking", thinking: 123, signature: "fabricated-invalid" }, delta: { type: "thinking_delta", thinking: "suffix" } },
-  { name: "missing signature", block: { type: "thinking", thinking: "fabricated" } },
-  { name: "numeric signature before a delta", block: { type: "thinking", thinking: "fabricated", signature: 123 }, delta: { type: "signature_delta", signature: "suffix" } },
-  { name: "null signature", block: { type: "thinking", thinking: "fabricated", signature: null } },
-  { name: "redacted data on thinking", block: { type: "thinking", thinking: "fabricated", signature: "fabricated-invalid", data: "forbidden" } },
-  { name: "missing redacted data", block: { type: "redacted_thinking" } },
-  { name: "object redacted data", block: { type: "redacted_thinking", data: {} } },
-  { name: "numeric redacted data", block: { type: "redacted_thinking", data: 123 } },
-  { name: "null redacted data", block: { type: "redacted_thinking", data: null } },
-  { name: "thinking on redacted content", block: { type: "redacted_thinking", data: "fabricated", thinking: "" } },
-  { name: "signature on redacted content", block: { type: "redacted_thinking", data: "fabricated", signature: "fabricated-invalid" } },
-  { name: "numeric signature delta", block: { type: "thinking", thinking: "", signature: "fabricated-invalid" }, delta: { type: "signature_delta", signature: 123 } },
-  { name: "object thinking delta", block: { type: "thinking", thinking: "", signature: "fabricated-invalid" }, delta: { type: "thinking_delta", thinking: {} } },
-  { name: "signature delta on redacted content", block: { type: "redacted_thinking", data: "fabricated" }, delta: { type: "signature_delta", signature: "forbidden" } },
+export const invalidSignedCases: readonly {
+  name: string; code: "invalid_provider_block" | "invalid_provider_delta"; block: Item; delta?: Item;
+}[] = [
+  { name: "missing thinking", code: "invalid_provider_block", block: { type: "thinking", signature: "fabricated-invalid" } },
+  { name: "numeric thinking before a delta", code: "invalid_provider_block", block: { type: "thinking", thinking: 123, signature: "fabricated-invalid" }, delta: { type: "thinking_delta", thinking: "suffix" } },
+  { name: "missing signature", code: "invalid_provider_block", block: { type: "thinking", thinking: "fabricated" } },
+  { name: "empty completed signature", code: "invalid_provider_block", block: { type: "thinking", thinking: "fabricated", signature: "" } },
+  { name: "numeric signature before a delta", code: "invalid_provider_block", block: { type: "thinking", thinking: "fabricated", signature: 123 }, delta: { type: "signature_delta", signature: "suffix" } },
+  { name: "null signature", code: "invalid_provider_block", block: { type: "thinking", thinking: "fabricated", signature: null } },
+  { name: "redacted data on thinking", code: "invalid_provider_block", block: { type: "thinking", thinking: "fabricated", signature: "fabricated-invalid", data: "forbidden" } },
+  { name: "missing redacted data", code: "invalid_provider_block", block: { type: "redacted_thinking" } },
+  { name: "object redacted data", code: "invalid_provider_block", block: { type: "redacted_thinking", data: {} } },
+  { name: "numeric redacted data", code: "invalid_provider_block", block: { type: "redacted_thinking", data: 123 } },
+  { name: "null redacted data", code: "invalid_provider_block", block: { type: "redacted_thinking", data: null } },
+  { name: "thinking on redacted content", code: "invalid_provider_block", block: { type: "redacted_thinking", data: "fabricated", thinking: "" } },
+  { name: "signature on redacted content", code: "invalid_provider_block", block: { type: "redacted_thinking", data: "fabricated", signature: "fabricated-invalid" } },
+  { name: "numeric signature delta", code: "invalid_provider_delta", block: { type: "thinking", thinking: "", signature: "fabricated-invalid" }, delta: { type: "signature_delta", signature: 123 } },
+  { name: "object thinking delta", code: "invalid_provider_delta", block: { type: "thinking", thinking: "", signature: "fabricated-invalid" }, delta: { type: "thinking_delta", thinking: {} } },
+  { name: "signature delta on redacted content", code: "invalid_provider_delta", block: { type: "redacted_thinking", data: "fabricated" }, delta: { type: "signature_delta", signature: "forbidden" } },
 ];
 
 /** Valid signed prefix and a completed tool must stay unpublished on failure. */

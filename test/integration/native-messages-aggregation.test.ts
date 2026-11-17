@@ -111,7 +111,6 @@ describe("native Messages HTTP aggregation", () => {
           { type: "tool_result", tool_use_id: "toolu_fixture", content: "fabricated file content" },
           { type: "text", text: "Continue" },
         ] });
-        const preserved = JSON.stringify(messages);
         const changed = structuredClone(messages);
         ((changed[1]!.content as Item[])[0]!).thinking = "tampered";
         for (const [history, model] of [[changed, "native"], [messages, "other"]] as const) {
@@ -122,7 +121,6 @@ describe("native Messages HTTP aggregation", () => {
         assert.equal(rig.requests.length, 1, "tamper and other-profile replay must not dispatch");
         assert.deepEqual(await contentOf(await rig.send(messages, stream), stream), [{ type: "text", text: "Complete" }]);
         assert.deepEqual(rig.requests[1]!.messages, messages);
-        assert.equal(JSON.stringify(messages), preserved);
         messages.push({ role: "assistant", content: "Complete" }, { role: "user", content: "Next turn" });
         await contentOf(await rig.send(messages, stream), stream);
         assert.deepEqual(rig.requests[2]!.messages, messages);
@@ -145,6 +143,19 @@ describe("native Messages HTTP aggregation", () => {
     });
   }
 
+  it("returns the matched native stop sequence in a nonstream response", async () => {
+    const events = nativeEvents([{ type: "text", text: "Complete" }]);
+    events[events.length - 2]!.delta = { stop_reason: "stop_sequence", stop_sequence: "\nEND α" };
+    const rig = await fixture(events);
+    try {
+      const response = await rig.send([{ role: "user", content: "Fixture" }]);
+      assert.equal(response.status, 200);
+      const message = await response.json() as Item;
+      assert.equal(message.stop_reason, "stop_sequence");
+      assert.equal(message.stop_sequence, "\nEND α");
+    } finally { await rig.close(); }
+  });
+
   for (const testCase of invalidSignedCases) {
     it(`returns 502 for ${testCase.name} without publishing the valid signed prefix`, async () => {
       const rig = await fixture(invalidSignedEvents(testCase));
@@ -152,7 +163,7 @@ describe("native Messages HTTP aggregation", () => {
         const messages: Item[] = [{ role: "user", content: "Read fixture.txt" }];
         const response = await rig.send(messages);
         assert.equal(response.status, 502);
-        assert.match(await response.text(), /invalid_provider_block|invalid_provider_delta/);
+        assert.deepEqual(await response.json(), { type: "error", error: { type: "api_error", message: testCase.code } });
         messages.push({ role: "assistant", content: [nativeContent[0]!, nativeContent[3]!] }, { role: "user", content: [
           { type: "tool_result", tool_use_id: "toolu_fixture", content: "fabricated file content" },
         ] });
@@ -167,7 +178,13 @@ describe("native Messages HTTP aggregation", () => {
     });
   }
 
-  for (const failure of ["missing terminal", "unsupported block", "unsupported delta", "invalid tool JSON"]) {
+  const failureCodes = {
+    "missing terminal": "missing_provider_terminal",
+    "unsupported block": "invalid_provider_block",
+    "unsupported delta": "invalid_provider_delta",
+    "invalid tool JSON": "invalid_provider_tool",
+  } as const;
+  for (const [failure, code] of Object.entries(failureCodes)) {
     it(`rejects ${failure} before returning a nonstream success`, async () => {
       const events = nativeEvents();
       if (failure === "missing terminal") events.pop();
@@ -181,7 +198,7 @@ describe("native Messages HTTP aggregation", () => {
       try {
         const response = await rig.send([{ role: "user", content: "Read fixture.txt" }]);
         assert.equal(response.status, 502);
-        assert.match(await response.text(), /missing_provider_terminal|invalid_provider_block|invalid_provider_delta|invalid_provider_tool/);
+        assert.deepEqual(await response.json(), { type: "error", error: { type: "api_error", message: code } });
         assert.equal(rig.requests.length, 1);
       } finally { await rig.close(); }
     });

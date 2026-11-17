@@ -22,12 +22,42 @@ describe("native Messages aggregation", () => {
     assert.deepEqual(result.value.message.usage, { input_tokens: 7, output_tokens: 9 });
   });
 
-  it("accepts an initially absent signature supplied by deltas for an empty thought", () => {
-    const content = [{ type: "thinking", thinking: "", signature: "fabricated-deferred-signature" }];
-    const result = aggregateFrames(messageFrames(nativeEvents(content, { signatureInDeltas: true })), "codex");
+  for (const initialSignature of [undefined, ""]) {
+    it(`accepts an initially ${initialSignature === undefined ? "absent" : "empty"} signature supplied by deltas for an empty thought`, () => {
+      const content = [{ type: "thinking", thinking: "", signature: "fabricated-deferred-signature" }];
+      const events = nativeEvents(content, { signatureInDeltas: true });
+      const start = events.find(event => event.type === "content_block_start");
+      assert.ok(start);
+      (start.content_block as Item).signature = initialSignature;
+      const result = aggregateFrames(messageFrames(events), "codex");
+      assert.ok(result.ok);
+      assert.equal(result.value.kind, "message");
+      if (result.value.kind === "message") assert.deepEqual(result.value.message.content, content);
+    });
+  }
+
+  for (const state of ["open", "closed"]) {
+    it(`rejects a duplicate index while the original content block is ${state}`, () => {
+      const events = nativeEvents([{ type: "text", text: "First" }, { type: "text", text: "Second" }])
+        .filter(event => state === "closed" || event.type !== "content_block_stop" || event.index !== 0)
+        .map(event => event.index === 1 ? { ...event, index: 0 } : event);
+      const result = aggregateFrames(messageFrames(events), "codex");
+      assert.ok(!result.ok);
+      assert.deepEqual(result.error, { kind: "upstream", message: "codex stream contained duplicate content block index" });
+    });
+  }
+
+  it("preserves a matched native stop sequence across later usage-only deltas", () => {
+    const events = nativeEvents([{ type: "text", text: "Complete" }]);
+    events[events.length - 2]!.delta = { stop_reason: "stop_sequence", stop_sequence: "\nEND α" };
+    events.splice(events.length - 1, 0, { type: "message_delta", delta: {}, usage: { output_tokens: 11 } });
+    const result = aggregateFrames(messageFrames(events), "codex");
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
-    if (result.value.kind === "message") assert.deepEqual(result.value.message.content, content);
+    if (result.value.kind !== "message") return;
+    assert.equal(result.value.message.stop_reason, "stop_sequence");
+    assert.equal(result.value.message.stop_sequence, "\nEND α");
+    assert.deepEqual(result.value.message.usage, { input_tokens: 7, output_tokens: 11 });
   });
 
   it("merges multiple partial usage deltas with the start counts and other usage fields", () => {
@@ -72,8 +102,13 @@ describe("native Messages aggregation", () => {
       await assert.rejects(async () => {
         for await (const event of validatedProviderEvents(response, profile, "messages", controller.signal, controller,
           systemClock, final => completed.push(final))) emitted.push(JSON.parse(event.data) as Item);
-      }, (error: unknown) => error instanceof RoutingError && error.status === 502 &&
-        ["invalid_provider_block", "invalid_provider_delta"].includes(error.code));
+      }, (error: unknown) => {
+        assert.ok(error instanceof RoutingError);
+        assert.equal(error.status, 502);
+        assert.equal(error.code, testCase.code);
+        assert.equal(error.message, testCase.code);
+        return true;
+      });
       assert.deepEqual(completed, []);
       assert.equal(emitted.some(event => event.type === "content_block_stop" && event.index === 1), false);
       assert.equal(emitted.some(event => event.type === "message_stop"), false);
@@ -91,6 +126,14 @@ describe("native Messages aggregation", () => {
     assert.ok(result.ok);
     assert.equal(result.value.kind, "message");
     if (result.value.kind === "message") assert.deepEqual(result.value.message.content, content);
+  });
+
+  it("rejects an invalid unclosed signed start before the unclosed-content check", () => {
+    const events = nativeEvents([{ type: "thinking", thinking: 123, signature: "fabricated-invalid" }])
+      .filter(event => event.type !== "content_block_delta" && event.type !== "content_block_stop");
+    const result = aggregateFrames(messageFrames(events), "codex");
+    assert.ok(!result.ok);
+    assert.deepEqual(result.error, { kind: "upstream", message: "codex stream contained invalid signed content" });
   });
 
   for (const type of ["thinking", "redacted_thinking"]) {
