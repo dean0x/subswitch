@@ -19,8 +19,9 @@ permissions, and execution loop.
   Messages. OpenAI models continue to OpenAI. Reverse-enabled sessions adapt the
   collaboration namespace so cross-provider task messages are readable.
 
-SubSwitch does not switch models or billing modes after a failure. Unknown models
-retain their originating provider's fallback behavior, except that an unregistered
+Default routing does not switch models or billing modes after a failure.
+Opt-in explicit routes can select another subscription profile before response commitment.
+Unknown models retain their originating provider's fallback behavior, except that an unregistered
 `claude-*` or `claude:*` name sent by Codex is refused rather than forwarded to OpenAI. Native
 settings and client binaries are not patched or downgraded.
 
@@ -246,8 +247,9 @@ Claude Code integration together. The default `init` behavior remains Claude Cod
 Codex setup changes only the user-level `openai_base_url` value, preserving other
 TOML settings and comments. It writes SubSwitch's user config to
 `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`).
-Project configuration merges over this fallback; explicit `SUBSWITCH_CONFIG`
-remains authoritative. Start the proxy before launching Codex. Existing custom
+Permitted project settings merge over this fallback; explicit `SUBSWITCH_CONFIG`
+remains authoritative. Profiles and routes require the user file or an explicit file.
+Start the proxy before launching Codex. Existing custom
 providers are not replaced. A custom upstream is preserved only when it is loopback or
 you have explicitly set `codexIngress.allowInsecureBaseUrl: true` in the SubSwitch config.
 Setup names an unapproved host and stops before writing files.
@@ -331,14 +333,24 @@ broader content/tool support in [#48](https://github.com/dean0x/subswitch/issues
 These are not included in the parity release. Missing reverse continuation state
 produces an explicit error; keep the proxy running during active translated sessions.
 
-A single-target explicit Claude route can accept complete native Messages history
-created before proxy startup or replayed after a restart. Signed thinking and
-redacted-thinking blocks reach the configured Claude upstream unchanged for validation.
-An in-flight cold import reserves its signatures; overlapping imports of those
-signatures fail until that attempt completes or releases its reservation.
+A single-target explicit Claude route to `https://api.anthropic.com` can accept
+complete native Messages history from before proxy startup, after a restart, or after
+cache eviction. Signed blocks reach Anthropic unchanged for validation. An active
+cold import reserves its signatures until that attempt completes or releases them.
+Emitted signatures retain their provenance through a failed or cancelled response.
+SubSwitch records signature ownership only for first-party destinations that validate signatures.
+Other destinations get no ownership claim, so replay from another scope fails with 409.
+Claude subscription routes with custom endpoints retain exact same-scope continuation after a successful response.
+Cross-scope replay returns 409 without an upstream request.
+Kimi routes need the subscription sign-in, which this version does not provide.
 This does not restore translated continuation handles or import signed history into
-fallback routes or another provider. Later system-role messages remain a separate
-unsupported case on explicit Messages routes.
+fallback routes. Later system-role messages remain a separate unsupported case on
+explicit Messages routes.
+
+The [2026-10-19 offline record](e2e/gates/native-thinking-continuity-offline-2026-10-19.json)
+describes source commit `a1e2471` only. Its hashes and results do not qualify the current
+HEAD. The run does not cover `test/integration/native-messages-aggregation.test.ts` or
+later replay changes.
 
 ## Effort control
 
@@ -361,13 +373,24 @@ default.
 The config file is located by the following precedence (highest wins):
 
 1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
-2. `subswitch.config.json` in the current working directory, merged over the user fallback
+2. Permitted settings from `subswitch.config.json` in the current directory, merged over the user fallback
 3. `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`), then built-in defaults
 
 An explicit `SUBSWITCH_CONFIG` file is authoritative and is not merged with the user fallback.
-This merge applies to all commands, including forward-only use. `doctor` displays every
-loaded source, and errors identify source paths. Explicit config paths passed by callers
-of `loadConfig` also bypass the merge.
+Explicit config paths passed by callers of `loadConfig` also bypass the merge.
+`doctor` displays every loaded source, and errors identify source paths.
+
+`accessProfiles` and `routes` load only from the user configuration or an explicit file.
+This rule includes each profile's `allowInsecureBaseUrl` value.
+A project file that declares either key fails with an error, even for an empty value.
+Move those keys to the user file, or select the file with `SUBSWITCH_CONFIG`.
+Use `configVersion: 2` for explicit profiles and routes.
+The [Wave 1 example](subswitch.wave1.example.json) shows their format.
+
+Other project settings retain their merge behavior, except the `run-action` port.
+`run-action` uses the user or explicit file's port, then the built-in default.
+It does not use the project port to select an existing proxy.
+Set the same port in the user file or `SUBSWITCH_CONFIG` when an action must use a custom-port proxy.
 
 **An unrecognised key is rejected, not ignored.** Two checks run against the raw file
 before it is parsed, and a hit on either is a hard load failure — subswitch prints the
@@ -846,7 +869,9 @@ local development.
 
 Version 2 access profiles, action-scoped failover, recovery behavior, configuration examples
 and current evidence gates are described in [the Wave 1 notes](e2e/gates/wave1.md).
-Kimi live compatibility is pending; see [the evidence manifest](e2e/gates/wave1-evidence.json).
-
-Kimi Code has an explicit, isolated [managed OAuth compatibility path](e2e/gates/kimi-managed-oauth.md).
-It is qualified offline; truthful Subswitch service identity acceptance remains unmeasured.
+Explicit routes use only `claude-code`, `chatgpt-codex` and `kimi-code` subscription sign-ins.
+Each profile uses `native-oauth` and `billing: "subscription"`. Provider keys and paid fallback are not supported.
+Fallback between subscription profiles remains available.
+Kimi Code has an explicit [subscription OAuth path](e2e/gates/kimi-managed-oauth.md).
+Offline tests cover this path. General live acceptance remains unmeasured.
+See [Kimi route status](e2e/gates/kimi-readiness.md) and [retained evidence](e2e/gates/wave1-evidence.json).

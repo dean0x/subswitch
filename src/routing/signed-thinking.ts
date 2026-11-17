@@ -26,29 +26,60 @@ export function sameThinking(block: Item, recorded: Item): boolean {
 const provenanceKey = (signature: string) =>
   `thinking-origin:${createHash("sha256").update(signature).digest("hex")}`;
 
-/** Distinguish a cold cache from a signature already observed under another scope. */
-export const knownThinking = (cache: ClaudeCache, signature: string): boolean =>
-  cache.get("snapshot", provenanceKey(signature)) !== undefined;
+/** Native provenance and exact replay share one record; gateway replay stays scope-local. */
+export function recordedThinking(
+  cache: ClaudeCache, signature: string, owner: string, conversation: string,
+): Item | undefined {
+  const record = cache.get("snapshot", provenanceKey(signature));
+  if (record?.request["owner"] === owner && record.request["conversation"] === conversation &&
+      !record.request["pending"]) return record.input[0];
+  return cache.get("snapshot", `signature:${owner}:${conversation}:${signature}`)?.input[0];
+}
 
-/** Staged callers publish imports only after a successful provider terminal. */
-export function rememberThinking(
-  cache: ClaudeCache, owner: string, conversation: string, block: Item,
+/** Same-scope emitted provenance does not imply a successful scoped publication. */
+export function foreignThinking(
+  cache: ClaudeCache, signature: string, owner: string, conversation: string,
+): boolean {
+  const origin = cache.get("snapshot", provenanceKey(signature))?.request;
+  return origin !== undefined && (origin["owner"] !== owner ||
+    origin["conversation"] !== conversation || origin["pending"] === true);
+}
+
+/** Retain emitted provenance through failure. Unvalidated output has no ownership claim. */
+export function observeThinking(
+  cache: StagedCache, owner: string, conversation: string, block: Item, validated = true,
 ): void {
   const signature = thinkingSignature(block);
   if (signature === undefined) return;
-  const scoped = `signature:${owner}:${conversation}:${signature}`;
+  const key = provenanceKey(signature);
+  const origin = cache.get("snapshot", key)?.request;
+  if (!validated && origin) return;
+  if (validated && origin && (origin["owner"] !== owner || origin["conversation"] !== conversation))
+    throw new RoutingError("foreign_opaque_state", 409);
+  cache.retainSnapshot(key, { request: validated ? { owner, conversation } : {}, input: [] });
+}
+
+/** Imports require an attempt-local stage; only success publishes exact replay. */
+export function rememberThinking(
+  cache: StagedCache, owner: string, conversation: string, block: Item, claimOwnership = true,
+): void {
+  if (!(cache instanceof StagedCache)) throw new RoutingError("invalid_replay_stage", 500);
+  const signature = thinkingSignature(block);
+  if (signature === undefined) return;
   const key = provenanceKey(signature);
   const provenance = cache.get("snapshot", key);
-  if (provenance && (provenance.request["owner"] !== owner ||
+  if (claimOwnership && provenance && (provenance.request["owner"] !== owner ||
       provenance.request["conversation"] !== conversation || provenance.request["pending"]))
     throw new RoutingError("foreign_opaque_state", 409);
-  const recorded = cache.get("snapshot", scoped)?.input[0];
+  const recorded = recordedThinking(cache, signature, owner, conversation);
   if (recorded && !sameThinking(block, recorded))
     throw new RoutingError("foreign_opaque_state", 409);
-  if (!provenance) {
-    const value = { request: { owner, conversation }, input: [] };
-    if (cache instanceof StagedCache) cache.reserveSnapshot(key, value);
+  if (claimOwnership) {
+    const value = { request: { owner, conversation }, input: [block] };
+    if (!provenance) cache.reserveSnapshot(key, value);
     else cache.put("snapshot", key, value);
+  } else {
+    // Unvalidated gateway output has scoped replay but cannot claim native ownership.
+    cache.put("snapshot", `signature:${owner}:${conversation}:${signature}`, { request: {}, input: [block] });
   }
-  cache.put("snapshot", scoped, { request: {}, input: [block] });
 }

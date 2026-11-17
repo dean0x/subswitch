@@ -25,7 +25,7 @@ const profile: AccessProfile = {
   region: "global",
   billing: "subscription",
   account: "synthetic",
-  credential: { kind: "env", name: "SYNTHETIC_KEY" },
+  credential: { kind: "native-oauth", authFile: "/synthetic/never-read.json" },
 };
 const scope = allowanceScope(profile);
 const failure = (now: number): ClassifiedFailure => ({
@@ -63,7 +63,7 @@ describe("routing reliability and isolation", () => {
     );
     assert.equal(
       classifyFailure(
-        { ...profile, product: "kimi-platform", billing: "api" },
+        { ...profile, product: "kimi-platform" },
         429,
         envelope({
           type: "exceeded_current_quota_error",

@@ -270,11 +270,11 @@ test("C6 genuine Codex action remains codecless Responses through previous_respo
   } finally { f.router.close(); }
 });
 
-for (const change of [{ region: "mainland-cn" }, { credential: { kind: "env", name: "FABRICATED_KEY" } },
-  { provider: "claude", product: "claude-code", region: undefined }, { product: "kimi-platform", billing: "api", credential: { kind: "env", name: "FABRICATED_KEY" } }])
+for (const change of [{ region: "mainland-cn" },
+  { provider: "claude", product: "claude-code", region: undefined }])
   test(`C6 scoped noneligible ${JSON.stringify(change)} remains codecless`, async () => {
     const p = { ...profile, ...change } as AccessProfile;
-    const selected = { ...target, model: p.product === "kimi-platform" ? "kimi-k3" : p.provider === "claude" ? "claude-sonnet-5-5" : target.model };
+    const selected = { ...target, model: p.provider === "claude" ? "claude-sonnet-5-5" : target.model };
     const f = fixture({ action: false, profile: p, model: selected.model, reply: () => response(wire(nativeMessages())), prepared(r) {
       assert.equal(r.atomicMessages, undefined); assert.equal(r.owner, ownerKey(p, selected, "messages", "generation1"));
     } });
@@ -360,7 +360,7 @@ test("C4 request deadline after auth wait prevents quota and physical dispatch",
 
 // Invalid billing is rejected by configuration; the pure resolver must not widen it either.
 test("C6 resolver does not select ordered codec for API billing or Codex ingress", () => {
-  assert.equal(resolveDestination({ ...profile, billing: "api" }, "messages", seed(), true).codec, undefined);
+  assert.equal(resolveDestination({ ...profile, billing: "api" } as unknown as AccessProfile, "messages", seed(), true).codec, undefined);
   assert.deepEqual(resolveDestination(profile, "responses", { input: "hello" }, true), { protocol: "responses" });
 });
 

@@ -97,11 +97,24 @@ export class CodexWebSockets {
   /** Local routed sockets authenticate a native destination only if a message selects it. */
   private localBridge(req: IncomingMessage, client: WebSocket, mode: CodexEndpointMode, path: string, scoped?: ScopedSocket): void {
     const active = new Map<string, AbortController>();
-    const nativeRequests = new Map<string, () => void>();
+    const nativeRequests = new Map<string, { release: () => void; responseId?: string }>();
     const releaseNative = (key: string) => {
-      const release = nativeRequests.get(key); if (!release) return;
-      for (const [alias, candidate] of nativeRequests) if (candidate === release) nativeRequests.delete(alias);
-      release();
+      const request = nativeRequests.get(key); if (!request) return;
+      nativeRequests.delete(key);
+      request.release();
+    };
+    const nativeRequestKey = (event: Item): string | undefined => {
+      const streamId = event["stream_id"];
+      if (typeof streamId === "string" && streamId) return nativeRequests.has(streamId) ? streamId : undefined;
+      const responseId = object(event["response"])?.["id"] ?? event["response_id"];
+      if (typeof responseId === "string" && responseId) {
+        for (const [key, request] of nativeRequests) if (request.responseId === responseId) return key;
+        // Native replies can omit stream_id. Bind new responses in request order, then use response IDs.
+        for (const [key, request] of nativeRequests) if (!request.responseId) return key;
+      }
+      // An error without either identifier is unambiguous only with one outstanding request.
+      if (!responseId && nativeRequests.size === 1) return nativeRequests.keys().next().value;
+      return undefined;
     };
     let parent: WebSocket | undefined, connecting: Promise<WebSocket> | undefined;
     const parentLifetime = new AbortController();
@@ -167,16 +180,17 @@ export class CodexWebSockets {
         });
         let outputQueue = Promise.resolve(), count = 0;
         upstream.on("message", data => {
-          if (++count > 16) { upstream.terminate(); return; }
+          count++;
           upstream.pause(); outputQueue = outputQueue.then(async () => {
             const event = namespaceEvent(json(Buffer.from(data.toString())));
             recordLimitEvent(this.options.logger, { provider: "codex", product: mode === "subscription" ? "chatgpt-codex" : "openai-api", protocol: "responses" }, event, "websocket", { truncated: (Buffer.isBuffer(data) ? data.length : data instanceof ArrayBuffer ? data.byteLength : data.reduce((sum, chunk) => sum + chunk.length, 0)) > 65536 });
-            const incomingStream = event["stream_id"];
-            const key = typeof incomingStream === "string" && incomingStream ? incomingStream : "default";
-            const response = object(event["response"]), release = nativeRequests.get(key);
-            if (release && typeof response?.["id"] === "string") nativeRequests.set(response["id"], release);
+            const key = nativeRequestKey(event);
+            const responseId = object(event["response"])?.["id"] ?? event["response_id"];
+            const request = key === undefined ? undefined : nativeRequests.get(key);
+            if (key !== undefined && request && typeof responseId === "string" && responseId)
+              nativeRequests.set(key, { ...request, responseId });
             await send(event);
-            if (["response.completed", "response.incomplete", "response.failed", "response.cancelled", "error"].includes(String(event["type"]))) releaseNative(key);
+            if (key !== undefined && ["response.completed", "response.incomplete", "response.failed", "response.cancelled", "error"].includes(String(event["type"]))) releaseNative(key);
           }).catch(async error => { await failure(error); if (scoped) upstream.terminate(); })
             .finally(() => { if (--count === 0 && upstream.readyState === WebSocket.OPEN) upstream.resume(); });
         });
@@ -215,7 +229,7 @@ export class CodexWebSockets {
           try {
             scoped.check();
             if (nativeRequests.has(key) || new Set(nativeRequests.values()).size >= 16) throw new RoutingError("concurrent_native_stream_id", 409);
-            nativeRequests.set(key, body["generate"] === false ? () => undefined : scoped.admit().release);
+            nativeRequests.set(key, { release: body["generate"] === false ? () => undefined : scoped.admit().release });
           } catch (error) { queued--; failure(error, streamId); return; }
         }
         let forwarded = false;

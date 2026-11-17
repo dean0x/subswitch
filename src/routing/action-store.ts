@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { scheduleRoutingTimer, systemClock, type RoutingClock } from "./clock.js";
 import {
   RoutingError,
   type ActionAffinity,
@@ -6,18 +7,60 @@ import {
   type OriginatingClient,
 } from "./routing-types.js";
 
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // Only ESRCH proves owner death; permission and probe errors do not.
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
+}
+
 interface Action {
+  ownerPid?: number;
   context: ActionContext;
   phase: ActionAffinity["phase"];
   requests: Map<AbortSignal, { controller: AbortController; agentId?: string }>;
   transports: Set<() => void>;
   affinities: Map<string, ActionAffinity>;
 }
-/** No active entry eviction; exhaustion is truthful admission failure. */
+/** Live owners keep their actions; only confirmed dead owners lose admitted work. */
 export class ActionStore {
   readonly capability = randomBytes(32).toString("hex");
   private readonly actions = new Map<string, Action>();
   private affinityCount = 0;
+  private cancelOwnerCheck: (() => void) | undefined;
+  constructor(
+    private readonly clock: RoutingClock = systemClock,
+    private readonly isOwnerAlive: (pid: number) => boolean = isProcessAlive,
+  ) {}
+  private watchOwners(): void {
+    if (this.cancelOwnerCheck) return;
+    this.cancelOwnerCheck = scheduleRoutingTimer(
+      this.clock,
+      () => {
+        this.cancelOwnerCheck = undefined;
+        this.reclaimOwners();
+        for (const action of this.actions.values()) {
+          if (action.ownerPid !== undefined) {
+            this.watchOwners();
+            break;
+          }
+        }
+      },
+      1000,
+    );
+  }
+  private reclaimOwners(): void {
+    for (const [id, action] of this.actions) {
+      if (action.ownerPid === undefined || this.isOwnerAlive(action.ownerPid))
+        continue;
+      this.cancel(id);
+      // A dead owner cannot resume. Release capacity even if an aborted request has not settled.
+      this.remove(id, action);
+    }
+  }
   authorized(value: string | undefined): boolean {
     return (
       !!value &&
@@ -29,7 +72,14 @@ export class ActionStore {
     client: OriginatingClient,
     conversationId: string,
     namespace = "explicit",
+    ownerPid?: number,
   ): { id: string; ingressPrefix: string } {
+    if (
+      ownerPid !== undefined &&
+      (!Number.isSafeInteger(ownerPid) || ownerPid < 1 || ownerPid > 2147483647)
+    )
+      throw new RoutingError("invalid_action_context");
+    if (this.actions.size >= 4096) this.reclaimOwners();
     if (this.actions.size >= 4096)
       throw new RoutingError("action_store_full", 503);
     if (
@@ -40,6 +90,7 @@ export class ActionStore {
       throw new RoutingError("invalid_action_context");
     const id = randomUUID();
     this.actions.set(id, {
+      ...(ownerPid !== undefined ? { ownerPid } : {}),
       context: {
         client,
         conversationId,
@@ -52,6 +103,7 @@ export class ActionStore {
       transports: new Set(),
       affinities: new Map(),
     });
+    if (ownerPid !== undefined) this.watchOwners();
     return { id, ingressPrefix: `/__subswitch/action/${id}/ingress` };
   }
   context(id: string, client: OriginatingClient): ActionContext {
@@ -91,6 +143,7 @@ export class ActionStore {
     if (admission) admission.agentId = context.agentId;
   }
   affinity(context: ActionContext, route: string): ActionAffinity {
+    if (this.affinityCount >= 4096) this.reclaimOwners();
     const a = this.actions.get(context.actionId);
     if (!a) throw new RoutingError("action_state_lost", 409);
     const key = JSON.stringify([context.agentId, route]);
@@ -158,18 +211,22 @@ export class ActionStore {
     for (const { controller } of a.requests.values())
       controller.abort(new RoutingError("action_cancelled", 499));
     for (const close of a.transports) close();
+    a.transports.clear();
     this.finalize(id, a);
   }
   private finalize(id: string, action: Action): void {
+    if (action.phase !== "active" && !action.requests.size) this.remove(id, action);
+  }
+  private remove(id: string, action: Action): void {
     if (this.actions.get(id) !== action) return;
-    if (action.phase !== "active" && !action.requests.size) {
-      for (const close of action.transports) close();
-      action.transports.clear();
-      this.actions.delete(id);
-      this.affinityCount -= action.affinities.size;
-    }
+    for (const close of action.transports) close();
+    action.transports.clear();
+    this.actions.delete(id);
+    this.affinityCount -= action.affinities.size;
   }
   close(): void {
+    this.cancelOwnerCheck?.();
+    this.cancelOwnerCheck = undefined;
     for (const id of this.actions.keys()) this.cancel(id);
   }
 }

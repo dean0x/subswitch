@@ -343,8 +343,8 @@ test("upstream failure remains unhealthy with no silent fallback", async () => {
   finally { f.router.close(); }
 });
 
-test("other credential/product scope keeps its late-system refusal", async () => {
-  const f = fixture({ profile: { ...profile, credential: { kind: "env", name: "FABRICATED_KEY" } } });
+test("other regional scope keeps its late-system refusal", async () => {
+  const f = fixture({ profile: { ...profile, region: "mainland-cn" } });
   try { const r = await f.run(); code(r.error, "unsupported_mid_conversation_system"); assert.deepEqual(f.sent, []); }
   finally { f.router.close(); }
 });
@@ -429,11 +429,11 @@ test("actual oversized ordered request retains pre-render 413 bound", async () =
   } finally { f.router.close(); }
 });
 
-test("ordinary Messages keeps existing metadata behavior", async () => {
+test("ordinary Messages omits origin-vendor metadata before Kimi dispatch", async () => {
   const f = fixture({ action: false, reply: () => response(wire(nativeMessages())) });
   try {
     const metadata = { user_id: "synthetic" }, r = await f.run({ ...ordinary(), metadata });
-    assert.equal(r.error, undefined); assert.equal(f.sent.length, 1); assert.deepEqual(f.sent[0]!.body["metadata"], metadata);
+    assert.equal(r.error, undefined); assert.equal(f.sent.length, 1); assert.equal(f.sent[0]!.body["metadata"], undefined, "origin-vendor metadata must not reach Kimi");
     assert.equal(f.sent[0]!.url, "https://api.kimi.ai/coding/v1/messages?beta=true");
   } finally { f.router.close(); }
 });
@@ -505,13 +505,13 @@ test("valid attribution does not bypass the next unsupported field or change aut
   } finally { f.router.close(); }
 });
 
-test("direct Responses metadata retains its existing behavior", async () => {
+test("direct Responses omits origin-vendor metadata before Kimi dispatch", async () => {
   const f = fixture();
   try {
     const metadata = { user_id: "fabricated-label" };
     const r = await f.run({ model: "work", input: [{ role: "user", content: "hello" }], metadata }, "codex");
     assert.equal(r.error, undefined); assert.equal(f.sent.length, 1);
-    assert.deepEqual(f.sent[0]!.body["metadata"], metadata);
+    assert.equal(f.sent[0]!.body["metadata"], undefined, "origin-vendor metadata must not reach Kimi");
   } finally { f.router.close(); }
 });
 
@@ -699,8 +699,8 @@ for (const [name, index, expected] of [["request", 0, "unsupported_request_field
     } finally { f.router.close(); }
   });
 }
-test("cache hints keep other credential refusal and existing native Messages/direct Responses policy", async () => {
-  const custom = fixture({ profile: { ...profile, credential: { kind: "env", name: "FABRICATED_KEY" } } });
+test("cache hints keep other regional refusal and existing native Messages/direct Responses policy", async () => {
+  const custom = fixture({ profile: { ...profile, region: "mainland-cn" } });
   const native = fixture({ action: false, reply: () => response(wire(nativeMessages())) }), direct = fixture();
   try {
     const hints = { type: "ephemeral", evict_on_complete: true };

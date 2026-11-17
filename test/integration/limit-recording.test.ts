@@ -1,3 +1,4 @@
+import { nativeCredential } from "../fixtures/native-profile.js";
 /** Synthetic providers and isolated diagnostic storage; never exhaust real quota. */
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -13,6 +14,7 @@ import { createRawHttpForwarder } from "../../src/raw-http-passthrough.js";
 import { createOpenaiPassthrough } from "../../src/openai-passthrough.js";
 import { loadConfig } from "../../src/config.js";
 import { SharedRouting } from "../../src/routing/shared-routing.js";
+import { AttemptFailure } from "../../src/routing/attempt-failure.js";
 import {
   LimitRecorder,
   readLimitObservations,
@@ -343,25 +345,25 @@ describe("explicit route observations and inspection", () => {
           configVersion: 2,
           accessProfiles: {
             code: {
-              provider: "kimi",
-              product: "kimi-code",
-              region: "global",
+              provider: "codex",
+              product: "chatgpt-codex",
+
               billing: "subscription",
               account: "synthetic",
-              credential: { kind: "env", name: "CODE_KEY" },
+              credential: nativeCredential("codex", "synthetic-code"),
             },
             api: {
               provider: "codex",
-              product: "openai-api",
-              billing: "api",
+              product: "chatgpt-codex",
+              billing: "subscription",
               account: "synthetic",
-              credential: { kind: "env", name: "API_KEY" },
+              credential: nativeCredential("codex", "synthetic-api"),
             },
           },
           routes: {
             work: {
               clients: ["codex"],
-              primary: { profile: "code", model: "k3", effort: "high" },
+              primary: { profile: "code", model: "gpt-6-sol", effort: "high" },
               fallbacks: [
                 { profile: "api", model: "gpt-6-sol", effort: "high" },
               ],
@@ -390,20 +392,17 @@ describe("explicit route observations and inspection", () => {
           return new Response(
             JSON.stringify({
               error: {
-                message:
-                  "You've reached your weekly (7-day) usage limit. private",
+                code: "insufficient_quota", message: "private",
               },
             }),
-            { status: 403, headers: { "retry-after": "120" } },
+            { status: 429, headers: { "retry-after": "120" } },
           );
         return new Response(
           'data: {"type":"response.created","response":{"id":"synthetic","status":"in_progress","output":[]}}\n\n' +
             'data: {"type":"response.completed","response":{"id":"synthetic","status":"completed","output":[]}}\n\n',
           { headers: { "content-type": "text/event-stream" } },
         );
-      },
-      { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-    );
+      });
     try {
       const action = router.actions.create("codex", "thread");
       for await (const event of router.events(
@@ -416,17 +415,17 @@ describe("explicit route observations and inspection", () => {
         void event;
       assert.equal(calls, 2);
       assert.equal(records.length, 1);
-      assert.equal(records[0]!.context.product, "kimi-code");
+      assert.equal(records[0]!.context.product, "chatgpt-codex");
       assert.equal(records[0]!.context.attempt, 0);
       assert.match(records[0]!.context.scopeHash!, /^[a-f0-9]{64}$/);
-      assert.equal(records[0]!.context.region, "global");
+      assert.equal(records[0]!.context.region, undefined);
       assert.equal(records[0]!.committed, false);
       assert.ok(!JSON.stringify(records).includes("private"));
     } finally {
       router.close();
     }
   });
-  it("keeps unrecognized failures unrecognized after recording instead of enabling paid fallback", async () => {
+  it("keeps unrecognized failures unrecognized after recording instead of enabling subscription fallback", async () => {
     const records: LimitObservation[] = [];
     let calls = 0;
     const router = new SharedRouting(
@@ -446,21 +445,25 @@ describe("explicit route observations and inspection", () => {
           }),
           { status: 403 },
         );
-      },
-      { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-    );
+      });
     try {
       const action = router.actions.create("codex", "thread");
-      await assert.rejects(async () => {
-        for await (const event of router.events(
-          { model: "work", input: "synthetic" },
-          "codex",
-          "work",
-          new AbortController().signal,
-          router.actions.context(action.id, "codex"),
-        ))
-          void event;
-      });
+      await assert.rejects(
+        async () => {
+          for await (const event of router.events(
+            { model: "work", input: "synthetic" },
+            "codex",
+            "work",
+            new AbortController().signal,
+            router.actions.context(action.id, "codex"),
+          ))
+            void event;
+        },
+        (error: unknown) =>
+          error instanceof AttemptFailure &&
+          error.failure.kind === "unknown" &&
+          error.failure.status === 403,
+      );
       assert.equal(calls, 1);
       assert.equal(records.length, 1);
       assert.equal(records[0]!.candidate, "possible-limit");
@@ -479,26 +482,30 @@ describe("explicit route observations and inspection", () => {
       { now: () => now, monotonic: () => now, random: () => 0.5 },
       async () =>
         new Response(
-          'event: error\ndata: {"type":"error","error":{"status":403,"message":"You\\u0027ve reached your weekly (7-day) usage limit."}}\n\n',
+          'event: error\ndata: {"type":"error","error":{"status":429,"code":"insufficient_quota"}}\n\n',
           {
             headers: {
               "content-type": "text/event-stream",
               "retry-after": "3600",
             },
           },
-        ),
-      { CODE_KEY: "synthetic" },
-    );
+        ));
     try {
-      await assert.rejects(async () => {
-        for await (const event of router.events(
-          { model: "work" },
-          "codex",
-          "work",
-          new AbortController().signal,
-        ))
-          void event;
-      });
+      await assert.rejects(
+        async () => {
+          for await (const event of router.events(
+            { model: "work" },
+            "codex",
+            "work",
+            new AbortController().signal,
+          ))
+            void event;
+        },
+        (error: unknown) =>
+          error instanceof AttemptFailure &&
+          error.failure.kind === "quota" &&
+          error.failure.status === 429,
+      );
       const credential = await router.attempts.auth.get(
           "code",
           new AbortController().signal,
@@ -527,21 +534,25 @@ describe("explicit route observations and inspection", () => {
           },
         },
         undefined,
-        async () => new Response(error, { status: 429 }),
-        { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-      );
+        async () => new Response(error, { status: 429 }));
       try {
         const action = router.actions.create("codex", "thread");
-        await assert.rejects(async () => {
-          for await (const event of router.events(
-            { model: "work" },
-            "codex",
-            "work",
-            new AbortController().signal,
-            router.actions.context(action.id, "codex"),
-          ))
-            void event;
-        });
+        await assert.rejects(
+          async () => {
+            for await (const event of router.events(
+              { model: "work" },
+              "codex",
+              "work",
+              new AbortController().signal,
+              router.actions.context(action.id, "codex"),
+            ))
+              void event;
+          },
+          (error: unknown) =>
+            error instanceof AttemptFailure &&
+            error.failure.kind === "rate_limit" &&
+            error.failure.status === 429,
+        );
       } finally {
         router.close();
       }

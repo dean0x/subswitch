@@ -11,7 +11,7 @@ import { ClaudeCache } from "../claude-cache.js";
 import { ReverseState } from "../claude-state.js";
 import { object } from "../plain-object.js";
 import { readBoundedBody } from "../provider-transport.js";
-import { resolveDestination, destinationUrl, type DestinationSelection } from "./destination-catalog.js";
+import { resolveDestination, destinationUrl, validatesNativeThinking, type DestinationSelection } from "./destination-catalog.js";
 import { KimiResponsesBridgeError, renderValidatedKimiResponses } from "./kimi-responses-bridge.js";
 import { classifyFailure, logProviderFailure, providerErrorHints } from "./provider-failure.js";
 import { validatedProviderEvents } from "./provider-stream.js";
@@ -39,7 +39,7 @@ import { systemClock, type RoutingClock } from "./clock.js";
 import { codexTransportConstants, buildHeaders } from "../codex-handler.js";
 import { StagedCache, type OrderedReplayDiagnostics } from "./replay-cache.js";
 import { adaptRequest } from "./request-adapter.js";
-import { rememberThinking } from "./signed-thinking.js";
+import { observeThinking, rememberThinking } from "./signed-thinking.js";
 import { deriveConversationKey } from "../conversation-key.js";
 import { recordLimitFailure, type LimitContext } from "../limit-observation.js";
 import { abortable } from "../abortable.js";
@@ -94,7 +94,6 @@ export class RoutedAttempts {
   private readonly key = randomBytes(32);
   private readonly replay = new ClaudeCache(
     { maxEntries: 2048, maxBytes: 32 * 1024 * 1024 },
-    true,
   );
   constructor(
     readonly auth: ProfileAuth,
@@ -229,6 +228,7 @@ export class RoutedAttempts {
       exec = new KimiExecStream(pending);
     }
     if (orderedPending) orderedLeases.push(orderedPending.reserve(2 * orderedJsonBytes(outbound) + 3));
+    stage.preflight();
     const encodedRequest = JSON.stringify(outbound);
     const serializedCap: unknown = this.beforeDispatch
       ? JSON.parse(encodedRequest)[protocol === "messages" ? "max_tokens" : "max_output_tokens"]
@@ -300,7 +300,7 @@ export class RoutedAttempts {
       });
     }
     const limitContext: LimitContext = { provider: p.provider, product: p.product, protocol, profile: t.profile, model: t.model,
-      ingress, configuredCredentialKind: p.credential.kind === "native-oauth" ? "native-oauth" : p.product === "kimi-code" ? "coding-plan-key" : "api-key",
+      ingress, configuredCredentialKind: "native-oauth",
       ...(request.scopeHash ? { scopeHash: request.scopeHash } : {}),
       ...(p.region ? { region: p.region } : {}),
       ...(request.route ? { route: request.route } : {}), ...(request.attempt !== undefined ? { attempt: request.attempt } : {}) };
@@ -323,7 +323,7 @@ export class RoutedAttempts {
         if (Array.isArray(final["content"]))
           for (const value of final["content"]) {
             const item = object(value);
-            if (item) rememberThinking(stage, owner, conversation, item);
+            if (item) rememberThinking(stage, owner, conversation, item, validatesNativeThinking(p));
           }
         if (Array.isArray(final["output"])) {
           const output = final["output"] as Item[],
@@ -365,6 +365,9 @@ export class RoutedAttempts {
       this.logger,
       limitContext,
       exec,
+      undefined,
+      undefined,
+      block => observeThinking(stage, owner, conversation, block, validatesNativeThinking(p)),
     );
     let converted: AsyncIterable<ClientEvent>;
     if (codec) {

@@ -53,8 +53,8 @@ for (const toolChoice of [{ type: "function", name: "exec" }, { type: "custom", 
 test("exact selected binding only; no opt-in or routing entrypoint is introduced", () => {
   const base = options();
   for (const change of [{ profile: { ...profile, region: "mainland-cn" as const } },
-    { profile: { ...profile, credential: { kind: "env" as const, name: "FABRICATED" } } },
-    { profile: { ...profile, billing: "api" as const } }, { target: { ...base.target, model: "other" } },
+    { profile: { ...profile, credential: { kind: "env", name: "FABRICATED" } } as unknown as AccessProfile },
+    { profile: { ...profile, billing: "api" } as unknown as AccessProfile }, { target: { ...base.target, model: "other" } },
     { ingress: "messages" as const }, { protocol: "messages" as const }]) {
     assert.equal(prepareKimiExecTransaction({ ...base, ...change }), undefined);
   }

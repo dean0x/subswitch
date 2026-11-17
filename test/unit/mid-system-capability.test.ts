@@ -16,7 +16,7 @@ import {
 
 const profile: AccessProfile = {
   provider: "kimi", product: "kimi-code", region: "global", billing: "subscription",
-  account: "fabricated", credential: { kind: "env", name: "FABRICATED_ONLY" },
+  account: "fabricated", credential: { kind: "native-oauth", authFile: "/fabricated/never-read.json" },
 };
 function adapt(body: Item, priorOwner?: string, stage = new ClaudeCache()) {
   return adaptRequest({

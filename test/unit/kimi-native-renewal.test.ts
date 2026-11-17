@@ -210,7 +210,7 @@ test("late bearer failures across self-renewals coalesce without rejecting the c
   let calls = 0;
   t.mock.method(globalThis, "fetch", async () => { calls++; return renewed(`fake-renewed-${calls}`); });
   const profile: AccessProfile = { provider: "kimi", product: "kimi-code", region: "global", billing: "subscription", account: "fake", credential: { kind: "native-oauth", source: "kimi-code", authFile: file } };
-  const auth = new ProfileAuth({ first: profile, alias: { ...profile, account: "alias" } }, noopLogger, {});
+  const auth = new ProfileAuth({ first: profile, alias: { ...profile, account: "alias" } }, noopLogger);
   const first = await auth.get("first", signal()), quota = auth.scope(first);
   const second = await auth.refresh("first", signal(), first);
   assert.equal(second.generation, first.generation); assert.equal(calls, 1);
@@ -227,7 +227,7 @@ test(`${protocol}: one 401 renewal preserves caller body, action lineage and quo
   let refreshes = 0;
   t.mock.method(globalThis, "fetch", async () => { refreshes++; return renewed(); });
   const profile: AccessProfile = { provider: "kimi", product: "kimi-code", region: "global", billing: "subscription", account: "fake", credential: { kind: "native-oauth", source: "kimi-code", authFile: file } };
-  const auth = new ProfileAuth({ native: profile, alias: { ...profile, account: "alias" } }, noopLogger, {});
+  const auth = new ProfileAuth({ native: profile, alias: { ...profile, account: "alias" } }, noopLogger);
   const first = await auth.get("native", signal()), scope = auth.scope(first);
   const bodies: string[] = [], bearers: string[] = [];
   const attempts = new RoutedAttempts(auth, noopLogger, async (_url, init) => {

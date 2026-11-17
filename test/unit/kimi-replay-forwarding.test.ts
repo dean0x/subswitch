@@ -23,7 +23,7 @@ test("buildDeps forwards closed publication/lookup diagnostics without changing 
     assert(config.ok);
     let dispatches = 0;
     const sent: unknown[] = [];
-    const built = buildDeps(config.value.config, noopLogger, { env: {},
+    const built = buildDeps(config.value.config, noopLogger, {
       ...(enabled ? { orderedReplayDiagnostics: new OrderedReplayDiagnostics(e => diagnostics.push(e)) } : {}),
       fetchImpl: async (_url, init) => {
         dispatches++; sent.push(JSON.parse(String(init?.body)));

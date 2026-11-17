@@ -244,9 +244,9 @@ export async function runNativeCodex(version: "v1" | "v2" = "v2", transport: "we
       anthropic: { baseUrl: base }, providers: { codex: { authFile: join(temp, "unused-auth.json") } },
       codexIngress: { enabled: true, subscriptionBaseUrl: `${base}/backend-api/codex`, apiBaseUrl: `${base}/v1` },
       ...(routingEnabled ? { configVersion: 2, accessProfiles: {
-        unused: { provider: "kimi", product: "kimi-code", region: "global", billing: "subscription", account: "synthetic",
-          credential: { kind: "env", name: "SYNTHETIC_UNUSED_KIMI_KEY" } },
-      }, routes: { unused: { clients: ["codex"], primary: { profile: "unused", model: "k3", effort: "high" } } } } : {}),
+        unused: { provider: "codex", product: "chatgpt-codex", billing: "subscription", account: "synthetic",
+          credential: { kind: "native-oauth", authFile: join(temp, "unused-auth.json") } },
+      }, routes: { unused: { clients: ["codex"], primary: { profile: "unused", model: "gpt-6-sol", effort: "high" } } } } : {}),
     }) });
     if (!loaded.ok) throw new Error("fixture_config_failed");
     const deps = buildDeps(loaded.value.config, { log: () => undefined });

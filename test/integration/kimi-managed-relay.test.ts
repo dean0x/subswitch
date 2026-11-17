@@ -52,7 +52,7 @@ for (const protocol of ["messages", "responses"] as const) test(`${protocol}: ma
   })().catch(error => { errors.push(error); res.writeHead(500).end(); }); });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address(); assert.ok(address && typeof address !== "string"); const loopback = `http://127.0.0.1:${address.port}`;
-  const auth = new ProfileAuth({ personal: profile }, noopLogger, {}, () => new KimiAuthManager({ store, region: "global", fixtureOrigin: loopback }));
+  const auth = new ProfileAuth({ personal: profile }, noopLogger, () => new KimiAuthManager({ store, region: "global", fixtureOrigin: loopback }));
   const attempts = new RoutedAttempts(auth, noopLogger, async (url, init) => {
     assert.equal(String(url), destinationUrl(profile, protocol));
     return fetch(loopback + new URL(String(url)).pathname + new URL(String(url)).search, init);
@@ -89,12 +89,12 @@ for (const protocol of ["messages", "responses"] as const) test(`${protocol}: ma
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); }
 });
 
-test("explicit config accepts isolated Kimi OAuth and existing key profiles, refuses native platform/redirects/relative stores", () => {
+test("explicit config accepts isolated Kimi OAuth and rejects key profiles, refuses native platform/redirects/relative stores", () => {
   const base = { provider: "kimi", product: "kimi-code", region: "global", billing: "subscription", account: "personal", credential: { kind: "native-oauth", authFile: "/fabricated/subswitch/auth.json" } };
-  for (const profile of [base, { ...base, credential: { kind: "env", name: "FABRICATED_KEY" } }]) {
+  for (const profile of [base]) {
     assert.equal(loadConfig({ configPath: "/fabricated/config.json", env: {}, readFile: () => JSON.stringify({ configVersion: 2, accessProfiles: { personal: profile } }) }).ok, true);
   }
-  for (const profile of [{ ...base, credential: { kind: "native-oauth", authFile: "relative.json" } }, { ...base, baseUrl: "https://attacker.invalid", allowInsecureBaseUrl: true }, { ...base, baseUrl: "http://127.0.0.1:8000" }, { ...base, product: "kimi-platform", billing: "api" }]) {
+  for (const profile of [{ ...base, credential: { kind: "env", name: "FABRICATED_KEY" } }, { ...base, credential: { kind: "native-oauth", authFile: "relative.json" } }, { ...base, baseUrl: "https://attacker.invalid", allowInsecureBaseUrl: true }, { ...base, baseUrl: "http://127.0.0.1:8000" }, { ...base, product: "kimi-platform", billing: "api" }]) {
     assert.equal(loadConfig({ configPath: "/fabricated/config.json", env: {}, readFile: () => JSON.stringify({ configVersion: 2, accessProfiles: { personal: profile } }) }).ok, false);
   }
 });

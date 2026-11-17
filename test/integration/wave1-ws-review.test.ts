@@ -1,8 +1,9 @@
+import { nativeCredential } from "../fixtures/native-profile.js";
 /** Synthetic native passthrough regressions with unrelated explicit routes configured. */
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import { WebSocket, WebSocketServer } from "ws";
 import { CodexGateway } from "../../src/codex-gateway.js";
 import { loadConfig } from "../../src/config.js";
@@ -42,6 +43,12 @@ async function until(condition: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+async function settleCredentials(pending: Promise<unknown>): Promise<void> {
+  await pending;
+  // The transport is closed. Drain the credential promise and its continuations.
+  for (let turn = 0; turn < 4; turn++)
+    await new Promise<void>((resolve) => setImmediate(resolve));
+}
 async function fixture(
   auth: ProviderAuth<"codex">,
   rejectEvery = false,
@@ -74,6 +81,8 @@ async function fixture(
     );
   });
   const base = await listen(upstream);
+  const upstreamPort = new URL(base).port;
+  const requestSpy = mock.method(http, "request");
   const loaded = loadConfig({
     configPath: "/synthetic/config.json",
     env: {},
@@ -86,13 +95,13 @@ async function fixture(
           claude: { enabled: bridge === "legacy" },
         },
         accessProfiles: {
-          kimi: {
-            provider: "kimi",
-            product: "kimi-code",
-            region: "global",
+          primarySubscription: {
+            provider: "codex",
+            product: "chatgpt-codex",
+
             billing: "subscription",
             account: "synthetic",
-            credential: { kind: "env", name: "SYNTHETIC_KIMI_KEY" },
+            credential: nativeCredential("codex", "synthetic-unused"),
           },
         },
         routes:
@@ -100,7 +109,7 @@ async function fixture(
             ? {
                 unrelated: {
                   clients: ["codex"],
-                  primary: { profile: "kimi", model: "k3", effort: "high" },
+                  primary: { profile: "primarySubscription", model: "gpt-6-sol", effort: "high" },
                 },
               }
             : {},
@@ -113,9 +122,7 @@ async function fixture(
     undefined,
     async () => {
       throw new Error("unexpected routed inference");
-    },
-    {},
-  );
+    });
   const gateway = new CodexGateway({
     config: loaded.value.config,
     logger: noopLogger,
@@ -162,6 +169,15 @@ async function fixture(
     gateway,
     sharedRouting,
     inboundClosed,
+    get upstreamStarts() {
+      // Both native HTTP and WS call http.request before TCP starts.
+      return requestSpy.mock.calls.filter(({ arguments: [options] }) =>
+        typeof options === "object" &&
+        options !== null &&
+        "port" in options &&
+        String(options.port) === upstreamPort,
+      ).length;
+    },
     async close() {
       client.terminate();
       gateway.close();
@@ -174,6 +190,7 @@ async function fixture(
             new Promise<void>((resolve) => server.close(() => resolve())),
         ),
       );
+      requestSpy.mock.restore();
     },
   };
 }
@@ -452,8 +469,8 @@ describe("Wave 1 unmatched native WS reliability", () => {
         await closed;
         await rig.inboundClosed;
         release(credential("synthetic-fresh"));
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        assert.equal(rig.headers.length, 0);
+        await settleCredentials(pending);
+        assert.equal(rig.upstreamStarts, 0);
       } finally {
         release(credential("synthetic-fresh"));
         await rig.close();
@@ -488,12 +505,14 @@ describe("Wave 1 unmatched native WS reliability", () => {
         }),
       );
       await until(() => refreshing);
+      assert.equal(rig.upstreamStarts, 1);
       const closed = once(rig.client, "close");
       rig.gateway.close();
       await closed;
       release(credential("synthetic-fresh"));
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      assert.equal(rig.headers.length, 1);
+      await rig.inboundClosed;
+      await settleCredentials(pending);
+      assert.equal(rig.upstreamStarts, 1);
     } finally {
       release(credential("synthetic-fresh"));
       await rig.close();

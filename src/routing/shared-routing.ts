@@ -57,14 +57,13 @@ export class SharedRouting {
     readonly logger: Logger,
     readonly clock: RoutingClock = systemClock,
     fetchImpl: typeof fetch = fetch,
-    env: NodeJS.ProcessEnv = process.env,
     usageDriver?: UsageDriver,
     orderedReplayDiagnostics?: OrderedReplayDiagnostics,
   ) {
     this.quota = new QuotaStore(clock);
     this.usage = new UsageCoordinator(this.quota, usageDriver);
     this.attempts = new RoutedAttempts(
-      new ProfileAuth(config.accessProfiles ?? {}, logger, env),
+      new ProfileAuth(config.accessProfiles ?? {}, logger),
       logger,
       fetchImpl,
       clock,
@@ -230,6 +229,16 @@ export class SharedRouting {
         : undefined;
       if (Buffer.byteLength(JSON.stringify(full)) > 32 * 1024 * 1024)
         throw new RoutingError("reconstructed_request_too_large", 413);
+      if (protocol === "responses")
+        this.continuations.preparePut({
+          conversation,
+          route: routeName,
+          request: full,
+          output: [],
+          owner: "0".repeat(64),
+          protocol,
+          scope: context ? "explicit" : "single-target",
+        }, `resp_subswitch_route_${randomUUID()}`);
       const transcript = decodePortableHistory(full, protocol);
       const refreshes = new Set<string>();
       let failure: ClassifiedFailure | undefined,

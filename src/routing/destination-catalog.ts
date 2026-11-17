@@ -14,21 +14,9 @@ export interface ProviderDefinition {
   protocols: readonly WireProtocol[];
 }
 export const DESTINATIONS: readonly ProviderDefinition[] = [
-  {
-    id: "codex",
-    products: ["chatgpt-codex", "openai-api"],
-    protocols: ["responses"],
-  },
-  {
-    id: "claude",
-    products: ["claude-code", "anthropic-api"],
-    protocols: ["messages"],
-  },
-  {
-    id: "kimi",
-    products: ["kimi-code", "kimi-platform"],
-    protocols: ["messages", "responses"],
-  },
+  { id: "codex", products: ["chatgpt-codex"], protocols: ["responses"] },
+  { id: "claude", products: ["claude-code"], protocols: ["messages"] },
+  { id: "kimi", products: ["kimi-code"], protocols: ["messages", "responses"] },
 ];
 /** Documentation establishes candidates, not live compatibility or equivalence. */
 export const KIMI_MODELS = {
@@ -40,7 +28,6 @@ export const KIMI_MODELS = {
     "kimi-for-coding",
     "kimi-for-coding-highspeed",
   ],
-  "kimi-platform": ["kimi-k3"],
 } as const;
 
 /** Native OAuth stores are implemented only for these exact provider/product pairs. */
@@ -63,10 +50,7 @@ export function modelEfforts(
     return CLAUDE_MODELS.some((m) => m.id === model)
       ? CLAUDE_REASONING_EFFORTS
       : undefined;
-  const models: readonly string[] =
-    profile.product === "kimi-code"
-      ? KIMI_MODELS["kimi-code"]
-      : KIMI_MODELS["kimi-platform"];
+  const models: readonly string[] = KIMI_MODELS["kimi-code"];
   // K2.7 Highspeed has fixed thinking, not adjustable effort. A route requires
   // an explicit effort; reject it until fixed-thinking targets are supported.
   // Source: https://www.kimi.com/code/docs/en/kimi-code/models.html (2026-10-28).
@@ -75,17 +59,9 @@ export function modelEfforts(
 }
 export function defaultBase(profile: AccessProfile): string {
   switch (profile.product) {
-    case "chatgpt-codex":
-      return "https://chatgpt.com/backend-api/codex";
-    case "openai-api":
-      return "https://api.openai.com";
-    case "claude-code":
-    case "anthropic-api":
-      return "https://api.anthropic.com";
-    case "kimi-code":
-      return `https://api.kimi.${profile.region === "mainland-cn" ? "com" : "ai"}/coding`;
-    case "kimi-platform":
-      return `https://api.moonshot.${profile.region === "mainland-cn" ? "cn" : "ai"}`;
+    case "chatgpt-codex": return "https://chatgpt.com/backend-api/codex";
+    case "claude-code": return "https://api.anthropic.com";
+    case "kimi-code": return `https://api.kimi.${profile.region === "mainland-cn" ? "com" : "ai"}/coding`;
   }
 }
 /** Use the same canonical endpoint check at startup and before credential access. */
@@ -101,18 +77,14 @@ export function destinationUrl(
   protocol: WireProtocol,
 ): string {
   const base = (profile.baseUrl ?? defaultBase(profile)).replace(/\/$/, "");
-  const path =
-    profile.product === "chatgpt-codex"
-      ? "/responses"
-      : protocol === "responses"
-        ? "/v1/responses"
-        : profile.product === "kimi-platform"
-          ? "/anthropic/v1/messages"
-          : "/v1/messages";
-  return base + path + (profile.product === "kimi-code" && profile.credential.kind === "native-oauth" && protocol === "messages" ? "?beta=true" : "");
+  if (profile.product === "chatgpt-codex") return base + "/responses";
+  return base + (protocol === "responses" ? "/v1/responses" : "/v1/messages") +
+    (profile.product === "kimi-code" && protocol === "messages" ? "?beta=true" : "");
 }
-/** Intentionally empty until exact product/region/capability live gates pass (#74). */
-export const VERIFIED_MODEL_EQUIVALENCES: readonly string[] = [];
+/** Only the first-party Messages endpoint can validate native Claude imports. */
+export const validatesNativeThinking = (profile: AccessProfile): boolean =>
+  profile.provider === "claude" &&
+  new URL(destinationUrl(profile, "messages")).href === "https://api.anthropic.com/v1/messages";
 
 /** Internal function data, never a caller capability. Scope is validated by the owning ActionStore. */
 export interface DestinationSelection {

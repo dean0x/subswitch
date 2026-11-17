@@ -1,3 +1,4 @@
+import { nativeCredential } from "../fixtures/native-profile.js";
 /** SYNTHETIC fixtures: authored envelopes and provider responses, no live inference. */
 import { describe, it } from "node:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -10,6 +11,8 @@ import { QuotaStore } from "../../src/routing/quota-store.js";
 import { classifyFailure } from "../../src/routing/provider-failure.js";
 import { readBoundedBody } from "../../src/provider-transport.js";
 import { routeChain } from "../../src/routing/routing-config.js";
+import { AttemptFailure } from "../../src/routing/attempt-failure.js";
+import { RoutingError } from "../../src/routing/routing-types.js";
 import {
   allowanceScope,
   type AccessProfile,
@@ -27,23 +30,24 @@ async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
   return items;
 }
 const code: AccessProfile = {
-  provider: "kimi",
-  product: "kimi-code",
-  region: "global",
+  provider: "codex",
+  product: "chatgpt-codex",
+
   billing: "subscription",
   account: "one",
-  credential: { kind: "env", name: "CODE_KEY" },
+  credential: nativeCredential("codex", "synthetic-code"),
 };
 const api: AccessProfile = {
   provider: "codex",
-  product: "openai-api",
-  billing: "api",
+  product: "chatgpt-codex",
+  billing: "subscription",
   account: "two",
-  credential: { kind: "env", name: "API_KEY" },
+  credential: nativeCredential("codex", "synthetic-api"),
 };
+const kimiFailureProfile = { ...code, provider: "kimi" as const, product: "kimi-code" };
 const policy: RoutePolicy = {
   clients: ["codex", "claude-code"],
-  primary: { profile: "code", model: "k3", effort: "high" },
+  primary: { profile: "code", model: "gpt-6-sol", effort: "high" },
   fallbacks: [{ profile: "api", model: "gpt-6-sol", effort: "high" }],
   affinity: "native-or-explicit",
   transientTriggers: [],
@@ -55,7 +59,7 @@ const envelope = (text: string, complete = true) => ({
 });
 const quota = () =>
   classifyFailure(
-    code,
+    kimiFailureProfile,
     403,
     envelope(
       JSON.stringify({
@@ -107,18 +111,24 @@ const full = (
   return loaded.value.config;
 };
 describe("Wave 1 configuration and failures (synthetic)", () => {
-  it("rejects billing/key mismatches, unsafe endpoints, missing regions and alias chains", () => {
+  it("rejects product mismatches, unsafe endpoints, extra regions and alias chains", () => {
     const invalid = [
-      { ...code, billing: "api" },
-      { ...code, region: undefined },
-      {
-        ...code,
-        credential: { kind: "native-oauth", authFile: "relative-auth.json" },
-      },
-      { ...code, baseUrl: "http://example.invalid" },
-      { ...code, baseUrl: "https://example.invalid" },
-    ];
-    for (const profile of invalid) {
+      [{ ...code, product: "claude-code" }, /invalid_product/],
+      [{ ...code, region: "global" }, /region_product_mismatch/],
+      [
+        {
+          ...code, provider: "claude",
+          credential: { kind: "native-oauth", authFile: "/synthetic/auth.json" },
+        },
+        /credential_product_mismatch/,
+      ],
+      [{ ...code, baseUrl: "http://example.invalid" }, /unsafe_endpoint/],
+      [
+        { ...code, baseUrl: "https://example.invalid" },
+        /endpoint_host_opt_in_required/,
+      ],
+    ] as const;
+    for (const [profile, expected] of invalid) {
       const loaded = loadConfig({
         configPath: "/synthetic/config.json",
         env: {},
@@ -129,6 +139,7 @@ describe("Wave 1 configuration and failures (synthetic)", () => {
           }),
       });
       assert.equal(loaded.ok, false);
+      if (!loaded.ok) assert.match(loaded.error.message, expected);
     }
     const chain = loadConfig({
       configPath: "/synthetic/config.json",
@@ -150,31 +161,6 @@ describe("Wave 1 configuration and failures (synthetic)", () => {
     assert.equal(chain.ok, false);
     if (!chain.ok) assert.match(chain.error.message, /alias chains/);
   });
-  it("rejects unverified exact-model equivalence without blocking explicit fallback", () => {
-    const platform = { ...code, product: "kimi-platform", billing: "api" };
-    const loaded = loadConfig({
-      configPath: "/synthetic/config.json",
-      env: {},
-      readFile: () =>
-        JSON.stringify({
-          configVersion: 2,
-          accessProfiles: { code, platform },
-          routes: {
-            work: {
-              ...policy,
-              sameModelApi: {
-                profile: "platform",
-                model: "kimi-k3",
-                effort: "high",
-              },
-            },
-          },
-        }),
-    });
-    assert.equal(loaded.ok, false);
-    if (!loaded.ok)
-      assert.match(loaded.error.message, /unverified_model_equivalence/);
-  });
   it("preserves first unique target and distinct access profiles", () => {
     assert.equal(
       routeChain({
@@ -188,7 +174,7 @@ describe("Wave 1 configuration and failures (synthetic)", () => {
     assert.equal(quota().kind, "quota");
     assert.equal(
       classifyFailure(
-        code,
+        kimiFailureProfile,
         429,
         envelope('{"error":{"message":"quota"}}'),
         1000,
@@ -197,7 +183,7 @@ describe("Wave 1 configuration and failures (synthetic)", () => {
     );
     assert.equal(
       classifyFailure(
-        code,
+        kimiFailureProfile,
         403,
         envelope('{"error":{"message":"quota"}}', false),
         1000,
@@ -206,7 +192,7 @@ describe("Wave 1 configuration and failures (synthetic)", () => {
     );
     assert.equal(
       classifyFailure(
-        code,
+        kimiFailureProfile,
         403,
         envelope(
           '{"error":{"message":"You\'ve reached your concurrent request limit. Synthetic gate."}}',
@@ -217,7 +203,7 @@ describe("Wave 1 configuration and failures (synthetic)", () => {
     );
     assert.equal(
       classifyFailure(
-        code,
+        kimiFailureProfile,
         401,
         envelope(
           '{"error":{"message":"Your current subscription does not have access to k3. Synthetic gate."}}',
@@ -252,16 +238,13 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
             {
               type: "error",
               error: {
-                status: 403,
-                message:
-                  "You've reached your 5-hour usage limit. Synthetic gate.",
+                status: 429,
+                code: "insufficient_quota",
               },
             },
           ]);
         return response(result("foreign-upstream-id", [text("ready")]));
-      },
-      { CODE_KEY: "synthetic-code", API_KEY: "synthetic-api" },
-    );
+      });
     const a = router.actions.create("codex", "thread");
     const events = await collect(
       router.events(
@@ -293,16 +276,13 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
             {
               type: "error",
               error: {
-                status: 403,
-                message:
-                  "You've reached your 5-hour usage limit. Synthetic gate.",
+                status: 429,
+                code: "insufficient_quota",
               },
             },
           ]);
         return response(result("fallback", [text("ready")]));
-      },
-      { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-    );
+      });
     const a = router.actions.create("codex", "thread");
     const events = await collect(
       router.events(
@@ -318,13 +298,14 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
     assert.doesNotMatch(JSON.stringify(events), /abandoned/);
     router.close();
   });
-  it("never routes unknown or auth/permission errors into paid fallback", async () => {
-    for (const [status, body] of [
-      [429, "<html>quota</html>"],
-      [401, '{"error":{"message":"bad key"}}'],
+  it("never routes unknown or auth/permission errors into subscription fallback", async t => {
+    for (const [status, body, kind] of [
+      [429, "<html>quota</html>", "unknown"],
+      [401, '{"error":{"message":"bad key"}}', "unknown"],
       [
-        401,
-        '{"error":{"message":"Your current subscription does not have access to k3. Synthetic gate."}}',
+        403,
+        '{"error":{"type":"permission_error"}}',
+        "permission",
       ],
     ] as const) {
       let attempts = 0;
@@ -335,9 +316,10 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
         async () => {
           attempts++;
           return new Response(body, { status });
-        },
-        { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-      );
+        });
+      if (status === 401)
+        t.mock.method(router.attempts.auth, "refresh", () =>
+          Promise.reject(new RoutingError("profile_auth_unavailable", 503)));
       const a = router.actions.create("codex", "thread");
       await assert.rejects(
         collect(
@@ -349,6 +331,9 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
             router.actions.context(a.id, "codex"),
           ),
         ),
+        (error: unknown) => status === 401
+          ? error instanceof RoutingError && error.code === "profile_auth_unavailable" && error.status === 503
+          : error instanceof AttemptFailure && error.failure.kind === kind && error.failure.status === status,
       );
       assert.equal(attempts, 1);
       router.close();
@@ -357,6 +342,8 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
   it("enforces the shared total deadline with an injected monotonic clock", async () => {
     let elapsed = 0,
       calls = 0;
+    let started!: () => void;
+    const fetchStarted = new Promise<void>(resolve => { started = resolve; });
     const callbacks = new Map<number, () => void>();
     const router = new SharedRouting(
       full(),
@@ -374,6 +361,7 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
       },
       async (_url, init) => {
         calls++;
+        started();
         return new Promise<Response>((_resolve, reject) =>
           init?.signal?.addEventListener(
             "abort",
@@ -381,9 +369,7 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
             { once: true },
           ),
         );
-      },
-      { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-    );
+      });
     const action = router.actions.create("codex", "thread");
     const pending = collect(
       router.events(
@@ -394,7 +380,7 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
         router.actions.context(action.id, "codex"),
       ),
     );
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await fetchStarted;
     elapsed = 600000;
     callbacks.get(600000)!();
     await assert.rejects(pending, /request_timeout/);
@@ -413,9 +399,7 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
         attempts++;
         controller.abort();
         throw new Error("synthetic_disconnect");
-      },
-      { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-    );
+      });
     const a = router.actions.create("codex", "thread");
     await assert.rejects(
       collect(
@@ -427,6 +411,10 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
           router.actions.context(a.id, "codex"),
         ),
       ),
+      (error: unknown) =>
+        error instanceof RoutingError &&
+        error.code === "request_cancelled" &&
+        error.status === 499,
     );
     assert.equal(attempts, 1);
     router.close();
@@ -437,9 +425,7 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
       full({ work: { ...policy, primary: policy.fallbacks[0]!, fallbacks: [] } }),
       noopLogger,
       { now: () => now, monotonic: () => now, random: () => 0.5 },
-      async () => response(result("synthetic", [text("complete")])),
-      { API_KEY: "synthetic" },
-    );
+      async () => response(result("synthetic", [text("complete")])));
     try {
       const credential = await router.attempts.auth.get(
         "api", new AbortController().signal,
@@ -474,24 +460,22 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
       full(),
       noopLogger,
       undefined,
-      async (url) => {
-        calls.push(String(url));
+      async (_url, init) => {
+        calls.push(new Headers(init?.headers).get("chatgpt-account-id")!);
         if (calls.length === 1) {
           started();
           await gate;
           return new Response(
             JSON.stringify({
               error: {
-                message: "You've reached your 5-hour usage limit. Synthetic gate.",
+                code: "insufficient_quota",
               },
             }),
-            { status: 403 },
+            { status: 429 },
           );
         }
         return response(result("synthetic", [text("fallback")]));
-      },
-      { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-    );
+      });
     const action = router.actions.create("codex", "thread");
     const context = router.actions.context(action.id, "codex");
     const run = (signal: AbortSignal) => collect(
@@ -517,8 +501,8 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
       release();
       await Promise.all([first, later]);
       assert.equal(calls.length, 3);
-      assert.match(calls[0]!, /kimi/);
-      assert.ok(calls.slice(1).every((url) => url.includes("openai")));
+      assert.equal(calls[0], "synthetic-code");
+      assert.ok(calls.slice(1).every(account => account === "synthetic-api"));
     } finally {
       release();
       router.close();
@@ -526,10 +510,13 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
     }
   });
   it("rejects excessive comments and oversized single-chunk SSE events before commitment", async () => {
-    for (const raw of [
-      ": comment\n\n".repeat(17),
-      `data: ${"x".repeat(4 * 1024 * 1024 + 1)}\n\n`,
-    ]) {
+    for (const [raw, expected] of [
+      [": comment\n\n".repeat(17), { code: "provider_prefix_limit", status: 502 }],
+      [
+        `data: ${"x".repeat(4 * 1024 * 1024 + 1)}\n\n`,
+        { name: "Error", message: "sse_event_too_large" },
+      ],
+    ] as const) {
       let attempts = 0;
       const router = new SharedRouting(
         full(),
@@ -540,9 +527,7 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
           return new Response(raw, {
             headers: { "content-type": "text/event-stream" },
           });
-        },
-        { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-      );
+        });
       const a = router.actions.create("codex", "thread");
       let events = 0;
       await assert.rejects(
@@ -556,6 +541,7 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
           ))
             events++;
         })(),
+        expected,
       );
       assert.equal(events, 0);
       assert.equal(attempts, 1);
@@ -582,9 +568,7 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
       async () =>
         new Response(stream, {
           headers: { "content-type": "text/event-stream" },
-        }),
-      { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-    );
+        }));
     const a = router.actions.create("codex", "thread"),
       iterator = router.events(
         { model: "work", stream: true },
@@ -633,9 +617,7 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
               incomplete_details: { reason: "max_output_tokens" },
             },
           },
-        ]),
-      { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-    );
+        ]));
     const a = router.actions.create("codex", "thread"),
       seen: Item[] = [];
     await assert.rejects(
@@ -649,6 +631,10 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
         ))
           seen.push(e);
       })(),
+      (error: unknown) =>
+        error instanceof RoutingError &&
+        error.code === "incomplete_provider_tools" &&
+        error.status === 502,
     );
     assert.equal(
       seen.filter((e) => e.type === "response.output_item.done").length,
@@ -698,38 +684,7 @@ describe("commitment, cancellation and ownership (synthetic)", () => {
       await rm(temp, { recursive: true, force: true });
     }
   });
-  it("keeps coding keys sharing an allowance grouped after a key-owner change", async () => {
-    const environment = { KEY_ONE: "synthetic-one", KEY_TWO: "synthetic-two" };
-    const auth = new ProfileAuth(
-      {
-        one: { ...code, credential: { kind: "env", name: "KEY_ONE" } },
-        two: { ...code, credential: { kind: "env", name: "KEY_TWO" } },
-      },
-      noopLogger,
-      environment,
-    );
-    const one = await auth.get("one", new AbortController().signal),
-      two = await auth.get("two", new AbortController().signal);
-    const before = auth.scope(one);
-    assert.deepEqual(before, auth.scope(two));
-    environment.KEY_ONE = "synthetic-replaced";
-    const changed = await auth.get("one", new AbortController().signal);
-    assert.notDeepEqual(before, auth.scope(changed));
-    assert.deepEqual(auth.scope(changed), auth.scope(two));
-  });
-  it("validates profile binding immediately before authentication and distinguishes changed keys", async () => {
-    const environment = { CODE_KEY: "synthetic-one" },
-      profiles = { code };
-    const auth = new ProfileAuth(profiles, noopLogger, environment);
-    const first = await auth.get("code", new AbortController().signal);
-    auth.validate(first);
-    environment.CODE_KEY = "synthetic-two";
-    assert.throws(() => auth.validate(first), /credential_owner_changed/);
-    const second = await auth.get("code", new AbortController().signal);
-    assert.notEqual(first.generation, second.generation);
-    profiles.code = { ...code, account: "different" };
-    assert.throws(() => auth.validate(second), /credential_binding_mismatch/);
-  });
+
 });
 describe("metadata and action admission (synthetic)", () => {
   it("retains a newer inference blocker when an earlier metadata query returns", async () => {
@@ -756,7 +711,7 @@ describe("metadata and action admission (synthetic)", () => {
           resolve = r;
         }),
     );
-    const pending = coordinator.refresh(allowanceScope(code));
+    const pending = coordinator.refresh(allowanceScope(kimiFailureProfile));
     now = 2000;
     quotaStore.fail(quota());
     now = 3000;
@@ -768,7 +723,7 @@ describe("metadata and action admission (synthetic)", () => {
       serviceableCredits: true,
     });
     assert.equal(await pending, false);
-    assert.equal(quotaStore.readiness(allowanceScope(code)), "exhausted");
+    assert.equal(quotaStore.readiness(allowanceScope(kimiFailureProfile)), "exhausted");
   });
   it("closes admission while existing requests settle and cancels only its own action", () => {
     const store = new ActionStore(),
@@ -792,92 +747,79 @@ describe("metadata and action admission (synthetic)", () => {
   });
 });
 describe("quota recovery and action affinity (synthetic)", () => {
-  for (const credentialKind of ["env", "native-oauth"] as const) {
-    it(`keeps a pinned fallback usable after the primary's ${credentialKind} credentials disappear`, async () => {
-      const directory = await mkdtemp(join(tmpdir(), "subswitch-primary-auth-"));
-      const authFile = join(directory, "auth.json");
-      const primary: AccessProfile = credentialKind === "env" ? code : {
-        provider: "codex",
-        product: "chatgpt-codex",
-        billing: "subscription",
-        account: "synthetic",
-        credential: { kind: "native-oauth", authFile },
-      };
-      const env: NodeJS.ProcessEnv = {
-        CODE_KEY: "synthetic", API_KEY: "synthetic",
-      };
-      const calls: string[] = [];
-      const router = new SharedRouting(
-        full({
-          work: {
-            ...policy,
-            primary: {
-              ...policy.primary,
-              model: credentialKind === "env" ? "k3" : "gpt-6-sol",
-            },
-          },
-        }, { code: primary, api }),
-        noopLogger,
-        undefined,
-        async (url) => {
-          calls.push(String(url));
-          if (calls.length === 1)
-            return new Response(
-              JSON.stringify({
-                error: credentialKind === "env" ? {
-                  message: "You've reached your 5-hour usage limit. Synthetic gate.",
-                } : { code: "insufficient_quota" },
-              }),
-              { status: credentialKind === "env" ? 403 : 429 },
-            );
-          return response(result("synthetic", [text("fallback")]));
-        },
-        env,
-      );
-      try {
-        if (credentialKind === "native-oauth") {
-          const token = `e30.${Buffer.from(JSON.stringify({
-            exp: Date.now() / 1000 + 3600,
-            "https://api.openai.com/auth": { chatgpt_account_id: "synthetic" },
-          })).toString("base64url")}.synthetic`;
-          await writeFile(authFile, JSON.stringify({
-            tokens: {
-              access_token: token, account_id: "synthetic", refresh_token: "",
-            },
-          }), { mode: 0o600 });
-        }
-        const action = router.actions.create("codex", "thread");
-        const context = router.actions.context(action.id, "codex");
-        const run = (activeContext = context) => collect(
-          router.events(
-            { model: "work", stream: true }, "codex", "work",
-            new AbortController().signal, activeContext,
-          ),
-        );
-        await run();
-        assert.equal(router.actions.affinity(context, "work").chainIndex, 1);
-        if (credentialKind === "env") delete env.CODE_KEY;
-        else await rm(authFile);
-        const resumed = await run();
-        assert.equal(resumed.at(-1)?.type, "response.completed");
-        assert.equal(calls.length, 3);
-        assert.ok(calls.slice(1).every((url) => url.includes("api.openai")));
-        const unpinned = router.actions.create("codex", "thread");
-        await assert.rejects(
-          run(router.actions.context(unpinned.id, "codex")),
-          /profile_credentials_missing/,
-        );
-        assert.equal(calls.length, 3);
-      } finally {
-        router.close();
-        await rm(directory, { recursive: true, force: true });
-      }
-    });
-  }
-  it("fails on missing pinned credentials but skips unused fallback credentials", async () => {
-    const env: NodeJS.ProcessEnv = {
-      CODE_KEY: "synthetic-code", API_KEY: "synthetic-api",
+  it("keeps a pinned fallback usable after the primary native credentials disappear", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "subswitch-primary-auth-"));
+    const authFile = join(directory, "auth.json");
+    const primary: AccessProfile = {
+      provider: "codex",
+      product: "chatgpt-codex",
+      billing: "subscription",
+      account: "synthetic",
+      credential: { kind: "native-oauth", authFile },
     };
+    const calls: string[] = [];
+    const router = new SharedRouting(
+      full({
+        work: {
+          ...policy,
+          primary: {
+            ...policy.primary,
+            model: "gpt-6-sol",
+          },
+        },
+      }, { code: primary, api }),
+      noopLogger,
+      undefined,
+      async (_url, init) => {
+        calls.push(new Headers(init?.headers).get("chatgpt-account-id")!);
+        if (calls.length === 1)
+          return new Response(
+            JSON.stringify({
+              error: { code: "insufficient_quota" },
+            }),
+            { status: 429 },
+          );
+        return response(result("synthetic", [text("fallback")]));
+      });
+    try {
+      const token = `e30.${Buffer.from(JSON.stringify({
+        exp: Date.now() / 1000 + 3600,
+        "https://api.openai.com/auth": { chatgpt_account_id: "synthetic" },
+      })).toString("base64url")}.synthetic`;
+      await writeFile(authFile, JSON.stringify({
+        tokens: {
+          access_token: token, account_id: "synthetic", refresh_token: "",
+        },
+      }), { mode: 0o600 });
+      const action = router.actions.create("codex", "thread");
+      const context = router.actions.context(action.id, "codex");
+      const run = (activeContext = context) => collect(
+        router.events(
+          { model: "work", stream: true }, "codex", "work",
+          new AbortController().signal, activeContext,
+        ),
+      );
+      await run();
+      assert.equal(router.actions.affinity(context, "work").chainIndex, 1);
+      await rm(authFile);
+      const resumed = await run();
+      assert.equal(resumed.at(-1)?.type, "response.completed");
+      assert.equal(calls.length, 3);
+      assert.ok(calls.slice(1).every(account => account === "synthetic-api"));
+      const unpinned = router.actions.create("codex", "thread");
+      await assert.rejects(
+        run(router.actions.context(unpinned.id, "codex")),
+        /profile_credentials_missing/,
+      );
+      assert.equal(calls.length, 3);
+    } finally {
+      router.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it("fails on missing pinned credentials but skips unused fallback credentials", async () => {
+    const pinned = nativeCredential("codex", "synthetic-pinned");
+    const last = nativeCredential("codex", "synthetic-last");
     const calls: string[] = [];
     const router = new SharedRouting(
       full({
@@ -890,14 +832,14 @@ describe("quota recovery and action affinity (synthetic)", () => {
           ],
         },
       }, {
-        code, api,
+        code, api: { ...api, credential: pinned },
         unused: {
           ...api, account: "unused",
-          credential: { kind: "env", name: "UNUSED_KEY" },
+          credential: { kind: "native-oauth", authFile: "/synthetic/missing-unused.json" },
         },
         last: {
           ...api, account: "last",
-          credential: { kind: "env", name: "LAST_KEY" },
+          credential: last,
         },
       }),
       noopLogger,
@@ -908,12 +850,11 @@ describe("quota recovery and action affinity (synthetic)", () => {
         if (key === "Bearer synthetic-code")
           return new Response(JSON.stringify({
             error: {
-              message: "You've reached your 5-hour usage limit. Synthetic gate.",
+              code: "insufficient_quota",
             },
-          }), { status: 403 });
+          }), { status: 429 });
         return response(result("synthetic", [text("ready")]));
       },
-      env,
     );
     try {
       const action = router.actions.create("codex", "thread");
@@ -926,10 +867,9 @@ describe("quota recovery and action affinity (synthetic)", () => {
       );
       await run();
       assert.equal(router.actions.affinity(context, "work").chainIndex, 1);
-      delete env.API_KEY;
-      env.LAST_KEY = "synthetic-last";
+      await rm(pinned.authFile);
       await assert.rejects(run(), /profile_credentials_missing/);
-      assert.deepEqual(calls, ["Bearer synthetic-code", "Bearer synthetic-api"]);
+      assert.deepEqual(calls, ["Bearer synthetic-code", "Bearer synthetic-pinned"]);
       const next = router.actions.create("codex", "thread");
       await run(router.actions.context(next.id, "codex"));
       assert.equal(calls.at(-1), "Bearer synthetic-last");
@@ -946,14 +886,14 @@ describe("quota recovery and action affinity (synthetic)", () => {
     });
     store.fail(quota());
     now = 62000;
-    assert.equal(store.reserve(allowanceScope(code)), true);
-    store.recoveryFailure(allowanceScope(code));
-    assert.equal(store.readiness(allowanceScope(code)), "exhausted");
-    assert.equal(store.observations(allowanceScope(code))[0]?.exhausted, true);
+    assert.equal(store.reserve(allowanceScope(kimiFailureProfile)), true);
+    store.recoveryFailure(allowanceScope(kimiFailureProfile));
+    assert.equal(store.readiness(allowanceScope(kimiFailureProfile)), "exhausted");
+    assert.equal(store.observations(allowanceScope(kimiFailureProfile))[0]?.exhausted, true);
     now = 181000;
-    assert.equal(store.reserve(allowanceScope(code)), false);
+    assert.equal(store.reserve(allowanceScope(kimiFailureProfile)), false);
     now = 183000;
-    assert.equal(store.reserve(allowanceScope(code)), true);
+    assert.equal(store.reserve(allowanceScope(kimiFailureProfile)), true);
   });
   it("reserves one half-open probe and preserves independent blockers and stale observations", () => {
     let now = 1000;
@@ -982,7 +922,7 @@ describe("quota recovery and action affinity (synthetic)", () => {
     store.fail(failure);
     assert.equal(
       store.observe(
-        allowanceScope(code),
+        allowanceScope(kimiFailureProfile),
         [
           {
             id: "five-hour",
@@ -996,13 +936,13 @@ describe("quota recovery and action affinity (synthetic)", () => {
       false,
     );
     now = 62000;
-    assert.equal(store.reserve(allowanceScope(code)), true);
-    assert.equal(store.reserve(allowanceScope(code)), false);
-    store.success(allowanceScope(code));
-    assert.equal(store.readiness(allowanceScope(code)), "available");
+    assert.equal(store.reserve(allowanceScope(kimiFailureProfile)), true);
+    assert.equal(store.reserve(allowanceScope(kimiFailureProfile)), false);
+    store.success(allowanceScope(kimiFailureProfile));
+    assert.equal(store.readiness(allowanceScope(kimiFailureProfile)), "available");
     assert.equal(
       store
-        .observations(allowanceScope(code))
+        .observations(allowanceScope(kimiFailureProfile))
         .filter((w) => w.exhausted === true).length,
       2,
     );
@@ -1010,20 +950,19 @@ describe("quota recovery and action affinity (synthetic)", () => {
   it("keeps action A on fallback while restored primary serves same-thread action B", async () => {
     let now = 1000,
       codeAttempts = 0;
-    const calls: { url: string; body: Item }[] = [];
-    const fetchImpl: typeof fetch = async (url, init) => {
+    const calls: { account: string | null; body: Item }[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
       const body = JSON.parse(String(init?.body));
-      calls.push({ url: String(url), body });
-      if (String(url).includes("kimi")) {
+      calls.push({ account: new Headers(init?.headers).get("chatgpt-account-id"), body });
+      if (new Headers(init?.headers).get("chatgpt-account-id") === "synthetic-code") {
         if (++codeAttempts === 1)
           return new Response(
             JSON.stringify({
               error: {
-                message:
-                  "You've reached your 5-hour usage limit. Synthetic gate.",
+                code: "insufficient_quota",
               },
             }),
-            { status: 403 },
+            { status: 429 },
           );
         return response(result("collision", [text("primary-B")]));
       }
@@ -1049,9 +988,7 @@ describe("quota recovery and action affinity (synthetic)", () => {
       full(),
       noopLogger,
       { now: () => now, monotonic: () => now, random: () => 0.5 },
-      fetchImpl,
-      { CODE_KEY: "synthetic-code", API_KEY: "synthetic-api" },
-    );
+      fetchImpl);
     const a = router.actions.create("codex", "thread");
     const ac = router.actions.context(a.id, "codex");
     const initial = {
@@ -1092,8 +1029,8 @@ describe("quota recovery and action affinity (synthetic)", () => {
       ),
     );
     assert.equal(calls.length, 4);
-    assert.match(calls[2]!.url, /kimi/);
-    assert.match(calls[3]!.url, /openai/);
+    assert.equal(calls[2]!.account, "synthetic-code");
+    assert.equal(calls[3]!.account, "synthetic-api");
     assert.equal(calls[3]!.body.previous_response_id, undefined);
     assert.equal(
       (calls[3]!.body.input as Item[]).filter((i) => i.type === "function_call")
@@ -1115,9 +1052,7 @@ describe("quota recovery and action affinity (synthetic)", () => {
       async () => {
         calls++;
         throw new Error();
-      },
-      {},
-    );
+      });
     const warmup = await collect(
       router.events(
         { model: "work", generate: false },
@@ -1157,15 +1092,12 @@ describe("quota recovery and action affinity (synthetic)", () => {
           {
             type: "error",
             error: {
-              status: 403,
-              message:
-                "You've reached your 5-hour usage limit. Synthetic gate.",
+              status: 429,
+              code: "insufficient_quota",
             },
           },
         ]);
-      },
-      { CODE_KEY: "synthetic", API_KEY: "synthetic" },
-    );
+      });
     const a = router.actions.create("codex", "thread");
     await assert.rejects(
       collect(

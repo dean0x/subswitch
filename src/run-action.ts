@@ -90,7 +90,11 @@ export async function runAction(
       port = address.port;
       capability = router.actions.capability;
     }
-    const action = await control("", { client, conversationId });
+    const action = await control("", {
+      client,
+      conversationId,
+      ownerPid: process.pid,
+    });
     if (
       !/^[a-f0-9-]{36}$/.test(action.id) ||
       action.ingressPrefix !== `/__subswitch/action/${action.id}/ingress`
@@ -140,6 +144,7 @@ export async function runAction(
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
+    process.once("SIGHUP", stop);
     options.signal?.addEventListener("abort", stop, { once: true });
     if (options.signal?.aborted) stop();
     try {
@@ -155,6 +160,7 @@ export async function runAction(
       clearTimeout(force);
       process.off("SIGINT", stop);
       process.off("SIGTERM", stop);
+      process.off("SIGHUP", stop);
       options.signal?.removeEventListener("abort", stop);
     }
   } finally {

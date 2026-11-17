@@ -2,21 +2,15 @@
 export type DestinationProviderId = "codex" | "claude" | "kimi";
 export type OriginatingClient = "claude-code" | "codex";
 export type WireProtocol = "messages" | "responses";
-export type BillingMode = "subscription" | "api";
-export type CredentialReference =
-  | { kind: "env"; name: string }
-  | { kind: "native-oauth"; authFile: string; source?: "kimi-code" | undefined };
+export type CredentialReference = { kind: "native-oauth"; authFile: string; source?: "kimi-code" | undefined };
 export interface AccessProfile {
   provider: DestinationProviderId;
   product:
     | "chatgpt-codex"
-    | "openai-api"
     | "claude-code"
-    | "anthropic-api"
-    | "kimi-code"
-    | "kimi-platform";
+    | "kimi-code";
   region?: "mainland-cn" | "global" | undefined;
-  billing: BillingMode;
+  billing: "subscription";
   account: string;
   credential: CredentialReference;
   baseUrl?: string | undefined;
@@ -30,7 +24,6 @@ export interface RouteTarget {
 export interface RoutePolicy {
   clients: OriginatingClient[];
   primary: RouteTarget;
-  sameModelApi?: RouteTarget | undefined;
   fallbacks: RouteTarget[];
   transientTriggers: ("overload" | "transport")[];
   affinity: "native-or-explicit";
@@ -38,7 +31,7 @@ export interface RoutePolicy {
 export interface AllowanceScope {
   provider: DestinationProviderId;
   product: string;
-  region?: string;
+  region?: string | undefined;
   account: string;
   allowanceGroup: string;
   modelScope?: string;
@@ -108,7 +101,7 @@ export class MidConversationSystemError extends RoutingError {
     super("unsupported_mid_conversation_system", 400);
   }
 }
-export const allowanceScope = (profile: AccessProfile): AllowanceScope => ({
+export const allowanceScope = (profile: Pick<AllowanceScope, "provider" | "product" | "region" | "account">): AllowanceScope => ({
   provider: profile.provider,
   product: profile.product,
   account: profile.account,

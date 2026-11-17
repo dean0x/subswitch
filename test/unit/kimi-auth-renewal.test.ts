@@ -41,7 +41,7 @@ for (const failure of ["network", "503", "timeout"] as const) test(`managed proa
   } });
   const profile: AccessProfile = { provider: "kimi", product: "kimi-code", billing: "subscription", region: "global", account: "fake",
     credential: { kind: "native-oauth", authFile: "/fake/never-read.json" } };
-  const auth = new ProfileAuth({ first: profile, alias: profile }, noopLogger, {}, () => manager);
+  const auth = new ProfileAuth({ first: profile, alias: profile }, noopLogger, () => manager);
   const first = await auth.get("first", signal()), sibling = await auth.get("alias", signal());
   f.due();
   const current = await auth.get("first", signal());
@@ -75,7 +75,7 @@ test("managed transient failure with an expired bearer does not invalidate a sib
     transport: async () => { throw new TypeError("fake network failure"); } });
   const profile: AccessProfile = { provider: "kimi", product: "kimi-code", billing: "subscription", region: "global", account: "fake",
     credential: { kind: "native-oauth", authFile: "/fake/never-read.json" } };
-  const auth = new ProfileAuth({ first: profile, alias: profile }, noopLogger, {}, () => manager);
+  const auth = new ProfileAuth({ first: profile, alias: profile }, noopLogger, () => manager);
   const sibling = await auth.get("alias", signal()); f.expire();
   await assert.rejects(auth.get("first", signal()));
   assert.doesNotThrow(() => auth.validate(sibling));

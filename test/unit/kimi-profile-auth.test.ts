@@ -14,7 +14,7 @@ function fixture(t: TestContext) {
   const replies: (() => Promise<KimiCredential>)[] = [];
   t.mock.method(manager, "credentials", () => replies.shift()!());
   const profiles = { first: profile, alias: { ...profile, account: "another-label" } };
-  return { auth: new ProfileAuth(profiles, noopLogger, {}, () => manager), replies };
+  return { auth: new ProfileAuth(profiles, noopLogger, () => manager), replies };
 }
 for (const region of ["global", "mainland-cn"] as const) for (const suffix of ["", "/"])
 test(`${region} default HTTPS port passes startup and runtime OAuth checks${suffix}`, async t => {
@@ -24,7 +24,7 @@ test(`${region} default HTTPS port passes startup and runtime OAuth checks${suff
   assert.equal(loaded.ok, true);
   const manager = new KimiAuthManager({ store: {} as KimiAuthStore, region });
   t.mock.method(manager, "credentials", async () => credential("fake-login"));
-  const auth = new ProfileAuth({ kimi: p }, noopLogger, {}, () => manager);
+  const auth = new ProfileAuth({ kimi: p }, noopLogger, () => manager);
   assert.equal((await auth.get("kimi", new AbortController().signal)).authHeaders.authorization, "Bearer fabricated-access");
   assert.equal((await auth.refresh("kimi", new AbortController().signal)).authHeaders.authorization, "Bearer fabricated-access");
 });
@@ -35,7 +35,7 @@ for (const baseUrl of ["https://fabricated.invalid/coding", "https://api.kimi.co
 test(`runtime OAuth endpoint check refuses ${baseUrl} before credential construction`, async () => {
   const p: AccessProfile = { ...profile, baseUrl, allowInsecureBaseUrl: true };
   let calls = 0;
-  const auth = new ProfileAuth({ kimi: p }, noopLogger, {}, () => { calls++; return assert.fail("credential factory must not run"); });
+  const auth = new ProfileAuth({ kimi: p }, noopLogger, () => { calls++; return assert.fail("credential factory must not run"); });
   await assert.rejects(auth.get("kimi", new AbortController().signal), { code: "kimi_oauth_endpoint_mismatch" });
   await assert.rejects(auth.refresh("kimi", new AbortController().signal), { code: "kimi_oauth_endpoint_mismatch" });
   assert.equal(calls, 0);
@@ -49,7 +49,7 @@ test(`runtime OAuth endpoint check refuses ${baseUrl} before credential construc
 
 test("runtime OAuth endpoint check refuses a missing region before credential construction", async () => {
   let calls = 0;
-  const auth = new ProfileAuth({ kimi: { ...profile, region: undefined } }, noopLogger, {}, () => { calls++; return assert.fail("credential factory must not run"); });
+  const auth = new ProfileAuth({ kimi: { ...profile, region: undefined } }, noopLogger, () => { calls++; return assert.fail("credential factory must not run"); });
   await assert.rejects(auth.get("kimi", new AbortController().signal), { code: "kimi_oauth_endpoint_mismatch" });
   assert.equal(calls, 0);
 });

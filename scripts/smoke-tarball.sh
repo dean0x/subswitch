@@ -46,11 +46,18 @@ const discovery = JSON.parse(execFileSync(process.execPath, [
   join(packageRoot, "dist/cli.js"), "models", "--schema-version", "3", "--client", "all", "--json",
 ], { encoding: "utf8", env: { ...process.env, SUBSWITCH_CONFIG: examplePath } }));
 assert.equal(discovery.schemaVersion, 3);
-const route = discovery.routes.find(route => route.id === "kimi-work");
+const route = discovery.routes.find(route => route.id === "subscription-work");
 assert.ok(route, "the installed example must expose its documented route");
 assert.deepEqual(route.targets, [example.routes[route.id].primary, ...example.routes[route.id].fallbacks]);
-assert.equal(discovery.providers.find(provider => provider.id === "kimi").compatibility, "live-unverified");
-console.log("  packaged Wave1 example: valid config and route discovery (live-unverified)");
+for (const target of route.targets) {
+  const profile = discovery.profiles.find(profile => profile.id === target.profile);
+  assert.ok(profile, "each route target must expose its subscription profile");
+  assert.equal(profile.billing, "subscription");
+  assert.equal(example.accessProfiles[profile.id].credential.kind, "native-oauth");
+  assert.equal(discovery.providers.find(provider => provider.id === profile.provider).compatibility, "existing-translators");
+}
+assert.equal(discovery.lifecycle.nativeCertification, "unverified");
+console.log("  packaged Wave1 example: valid subscription config and route discovery (native-unverified)");
 NODE
 
 # Ask the OS for an available port; never assume a developer port is unused.

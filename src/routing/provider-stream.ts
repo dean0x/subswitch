@@ -33,10 +33,10 @@ export async function* validatedProviderEvents(
   logger?: Logger,
   limitContext?: LimitContext,
   exec?: KimiExecStream,
-  // Disabled strict codecs inspect ORIGINAL order, before legacy tool holding.
-  // Opting in also requires clean EOF and defers completion until then.
+  // Strict codecs inspect original order and require clean EOF.
   observeOriginal?: (event: SseEvent, value: Item) => void,
   orderedPending?: KimiExecPending,
+  onSignedBlock?: (block: Item) => void,
 ): AsyncGenerator<SseEvent> {
   if (exec && observeOriginal) throw new RoutingError("unsupported_routed_content");
   if (exec && (p.provider !== "kimi" || p.product !== "kimi-code" || p.region !== "global" ||
@@ -337,6 +337,8 @@ export async function* validatedProviderEvents(
         if ((block.type === "thinking" || block.type === "redacted_thinking") && !isValidNativeSignedBlock(block.content, "complete"))
           throw new RoutingError("invalid_provider_block", 502);
         block.closed = true;
+        if (block.type === "thinking" || block.type === "redacted_thinking")
+          onSignedBlock?.(block.content);
         if (block.type === "tool_use") {
           try {
             if (

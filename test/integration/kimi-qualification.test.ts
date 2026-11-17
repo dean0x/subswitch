@@ -1,6 +1,7 @@
 /** OFFLINE: real ephemeral loopback sockets, fabricated providers/clients/keys only.
  * This qualifies Subswitch plumbing, not the live Kimi contract or native CLI.
  */
+import { nativeCredential } from "../fixtures/native-profile.js";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
@@ -29,9 +30,8 @@ interface Call {
 type Handler = (call: Call, res: http.ServerResponse) => void;
 const key = "fabricated-kimi-key";
 const primaryKey = "fabricated-primary-key";
-const env = { SYNTHETIC_KIMI_KEY: key, SYNTHETIC_PRIMARY_KEY: primaryKey };
 const signal = () => AbortSignal.timeout(5000);
-const protocolFor = (client: OriginatingClient): WireProtocol => client === "codex" ? "responses" : "messages";
+const protocolFor = (client: OriginatingClient, region = "global"): WireProtocol => client === "claude-code" && region === "mainland-cn" ? "messages" : "responses";
 const textItem = (text: string): Item => ({
   type: "message", id: "fake-message", role: "assistant", status: "completed",
   content: [{ type: "output_text", text, annotations: [] }],
@@ -56,18 +56,14 @@ function events(protocol: WireProtocol, toolPath?: string, text = "offline-ready
   const item: Item = toolPath
     ? { type: "function_call", id: "fake-tool", call_id: "fake-call", name: "Read", arguments: JSON.stringify({ path: toolPath }), status: "completed" }
     : textItem(text);
-  return [
-    { type: "response.created", response: { id: "fake-response", status: "in_progress", output: [] } },
-    { type: "response.output_item.added", output_index: 0, item: { ...item, ...(toolPath ? { arguments: "" } : { content: [] }), status: "in_progress" } },
-    ...(toolPath ? [{ type: "response.function_call_arguments.delta", output_index: 0, item_id: "fake-tool", delta: item["arguments"] }]
-      : [{ type: "response.output_text.delta", output_index: 0, item_id: "fake-message", content_index: 0, delta: text }]),
-    { type: "response.output_item.done", output_index: 0, item },
-    { type: "response.completed", response: { id: "fake-response", status: "completed", output: [item] } },
-  ];
+  return [created(), added(0, { ...item, ...(toolPath ? { arguments: "" } : { content: [] }), status: "in_progress" }),
+    ...(toolPath ? [{ type: "response.function_call_arguments.delta", output_index: 0, item_id: item.id, delta: item.arguments }]
+      : [delta(String(item.id), 0, text)]),
+    done(0, item), terminal([item])];
 }
 function send(res: http.ServerResponse, values: Item[]): void {
   res.writeHead(200, { "content-type": "text/event-stream" });
-  res.end(values.map((value) => `data: ${JSON.stringify(value)}\n\n`).join(""));
+  res.end(wire(values));
 }
 async function listen(server: http.Server): Promise<string> {
   const result = await listenServer(server, 0, "127.0.0.1");
@@ -82,7 +78,7 @@ async function close(server: http.Server): Promise<void> {
 }
 
 async function fixture(
-  options: { product?: "kimi-code" | "kimi-platform"; region?: "global" | "mainland-cn"; fallback?: boolean;
+  options: { region?: "global" | "mainland-cn"; fallback?: boolean;
     managedRecovery?: { clock: RoutingClock } },
   handle: Handler,
 ) {
@@ -104,16 +100,15 @@ async function fixture(
   let routing: SharedRouting | undefined;
   try {
     const upstreamBase = await listen(upstream);
-    const product = options.product ?? "kimi-code";
+    const product = "kimi-code";
     const profile: AccessProfile = {
       provider: "kimi", product, region: options.region ?? "global",
-      billing: product === "kimi-code" ? "subscription" : "api", account: "offline-kimi",
+      billing: "subscription", account: "offline-kimi",
       credential: options.managedRecovery
         ? { kind: "native-oauth", authFile: join(directory, "managed-auth.json") }
-        : { kind: "env", name: "SYNTHETIC_KIMI_KEY" },
-      ...(options.managedRecovery ? {} : { baseUrl: upstreamBase + (product === "kimi-code" ? "/coding" : "") }),
+        : nativeCredential("kimi", key, options.region ?? "global"),
     };
-    const target = { profile: "kimi", model: options.managedRecovery ? "kimi-for-coding" : product === "kimi-code" ? "k3" : "kimi-k3", effort: "high" };
+    const target = { profile: "kimi", model: "kimi-for-coding", effort: "high" };
     const existingTarget = { profile: "primary", model: "gpt-6.1-sol", effort: "high" };
     const loaded = loadConfig({
       configPath: join(directory, "config.json"), env: {},
@@ -127,7 +122,7 @@ async function fixture(
         },
         accessProfiles: {
           kimi: profile,
-          primary: { provider: "codex", product: "openai-api", billing: "api", account: "offline-primary", credential: { kind: "env", name: "SYNTHETIC_PRIMARY_KEY" }, baseUrl: upstreamBase + "/primary" },
+          primary: { provider: "codex", product: "chatgpt-codex", billing: "subscription", account: "offline-primary", credential: nativeCredential("codex", primaryKey), baseUrl: upstreamBase + "/primary" },
         },
         routes: {
           offline: {
@@ -141,16 +136,17 @@ async function fixture(
     assert.ok(loaded.ok, loaded.ok ? "" : loaded.error.message);
     const fetchImpl: typeof fetch = async (url, init) => {
       const parsed = new URL(String(url));
-      const managedKimi = options.managedRecovery && parsed.origin === "https://api.kimi.ai"
-        && parsed.pathname === "/coding/v1/responses" && parsed.search === "";
+      const managedKimi = parsed.origin === new URL(defaultBase(profile)).origin &&
+        ["/coding/v1/messages", "/coding/v1/responses"].includes(parsed.pathname) &&
+        (parsed.search === "" || parsed.search === "?beta=true");
       if (!managedKimi && parsed.origin !== upstreamBase) {
         violations.push("non-fixture upstream requested");
         throw new Error("offline_network_boundary");
       }
-      return fetch(managedKimi ? upstreamBase + parsed.pathname : url,
+      return fetch(managedKimi ? upstreamBase + parsed.pathname + parsed.search : url,
         { ...init, signal: AbortSignal.any([...(init?.signal ? [init.signal] : []), signal()]) });
     };
-    const deps = buildDeps(loaded.value.config, noopLogger, { fetchImpl, env });
+    const deps = buildDeps(loaded.value.config, noopLogger, { fetchImpl });
     assert.ok(deps.ok, deps.ok ? "" : deps.error);
     routing = deps.value.sharedRouting!;
     if (options.managedRecovery) {
@@ -161,9 +157,9 @@ async function fixture(
           refresh_token: "fabricated-managed-refresh", token_type: "Bearer", expires_at: Math.floor(Date.now() / 1000) + 3600 } };
       await store.withLock(() => store.write(record, signal()), signal());
       routing.close();
-      routing = new SharedRouting(loaded.value.config, noopLogger, options.managedRecovery.clock, fetchImpl, env);
+      routing = new SharedRouting(loaded.value.config, noopLogger, options.managedRecovery.clock, fetchImpl);
       // Existing dependency seams keep authentication and any unexpected refresh on owned fixtures.
-      Object.defineProperty(routing.attempts, "auth", { value: new ProfileAuth(loaded.value.config.accessProfiles!, noopLogger, env,
+      Object.defineProperty(routing.attempts, "auth", { value: new ProfileAuth(loaded.value.config.accessProfiles!, noopLogger,
         () => new KimiAuthManager({ store, region: "global", fixtureOrigin: upstreamBase })) });
     }
     relay = createProxyServer({ ...deps.value, sharedRouting: routing });
@@ -235,18 +231,19 @@ function resumed(client: OriginatingClient, body: Item, reply: Item, value: stri
 }
 function assertCredentialIsolation(call: Call, expected: string): void {
   assert.equal(call.headers.authorization, `Bearer ${expected}`);
-  for (const name of ["x-api-key", "chatgpt-account-id", "anthropic-beta", "x-subswitch-capability"])
+  for (const name of ["x-api-key", "anthropic-beta", "x-subswitch-capability"])
     assert.equal(call.headers[name], undefined, `${name} crossed the profile boundary`);
+  assert.equal(call.headers["chatgpt-account-id"], expected === primaryKey ? primaryKey : undefined);
   assert.doesNotMatch(call.path, /__subswitch/);
 }
 
 describe("Kimi qualification through isolated loopback Subswitch (synthetic)", () => {
-  for (const product of ["kimi-code", "kimi-platform"] as const)
+  for (const product of ["kimi-code"] as const)
     for (const region of ["global", "mainland-cn"] as const)
       for (const client of ["claude-code", "codex"] as const) {
-        it(`binds ${product}/${region}/${client} to its key, protocol and product path`, async () => {
-          const protocol = protocolFor(client);
-          const rig = await fixture({ product, region }, (_call, res) => send(res, events(protocol)));
+        it(`binds ${product}/${region}/${client} to its subscription, protocol and product path`, async () => {
+          const protocol = protocolFor(client, region);
+          const rig = await fixture({ region }, (_call, res) => send(res, events(protocol)));
           try {
             const action = await rig.action(client);
             const response = await rig.request(client, action.ingressPrefix, initial(client));
@@ -255,16 +252,13 @@ describe("Kimi qualification through isolated loopback Subswitch (synthetic)", (
             assert.equal(rig.calls.length, 1);
             const call = rig.calls[0]!;
             assertCredentialIsolation(call, key);
-            assert.equal(call.path, product === "kimi-code"
-              ? `/coding/v1/${protocol}`
-              : protocol === "messages" ? "/anthropic/v1/messages" : "/v1/responses");
+            assert.equal(call.path, `/coding/v1/${protocol}${protocol === "messages" ? "?beta=true" : ""}`);
             assert.equal(call.body["model"], rig.target.model);
             assert.equal(call.body["stream"], true);
             assert.equal((call.body[protocol === "messages" ? "output_config" : "reasoning"] as Item)["effort"], "high");
             assert.equal(call.headers["anthropic-version"], protocol === "messages" ? "2023-06-01" : undefined);
             if (protocol === "responses") assert.equal(call.body["store"], false);
-            const domain = product === "kimi-code" ? `api.kimi.${region === "global" ? "ai" : "com"}/coding`
-              : `api.moonshot.${region === "global" ? "ai" : "cn"}`;
+            const domain = `api.kimi.${region === "global" ? "ai" : "com"}/coding`;
             assert.equal(defaultBase(rig.profile), `https://${domain}`);
           } finally { await rig.close(); }
         });
@@ -281,10 +275,8 @@ describe("Kimi qualification through isolated loopback Subswitch (synthetic)", (
           kimiCalls++;
           if (kimiCalls === 1) send(res, events(protocolFor(client), toolPath));
           else {
-            const input = client === "codex" ? call.body["input"] as Item[] : call.body["messages"] as Item[];
-            const value = client === "codex"
-              ? input.find((item) => item["type"] === "function_call_output")?.["output"]
-              : (input.at(-1)?.["content"] as Item[])[0]?.["content"];
+            const input = call.body["input"] as Item[];
+            const value = input.find((item) => item["type"] === "function_call_output")?.["output"];
             assert.equal(value, nonce, "fake Kimi did not receive the executed tool result");
             send(res, events(protocolFor(client), undefined, String(value)));
           }
@@ -333,7 +325,7 @@ describe("Kimi qualification through isolated loopback Subswitch (synthetic)", (
       } else send(res, events("responses", call.path.startsWith("/coding/") && ++kimiCalls === 1 ? "fixture.txt" : undefined));
     });
     const routing = new SharedRouting(rig.config, noopLogger,
-      { now: () => now, monotonic: () => now, random: () => 0.5 }, rig.fetchImpl, env);
+      { now: () => now, monotonic: () => now, random: () => 0.5 }, rig.fetchImpl);
     const collect = async (body: Item, context: ReturnType<typeof routing.actions.context>) => {
       const result: Item[] = [];
       for await (const event of routing.events(body, "codex", "offline", signal(), context)) result.push(event);
@@ -356,7 +348,7 @@ describe("Kimi qualification through isolated loopback Subswitch (synthetic)", (
     let now = 1000, toolPath = "", nonce = "", fallbackCalls = 0, fileReads = 0;
     const clock = { now: () => now, monotonic: () => now, random: () => 0.5 };
     const rig = await fixture({ managedRecovery: { clock } }, (call, res) => {
-      if (call.path === "/primary/v1/responses") {
+      if (call.path === "/primary/responses") {
         assertCredentialIsolation(call, primaryKey);
         assert.equal(call.headers["x-msh-platform"], undefined);
         if (++fallbackCalls === 1) send(res, events("responses", toolPath));
@@ -419,7 +411,7 @@ describe("Kimi qualification through isolated loopback Subswitch (synthetic)", (
       assert.deepEqual((await last.json() as Item)["content"], [{ type: "text", text: nonce }]);
       assert.equal(rig.routing.actions.affinity(contextA, "offline").selectedOwner, ownerA);
       assert.equal(rig.routing.actions.affinity(contextA, "offline").selectedTarget?.profile, "primary");
-      assert.deepEqual(rig.calls.map(call => call.path), ["/primary/v1/responses", "/coding/v1/responses", "/primary/v1/responses"]);
+      assert.deepEqual(rig.calls.map(call => call.path), ["/primary/responses", "/coding/v1/responses", "/primary/responses"]);
       assert.equal(fileReads, 1); assert.equal(fallbackCalls, 2);
       await rig.complete(a.id);
       assert.throws(() => rig.routing.actions.context(a.id, "claude-code"));

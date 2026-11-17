@@ -5,41 +5,39 @@ import {
   isDefaultEndpoint,
   modelEfforts,
   supportsNativeOAuth,
-  VERIFIED_MODEL_EQUIVALENCES,
 } from "./destination-catalog.js";
 import type { AccessProfile, RoutePolicy } from "./routing-types.js";
-import { ownValue } from "../plain-object.js";
+import { object, ownValue } from "../plain-object.js";
 import { isAbsolute } from "node:path";
 import { validateKimiNativePath } from "../kimi-native-auth.js";
 
 const label = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/);
+const unsupportedValue = (field: string, value: unknown): string =>
+  typeof value === "string"
+    ? `unsupported ${field}: ${value}`
+    : `${field} must be a string`;
 export const AccessProfilesSchema = z
   .record(
     label,
     z.strictObject({
       provider: z.enum(["codex", "claude", "kimi"]),
-      product: z.enum([
-        "chatgpt-codex",
-        "openai-api",
-        "claude-code",
-        "anthropic-api",
-        "kimi-code",
-        "kimi-platform",
-      ]),
+      product: z.enum(["chatgpt-codex", "claude-code", "kimi-code"], {
+        error: issue => unsupportedValue("product", issue.input),
+      }),
       region: z.enum(["mainland-cn", "global"]).optional(),
-      billing: z.enum(["subscription", "api"]),
+      billing: z.literal("subscription", {
+        error: issue => unsupportedValue("billing", issue.input),
+      }),
       account: label,
       credential: z.discriminatedUnion("kind", [
-        z.strictObject({
-          kind: z.literal("env"),
-          name: z.string().regex(/^[A-Z_][A-Z0-9_]{0,127}$/),
-        }),
         z.strictObject({
           kind: z.literal("native-oauth"),
           authFile: z.string().min(1),
           source: z.literal("kimi-code").optional(),
         }),
-      ]),
+      ], {
+        error: issue => unsupportedValue("credential kind", object(issue.input)?.["kind"]),
+      }),
       baseUrl: z.url().optional(),
       allowInsecureBaseUrl: z.boolean().optional(),
     }),
@@ -56,7 +54,6 @@ export const RoutesSchema = z
     z.strictObject({
       clients: z.array(z.enum(["claude-code", "codex"])).min(1),
       primary: target,
-      sameModelApi: target.optional(),
       fallbacks: z.array(target).max(64).default([]),
       transientTriggers: z.array(z.enum(["overload", "transport"])).default([]),
       affinity: z.literal("native-or-explicit").default("native-or-explicit"),
@@ -77,17 +74,10 @@ export function validateExplicitConfig(
       )
     )
       errors.push(`${id}: invalid_product`);
-    const subscription = ["chatgpt-codex", "claude-code", "kimi-code"].includes(
-      p.product,
-    );
-    if ((p.billing === "subscription") !== subscription)
-      errors.push(`${id}: billing_product_mismatch`);
     if (p.provider === "kimi" ? !p.region : p.region !== undefined)
       errors.push(`${id}: region_product_mismatch`);
     if (
-      p.credential.kind === "native-oauth"
-        ? !supportsNativeOAuth(p)
-        : supportsNativeOAuth(p) && p.provider !== "kimi"
+      !supportsNativeOAuth(p)
     )
       errors.push(`${id}: credential_product_mismatch`);
     const url = new URL(p.baseUrl ?? defaultBase(p));
@@ -134,7 +124,6 @@ export function validateExplicitConfig(
   for (const [name, route] of Object.entries(routes)) {
     const targets = [
       route.primary,
-      ...(route.sameModelApi ? [route.sameModelApi] : []),
       ...route.fallbacks,
     ];
     const seen = new Set<string>();
@@ -155,24 +144,6 @@ export function validateExplicitConfig(
         errors.push(`${name}: unsupported_effort`);
     }
     if (seen.size > 8) errors.push(`${name}: too_many_targets`);
-    if (route.sameModelApi) {
-      const primary = ownValue(profiles, route.primary.profile),
-        api = ownValue(profiles, route.sameModelApi.profile);
-      const key = JSON.stringify([
-        primary,
-        route.primary.model,
-        api,
-        route.sameModelApi.model,
-      ]);
-      if (
-        primary?.billing !== "subscription" ||
-        api?.billing !== "api" ||
-        !VERIFIED_MODEL_EQUIVALENCES.includes(key)
-      )
-        errors.push(
-          `${name}: unverified_model_equivalence; list the API target explicitly in fallbacks`,
-        );
-    }
   }
   return errors;
 }
@@ -180,7 +151,6 @@ export const routeChain = (route: RoutePolicy) => {
   const seen = new Set<string>();
   return [
     route.primary,
-    ...(route.sameModelApi ? [route.sameModelApi] : []),
     ...route.fallbacks,
   ].filter((t) => {
     const key = JSON.stringify([t.profile, t.model, t.effort]);

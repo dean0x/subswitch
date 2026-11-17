@@ -634,7 +634,7 @@ const main = async (): Promise<void> => {
       return;
     }
     case "run-action": {
-      const loaded = loadConfig(); if (!loaded.ok) { fail(loaded.error.message); return; }
+      const loaded = loadConfig({ allowProjectPort: false }); if (!loaded.ok) { fail(loaded.error.message); return; }
       process.exitCode = await runAction(loaded.value.config, command.client, command.native, command.conversation);
       return;
     }

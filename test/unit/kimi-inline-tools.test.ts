@@ -63,7 +63,7 @@ test("Kimi Responses preserves temporal inline declarations, namespaced call/res
   assert.deepEqual(outbound.tools, [fn], "inline tools must not become available before their item");
   assert.deepEqual(transcript.tools, [fn, namespace, patch], "aggregate metadata retains every declaration");
   assert.deepEqual(outbound.instructions, body.instructions);
-  assert.deepEqual(outbound.metadata, body.metadata);
+  assert.equal(outbound.metadata, undefined, "origin-vendor metadata must not reach Kimi");
   assert.deepEqual(body, before);
 });
 
@@ -157,7 +157,7 @@ test("inline declarations do not weaken complete tool call/result checks", () =>
 test("non-Kimi same-protocol and Kimi cross-protocol behavior remain unchanged", () => {
   // A missing inline role is legacy-supported; new Kimi same-protocol validation stays scoped.
   const body: Item = { ...bodyWith({ type: "additional_tools", tools: [fn] }), model: "fixture" };
-  const api: AccessProfile = { provider: "codex", product: "openai-api", billing: "api", account: "fixture", credential: { kind: "env", name: "UNUSED" } };
+  const api: AccessProfile = { provider: "codex", product: "chatgpt-codex", billing: "subscription", account: "fixture", credential: { kind: "native-oauth", authFile: "/fabricated/never-read.json" } };
   assert.deepEqual(adapt(body, { profile: api }).input, body.input);
   assert.equal(Object.hasOwn(adapt(body, { profile: api }), "tools"), false);
   const legacy = reverseRequest(renderResponsesHistory(decodePortableHistory(body, "responses"))).body;

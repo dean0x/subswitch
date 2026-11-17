@@ -38,7 +38,7 @@ async function fixture(t: TestContext, region: "global" | "mainland-cn" = "globa
 for (const region of ["global", "mainland-cn"] as const) test(`native ${region} access uses truthful Subswitch identity without changing native files`, async t => {
   const { directory, authFile, raw, profile } = await fixture(t, region);
   const before = await lstat(authFile);
-  const auth = new ProfileAuth({ native: profile }, noopLogger, { KIMI_CODE_OAUTH_HOST: "https://fabricated.invalid", KIMI_CODE_HOME: "/fabricated/never-read" });
+  const auth = new ProfileAuth({ native: profile }, noopLogger);
   const value = await auth.get("native", signal());
   assert.deepEqual(value.authHeaders, { authorization: "Bearer fabricated-access" });
   const identity = auth.identity(value);
@@ -93,7 +93,7 @@ for (const failure of ["network", "503"]) test(`native proactive ${failure} does
     if (failure === "network") throw new TypeError("fake private network failure");
     return new Response("{}", { status: 503 });
   });
-  const auth = new ProfileAuth({ first: profile, alias: profile }, noopLogger, {});
+  const auth = new ProfileAuth({ first: profile, alias: profile }, noopLogger);
   const sibling = await auth.get("alias", signal());
   await writeFile(authFile, JSON.stringify(token("fabricated-access", Math.floor(Date.now() / 1000) + 90)));
   assert.equal((await auth.get("first", signal())).authHeaders.authorization, "Bearer fabricated-access");
@@ -146,7 +146,7 @@ test("native force requires an exact failed credential, not the last observed be
 
 test("late 401s reject only their dispatched bearer and aliases share rejection state", async t => {
   const { authFile, profile } = await fixture(t);
-  const auth = new ProfileAuth({ first: profile, alias: { ...profile, account: "another-label" } }, noopLogger, {});
+  const auth = new ProfileAuth({ first: profile, alias: { ...profile, account: "another-label" } }, noopLogger);
   const first = await auth.get("first", signal());
   await writeFile(authFile, JSON.stringify(token("fabricated-second")));
   const second = await auth.get("alias", signal());
@@ -166,7 +166,7 @@ test("late 401s reject only their dispatched bearer and aliases share rejection 
 for (const protocol of ["messages", "responses"] as const) for (const rotated of [false, true])
 test(`${protocol}: native 401 ${rotated ? "with overlapping rotation requires a new action" : "refuses the unchanged bearer without retry"}`, async t => {
   const { authFile, profile } = await fixture(t);
-  const auth = new ProfileAuth({ first: profile, alias: { ...profile, account: "another-label" } }, noopLogger, {});
+  const auth = new ProfileAuth({ first: profile, alias: { ...profile, account: "another-label" } }, noopLogger);
   const first = await auth.get("first", signal()), scope = auth.scope(first);
   const target = { profile: "first", model: "kimi-for-coding", effort: "high" };
   const body: Item = protocol === "messages"
@@ -225,7 +225,7 @@ test(`${protocol}: native 401 ${rotated ? "with overlapping rotation requires a 
 
 test("token rotation invalidates aliases but preserves a conservative source allowance", async t => {
   const { authFile, profile } = await fixture(t);
-  const auth = new ProfileAuth({ first: profile, alias: { ...profile, account: "another-label" } }, noopLogger, {});
+  const auth = new ProfileAuth({ first: profile, alias: { ...profile, account: "another-label" } }, noopLogger);
   const first = await auth.get("first", signal());
   const sibling = await auth.get("alias", signal());
   const scope = auth.scope(first); assert.deepEqual(auth.scope(sibling), scope);
@@ -393,7 +393,7 @@ test("native selection is explicit, Kimi-only, and region-bound in config", asyn
     assert.equal(loaded.ok, ok);
   }
   const codex: AccessProfile = { ...profile, provider: "codex", product: "chatgpt-codex", region: undefined };
-  const auth = new ProfileAuth({ unsupported: codex }, noopLogger, {});
+  const auth = new ProfileAuth({ unsupported: codex }, noopLogger);
   assert.equal(auth.has("unsupported"), false);
   await assert.rejects(auth.get("unsupported", signal()), /credential_product_mismatch/);
 });

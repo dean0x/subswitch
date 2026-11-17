@@ -622,11 +622,12 @@ interface PendingBlock {
   partialJson: string;
 }
 
-/** Match native replay fields; only a signature may be deferred to deltas. */
+/** Only signatures may be deferred; completion requires a nonempty signature. */
 export const isValidNativeSignedBlock = (block: Record<string, unknown>, phase: "start" | "complete"): boolean => {
   if (block["type"] === "thinking")
     return typeof block["thinking"] === "string" && block["data"] === undefined &&
-      (typeof block["signature"] === "string" || (phase === "start" && block["signature"] === undefined));
+      ((typeof block["signature"] === "string" && (phase === "start" || block["signature"].length > 0)) ||
+        (phase === "start" && block["signature"] === undefined));
   return block["type"] === "redacted_thinking" && typeof block["data"] === "string" &&
     block["thinking"] === undefined && block["signature"] === undefined;
 };
@@ -636,6 +637,7 @@ export const aggregateFrames = (frames: readonly string[], providerId: ProviderI
   const blocks = new Map<number, PendingBlock>();
   const content = new Map<number, Record<string, unknown>>();
   let stopReason: string | null = null;
+  let stopSequence: string | null = null;
   let usage: Record<string, unknown> = { input_tokens: 0, output_tokens: 0 };
 
   for (const rawFrame of frames) {
@@ -654,6 +656,8 @@ export const aggregateFrames = (frames: readonly string[], providerId: ProviderI
         break;
       case "content_block_start": {
         const index = data["index"] as number;
+        if (blocks.has(index) || content.has(index))
+          return err({ kind: "upstream", message: `${providerId} stream contained duplicate content block index` });
         const block = { ...(data["content_block"] as Record<string, unknown>) };
         if ((block["type"] === "thinking" || block["type"] === "redacted_thinking") && !isValidNativeSignedBlock(block, "start"))
           return err({ kind: "upstream", message: `${providerId} stream contained invalid signed content` });
@@ -708,6 +712,8 @@ export const aggregateFrames = (frames: readonly string[], providerId: ProviderI
       case "message_delta": {
         const delta = data["delta"] as Record<string, unknown> | undefined;
         if (delta !== undefined && typeof delta["stop_reason"] === "string") stopReason = delta["stop_reason"];
+        if (delta !== undefined && (typeof delta["stop_sequence"] === "string" || delta["stop_sequence"] === null))
+          stopSequence = delta["stop_sequence"];
         usage = { ...usage, ...object(data["usage"]) };
         break;
       }
@@ -743,6 +749,6 @@ export const aggregateFrames = (frames: readonly string[], providerId: ProviderI
     kind: "message",
     // Native provider validation can defer tool stops until its terminal. Index
     // order preserves the original content order even when stops arrive later.
-    message: { ...message, content: [...content].sort(([a], [b]) => a - b).map(([, block]) => block), stop_reason: stopReason, stop_sequence: null, usage },
+    message: { ...message, content: [...content].sort(([a], [b]) => a - b).map(([, block]) => block), stop_reason: stopReason, stop_sequence: stopSequence, usage },
   });
 };

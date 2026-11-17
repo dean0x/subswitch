@@ -38,7 +38,7 @@ export function response(raw = wire(output()), fragment = 65536, atEof = () => {
 }
 class FakeAuth extends ProfileAuth {
   generation = "generation1"; gets = 0; refreshCount = 0; rotateOnRefresh = false;
-  constructor() { super({ fixture: profile }, noopLogger, {}); }
+  constructor() { super({ fixture: profile }, noopLogger); }
   override has() { return true; }
   override async get(name = "fixture"): Promise<BoundCredential> { this.gets++; return { profile: name, provider: "kimi", generation: this.generation,
     binding: "fabricated", authHeaders: { authorization: "Bearer fabricated-only" } }; }
@@ -75,7 +75,7 @@ export function fixture(options: { reply?: (index: number, request: Item, url: s
     timeline.push("fetch");
     return options.reply?.(index, body, String(url)) ?? response(undefined, 1, () => { eof = true; timeline.push("eof"); });
   };
-  const router = new SharedRouting(loaded.value.config, logger, clock, fetchImpl, {});
+  const router = new SharedRouting(loaded.value.config, logger, clock, fetchImpl);
   const attempts = new RoutedAttempts(auth, logger, fetchImpl, clock, "subswitch", () => { physicalAdmissions++; }, undefined, router.actions,
     undefined, options.diagnostics);
   Object.defineProperty(attempts, "replay", { value: cache });

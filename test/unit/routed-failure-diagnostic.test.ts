@@ -1,4 +1,5 @@
 /** Fabricated transport and credentials only; never invokes a network transport. */
+import { nativeCredential } from "../fixtures/native-profile.js";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createConsoleLogger, type Logger, type LogFields } from "../../src/logger.js";
@@ -10,14 +11,14 @@ import { RoutingError, type AccessProfile, type Item, type WireProtocol } from "
 const secret = "fabricated-private-token-code-prompt";
 const profile: AccessProfile = {
   provider: "kimi", product: "kimi-code", region: "global", billing: "subscription",
-  account: "fabricated", credential: { kind: "env", name: "FABRICATED_ONLY" },
+  account: "fabricated", credential: nativeCredential("kimi", secret),
 };
 const sse = (event: Item) => new Response(`data: ${JSON.stringify(event)}\n\n`, {
   headers: { "content-type": "text/event-stream", "x-fabricated-secret": secret },
 });
 
 async function attempt(protocol: WireProtocol, transport: typeof fetch, logger: Logger, signal = AbortSignal.timeout(2000), bodyOverride?: Item) {
-  const auth = new ProfileAuth({ fixture: profile }, logger, { FABRICATED_ONLY: secret });
+  const auth = new ProfileAuth({ fixture: profile }, logger);
   const attempts = new RoutedAttempts(auth, logger, transport);
   const body: Item = protocol === "messages"
     ? { model: "fixture", max_tokens: 256, system: secret, messages: [{ role: "user", content: secret }] }

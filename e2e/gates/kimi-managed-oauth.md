@@ -132,9 +132,10 @@ Use an explicit access profile:
 ```
 
 Reference it as a primary or fallback target with model `kimi-for-coding` and
-effort `high`. Existing Kimi coding-plan key profiles remain supported, with no
-implicit key fallback. Kimi Platform OAuth remains unsupported. The account
-label groups local allowances; it does not attest provider account identity.
+effort `high`. All explicit profiles use subscription sign-ins only. Provider keys,
+environment credentials, API billing and paid fallback are not supported.
+Removed product and credential kinds fail config load. The account label groups
+local allowances; it does not attest provider account identity.
 Token rotation preserves local login lineage; a replaced login invalidates
 parked actions. Refresh uses cross-process locking and atomic revision checks.
 
@@ -193,9 +194,9 @@ attribution at Kimi is not established. No attribution values are logged.
 
 Unknown metadata members, null/array metadata, nonstring or over-limit `user_id`,
 and invalid JSON remain fixed-error refusals. Other unsupported request fields
-remain refused. Ordinary Messages and direct
-Responses routes retain their existing metadata behavior. Authentication and owner
-checks keep their existing order: credential reads or refresh may precede a local
+remain refused. All Kimi paths omit origin-vendor `metadata` before dispatch.
+Subswitch does not translate it into a Kimi identity or attribution field.
+Authentication and owner checks keep their existing order: credential reads or refresh may precede a local
 renderer refusal; its quota reservation is released without provider dispatch.
 
 ## Ordered Messages thinking compatibility

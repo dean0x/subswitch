@@ -7,9 +7,10 @@ import { ReverseState } from "../claude-state.js";
 import { ReasoningCache } from "../reasoning-cache.js";
 import { object } from "../plain-object.js";
 import { validateTargetCapabilities } from "./target-capabilities.js";
-import type { DestinationSelection } from "./destination-catalog.js";
+import { validatesNativeThinking, type DestinationSelection } from "./destination-catalog.js";
 import { renderKimiResponsesRequest, type KimiResponsesRequest } from "./kimi-responses-request.js";
-import { knownThinking, rememberThinking, sameThinking, thinkingSignature } from "./signed-thinking.js";
+import { foreignThinking, recordedThinking, rememberThinking, sameThinking, thinkingSignature } from "./signed-thinking.js";
+import { StagedCache } from "./replay-cache.js";
 import {
   renderResponsesHistory,
   type PortableTranscript,
@@ -78,7 +79,7 @@ export function adaptRequest(request: RequestAdaptation): {
   };
   const switched = priorOwner !== undefined && priorOwner !== owner;
   const nativeImport = request.allowNativeThinkingReplay === true &&
-    p.provider === "claude" && ingress === "messages" && protocol === "messages" && !switched;
+    validatesNativeThinking(p) && ingress === "messages" && protocol === "messages" && !switched;
   if (ingress === "messages" && Array.isArray(body["messages"])) {
     for (const message of body["messages"]) {
       const m = object(message);
@@ -89,10 +90,7 @@ export function adaptRequest(request: RequestAdaptation): {
           const signature = thinkingSignature(b);
           const recorded =
             typeof signature === "string"
-              ? stage.get(
-                  "snapshot",
-                  `signature:${owner}:${conversation}:${signature}`,
-                )?.input[0]
+              ? recordedThinking(stage, signature, owner, conversation)
               : undefined;
           if (signature === undefined)
             throw new RoutingError("foreign_opaque_state", 409);
@@ -100,10 +98,11 @@ export function adaptRequest(request: RequestAdaptation): {
             if (!sameThinking(b, recorded))
               throw new RoutingError("foreign_opaque_state", 409);
           } else {
-            if (!nativeImport || knownThinking(stage, signature))
+            if (!nativeImport || foreignThinking(stage, signature, owner, conversation))
               throw new RoutingError("foreign_opaque_state", 409);
-            // A cache miss is not proof that native Claude history is foreign. Preserve it
-            // for that upstream to validate; failed/cancelled attempts never commit this import.
+            // Anthropic validates cold history. Emitted provenance permits only its original
+            // scope; failed/cancelled attempts never publish imported scoped blocks.
+            if (!(stage instanceof StagedCache)) throw new RoutingError("invalid_replay_stage", 500);
             rememberThinking(stage, owner, conversation, b);
           }
         }
@@ -179,8 +178,6 @@ export function adaptRequest(request: RequestAdaptation): {
       )
         throw new RoutingError("continuity_unavailable", 409);
       outbound = translated.value.body;
-      if (p.product === "openai-api" && body["max_tokens"] !== undefined)
-        outbound = { ...outbound, max_output_tokens: body["max_tokens"] };
       if (transcript?.toolErrors.size && Array.isArray(outbound["input"])) {
         outbound["input"] = outbound["input"].map((value) => {
           const entry = object(value);
@@ -197,6 +194,9 @@ export function adaptRequest(request: RequestAdaptation): {
     }
   }
   outbound = { ...outbound, model: t.model, stream: true };
+  const originProvider = ingress === "messages" ? "claude" : "codex";
+  // Client metadata stays with its origin vendor, even if the wire protocol matches.
+  if (p.provider !== originProvider) delete outbound["metadata"];
   if (protocol === "responses") {
     delete outbound["previous_response_id"];
     delete outbound["conversation"];

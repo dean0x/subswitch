@@ -69,8 +69,21 @@ export class ClaudeCache {
     }
     } finally { lease?.release(); }
   }
+  /** Check known attempt state before inference without eviction or publication. */
+  checkBatch(writes: readonly CacheWrite[]): void {
+    this.planBatch(writes);
+  }
   /** Routed attempts publish all staged state together, after checking the shared budget. */
   putBatch(writes: readonly CacheWrite[], pending?: KimiExecPending): void {
+    const { updates, evictions, bytes } = this.planBatch(writes, pending);
+    for (const key of evictions) this.entries.delete(key);
+    // Replacement retains the existing eviction order.
+    for (const [key, entry] of updates) this.entries.set(key, entry);
+    this.bytes = bytes;
+  }
+  private planBatch(writes: readonly CacheWrite[], pending?: KimiExecPending): {
+    updates: Map<string, Entry>; evictions: string[]; bytes: number;
+  } {
     const updates = new Map<string, Entry>();
     const leases: KimiExecReservation[] = [];
     let bytes = this.bytes;
@@ -88,13 +101,21 @@ export class ClaudeCache {
       if (pending) leases.push(pending.retain([key, { kind: write.kind, value: write.value, bytes: size }]));
       updates.set(key, { kind: write.kind, value: write.value, bytes: size } as Entry);
     }
-    if (entries > this.limits.maxEntries || bytes > this.limits.maxBytes)
+    let updateBytes = 0;
+    for (const entry of updates.values()) updateBytes += entry.bytes;
+    if (updates.size > this.limits.maxEntries || updateBytes > this.limits.maxBytes ||
+      (this.strict && (entries > this.limits.maxEntries || bytes > this.limits.maxBytes)))
       throw new Error("continuation_store_full");
-    // Preflight only touched entries; publication is synchronous and preserves LRU order.
-    for (const [key, entry] of updates) this.entries.set(key, entry);
-    this.bytes = bytes;
+    const evictions: string[] = [];
+    for (const [key, entry] of this.entries) {
+      if (entries <= this.limits.maxEntries && bytes <= this.limits.maxBytes) break;
+      if (updates.has(key)) continue;
+      evictions.push(key);
+      entries--;
+      bytes -= entry.bytes;
+    }
+    return { updates, evictions, bytes };
     } finally {
-      updates.clear();
       for (const lease of leases) lease.release();
     }
   }

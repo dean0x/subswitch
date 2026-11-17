@@ -9,9 +9,7 @@ export interface LimitContext {
     | "chatgpt-codex"
     | "openai-api"
     | "claude-code"
-    | "anthropic-api"
     | "kimi-code"
-    | "kimi-platform"
     | "anthropic-unknown";
   protocol: "messages" | "responses";
   profile?: string;
@@ -21,7 +19,7 @@ export interface LimitContext {
   model?: string;
   region?: "global" | "mainland-cn";
   ingress?: "messages" | "responses";
-  configuredCredentialKind?: "native-oauth" | "coding-plan-key" | "api-key";
+  configuredCredentialKind?: "native-oauth";
 }
 export interface LimitObservation {
   readonly [SANITIZED_OBSERVATION]: true;

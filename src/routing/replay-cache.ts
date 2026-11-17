@@ -117,23 +117,37 @@ export class StagedCache extends ClaudeCache {
   private writes = new Map<string, CacheWrite>();
   private pending: KimiExecPending | undefined;
   private leases = new Map<string, { entry: KimiExecReservation; write: KimiExecReservation }>();
+  private pendingReservations = new Map<string, Snapshot>();
   private reservations = new Map<string, Snapshot>();
   private disposed = false;
   constructor(private shared: ClaudeCache, private readonly diagnostics?: OrderedReplayDiagnostics) {
     super({ maxEntries: 2048, maxBytes: 32 * 1024 * 1024 }, true);
   }
-  override get<K extends keyof ClaudeCacheValues>(
-    kind: K,
-    id: string,
-  ): ClaudeCacheValues[K] | undefined {
+  override get<K extends keyof ClaudeCacheValues>(kind: K, id: string): ClaudeCacheValues[K] | undefined {
     this.checkOpen();
-    return super.get(kind, id) ?? this.shared.get(kind, id);
+    const local = super.get(kind, id);
+    if (local !== undefined) return local;
+    const value = this.shared.get(kind, id);
+    if (value === undefined) return undefined;
+    // Keep active history local if another response reclaims shared LRU state.
+    // Ordered associations are immutable scalar records; preserve their diagnostic identity.
+    const snapshot = kind === "kimiOrdered" ? value : structuredClone(value);
+    const leases = this.hold([{ kind, id, value: snapshot } as CacheWrite]);
+    try {
+      super.put(kind, id, snapshot, this.pending);
+      this.replace(leases);
+    } catch (error) {
+      this.release(leases);
+      if (error instanceof RoutingError) throw error;
+      throw new RoutingError("continuation_store_full", 503);
+    }
+    return snapshot;
   }
-  /** Called after exactly the existing lookup; no cache read, mutation or LRU touch. */
+  /** Called after the existing lookup; no cache read or LRU touch. */
   observeOrderedLookup(scope: string, prefix: string, record: Readonly<KimiOrderedAssociation> | undefined): void {
     try { this.diagnostics?.lookup(this.shared, scope, prefix, record !== undefined); } catch {}
   }
-  /** Internal codec attachment happens only after the original request guards. */
+  /** Internal codec attachment follows the original request guards. */
   attachPending(pending: KimiExecPending): void {
     this.checkOpen();
     if (this.pending) throw new RoutingError("invalid_codec_publication", 500);
@@ -148,11 +162,7 @@ export class StagedCache extends ClaudeCache {
     this.pending = pending;
     this.leases = leases;
   }
-  override put<K extends keyof ClaudeCacheValues>(
-    kind: K,
-    id: string,
-    value: ClaudeCacheValues[K],
-  ): void {
+  override put<K extends keyof ClaudeCacheValues>(kind: K, id: string, value: ClaudeCacheValues[K]): void {
     this.checkOpen();
     const write = { kind, id, value } as CacheWrite, leases = this.hold([write]);
     try {
@@ -160,9 +170,13 @@ export class StagedCache extends ClaudeCache {
       this.writes.set(`${kind}:${id}`, write);
       this.replace(leases);
       this.observeStaged(write);
-    } catch (error) { this.release(leases); throw error; }
+    } catch (error) {
+      this.release(leases);
+      if (error instanceof RoutingError) throw error;
+      throw new RoutingError("continuation_store_full", 503);
+    }
   }
-  /** Preflight a complete attempt-local group before recording any of its writes. */
+  /** Validate the complete local group before any write becomes visible. */
   override putBatch(writes: readonly CacheWrite[]): void {
     this.checkOpen();
     const leases = this.hold(writes);
@@ -174,39 +188,59 @@ export class StagedCache extends ClaudeCache {
         if (write.kind === "kimiOrdered") ordered = write;
       }
       this.replace(leases);
-      // Observe the latest association only after the complete group is recorded
-      // and charged. A callback must not interleave partial batch registration.
       if (ordered) this.observeStaged(ordered);
     } catch (error) { this.release(leases); throw error; }
   }
-  /** Exclusive claims use the existing shared byte/entry budget before dispatch. */
-  reserveSnapshot(id: string, value: Snapshot): void {
+  preflight(): void {
     this.checkOpen();
-    if (this.shared.get("snapshot", id))
-      throw new RoutingError("foreign_opaque_state", 409);
-    this.put("snapshot", id, value);
-    const reservation = {
-      request: { ...value.request, pending: true }, input: value.input,
-    };
+    for (const id of this.pendingReservations.keys())
+      if (this.shared.get("snapshot", id)) throw new RoutingError("foreign_opaque_state", 409);
+    const pending: CacheWrite[] = [...this.pendingReservations].map(([id, value]) => ({ kind: "snapshot", id, value }));
     try {
-      this.shared.put("snapshot", id, reservation);
-    } catch {
+      const writes = [...this.writes.values()];
+      // Count staged-only imports and their pending form before any shared write.
+      this.shared.checkBatch(writes);
+      this.shared.checkBatch([...writes, ...pending]);
+      if (pending.length) this.shared.putBatch(pending, this.pending);
+    } catch (error) {
+      if (error instanceof RoutingError) throw error;
       throw new RoutingError("continuation_store_full", 503);
     }
-    this.reservations.set(id, reservation);
+    for (const [id, value] of this.pendingReservations) this.reservations.set(id, value);
+    this.pendingReservations.clear();
+  }
+  /** Import claims stay local until preflight checks the complete budget. */
+  reserveSnapshot(id: string, value: Snapshot): void {
+    this.checkOpen();
+    if (this.shared.get("snapshot", id) || this.pendingReservations.has(id))
+      throw new RoutingError("foreign_opaque_state", 409);
+    this.put("snapshot", id, value);
+    this.pendingReservations.set(id, { request: { ...value.request, pending: true }, input: [] });
+  }
+  /** Emitted provenance survives disposal; it is not usable scoped replay. */
+  retainSnapshot(id: string, value: Snapshot): void {
+    this.put("snapshot", id, value);
+    try { this.shared.put("snapshot", id, value, this.pending); }
+    catch (error) {
+      if (error instanceof RoutingError) throw error;
+      throw new RoutingError("continuation_store_full", 503);
+    }
+    this.pendingReservations.delete(id);
+    this.reservations.delete(id);
   }
   commit(): void {
     this.checkOpen();
     let writes: CacheWrite[] | undefined;
     let lease: KimiExecReservation | undefined;
     try {
+      if (this.pendingReservations.size) this.preflight();
       if (this.pending) {
         let bytes = 2, count = 0;
         for (const write of this.writes.values()) bytes += (count++ ? 1 : 0) + this.pending.measure(write);
         lease = this.pending.reserve(bytes + 1);
       }
       writes = [...this.writes.values()];
-      // Ownership validation and atomic publication are synchronous.
+      // Ownership checks and atomic publication are synchronous.
       for (const [id, reservation] of this.reservations)
         if (this.shared.get("snapshot", id) !== reservation)
           throw new RoutingError("foreign_opaque_state", 409);
@@ -218,21 +252,19 @@ export class StagedCache extends ClaudeCache {
           throw new RoutingError("continuity_unavailable", 409);
         throw new RoutingError("continuation_store_full", 503);
       }
-      // Published writes replace the claims; disposal must not roll them back.
       this.reservations.clear();
-      // Only a successful return from the actual atomic shared publication counts.
       try { this.diagnostics?.publicationResult(this, writes, true); } catch {}
     } finally { writes = undefined; lease?.release(); }
     if (this.pending) this.dispose();
     else this.writes.clear();
   }
-  /** Clears this attempt and its pending claims, never a successful publication. */
+  /** Clear this attempt and pending claims, never a successful publication. */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     for (const [id, reservation] of this.reservations)
-      if (this.shared.get("snapshot", id) === reservation)
-        this.shared.delete("snapshot", id);
+      if (this.shared.get("snapshot", id) === reservation) this.shared.delete("snapshot", id);
+    this.pendingReservations.clear();
     this.reservations.clear();
     this.writes.clear();
     this.clearEntries();

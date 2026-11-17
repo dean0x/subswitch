@@ -104,7 +104,7 @@ const createCodexProvider = (config: Config, logger: Logger, auth: ProviderAuth<
  * do not call `buildDeps` and are unaffected.
  */
 export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel),
-  routingOptions: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv;
+  routingOptions: { fetchImpl?: typeof fetch;
     orderedReplayDiagnostics?: OrderedReplayDiagnostics } = {}): Result<ServerDeps, string> => {
 
   if (config.codexIngress.enabled && config.codexIngress.claude.enabled && !hasNativeDecoders())
@@ -171,7 +171,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
   const resolveClaude = claudeResolver(config.codexIngress.claude.aliases);
   if (resolveClaude.rejectedAliases.length) return err(`Invalid Claude aliases: ${resolveClaude.rejectedAliases.join(", ")}`);
   const codexAuth = createCodexAuth(config, logger);
-  const sharedRouting = new SharedRouting(config, logger, undefined, routingOptions.fetchImpl, routingOptions.env,
+  const sharedRouting = new SharedRouting(config, logger, undefined, routingOptions.fetchImpl,
     undefined, routingOptions.orderedReplayDiagnostics);
 
   return ok({

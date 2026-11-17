@@ -39,7 +39,7 @@ class FabricatedAuth extends ProfileAuth {
   refreshCount = 0;
   changeOnRefresh = false;
   refuse = false;
-  constructor() { super({ fixture: profile }, noopLogger, {}); }
+  constructor() { super({ fixture: profile }, noopLogger); }
   override has() { return true; }
   override async get(name = "fixture"): Promise<BoundCredential> { return { provider: "kimi", profile: name, generation: this.generation,
     binding: "fabricated", authHeaders: { authorization: "Bearer fabricated-not-a-credential" } }; }
@@ -65,7 +65,7 @@ function fixture(options: { disabled?: boolean; reply?: (body: Item, index: numb
     assert.equal((init?.headers as Record<string, string>)["user-agent"], "subswitch/fabricated");
     return options.reply?.(request, sent.length) ?? response(events());
   };
-  const router = new SharedRouting(loaded.value.config, noopLogger, systemClock, fetchImpl, {});
+  const router = new SharedRouting(loaded.value.config, noopLogger, systemClock, fetchImpl);
   const attempts = new RoutedAttempts(auth, noopLogger, fetchImpl, systemClock, "subswitch", options.beforeDispatch,
     options.disabled ? undefined : () => { const pending = options.pending?.() ?? new KimiExecPending(); pendings.push(pending); return pending; }, router.actions);
   if (options.cache) Object.defineProperty(attempts, "replay", { value: options.cache });
@@ -176,7 +176,12 @@ for (const fail of ["cache", "continuation", "association"] as const)
   test(`actual route ${fail} failure emits no held suffix or partial association`, async () => {
     const shared = new ClaudeCache({ maxEntries: 10, maxBytes: fail === "cache" ? 1 : 1000000 }, true);
     const f = fixture({ cache: shared });
-    if (fail === "continuation") f.router.continuations.preparePut = () => { throw new RoutingError("continuation_store_full", 503); };
+    let preflights = 0;
+    const preparePut = f.router.continuations.preparePut.bind(f.router.continuations);
+    if (fail === "continuation") f.router.continuations.preparePut = (...args) => {
+      if (++preflights === 2) throw new RoutingError("continuation_store_full", 503);
+      return preparePut(...args);
+    };
     let first: Awaited<ReturnType<typeof f.run>> | undefined;
     try {
       if (fail === "association") { first = await f.run(); assert.equal(first.error, undefined); }
@@ -184,6 +189,7 @@ for (const fail of ["cache", "continuation", "association"] as const)
       assert(result.error); assert.deepEqual(result.seen.map(e => e["type"]), ["response.created"]);
       assert.equal(shared.size, before); assert(f.pendings.every(p => p.byteSize === 0));
       if (fail === "association") code(result.error, "continuity_unavailable");
+      if (fail === "continuation") assert.equal(preflights, 2);
     } finally { f.router.close(); }
   });
 for (const change of [false, true]) test(`actual nativeOAuth401 preserves dispatch count and lineage change${change}`, async () => {
@@ -267,15 +273,15 @@ for (const streaming of [true, false]) test(`actual interleaved twoexec/unmapped
     ready.commit = () => { order.push("cache-commit"); commit(); };
   } });
   const preparePut = f.router.continuations.preparePut.bind(f.router.continuations);
-  f.router.continuations.preparePut = (...args) => { order.push("continuation-preflight"); const publish = preparePut(...args);
+  f.router.continuations.preparePut = (...args) => { order.push(order.length === 0 ? "dispatch-preflight" : "continuation-preflight"); const publish = preparePut(...args);
     return () => { order.push("continuation-publish"); publish(); }; };
   const success = f.router.quota.success.bind(f.router.quota);
   f.router.quota.success = (...args) => { order.push("quota-success"); return success(...args); };
   const seen: Item[] = [];
   try {
     for await (const item of f.iterate({ ...body(), stream: streaming })) {
-      if (!streaming || seen.length >= 2) assert.deepEqual(order, ["stage", "continuation-preflight", "cache-commit", "continuation-publish", "quota-success"]);
-      else assert.deepEqual(order, []);
+      if (!streaming || seen.length >= 2) assert.deepEqual(order, ["dispatch-preflight", "stage", "continuation-preflight", "cache-commit", "continuation-publish", "quota-success"]);
+      else assert.deepEqual(order, ["dispatch-preflight"]);
       seen.push(item);
     }
     const projected = raw.filter(e => !(e["type"] === "response.function_call_arguments.delta" && e["item_id"] === "one")).map(e => {
@@ -308,11 +314,11 @@ for (const streaming of [true, false]) for (const failure of ["cache", "continua
     const shared = new ClaudeCache({ maxEntries: 10, maxBytes: failure === "cache" ? 1 : 1000000 }, true);
     const f = fixture({ cache: shared, reply: () => chunked(interleaved(), 31) }); let prepared = 0, published = 0;
     const original = f.router.continuations.preparePut.bind(f.router.continuations);
-    f.router.continuations.preparePut = (...args) => { prepared++; if (failure === "continuation") throw new RoutingError("continuation_store_full", 503);
+    f.router.continuations.preparePut = (...args) => { prepared++; if (failure === "continuation" && prepared === 2) throw new RoutingError("continuation_store_full", 503);
       const publish = original(...args); return () => { published++; publish(); }; };
     try { const result = await f.run({ ...body(), stream: streaming }); code(result.error, "continuation_store_full");
       assert.deepEqual(result.seen.map(e => e["type"]), streaming ? ["response.created", "response.in_progress"] : []);
-      assert.equal(prepared, 1); assert.equal(published, 0); assert.equal(shared.size, 0); assert.equal(f.pendings[0]!.byteSize, 0);
+      assert.equal(prepared, 2); assert.equal(published, 0); assert.equal(shared.size, 0); assert.equal(f.pendings[0]!.byteSize, 0);
     } finally { f.router.close(); }
   });
 

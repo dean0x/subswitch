@@ -2,6 +2,12 @@
   "schemaVersion": 1,
   "kind": "native-thinking-continuity-offline",
   "date": "2026-10-19",
+  "qualification": {
+    "status": "historical",
+    "recordCommit": "46114e6c6cac3eac714b3f7ee90b02c441bc084d",
+    "note": "All bases, hashes, results and review statements below describe validatedSourceCommit only. They do not qualify the current HEAD.",
+    "coverageLimit": "This run does not cover test/integration/native-messages-aggregation.test.ts or later replay changes. The README hash describes that historical source commit, not the current README."
+  },
   "base": "7e6962c177b679bb2cbd55d8334df071bee262ad",
   "scope": "Single-target explicit native Claude Messages full-history replay; no live provider inference or real client/profile/history/auth access.",
   "confirmedMechanism": "An otherwise valid full native signed history is refused by the explicit-route local signature cache before upstream contact on a cold instance. Released ordinary Claude passthrough bypasses the adapter; the reported released-user incident remains unproven.",

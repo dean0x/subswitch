@@ -15,7 +15,7 @@ function controlledRefresh(t: TestContext, provider: "claude" | "codex") {
       credential: { kind: "native-oauth", authFile: "/fabricated/never-read.json" },
     },
   };
-  const auth = new ProfileAuth(profiles, noopLogger, {});
+  const auth = new ProfileAuth(profiles, noopLogger);
   const credential: BoundCredential = {
     provider, profile: "native", generation: "fabricated-generation", binding: "fabricated-binding",
     authHeaders: { authorization: "Bearer fabricated-refresh" },
@@ -31,83 +31,71 @@ function controlledRefresh(t: TestContext, provider: "claude" | "codex") {
 }
 
 describe("Kimi authentication support boundary", () => {
-  for (const product of ["kimi-platform"] as const) {
-    const profile: AccessProfile = {
-      provider: "kimi", product, region: "global",
-      billing: "api",
-      account: "synthetic", credential: { kind: "env", name: "SYNTHETIC_KEY" },
-    };
+  const product = "claude-code" as const;
+  const profile: AccessProfile = {
+    provider: "kimi", product, region: "global",
+    billing: "subscription",
+    account: "synthetic", credential: { kind: "native-oauth", authFile: "/fabricated/never-read.json" },
+  };
 
-    it(`rejects ${product} native OAuth in configuration`, () => {
-      const loaded = loadConfig({
-        configPath: "/fabricated/config.json", env: {},
-        readFile: () => JSON.stringify({
-          configVersion: 2,
-          accessProfiles: {
-            kimi: { ...profile, credential: { kind: "native-oauth", authFile: "/fabricated/auth.json" } },
-          },
-        }),
-      });
-      assert.equal(loaded.ok, false);
-      if (!loaded.ok) assert.match(loaded.error.message, /credential_product_mismatch/);
+  it(`rejects ${product} native OAuth in configuration`, () => {
+    const loaded = loadConfig({
+      configPath: "/fabricated/config.json", env: {},
+      readFile: () => JSON.stringify({
+        configVersion: 2,
+        accessProfiles: {
+          kimi: { ...profile, credential: { kind: "native-oauth", authFile: "/fabricated/auth.json" } },
+        },
+      }),
     });
+    assert.equal(loaded.ok, false);
+    if (!loaded.ok) assert.match(loaded.error.message, /invalid_product/);
+  });
 
-    it(`rejects programmatic ${product} OAuth before inspecting a credential path`, async () => {
-      const auth = new ProfileAuth({
-        kimi: {
-          ...profile,
-          credential: {
-            kind: "native-oauth",
-            get authFile(): string {
-              return assert.fail("unsupported native credential path was inspected");
-            },
+  it(`rejects programmatic ${product} OAuth before inspecting a credential path`, async () => {
+    const auth = new ProfileAuth({
+      kimi: {
+        ...profile,
+        credential: {
+          kind: "native-oauth",
+          get authFile(): string {
+            return assert.fail("unsupported native credential path was inspected");
           },
         },
-      }, noopLogger, {});
-      assert.equal(auth.has("kimi"), false);
-      await assert.rejects(auth.get("kimi", new AbortController().signal), /credential_product_mismatch/);
-      await assert.rejects(auth.refresh("kimi", new AbortController().signal), /credential_product_mismatch/);
-    });
+      },
+    }, noopLogger);
+    assert.equal(auth.has("kimi"), false);
+    await assert.rejects(auth.get("kimi", new AbortController().signal), /credential_product_mismatch/);
+    await assert.rejects(auth.refresh("kimi", new AbortController().signal), /credential_product_mismatch/);
+  });
 
-    it(`rejects ${product} OAuth before reusing a supported pending refresh`, async t => {
-      const fixture = controlledRefresh(t, "claude");
-      const first = fixture.auth.refresh("native", new AbortController().signal);
-      try {
-        fixture.profiles.native = {
-          ...profile,
-          credential: {
-            kind: "native-oauth",
-            get authFile(): string {
-              return assert.fail("unsupported native credential path was inspected");
-            },
+  it(`rejects ${product} OAuth before reusing a supported pending refresh`, async t => {
+    const fixture = controlledRefresh(t, "claude");
+    const first = fixture.auth.refresh("native", new AbortController().signal);
+    try {
+      fixture.profiles.native = {
+        ...profile,
+        credential: {
+          kind: "native-oauth",
+          get authFile(): string {
+            return assert.fail("unsupported native credential path was inspected");
           },
-        };
-        const rejected = assert.rejects(
-          fixture.auth.refresh("native", new AbortController().signal),
-          /credential_product_mismatch/,
-        );
-        fixture.finish();
-        await rejected;
-        assert.equal(await first, fixture.credential);
-        assert.equal(fixture.get.mock.callCount(), 1);
-      } finally {
-        fixture.finish();
-        await first;
-      }
-    });
+        },
+      };
+      const rejected = assert.rejects(
+        fixture.auth.refresh("native", new AbortController().signal),
+        /credential_product_mismatch/,
+      );
+      fixture.finish();
+      await rejected;
+      assert.equal(await first, fixture.credential);
+      assert.equal(fixture.get.mock.callCount(), 1);
+    } finally {
+      fixture.finish();
+      await first;
+    }
+  });
 
-    it(`binds ${product} only to its explicitly named environment key`, async () => {
-      const auth = new ProfileAuth({ kimi: profile }, noopLogger, {
-        SYNTHETIC_KEY: "fabricated-kimi-key",
-        ANTHROPIC_API_KEY: "fabricated-unrelated-key",
-      });
-      const credential = await auth.get("kimi", new AbortController().signal);
-      assert.equal(credential.provider, "kimi");
-      assert.deepEqual(credential.authHeaders, { authorization: "Bearer fabricated-kimi-key" });
-      assert.equal(auth.scope(credential).product, product);
-      assert.throws(() => auth.refresh("kimi", new AbortController().signal), /profile_not_refreshable/);
-    });
-  }
 
   for (const provider of ["claude", "codex"] as const) {
     it(`preserves ${provider} refresh deduplication when one waiter cancels`, async t => {
