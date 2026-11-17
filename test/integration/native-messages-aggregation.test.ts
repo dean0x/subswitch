@@ -9,6 +9,7 @@ import { noopLogger } from "../../src/logger.js";
 import type { Item } from "../../src/routing/routing-types.js";
 import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
 import { invalidSignedCases, invalidSignedEvents, messageFrames, nativeContent, nativeEvents } from "../fixtures/native-messages.js";
+import { nativeCredential } from "../fixtures/native-profile.js";
 
 async function fixture(output = nativeEvents()) {
   const root = mkdtempSync(join(tmpdir(), "subswitch-native-aggregate-"));
@@ -21,8 +22,8 @@ async function fixture(output = nativeEvents()) {
       claude: { baseUrl: `${origin}/unexpected-claude`, oauthTokenUrl: `${origin}/unexpected-claude-refresh`,
         authFile: join(root, "absent-claude.json"), configDir: join(root, "absent-claude") } },
     accessProfiles: Object.fromEntries(["native", "other"].map(account => [account, {
-      provider: "claude", product: "anthropic-api", billing: "api", account,
-      baseUrl: `${origin}/${account}`, credential: { kind: "env", name: "FABRICATED_KEY" },
+      provider: "claude", product: "claude-code", billing: "subscription", account,
+      baseUrl: `${origin}/${account}`, credential: nativeCredential("claude", "fabricated-profile-token"),
     }])),
     routes: Object.fromEntries(["native", "other"].map(profile => [profile, {
       clients: ["claude-code"], primary: { profile, model: "claude-sonnet-5", effort: "high" },
@@ -30,12 +31,12 @@ async function fixture(output = nativeEvents()) {
   }) });
   assert.ok(loaded.ok);
   const requests: Item[] = [];
-  const deps = buildDeps(loaded.value.config, noopLogger, { env: { FABRICATED_KEY: "fabricated-profile-key" }, fetchImpl: async (url, init) => {
+  const deps = buildDeps(loaded.value.config, noopLogger, { fetchImpl: async (url, init) => {
     assert.equal(String(url), `${origin}/native/v1/messages`, "unexpected upstream blocked before any socket");
     assert.equal(init?.redirect, "error");
     const headers = new Headers(init?.headers);
-    assert.equal(headers.get("authorization"), null);
-    assert.equal(headers.get("x-api-key"), "fabricated-profile-key");
+    assert.equal(headers.get("authorization"), "Bearer fabricated-profile-token");
+    assert.equal(headers.get("x-api-key"), null);
     requests.push(JSON.parse(String(init?.body)) as Item);
     return new Response(messageFrames(requests.length === 1 ? output : nativeEvents([{ type: "text", text: "Complete" }])).join(""), {
       headers: { "content-type": "text/event-stream" },
