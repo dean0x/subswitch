@@ -2,11 +2,14 @@ import { z } from "zod";
 import {
   DESTINATIONS,
   defaultBase,
+  isDefaultEndpoint,
   modelEfforts,
   supportsNativeOAuth,
 } from "./destination-catalog.js";
 import type { AccessProfile, RoutePolicy } from "./routing-types.js";
 import { object, ownValue } from "../plain-object.js";
+import { isAbsolute } from "node:path";
+import { validateKimiNativePath } from "../kimi-native-auth.js";
 
 const label = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/);
 const unsupportedValue = (field: string, value: unknown): string =>
@@ -30,6 +33,7 @@ export const AccessProfilesSchema = z
         z.strictObject({
           kind: z.literal("native-oauth"),
           authFile: z.string().min(1),
+          source: z.literal("kimi-code").optional(),
         }),
       ], {
         error: issue => unsupportedValue("credential kind", object(issue.input)?.["kind"]),
@@ -64,27 +68,32 @@ export function validateExplicitConfig(
 ): string[] {
   const errors: string[] = [];
   for (const [id, p] of Object.entries(profiles)) {
-    if (p.provider === "kimi") {
-      errors.push(`${id}: Kimi needs the subscription sign-in; it is not available in this version`);
-      continue;
-    }
     if (
       !DESTINATIONS.find((d) => d.id === p.provider)?.products.includes(
         p.product,
       )
     )
       errors.push(`${id}: invalid_product`);
-    if (p.region !== undefined)
+    if (p.provider === "kimi" ? !p.region : p.region !== undefined)
       errors.push(`${id}: region_product_mismatch`);
     if (
-      (p.credential.kind === "native-oauth") !==
-      supportsNativeOAuth(p)
+      !supportsNativeOAuth(p)
     )
       errors.push(`${id}: credential_product_mismatch`);
     const url = new URL(p.baseUrl ?? defaultBase(p));
     const expected = new URL(defaultBase(p));
+    if (p.provider === "kimi" && p.credential.kind === "native-oauth") {
+      if (!isAbsolute(p.credential.authFile)) errors.push(`${id}: kimi_oauth_absolute_store_required`);
+      if (p.credential.source === "kimi-code") {
+        try { validateKimiNativePath(p.credential.authFile, p.region!); }
+        catch { errors.push(`${id}: kimi_native_region_store_mismatch`); }
+      }
+      if (!isDefaultEndpoint(p)) errors.push(`${id}: kimi_oauth_endpoint_mismatch`);
+    }
     const knownHosts =
-      p.provider === "codex"
+      p.provider === "kimi"
+        ? ["api.kimi.ai", "api.kimi.com", "api.moonshot.ai", "api.moonshot.cn"]
+        : p.provider === "codex"
           ? ["chatgpt.com", "api.openai.com"]
           : ["api.anthropic.com"];
     if (
@@ -129,7 +138,6 @@ export function validateExplicitConfig(
         errors.push(`${name}: route_reference_forbidden`);
         continue;
       }
-      if (p.provider === "kimi") continue;
       const efforts = modelEfforts(p, t.model);
       if (!efforts) errors.push(`${name}: invalid_target_model`);
       else if (!efforts.includes(t.effort))

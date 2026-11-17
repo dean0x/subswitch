@@ -240,7 +240,7 @@ describe("routed replay lifetime", () => {
     for (let index = 1; index < 2048; index++) stage.put("adapted", `local-${index}`, true);
     assert.throws(() => stage.put("adapted", "overflow", true),
       (error: unknown) => error instanceof RoutingError && error.code === "continuation_store_full" && error.status === 503);
-    stage.discard();
+    stage.dispose();
     assert.equal(shared.size, 0);
     assert.equal(shared.byteSize, 0);
   });
@@ -252,32 +252,32 @@ describe("routed replay lifetime", () => {
     for (let index = 0; index < 2048; index++) stage.put("adapted", `local-${index}`, true);
     assert.throws(() => stage.get("adapted", "prior"),
       (error: unknown) => error instanceof RoutingError && error.code === "continuation_store_full" && error.status === 503);
-    stage.discard();
+    stage.dispose();
     assert.equal(shared.size, 1);
     assert.equal(shared.byteSize, bytes);
     assert.equal(shared.get("adapted", "prior"), true);
   });
 
   for (const operation of ["put", "reserveSnapshot", "retainSnapshot", "commit"] as const) {
-    it(`refuses ${operation} after discard without changing shared state`, () => {
+    it(`refuses ${operation} after disposal without changing shared state`, () => {
       const shared = new ClaudeCache(), stage = new StagedCache(shared);
       shared.put("adapted", "prior", true);
       const bytes = shared.byteSize;
       stage.reserveSnapshot("claim", { request: { owner: "original" }, input: [] });
       stage.preflight();
-      stage.discard();
+      stage.dispose();
       const write = () => {
-        if (operation === "put") stage.put("snapshot", "after-discard", { request: {}, input: [] });
+        if (operation === "put") stage.put("snapshot", "after-disposal", { request: {}, input: [] });
         else if (operation === "commit") stage.commit();
-        else stage[operation]("after-discard", { request: {}, input: [] });
+        else stage[operation]("after-disposal", { request: {}, input: [] });
       };
       assert.throws(write, (error: unknown) => error instanceof RoutingError &&
-        error.code === "request_cancelled" && error.status === 499);
+        error.code === "invalid_codec_publication" && error.status === 500);
       assert.equal(shared.size, 1);
       assert.equal(shared.byteSize, bytes);
       assert.equal(shared.get("adapted", "prior"), true);
       assert.equal(shared.get("snapshot", "claim"), undefined);
-      assert.equal(shared.get("snapshot", "after-discard"), undefined);
+      assert.equal(shared.get("snapshot", "after-disposal"), undefined);
     });
   }
 

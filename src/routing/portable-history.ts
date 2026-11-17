@@ -11,6 +11,7 @@ export interface PortableTranscript {
   source: Item;
   hasOpaqueReasoning: boolean;
   hasThinking: boolean;
+  hasResponsesExecDeclaration: boolean;
 }
 /** Decode supported native history once. Destination-owned reasoning remains opaque. */
 export function decodePortableHistory(
@@ -151,6 +152,7 @@ export function decodePortableHistory(
   }
   if ([...calls].some((id) => !results.has(id)))
     throw new RoutingError("continuity_unavailable", 409);
+  let hasResponsesExecDeclaration = false;
   const checkTools = (items: readonly Item[], depth = 0) => {
     if (depth > 4 || items.length > 1024) fail();
     for (const tool of items) {
@@ -165,6 +167,9 @@ export function decodePortableHistory(
         );
       } else if (tool["type"] !== "function" && tool["type"] !== "custom")
         fail();
+      // Reuse the original bounded traversal, including every temporal and
+      // namespaced declaration. Ordinary history length cannot imply absence.
+      else if (tool["name"] === "exec") hasResponsesExecDeclaration = true;
     }
   };
   checkTools(tools);
@@ -182,19 +187,69 @@ export function decodePortableHistory(
     source: body,
     hasOpaqueReasoning,
     hasThinking,
+    hasResponsesExecDeclaration,
   };
 }
 function fail(): never {
   throw new RoutingError("unsupported_routed_content");
 }
+/** Validate only the inline declarations preserved for Kimi's Responses wire format. */
+function validateInlineTools(entry: Item): void {
+  const fields = (item: Item, allowed: readonly string[]) => {
+    if (Object.keys(item).some((key) => !allowed.includes(key))) fail();
+  };
+  const declaration = (value: unknown, nested = false): void => {
+    const tool = object(value) ?? fail();
+    if (typeof tool["name"] !== "string") fail();
+    if (tool["description"] !== undefined && typeof tool["description"] !== "string")
+      fail();
+    if (tool["type"] === "function") {
+      fields(tool, ["type", "name", "description", "parameters", "strict"]);
+      if (!/^[a-zA-Z_][a-zA-Z0-9_-]{0,127}$/.test(tool["name"])) fail();
+      if (tool["parameters"] !== undefined && !object(tool["parameters"])) fail();
+      if (tool["strict"] !== undefined && typeof tool["strict"] !== "boolean") fail();
+    } else if (tool["type"] === "custom") {
+      fields(tool, ["type", "name", "description", "format"]);
+      const format = object(tool["format"]) ?? fail();
+      fields(format, ["type", "syntax", "definition"]);
+      if (
+        tool["name"] !== "apply_patch" ||
+        format["type"] !== "grammar" ||
+        format["syntax"] !== "lark" ||
+        typeof format["definition"] !== "string"
+      ) fail();
+    } else if (tool["type"] === "namespace") {
+      fields(tool, ["type", "name", "description", "tools"]);
+      if (nested || typeof tool["description"] !== "string" || !Array.isArray(tool["tools"]))
+        fail();
+      for (const child of tool["tools"]) declaration(child, true);
+    } else fail();
+  };
+  fields(entry, ["type", "role", "id", "tools"]);
+  if (
+    entry["role"] !== "developer" ||
+    (entry["id"] !== undefined && typeof entry["id"] !== "string") ||
+    !Array.isArray(entry["tools"])
+  ) fail();
+  // The published schema has no minItems or ID/declaration uniqueness constraint.
+  // Preserve empty lists and repeated declarations at their original positions.
+  for (const tool of entry["tools"]) declaration(tool);
+}
+
 /** Native agent identities become ordered, addressed text on non-native Responses destinations. */
-export function renderResponsesHistory(transcript: PortableTranscript): Item {
+export function renderResponsesHistory(
+  transcript: PortableTranscript,
+  preserveInlineTools = false,
+): Item {
   if (transcript.protocol !== "responses") return transcript.source;
+  if (preserveInlineTools)
+    for (const entry of transcript.entries)
+      if (entry["type"] === "additional_tools") validateInlineTools(entry);
   return {
     ...transcript.source,
-    tools: transcript.tools,
+    ...(preserveInlineTools ? {} : { tools: transcript.tools }),
     input: transcript.entries
-      .filter((e) => e["type"] !== "additional_tools")
+      .filter((e) => preserveInlineTools || e["type"] !== "additional_tools")
       .map((e) => {
         if (e["type"] !== "agent_message") return e;
         if (

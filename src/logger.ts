@@ -4,18 +4,36 @@ import type { LimitObservation } from "./limit-observation.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
+/** Provider-reported clues only; these never establish acceptance or drive retries. */
+export interface ProviderErrorHints {
+  readonly rejectionEnvelope: "nested_error" | "top_level_error" | "non_json" | "incomplete" | "unrecognized";
+  readonly rejectionReason: "unsupported_tool_type" | "invalid_tool_schema" | "unsupported_effort" | "model_unavailable" |
+    "unsupported_field" | "identity_rejected" | "authentication_rejected" | "ambiguous" | "unrecognized";
+  readonly rejectionField: "tools" | "reasoning" | "model" | "text" | "input" | "max_output_tokens" | "unknown";
+  readonly rejectionCode: "unsupported_tool_type" | "invalid_tool_schema" | "unsupported_reasoning_effort" |
+    "model_not_found" | "model_not_available" | "unsupported_parameter" | "unknown_parameter" | "invalid_client" |
+    "unauthorized_client" | "invalid_api_key" | "authentication_error" | "invalid_request_error" | "invalid_request" |
+    "invalid_value" | "ambiguous" | "unrecognized";
+}
+
 /**
  * The closed field set is the redaction mechanism: nothing that can carry
  * token material or request content is representable here.
  */
-export interface LogFields {
+export interface LogFields extends Partial<ProviderErrorHints> {
   readonly model?: string;
   readonly path?: string;
   readonly route?: string;
-  readonly status?: number;
+  readonly status?: number | null;
   readonly latencyMs?: number;
   readonly eventType?: string;
   readonly errorCode?: string;
+  /** Closed source event label and versioned field-presence mask; never provider values. */
+  readonly responseEventKind?: string;
+  readonly responseFieldMask?: number;
+  readonly responseUnknownField?: boolean;
+  /** Closed source guard discriminator; never reasoning content or event names. */
+  readonly reasoningRefusalReason?: string;
   readonly effort?: string;
   /** Number of cached input tokens from the Codex backend response.completed usage.
    *  Proves prompt_cache_key is effective. Non-reversible (a count, not content). */
@@ -55,11 +73,14 @@ export const FIELD_KEYS = [
   "latencyMs",
   "eventType",
   "errorCode",
+  "responseEventKind", "responseFieldMask", "responseUnknownField",
+  "reasoningRefusalReason",
   "effort",
   "cachedTokens",
   "sessionKey",
   "bodyMode",
   "attemptOrder", "targetProfile", "product", "commitState", "quotaWindow", "observationAgeMs", "retryEligible", "evidence",
+  "rejectionEnvelope", "rejectionReason", "rejectionField", "rejectionCode",
 ] as const satisfies readonly (keyof LogFields)[];
 // Completeness proof lives in test/unit/logger.types.test.ts (module-level type
 // proofs follow the *.types.test.ts convention; in-src guards are function-local

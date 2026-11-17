@@ -5,11 +5,12 @@ accepted without rewriting files. Both ingresses share the explicit route dispat
 profile authentication, quota store and continuation ownership. Legacy routes retain
 their existing provider handlers and passthrough behavior.
 
-Explicit routes use only Claude and Codex subscription sign-ins.
-Kimi needs the subscription sign-in; it is not available in this version.
-A Kimi profile fails config load. A later change adds that sign-in.
-The recorded Codex HTTP same-child follow-up control exposes unsupported instruction history.
-That existing limitation remains separate from Claude Code route qualification.
+Claude Code is the primary originating client for new provider delivery. The root
+[AGENTS.md](../../AGENTS.md) and [CLAUDE.md](../../CLAUDE.md) define Codex-client
+maintenance mode; OpenAI/Codex remains an active destination for Claude Code.
+Relevant Claude Code Kimi fallback/recovery live evidence remains incomplete.
+The retained Codex HTTP history failure below is a known maintenance limitation,
+not a new-provider parity requirement for Claude Code.
 
 Use `subswitch.wave1.example.json` as a starting point.
 Put `accessProfiles` and `routes` in the user configuration, or select a file with `SUBSWITCH_CONFIG`.
@@ -18,9 +19,11 @@ A declaration fails the load even when its value is empty.
 Model aliases resolve at config load; route references and alias chains are rejected. Each target pins its effort.
 Identical targets are deduplicated, with a maximum of eight unique targets. Different
 profiles remain distinct. Each profile uses `native-oauth` and `billing: "subscription"`.
-The supported products are `claude-code` and `chatgpt-codex`.
+The supported products are `claude-code`, `chatgpt-codex` and `kimi-code`.
 Fallback may select another subscription profile. No explicit route uses a provider key.
+Removed products, environment credentials, API billing and `sameModelApi` fail config load.
 The `baseUrl` override is a product root. Claude appends `/v1/messages`; Codex appends `/responses`.
+Kimi subscription endpoints are fixed by region. See [subscription OAuth boundaries](kimi-managed-oauth.md).
 HTTPS, loopback and host opt-in checks still apply. Unknown config keys fail the load.
 
 ## Code structure and reliability review
@@ -224,11 +227,47 @@ The initial failure is retained in `native-codex-http-review-failure-2026-10-11.
 two bounded, sanitized diagnostic runs reproduce an unrecognized new developer
 instruction after the first child answer. It does not match initial instructions or
 the pinned source's factual clock markers. Arbitrary instructions remain rejected;
-none were hoisted, dropped or downgraded to make the gate pass. This native control retains its documented limitation. Older successful runs do not replace the failed
-review evidence. The HTTP gate injects WebSocket 426;
+none were hoisted, dropped or downgraded to make the gate pass. This failed native
+control remains a documented Codex-client limitation. Under the root maintenance
+policy it does not block a Claude Code-only feature. Older successful runs do not
+replace the failed review evidence. The HTTP gate injects WebSocket 426;
 upstream inference is real. Basic protocol probes
 do not certify tools, replay, native orchestration, quota exhaustion or model equivalence.
 
-Kimi route acceptance belongs to the later subscription sign-in change.
-The native CLI evidence does not certify a Subswitch destination.
-See [Kimi route status](kimi-readiness.md) for the current boundary and retained evidence.
+For the supported Claude Code Kimi route, retain the live tool/continuation evidence
+and qualify the configured existing-model fallback and subsequent-action recovery
+claims. Synthetic quota injection must remain distinct from real provider behavior.
+Codex-client Kimi parity is not required. This client policy does not waive the
+subscription-route gates: live Kimi Code access, tool/reasoning replay, usage
+contracts and the configured fallback/recovery flow remain pending where required.
+Provider-key profiles and paid fallback are outside the supported scope. Do not claim full Wave 1
+acceptance or general authentication/model acceptance from the bounded manual run.
+DeepSeek remains blocked on the relevant Wave 1 exit criteria.
+
+Live evidence is required for the specific supported Claude Code route claims.
+The following earlier CLI observation is historical. On 2026-10-12, installed Kimi CLI 2.1.1
+completed a headless text request and read an unpredictable value from an isolated
+file through its native tool, then returned that value in its final answer. The
+configured default is `kimi-for-coding`, provider type `kimi`, OAuth access, endpoint
+host `api.kimi.ai`. The sanitized report is
+`native-kimi-headless-live-2026-10-12.json`. This establishes native CLI access and
+tool use. It does not establish K3 entitlement, regional endpoint equivalence, either
+Messages/Responses contract, or Subswitch destination compatibility.
+
+Use `kimi -p '<prompt>' --output-format stream-json` for headless native output.
+Version 2.1.1 rejects combining `--prompt` with `--auto`; the corrected probe used
+prompt mode alone. Working directories were isolated and native authenticated storage
+was reused without exposing credentials or copying them into probe files.
+
+The earlier key-only assessment is superseded by the implemented
+[Kimi Code subscription OAuth path](kimi-managed-oauth.md). The bounded manual
+Claude Code Agent/Read flow establishes two through-Subswitch Kimi HTTP200 sends,
+owned continuation and the exact parent answer. Its separate strict complete-child
+report fixture remains FAIL_SPENT, with an unresolved report-note/full-text mismatch.
+Neither the earlier CLI pass nor this manual demonstration establishes the configured
+existing-model fallback/recovery flow, general identity acceptance or live refresh.
+
+The 2026-10-19 offline audit records an earlier key-based implementation.
+Its fixtures and plan do not qualify the current subscription route.
+See [current Kimi route status](kimi-readiness.md) for supported access and evidence limits.
+No new live Kimi or native-client acceptance is claimed by that audit.

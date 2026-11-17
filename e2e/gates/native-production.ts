@@ -105,6 +105,8 @@ export async function runNativeProduction(model = "sonnet", followup = true, htt
     const base = `http://127.0.0.1:${address.port}/codex/backend-api/codex`;
     const env = isolatedNativeEnv({ CODEX_HOME: codexDir });
     const version = await nativeProcess("codex", ["--version"], { cwd: work, env, timeoutMs: 10000 });
+    if (version.failure) return { success: false, stage: "version", nativeExit: version.failure,
+      nativeCleanupError: version.cleanupError ?? null, ...counts };
     const clientVersion = version.stdout.match(/codex-cli (\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?)/)?.[1];
     if (version.code !== 0 || !clientVersion) throw new Error("version_unavailable");
     const catalogResponse = await fetch(`${base}/models?client_version=${clientVersion}`, {
@@ -136,7 +138,7 @@ export async function runNativeProduction(model = "sonnet", followup = true, htt
         .filter(value => (result.stderr + result.stdout).toLowerCase().includes(value)),
       success: result.code === 0 && !result.failure && result.stdout.includes(marker) && (!followup || result.stdout.includes(nextMarker)) &&
         counts.modelRequests >= 2 && counts.claudeResponses >= (followup ? 4 : 2) && counts.openaiResponses >= 2 && counts.toolCalls >= (followup ? 2 : 1) && counts.toolResults >= (followup ? 2 : 1) && !counts.errors.length,
-      nativeExit: result.failure ?? `exit_${result.code}`, ...counts,
+      nativeExit: result.failure ?? `exit_${result.code}`, nativeCleanupError: result.cleanupError ?? null, ...counts,
       ...(observeHistory ? { historyObservations: historyObservations.sort((a, b) => a.request - b.request), historyObservationTruncated } : {}) };
   } finally {
     server?.closeAllConnections(); await new Promise<void>(resolve => { if (server) server.close(() => resolve()); else resolve(); });

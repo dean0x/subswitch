@@ -31,7 +31,7 @@ function controlledRefresh(t: TestContext, provider: "claude" | "codex") {
 }
 
 describe("Kimi authentication support boundary", () => {
-  const product = "kimi-code" as const;
+  const product = "claude-code" as const;
   const profile: AccessProfile = {
     provider: "kimi", product, region: "global",
     billing: "subscription",
@@ -49,7 +49,7 @@ describe("Kimi authentication support boundary", () => {
       }),
     });
     assert.equal(loaded.ok, false);
-    if (!loaded.ok) assert.match(loaded.error.message, /Kimi needs the subscription sign-in/);
+    if (!loaded.ok) assert.match(loaded.error.message, /invalid_product/);
   });
 
   it(`rejects programmatic ${product} OAuth before inspecting a credential path`, async () => {

@@ -107,6 +107,8 @@ Commands:
   limits    Show recorded upstream limit/error formats (--json, --port <n>)
   run-action --client <client> [--conversation <id>] -- <native command>
             Scope one native invocation, including its tools and children
+  kimi-login --auth-file <absolute new path> --region <global|mainland-cn>
+            Explicit device login into a separate private Subswitch store
 
 Flags (global):
   -h, --help       Show this help message
@@ -867,8 +869,9 @@ local development.
 
 Version 2 access profiles, action-scoped failover, recovery behavior, configuration examples
 and current evidence gates are described in [the Wave 1 notes](e2e/gates/wave1.md).
-Explicit routes use Claude and Codex subscription sign-ins only.
+Explicit routes use only `claude-code`, `chatgpt-codex` and `kimi-code` subscription sign-ins.
+Each profile uses `native-oauth` and `billing: "subscription"`. Provider keys and paid fallback are not supported.
 Fallback between subscription profiles remains available.
-Kimi needs the subscription sign-in; this version does not provide it.
-A Kimi profile fails config load. See [Kimi route status](e2e/gates/kimi-readiness.md).
-The [evidence manifest](e2e/gates/wave1-evidence.json) contains past runs, not current Kimi qualification.
+Kimi Code has an explicit [subscription OAuth path](e2e/gates/kimi-managed-oauth.md).
+Offline tests cover this path. General live acceptance remains unmeasured.
+See [Kimi route status](e2e/gates/kimi-readiness.md) and [retained evidence](e2e/gates/wave1-evidence.json).

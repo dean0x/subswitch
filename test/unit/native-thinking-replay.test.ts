@@ -127,7 +127,7 @@ describe("native thinking import boundary", () => {
       assert.equal(shared.byteSize, bytes);
       assert.throws(() => stage.preflight(), (error: unknown) => error instanceof RoutingError &&
         error.code === "continuation_store_full" && error.status === 503);
-      stage.discard();
+      stage.dispose();
       assert.equal(shared.size, 1);
       assert.equal(shared.byteSize, bytes);
       assert.equal(shared.get("adapted", "prior"), true);
@@ -149,7 +149,7 @@ describe("native thinking import boundary", () => {
     const blocks = Array.from({ length: 2049 }, (_, index) => ({ ...thinking, signature: `import-${index}` }));
     assert.throws(() => adapt({ stage, blocks }), (error: unknown) => error instanceof RoutingError &&
       error.code === "continuation_store_full" && error.status === 503);
-    stage.discard();
+    stage.dispose();
     assert.equal(shared.size, 0);
     assert.equal(shared.byteSize, 0);
   });
@@ -157,7 +157,7 @@ describe("native thinking import boundary", () => {
   it("gives unvalidated emitted signatures no native ownership claim", () => {
     const shared = new ClaudeCache(), stage = new StagedCache(shared);
     observeThinking(stage, "original-owner", "original-conversation", thinking, false);
-    stage.discard();
+    stage.dispose();
     assert.equal(foreignThinking(shared, thinking.signature, "original-owner", "original-conversation"), true);
     assert.throws(() => adapt({ stage: new StagedCache(shared) }), /foreign_opaque_state/);
   });
@@ -169,8 +169,24 @@ describe("native thinking import boundary", () => {
     const foreign = { request: { owner: "foreign" }, input: [] };
     shared.put("snapshot", "claim", foreign);
     assert.throws(() => stage.commit(), /foreign_opaque_state/);
+    stage.dispose();
     assert.equal(shared.get("snapshot", "scoped-block"), undefined);
     assert.equal(shared.get("snapshot", "claim"), foreign, "rollback cannot delete another scope's claim");
+  });
+
+  it("rejects writes after disposal before checking another stage's claim", () => {
+    const shared = new ClaudeCache(), stage = new StagedCache(shared);
+    const value = { request: { owner: "original" }, input: [] };
+    stage.reserveSnapshot("claim", value);
+    stage.dispose();
+    assert.equal(shared.size, 0);
+    const foreign = { request: { owner: "foreign" }, input: [] };
+    shared.put("snapshot", "claim", foreign);
+    assert.throws(() => stage.reserveSnapshot("claim", value), /invalid_codec_publication/);
+    assert.throws(() => stage.put("snapshot", "late", value), /invalid_codec_publication/);
+    assert.throws(() => stage.putBatch([{ kind: "snapshot", id: "late", value }]), /invalid_codec_publication/);
+    assert.equal(shared.get("snapshot", "claim"), foreign);
+    assert.equal(shared.size, 1);
   });
 
   it("bounds pending claims and releases them without partial publication when the shared budget is full", () => {
@@ -182,15 +198,17 @@ describe("native thinking import boundary", () => {
     const competing = new StagedCache(shared);
     competing.reserveSnapshot("other-claim", { request: {}, input: [] });
     assert.throws(() => competing.preflight(), /continuation_store_full/);
-    competing.discard();
+    competing.dispose();
     stage.put("snapshot", "scoped-block", { request: {}, input: [thinking] });
     assert.throws(() => stage.commit(), /continuation_store_full/);
+    assert.equal(shared.size, 1, "a failed commit keeps its claim until caller disposal");
+    stage.dispose();
     assert.equal(shared.size, 0);
     assert.equal(shared.byteSize, 0);
     assert.equal(shared.get("snapshot", "scoped-block"), undefined);
     const retry = new StagedCache(shared);
     assert.doesNotThrow(() => retry.reserveSnapshot("claim", { request: { owner: "other" }, input: [] }));
-    retry.discard();
+    retry.dispose();
     assert.equal(shared.size, 0);
   });
 });

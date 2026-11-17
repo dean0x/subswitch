@@ -34,13 +34,15 @@ describe("subscription-only explicit configuration", () => {
     if (!loaded.ok) assert.equal(loaded.error.message,
       error("accessProfiles.work.billing", "unsupported billing: api"));
   });
-  it("rejects a Kimi route until the subscription sign-in exists", () => {
-    const loaded = load({ ...profile, provider: "kimi", product: "kimi-code", region: "global" }, {
-      routes: { work: { clients: ["claude-code"], primary: { profile: "work", model: "k3", effort: "high" } } },
+  it("accepts a Kimi route only through its subscription sign-in", () => {
+    const kimi = { ...profile, provider: "kimi", product: "kimi-code", region: "global" };
+    const target = { profile: "work", model: "kimi-for-coding", effort: "high" };
+    const loaded = load(kimi, {
+      routes: { work: { clients: ["claude-code"], primary: target } },
     });
-    assert.equal(loaded.ok, false);
-    if (!loaded.ok) assert.equal(loaded.error.message,
-      error("", "work: Kimi needs the subscription sign-in; it is not available in this version"));
+    assert.ok(loaded.ok);
+    assert.deepEqual(loaded.value.config.accessProfiles!.work, kimi);
+    assert.deepEqual(loaded.value.config.routes!.work!.primary, target);
   });
   for (const field of ["product", "billing", "credential kind"] as const) {
     it(`rejects an object-valued ${field} without string coercion`, () => {

@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { withNativeClaudeCapture } from "./claude-system-control.js";
 import { object } from "./probe.js";
+import { nativeGateFailureReport, type NativeDiagnosticOptions } from "./native-process.js";
 
-export async function runClaudeToolContract() {
-  return withNativeClaudeCapture(async (capture, originalHeaders) => {
+export async function runClaudeToolContract(options?: NativeDiagnosticOptions) {
+  return withNativeClaudeCapture(async (capture, originalHeaders, scope) => {
     const system = (capture.body["system"] as unknown[]).filter(value => {
       const text = object(value)?.["text"];
       return typeof text === "string" && /^(You are Claude Code,|You are a Claude agent,)/.test(text);
@@ -45,6 +46,7 @@ export async function runClaudeToolContract() {
     const call = calls[0];
     if (first?.["stop_reason"] !== "tool_use" || calls.length !== 1 || call?.["name"] !== "read_fixture" ||
       typeof call["id"] !== "string" || object(call["input"])?.["path"] !== "check.txt") {
+      scope.markFailure();
       return { schemaVersion: 1, success: false, nativePreambleUsed: true, results };
     }
     results[0]!.valid = true;
@@ -57,11 +59,15 @@ export async function runClaudeToolContract() {
     const text = Array.isArray(next?.["content"]) ? next["content"].map(object).filter(block => block?.["type"] === "text")
       .map(block => block?.["text"]).join("") : "";
     results[1]!.valid = next?.["stop_reason"] === "end_turn" && text === value;
-    return { schemaVersion: 1, success: results.every(result => result.valid), nativePreambleUsed: true, results };
-  });
+    const success = results.every(result => result.valid);
+    if (!success) scope.markFailure();
+    return { schemaVersion: 1, success, nativePreambleUsed: true, results };
+  }, options);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  try { const report = await runClaudeToolContract(); console.log(JSON.stringify(report)); process.exitCode = report.success ? 0 : 1; }
-  catch { console.log(JSON.stringify({ schemaVersion: 1, success: false, code: "tool_contract_unavailable" })); process.exitCode = 2; }
+  try { const report = await runClaudeToolContract({ onDiagnostic: diagnostic => { process.stderr.write(JSON.stringify(diagnostic) + "\n"); } });
+    console.log(JSON.stringify(report)); process.exitCode = report.success ? 0 : 1; }
+  catch (error) { console.log(JSON.stringify({ schemaVersion: 1, success: false, code: "tool_contract_unavailable",
+    ...nativeGateFailureReport(error) })); process.exitCode = 2; }
 }

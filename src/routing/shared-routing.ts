@@ -13,6 +13,7 @@ import { QuotaStore, scopeKey } from "./quota-store.js";
 import {
   systemClock,
   scheduleRoutingTimer,
+  ROUTING_TOTAL_TIMEOUT_MS,
   type RoutingClock,
 } from "./clock.js";
 import { ProfileAuth } from "./profile-auth.js";
@@ -23,7 +24,7 @@ import {
   type RoutedPrepared,
 } from "./routed-attempt.js";
 import { routeChain } from "./routing-config.js";
-import { destinationProtocol } from "./destination-catalog.js";
+import { resolveDestination } from "./destination-catalog.js";
 import { validateTargetCapabilities } from "./target-capabilities.js";
 import { object, ownValue } from "../plain-object.js";
 import {
@@ -40,6 +41,7 @@ import type { Config } from "../config.js";
 import type { Logger } from "../logger.js";
 import { decodePortableHistory } from "./portable-history.js";
 import { UsageCoordinator, type UsageDriver } from "./usage-coordinator.js";
+import type { OrderedReplayDiagnostics } from "./replay-cache.js";
 
 /** One selection, quota and continuation owner for both originating protocols. */
 export class SharedRouting {
@@ -57,6 +59,7 @@ export class SharedRouting {
     readonly clock: RoutingClock = systemClock,
     fetchImpl: typeof fetch = fetch,
     usageDriver?: UsageDriver,
+    orderedReplayDiagnostics?: OrderedReplayDiagnostics,
   ) {
     this.quota = new QuotaStore(clock);
     this.usage = new UsageCoordinator(this.quota, usageDriver);
@@ -66,6 +69,11 @@ export class SharedRouting {
       fetchImpl,
       clock,
       config.providers.codex.userAgent,
+      undefined,
+      undefined,
+      this.actions,
+      undefined,
+      orderedReplayDiagnostics,
     );
   }
   close(): void {
@@ -180,19 +188,21 @@ export class SharedRouting {
       }
       return;
     }
+    context = context ? Object.freeze({ ...context }) : undefined;
     const chain = routeChain(policy);
     if (chain.length > 1 && !context)
       throw new RoutingError("action_identity_required", 409);
     const controller = new AbortController(),
-      deadline = this.clock.monotonic() + 600000;
+      deadline = this.clock.monotonic() + ROUTING_TOTAL_TIMEOUT_MS;
     const timeout = () =>
       controller.abort(new RoutingError("request_timeout", 504));
-    const cancelTotal = scheduleRoutingTimer(this.clock, timeout, 600000);
+    const cancelTotal = scheduleRoutingTimer(this.clock, timeout, ROUTING_TOTAL_TIMEOUT_MS);
     const combined = AbortSignal.any([
       signal,
       controller.signal,
       ...(admissionSignal ? [admissionSignal] : []),
     ]);
+    const requestSignal = admissionSignal ?? controller.signal;
     this.controllers.add(controller);
     let releaseAction: () => void = () => undefined;
     let releaseSelection: (() => void) | undefined;
@@ -207,6 +217,7 @@ export class SharedRouting {
         ]);
         releaseSelection = await this.selections.acquire(key, combined);
       }
+      if (context) this.attempts.validateAction(context, client, requestSignal);
       const { conversation, full, priorOwner } = this.history.resolve(
         body,
         client,
@@ -243,6 +254,9 @@ export class SharedRouting {
         const target = chain[index]!,
           profile = ownValue(this.config.accessProfiles, target.profile);
         if (!profile) throw new RoutingError("unknown_profile");
+        const selection = resolveDestination(profile, protocol, full, !!context && client === "claude-code");
+        const validateAction = () => this.attempts.validateAction(context, client, selection.codec ? undefined : requestSignal);
+        if (context) validateAction();
         const pinned =
           !!affinity?.selectedTarget &&
           index === affinity.chainIndex &&
@@ -267,7 +281,7 @@ export class SharedRouting {
             target,
             full,
             protocol,
-            destinationProtocol(profile, protocol),
+            selection.protocol,
             transcript.tools.length > 0,
           );
         } catch (error) {
@@ -291,12 +305,18 @@ export class SharedRouting {
           target.profile,
           combined,
         );
+        if (context) validateAction();
+        if (this.clock.monotonic() >= deadline) timeout();
+        combined.throwIfAborted();
         const scope = this.attempts.auth.scope(credential);
         if (
           !affinity?.selectedTarget &&
           this.quota.readiness(scope) !== "available"
         )
           await abortable(this.usage.refresh(scope), combined);
+        if (context) validateAction();
+        if (this.clock.monotonic() >= deadline) timeout();
+        combined.throwIfAborted();
         const requestedEffort =
           object(full["reasoning"])?.["effort"] ??
           object(full["output_config"])?.["effort"];
@@ -334,12 +354,14 @@ export class SharedRouting {
             transcript,
             credential,
             protocol,
+            selection,
             conversation,
             signal: combined,
             refreshes,
             route: routeName,
             attempt: index,
             scopeHash: scopeKey(scope),
+            ...(context ? { action: Object.freeze({ ...context }), admissionSignal: requestSignal } : {}),
             // Import only native same-provider full history, never a fallback candidate.
             allowNativeThinkingReplay: chain.length === 1 && index === 0,
             ...(priorOwner ? { priorOwner } : {}),
@@ -374,6 +396,7 @@ export class SharedRouting {
               );
             },
             onTerminal: (response) => {
+              if (selection.codec) validateAction();
               let publishContinuation: (() => void) | undefined;
               if (
                 protocol === "responses" &&
@@ -446,6 +469,7 @@ export class SharedRouting {
           }
           if (
             error instanceof RoutingError &&
+            !selection.codec &&
             [
               "continuity_unavailable",
               "unsupported_routed_content",

@@ -2,7 +2,7 @@
 export type DestinationProviderId = "codex" | "claude" | "kimi";
 export type OriginatingClient = "claude-code" | "codex";
 export type WireProtocol = "messages" | "responses";
-export type CredentialReference = { kind: "native-oauth"; authFile: string };
+export type CredentialReference = { kind: "native-oauth"; authFile: string; source?: "kimi-code" | undefined };
 export interface AccessProfile {
   provider: DestinationProviderId;
   product:
@@ -93,6 +93,12 @@ export class RoutingError extends Error {
     readonly status = 400,
   ) {
     super(code);
+  }
+}
+/** Local Messages instruction placement refusal; the caller owns any reconstruction. */
+export class MidConversationSystemError extends RoutingError {
+  constructor() {
+    super("unsupported_mid_conversation_system", 400);
   }
 }
 export const allowanceScope = (profile: Pick<AllowanceScope, "provider" | "product" | "region" | "account">): AllowanceScope => ({
