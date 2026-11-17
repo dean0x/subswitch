@@ -14,7 +14,7 @@ import { destinationUrl } from "../../src/routing/destination-catalog.js";
 import { inspectKimiProfiles } from "../../src/kimi-doctor.js";
 import { loadConfig } from "../../src/config.js";
 import { noopLogger } from "../../src/logger.js";
-import type { AccessProfile, Item } from "../../src/routing/routing-types.js";
+import { RoutingError, type AccessProfile, type Item } from "../../src/routing/routing-types.js";
 import { nativeEvents, messageFrames } from "../fixtures/native-messages.js";
 import { aggregateFrames } from "../../src/codex-response.js";
 
@@ -56,7 +56,7 @@ for (const protocol of ["messages", "responses"] as const) test(`${protocol}: ma
   const attempts = new RoutedAttempts(auth, noopLogger, async (url, init) => {
     assert.equal(String(url), destinationUrl(profile, protocol));
     return fetch(loopback + new URL(String(url)).pathname + new URL(String(url)).search, init);
-  }, undefined, undefined, dispatch => { if (dispatches.length >= 3) throw new Error("qualification_budget_exhausted"); assert.equal(dispatch.requestedOutputTokens, 256); dispatches.push(dispatch); });
+  }, undefined, undefined, dispatch => { if (dispatches.length >= 3) throw new RoutingError("qualification_budget_exhausted", 503); assert.equal(dispatch.requestedOutputTokens, 256); dispatches.push(dispatch); });
   const body: Item = protocol === "messages" ? { model: "route", max_tokens: 256, system: "Caller system", messages: [{ role: "user", content: "Read caller file" }], tools: [{ name: "caller_read", input_schema: { type: "object", properties: { path: { type: "string" } } } }] }
     : { model: "route", max_output_tokens: 256, instructions: "Caller system", input: [{ role: "user", content: "Read caller file" }], tools: [{ type: "function", name: "caller_read", parameters: { type: "object", properties: { path: { type: "string" } } } }] };
   const refreshSet = new Set<string>();
@@ -78,7 +78,9 @@ for (const protocol of ["messages", "responses"] as const) test(`${protocol}: ma
     assert.deepEqual(requests[2]?.body.tools, body.tools); assert.ok(JSON.stringify(requests[2]?.body).includes("caller-tool:7"));
     const rows: string[] = []; assert.equal(await inspectKimiProfiles({ personal: profile }, row => rows.push(row)), 0); assert.match(rows[0]!, /unverified/); assert.equal(refreshes, 1);
     const old = await auth.get("personal", signal);
-    await assert.rejects(execute(followup, first.owner));
+    await assert.rejects(execute(followup, first.owner), {
+      code: "qualification_budget_exhausted", status: 503, message: "qualification_budget_exhausted",
+    });
     assert.equal(requests.length, 3, "budget rejects a fourth dispatch before transport");
     const replacement = { ...record, generation: randomUUID(), revision: "new-revision" };
     const replacementPath = join(root, "replacement.json"); await writeFile(replacementPath, JSON.stringify(replacement), { mode: 0o600 }); await rename(replacementPath, path);
