@@ -92,6 +92,11 @@ export function destinationUrl(
           : "/v1/messages";
   return base + path;
 }
+/** Only the first-party Messages endpoint can validate native Claude imports. */
+export const validatesNativeThinking = (profile: AccessProfile): boolean =>
+  profile.provider === "claude" &&
+  new URL(destinationUrl(profile, "messages")).href === "https://api.anthropic.com/v1/messages";
+
 /** Intentionally empty until exact product/region/capability live gates pass (#74). */
 export const VERIFIED_MODEL_EQUIVALENCES: readonly string[] = [];
 

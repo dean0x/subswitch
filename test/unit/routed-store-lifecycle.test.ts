@@ -21,9 +21,13 @@ function router(fetchImpl: typeof fetch, nativeMessages = false): SharedRouting 
     configVersion: 2,
     accessProfiles: { api: { provider: nativeMessages ? "claude" : "codex",
       product: nativeMessages ? "anthropic-api" : "openai-api", billing: "api", account: "synthetic",
-      credential: { kind: "env", name: "SYNTHETIC_KEY" } } },
+      credential: { kind: "env", name: "SYNTHETIC_KEY" } },
+      ...(nativeMessages ? { other: { provider: "claude", product: "anthropic-api", billing: "api", account: "other",
+        credential: { kind: "env", name: "SYNTHETIC_KEY" } } } : {}) },
     routes: { work: { clients: ["codex", "claude-code"], primary: { profile: "api",
-      model: nativeMessages ? "claude-sonnet-5-5" : "gpt-6-sol", effort: "high" } } },
+      model: nativeMessages ? "claude-sonnet-5-5" : "gpt-6-sol", effort: "high" } },
+      ...(nativeMessages ? { other: { clients: ["claude-code"], primary: {
+        profile: "other", model: "claude-sonnet-5-5", effort: "high" } } } : {}) },
   }) });
   if (!loaded.ok) assert.fail(loaded.error.message);
   return new SharedRouting(loaded.value.config, noopLogger, undefined, fetchImpl, { SYNTHETIC_KEY: "synthetic" });
@@ -106,9 +110,12 @@ describe("routed replay lifetime", () => {
     } finally { routing.close(); }
   });
 
-  it("reclaims Claude Code replay entries and rejects an evicted signature before inference", async () => {
+  it("reimports evicted Claude Code history in the same scope and rejects another scope before inference", async () => {
     let calls = 0;
-    const routing = router(async () => {
+    const requests: Item[] = [];
+    const routing = router(async (url, init) => {
+      assert.equal(String(url), "https://api.anthropic.com/v1/messages");
+      requests.push(JSON.parse(String(init?.body)) as Item);
       calls++;
       const events: Item[] = [{ type: "message_start", message: {
         id: `message-${calls}`, type: "message", role: "assistant", content: [],
@@ -130,12 +137,19 @@ describe("routed replay lifetime", () => {
         const events = await collect(routing.events(body, "claude-code", "work", new AbortController().signal));
         assert.equal(events.at(-1)?.type, "message_stop");
       }
-      await assert.rejects(collect(routing.events({ ...body, messages: [
+      const followup = { ...body, messages: [
         ...body.messages, { role: "assistant", content: [{ type: "thinking", thinking: "synthetic", signature: "1:0" }] },
         { role: "user", content: "follow up" },
-      ] }, "claude-code", "work", new AbortController().signal)),
+      ] };
+      // An LRU miss has the same import contract as a fresh process at the Anthropic origin.
+      const replay = await collect(routing.events(followup, "claude-code", "work", new AbortController().signal));
+      assert.equal(replay.at(-1)?.type, "message_stop");
+      assert.equal(calls, 4, "same-scope history must reach Anthropic for validation");
+      assert.deepEqual(requests[3]!.messages, followup.messages);
+      await assert.rejects(collect(routing.events({ ...followup, model: "other" },
+        "claude-code", "other", new AbortController().signal)),
       (error: unknown) => error instanceof RoutingError && error.code === "foreign_opaque_state" && error.status === 409);
-      assert.equal(calls, 3);
+      assert.equal(calls, 4, "known other-scope history must not reach inference");
     } finally { routing.close(); }
   });
 

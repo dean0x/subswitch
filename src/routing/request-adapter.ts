@@ -7,7 +7,8 @@ import { ReverseState } from "../claude-state.js";
 import { ReasoningCache } from "../reasoning-cache.js";
 import { object } from "../plain-object.js";
 import { validateTargetCapabilities } from "./target-capabilities.js";
-import { knownThinking, rememberThinking, sameThinking, thinkingSignature } from "./signed-thinking.js";
+import { foreignThinking, rememberThinking, sameThinking, thinkingSignature } from "./signed-thinking.js";
+import { validatesNativeThinking } from "./destination-catalog.js";
 import {
   renderResponsesHistory,
   type PortableTranscript,
@@ -73,7 +74,7 @@ export function adaptRequest(request: RequestAdaptation): {
     body = normalizeMessagesInstructions(body);
   const switched = priorOwner !== undefined && priorOwner !== owner;
   const nativeImport = request.allowNativeThinkingReplay === true &&
-    p.provider === "claude" && ingress === "messages" && protocol === "messages" && !switched;
+    validatesNativeThinking(p) && ingress === "messages" && protocol === "messages" && !switched;
   if (ingress === "messages" && Array.isArray(body["messages"])) {
     for (const message of body["messages"]) {
       const m = object(message);
@@ -95,10 +96,10 @@ export function adaptRequest(request: RequestAdaptation): {
             if (!sameThinking(b, recorded))
               throw new RoutingError("foreign_opaque_state", 409);
           } else {
-            if (!nativeImport || knownThinking(stage, signature))
+            if (!nativeImport || foreignThinking(stage, signature, owner, conversation))
               throw new RoutingError("foreign_opaque_state", 409);
-            // A cache miss is not proof that native Claude history is foreign. Preserve it
-            // for that upstream to validate; failed/cancelled attempts never commit this import.
+            // Anthropic validates cold history. Emitted provenance permits only its original
+            // scope; failed/cancelled attempts never publish imported scoped blocks.
             rememberThinking(stage, owner, conversation, b);
           }
         }

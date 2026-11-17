@@ -4,7 +4,7 @@ import { ClaudeCache } from "../../src/claude-cache.js";
 import { ReverseState } from "../../src/claude-state.js";
 import { adaptRequest } from "../../src/routing/request-adapter.js";
 import { decodePortableHistory } from "../../src/routing/portable-history.js";
-import { rememberThinking } from "../../src/routing/signed-thinking.js";
+import { foreignThinking, observeThinking, rememberThinking } from "../../src/routing/signed-thinking.js";
 import { StagedCache } from "../../src/routing/replay-cache.js";
 import type { AccessProfile, Item, WireProtocol } from "../../src/routing/routing-types.js";
 
@@ -47,6 +47,14 @@ describe("native thinking import boundary", () => {
     } }));
   });
 
+  it("refuses cold imports at a custom origin, path, port or scheme", () => {
+    for (const baseUrl of [
+      "https://gateway.example", "https://api.anthropic.com/gateway",
+      "https://api.anthropic.com:8443", "http://api.anthropic.com",
+    ]) assert.throws(() => adapt({ profile: { ...profile, baseUrl } }), /foreign_opaque_state/);
+    assert.doesNotThrow(() => adapt({ profile: { ...profile, baseUrl: "https://api.anthropic.com/" } }));
+  });
+
   it("does not mistake malformed native blocks for cache misses that can be imported", () => {
     for (const block of [
       { ...thinking, signature: "" }, { ...thinking, signature: undefined },
@@ -63,6 +71,14 @@ describe("native thinking import boundary", () => {
     assert.doesNotThrow(() => adapt({ stage }));
     assert.throws(() => adapt({ stage, conversation: "another-conversation" }), /foreign_opaque_state/);
     assert.throws(() => adapt({ stage, block: { ...thinking, thinking: "tampered" } }), /foreign_opaque_state/);
+  });
+
+  it("gives unvalidated emitted signatures no native ownership claim", () => {
+    const shared = new ClaudeCache(), stage = new StagedCache(shared);
+    observeThinking(stage, "original-owner", "original-conversation", thinking, false);
+    stage.discard();
+    assert.equal(foreignThinking(shared, thinking.signature, "original-owner", "original-conversation"), true);
+    assert.throws(() => adapt({ stage: new StagedCache(shared) }), /foreign_opaque_state/);
   });
 
   it("revalidates exclusive ownership before atomically publishing replay state", () => {

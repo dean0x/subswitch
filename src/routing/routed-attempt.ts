@@ -11,7 +11,7 @@ import { ClaudeCache } from "../claude-cache.js";
 import { ReverseState } from "../claude-state.js";
 import { object } from "../plain-object.js";
 import { readBoundedBody } from "../provider-transport.js";
-import { destinationProtocol, destinationUrl } from "./destination-catalog.js";
+import { destinationProtocol, destinationUrl, validatesNativeThinking } from "./destination-catalog.js";
 import { classifyFailure } from "./provider-failure.js";
 import { validatedProviderEvents } from "./provider-stream.js";
 import { AttemptFailure } from "./attempt-failure.js";
@@ -35,7 +35,7 @@ import { systemClock, type RoutingClock } from "./clock.js";
 import { codexTransportConstants, buildHeaders } from "../codex-handler.js";
 import { StagedCache } from "./replay-cache.js";
 import { adaptRequest } from "./request-adapter.js";
-import { rememberThinking } from "./signed-thinking.js";
+import { observeThinking, rememberThinking } from "./signed-thinking.js";
 import { deriveConversationKey } from "../conversation-key.js";
 import { recordLimitFailure, type LimitContext } from "../limit-observation.js";
 
@@ -206,7 +206,7 @@ export class RoutedAttempts {
           if (Array.isArray(final["content"]))
             for (const value of final["content"]) {
               const item = object(value);
-              if (item) rememberThinking(stage, owner, conversation, item);
+              if (item) rememberThinking(stage, owner, conversation, item, validatesNativeThinking(p));
             }
           if (Array.isArray(final["output"])) {
             const output = final["output"] as Item[],
@@ -235,6 +235,7 @@ export class RoutedAttempts {
         },
         this.logger,
         limitContext,
+        block => observeThinking(stage, owner, conversation, block, validatesNativeThinking(p)),
       );
       let converted: AsyncIterable<ClientEvent>;
       if (protocol === ingress) converted = this.identity(raw, protocol);

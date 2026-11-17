@@ -58,6 +58,16 @@ export class StagedCache extends ClaudeCache {
     }
     this.reservations.set(id, reservation);
   }
+  /** Observed provenance survives discard; it is not a usable scoped replay record. */
+  retainSnapshot(id: string, value: Snapshot): void {
+    this.put("snapshot", id, value);
+    try {
+      this.shared.put("snapshot", id, value);
+    } catch {
+      throw new RoutingError("continuation_store_full", 503);
+    }
+    this.reservations.delete(id);
+  }
   commit(): void {
     try {
       if (this.closed) throw new RoutingError("request_cancelled", 499);

@@ -10,6 +10,7 @@ import { noopLogger } from "../../src/logger.js";
 import { SharedRouting } from "../../src/routing/shared-routing.js";
 import type { Item } from "../../src/routing/routing-types.js";
 import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
+import { messageFrames, nativeEvents } from "../fixtures/native-messages.js";
 
 const thought = {
   type: "thinking",
@@ -59,12 +60,12 @@ function config(root: string, origin = injectedOrigin) {
       accessProfiles: {
         native: {
           provider: "claude", product: "anthropic-api", billing: "api", account: "original",
-          baseUrl: `${origin}/native`,
+          baseUrl: "https://api.anthropic.com",
           credential: { kind: "env", name: "FABRICATED_CLAUDE_KEY" },
         },
         other: {
           provider: "claude", product: "anthropic-api", billing: "api", account: "other",
-          baseUrl: `${origin}/other`,
+          baseUrl: "https://api.anthropic.com",
           credential: { kind: "env", name: "FABRICATED_OTHER_KEY" },
         },
       },
@@ -78,8 +79,8 @@ function config(root: string, origin = injectedOrigin) {
   return loaded.value.config;
 }
 
-function restrictedFetch(origin: string, implementation: typeof fetch): typeof fetch {
-  const allowed = new Set([`${origin}/native/v1/messages`, `${origin}/other/v1/messages`]);
+function restrictedFetch(implementation: typeof fetch): typeof fetch {
+  const allowed = new Set(["https://api.anthropic.com/v1/messages"]);
   return async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     assert.ok(allowed.has(url), `offline fixture blocked unexpected fetch: ${url}`);
@@ -113,7 +114,7 @@ function rig(response: (request: Item, number: number, signal: AbortSignal) => R
   const root = mkdtempSync(join(tmpdir(), "subswitch-continuity-"));
   const requests: Item[] = [];
   const auth: string[] = [];
-  const routing = new SharedRouting(config(root), noopLogger, undefined, restrictedFetch(injectedOrigin, async (_url, init) => {
+  const routing = new SharedRouting(config(root), noopLogger, undefined, restrictedFetch(async (_url, init) => {
     requests.push(JSON.parse(String(init?.body)));
     auth.push(new Headers(init?.headers).get("x-api-key") ?? "");
     return response(requests.at(-1)!, requests.length, init!.signal!);
@@ -139,20 +140,21 @@ describe("native Claude full-history continuity (offline)", () => {
         fixture.anthropic.baseUrl, fixture.providers.codex.baseUrl, fixture.providers.codex.oauthTokenUrl,
         fixture.codexIngress.subscriptionBaseUrl, fixture.codexIngress.apiBaseUrl,
         claude.baseUrl, claude.oauthTokenUrl,
-        ...Object.values(fixture.accessProfiles!).map(profile => profile.baseUrl!),
       ]) assert.equal(new URL(endpoint).origin, injectedOrigin);
+      for (const profile of Object.values(fixture.accessProfiles!))
+        assert.equal(profile.baseUrl, "https://api.anthropic.com");
       for (const path of [fixture.providers.codex.authFile, claude.authFile!, claude.configDir!]) {
         assert.equal(path.startsWith(`${root}/`), true);
         assert.equal(existsSync(path), false);
       }
       for (const profile of Object.values(fixture.accessProfiles!)) assert.equal(profile.credential.kind, "env");
       let calls = 0;
-      const allowed = restrictedFetch(injectedOrigin, async () => { calls++; return reply(); });
-      for (const url of ["https://api.anthropic.com/v1/messages", `${injectedOrigin}/unexpected/anthropic/v1/messages`])
+      const allowed = restrictedFetch(async () => { calls++; return reply(); });
+      for (const url of ["https://unexpected.example/v1/messages", `${injectedOrigin}/unexpected/anthropic/v1/messages`])
         await assert.rejects(allowed(url, { redirect: "error" }), /blocked unexpected fetch/);
-      await assert.rejects(allowed(`${injectedOrigin}/native/v1/messages`, { redirect: "follow" }), /must not follow redirects/);
+      await assert.rejects(allowed("https://api.anthropic.com/v1/messages", { redirect: "follow" }), /must not follow redirects/);
       assert.equal(calls, 0);
-      await allowed(`${injectedOrigin}/native/v1/messages`, { redirect: "error" });
+      await allowed("https://api.anthropic.com/v1/messages", { redirect: "error" });
       assert.equal(calls, 1);
       const deps = buildDeps(fixture, noopLogger, { fetchImpl: allowed, env: {} });
       assert.ok(deps.ok);
@@ -300,6 +302,31 @@ describe("native Claude full-history continuity (offline)", () => {
     } finally { await events.return(undefined); close(); }
   });
 
+  for (const block of [thought, hiddenThought]) {
+    it(`retains emitted ${block.type} provenance after cancellation without publishing scoped replay`, async () => {
+      const { routing, requests, close } = rig((_request, number) => number === 1
+        ? new Response(messageFrames(nativeEvents([block])).join(""), { headers: { "content-type": "text/event-stream" } })
+        : reply());
+      const events = routing.events({ model: "work", messages: structuredClone(history) },
+        "claude-code", "work", new AbortController().signal);
+      try {
+        let stopped = false;
+        for (let count = 0; count < 16; count++) {
+          const event = await events.next();
+          if (event.value?.type === "content_block_stop") { stopped = true; break; }
+          assert.equal(event.done, false);
+        }
+        assert.equal(stopped, true);
+        await events.return(undefined);
+        await assert.rejects(run(routing, history, "other"), /foreign_opaque_state/);
+        assert.equal(requests.length, 1, "emitted provenance must survive cancellation");
+        await run(routing);
+        assert.deepEqual(requests[1]!.messages, history);
+        assert.equal(requests.length, 2, "the original scope can still import after cancellation");
+      } finally { await events.return(undefined); close(); }
+    });
+  }
+
   for (const streaming of [false, true]) {
     it(`preserves native history through HTTP startup, follow-up and restart with stream=${streaming}`, async (t) => {
       const root = mkdtempSync(join(tmpdir(), "subswitch-continuity-http-"));
@@ -334,7 +361,8 @@ describe("native Claude full-history continuity (offline)", () => {
         for (let restart = 0; restart < 2; restart++) {
           const deps = buildDeps(config(root, originUrl), noopLogger, {
             env: { FABRICATED_CLAUDE_KEY: "fabricated-original" },
-            fetchImpl: restrictedFetch(originUrl, fetch),
+            // Assert the first-party destination, then use only the owned loopback transport.
+            fetchImpl: restrictedFetch((_url, init) => fetch(`${originUrl}/native/v1/messages`, init)),
           });
           assert.ok(deps.ok);
           const proxy = createProxyServer(deps.value);

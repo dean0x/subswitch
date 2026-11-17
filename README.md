@@ -330,14 +330,17 @@ broader content/tool support in [#48](https://github.com/dean0x/subswitch/issues
 These are not included in the parity release. Missing reverse continuation state
 produces an explicit error; keep the proxy running during active translated sessions.
 
-A single-target explicit Claude route can accept complete native Messages history
-created before proxy startup or replayed after a restart. Signed thinking and
-redacted-thinking blocks reach the configured Claude upstream unchanged for validation.
-An in-flight cold import reserves its signatures; overlapping imports of those
-signatures fail until that attempt completes or releases its reservation.
+A single-target explicit Claude route to `https://api.anthropic.com` can accept
+complete native Messages history from before proxy startup, after a restart, or after
+cache eviction. Signed blocks reach Anthropic unchanged for validation. An active
+cold import reserves its signatures until that attempt completes or releases them.
+Emitted signatures retain their provenance through a failed or cancelled response.
+Only Anthropic output establishes native ownership. Kimi and custom endpoints retain
+exact same-scope continuation after a successful response. Their signed output has no
+native ownership claim; cross-scope replay returns 409 without an upstream request.
 This does not restore translated continuation handles or import signed history into
-fallback routes or another provider. Later system-role messages remain a separate
-unsupported case on explicit Messages routes.
+fallback routes. Later system-role messages remain a separate unsupported case on
+explicit Messages routes.
 
 ## Effort control
 
