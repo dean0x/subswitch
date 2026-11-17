@@ -7,6 +7,9 @@ import type { ProxyError } from "./errors.js";
 import type { LogLevel } from "./logger.js";
 import { isReservedAnthropicName, PROVIDER_IDS, type ProviderId, type AliasesByProvider } from "./models.js";
 import { validClaudeAlias } from "./claude-models.js";
+import { AccessProfilesSchema, RoutesSchema, validateExplicitConfig } from "./routing/routing-config.js";
+import type { AccessProfile, RoutePolicy } from "./routing/routing-types.js";
+import { ownValue } from "./plain-object.js";
 
 export const DEFAULT_PORT = 4141 as const;
 
@@ -351,12 +354,36 @@ const CodexIngressSchema = z.strictObject({
 export type CodexIngressConfig = z.infer<typeof CodexIngressSchema>;
 
 const FileConfigSchema = z.strictObject({
+  configVersion: z.literal(2).optional(),
+  accessProfiles: AccessProfilesSchema,
+  routes: RoutesSchema,
   port: z.number().int().min(1).max(65535).default(DEFAULT_PORT),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
   anthropic: AnthropicSchema,
   providers: ProvidersSchema,
   limits: LimitsSchema,
   codexIngress: CodexIngressSchema,
+}).superRefine((file, ctx) => {
+  if ((Object.keys(file.accessProfiles).length || Object.keys(file.routes).length) && file.configVersion !== 2)
+    ctx.addIssue({ code: "custom", message: "explicit profiles/routes require configVersion: 2" });
+  for (const route of Object.values(file.routes)) {
+    for (const target of [route.primary, ...route.fallbacks]) {
+      const profile = ownValue(file.accessProfiles, target.profile);
+      const aliases = profile?.provider === "codex" ? file.providers.codex.aliases :
+        profile?.provider === "claude" ? file.codexIngress.claude.aliases : {};
+      const alias = ownValue(aliases, target.model);
+      if (alias) {
+        if (ownValue(aliases, alias)) ctx.addIssue({ code: "custom", message: "alias chains and cycles are forbidden in explicit routes" });
+        else target.model = alias;
+      }
+    }
+  }
+  for (const name of Object.keys(file.routes)) {
+    if (Object.hasOwn(file.providers.codex.aliases, name) || Object.hasOwn(file.codexIngress.claude.aliases, name))
+      ctx.addIssue({ code: "custom", message: `${name}: conflicting legacy/explicit declaration; remove the legacy alias to migrate` });
+  }
+  for (const message of validateExplicitConfig(file.accessProfiles, file.routes, isLoopbackHost))
+    ctx.addIssue({ code: "custom", message });
 });
 
 /** Raw on-disk config shape — what FileConfigSchema.safeParse() produces. */
@@ -416,6 +443,9 @@ export type ProviderConfigs = { readonly [K in ProviderId]: ProviderConfigShape[
  *  - the parse-time `kind` discriminant does not leak into the runtime shape.
  */
 export interface Config {
+  readonly configVersion?: 2;
+  readonly accessProfiles?: Readonly<Record<string, AccessProfile>>;
+  readonly routes?: Readonly<Record<string, RoutePolicy>>;
   readonly port: number;
   readonly logLevel: LogLevel;
   readonly codexIngress: CodexIngressConfig;
@@ -758,6 +788,7 @@ const PROVIDER_RESOLVERS: {
  * Expands tilde in authFile.
  */
 export const resolveConfig = (file: FileConfig): Config => ({
+  ...(file.configVersion === 2 ? { configVersion: 2 as const, accessProfiles: file.accessProfiles, routes: file.routes } : {}),
   port: file.port,
   logLevel: file.logLevel,
   codexIngress: file.codexIngress,
@@ -790,6 +821,8 @@ export interface LoadConfigOptions {
   readonly globalConfigPath?: string | false;
   readonly homeDir?: string;
   readonly cwd?: string;
+  /** When false, use only the user or explicit config port, then the built-in default. */
+  readonly allowProjectPort?: boolean;
 }
 
 export const userConfigPath = (env: Record<string, string | undefined> = process.env, homeDir = env["HOME"] ?? homedir()): string =>
@@ -842,8 +875,11 @@ const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
  * Path precedence (highest to lowest):
  *   1. explicit `configPath` option
  *   2. `SUBSWITCH_CONFIG` env var (tilde-expanded)
- *   3. implicit user config merged under `<cwd>/subswitch.config.json` (project fields win)
+ *   3. implicit user config merged under `<cwd>/subswitch.config.json` (permitted project fields win)
  *
+ * Profiles and routes, including profile endpoint opt-ins, require a user or explicit config.
+ * Project files that declare either key fail before the merge, even for empty values.
+ * With allowProjectPort false, the project port does not participate in the merge.
  * Only implicit user/project files silently fall back to defaults on ENOENT.
  * Explicit config selection bypasses the user/project merge.
  * An explicitly-requested path (option or SUBSWITCH_CONFIG) that is missing is an error.
@@ -897,10 +933,28 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     }
   }
 
+  const globalPath = options.globalConfigPath === false ? undefined :
+    options.globalConfigPath ?? userConfigPath(env, options.homeDir);
+  const isProject = !isExplicit && resolvedPath !== globalPath;
+  if (isProject && isPlainObject(raw)) {
+    const project = raw;
+    const forbidden = ["accessProfiles", "routes"].filter(key => Object.hasOwn(project, key));
+    if (forbidden.length > 0) {
+      return err({
+        kind: "translate",
+        message: `${forbidden.join(", ")} not allowed in project configuration at ${resolvedPath}. ` +
+          `Put these keys in the user configuration at ${globalPath ?? userConfigPath(env, options.homeDir)} ` +
+          `or select a file with SUBSWITCH_CONFIG.`,
+      });
+    }
+  }
+
   const sources: { path: string; raw: unknown }[] = fileFound ? [{ path: resolvedPath, raw }] : [];
+  if (isProject && options.allowProjectPort === false && isPlainObject(raw)) {
+    raw = Object.fromEntries(Object.entries(raw).filter(([key]) => key !== "port"));
+  }
   let loadedGlobal: string | undefined;
-  if (!isExplicit && options.globalConfigPath !== false) {
-    const globalPath = options.globalConfigPath ?? userConfigPath(env, options.homeDir);
+  if (!isExplicit && globalPath !== undefined) {
     if (globalPath !== resolvedPath) {
       let globalText: string | undefined;
       try { globalText = readFile(globalPath); }

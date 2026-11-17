@@ -6,24 +6,28 @@ export interface Snapshot {
   request: Item;
   input: Item[];
 }
-interface Values {
+export interface ClaudeCacheValues {
   snapshot: Snapshot;
   replay: ClaudeReplay;
   adapted: true;
 }
+type Values = ClaudeCacheValues;
+export type CacheWrite = { [K in keyof Values]: { kind: K; id: string; value: Values[K] } }[keyof Values];
 type Entry = { [K in keyof Values]: { kind: K; value: Values[K]; bytes: number } }[keyof Values];
 
 /** One strict byte/entry budget covers snapshots, thinking replay, and adaptation markers. */
 export class ClaudeCache {
   private readonly entries = new Map<string, Entry>();
   private bytes = 0;
-  constructor(private readonly limits = { maxEntries: 4096, maxBytes: 64 * 1024 * 1024 }) {
+  constructor(private readonly limits = { maxEntries: 4096, maxBytes: 64 * 1024 * 1024 }, private readonly strict = false) {
     assert(limits.maxEntries > 0 && limits.maxBytes > 0, "Claude cache requires positive bounds");
   }
   put<K extends keyof Values>(kind: K, id: string, value: Values[K]): void {
     const key = `${kind}:${id}`;
     const bytes = Buffer.byteLength(JSON.stringify(value)) + Buffer.byteLength(key);
     const old = this.entries.get(key);
+    if (this.strict && (bytes > this.limits.maxBytes || this.bytes - (old?.bytes ?? 0) + bytes > this.limits.maxBytes ||
+      (!old && this.entries.size >= this.limits.maxEntries))) throw new Error("continuation_store_full");
     if (old) {
       this.bytes -= old.bytes;
       this.entries.delete(key);
@@ -38,6 +42,47 @@ export class ClaudeCache {
       this.bytes -= oldest[1].bytes;
       this.entries.delete(oldest[0]);
     }
+  }
+  /** Check known attempt state before inference without eviction or publication. */
+  checkBatch(writes: readonly CacheWrite[]): void {
+    this.planBatch(writes);
+  }
+  /** Routed attempts publish all staged state together, after checking the shared budget. */
+  putBatch(writes: readonly CacheWrite[]): void {
+    const { updates, evictions, bytes } = this.planBatch(writes);
+    for (const key of evictions) this.entries.delete(key);
+    // Replacement retains the existing eviction order.
+    for (const [key, entry] of updates) this.entries.set(key, entry);
+    this.bytes = bytes;
+  }
+  private planBatch(writes: readonly CacheWrite[]): {
+    updates: Map<string, Entry>; evictions: string[]; bytes: number;
+  } {
+    const updates = new Map<string, Entry>();
+    let bytes = this.bytes;
+    let entries = this.entries.size;
+    for (const write of writes) {
+      const key = `${write.kind}:${write.id}`;
+      const size = Buffer.byteLength(JSON.stringify(write.value)) + Buffer.byteLength(key);
+      const previous = updates.get(key) ?? this.entries.get(key);
+      if (!previous) entries++;
+      bytes += size - (previous?.bytes ?? 0);
+      updates.set(key, { kind: write.kind, value: write.value, bytes: size } as Entry);
+    }
+    let updateBytes = 0;
+    for (const entry of updates.values()) updateBytes += entry.bytes;
+    if (updates.size > this.limits.maxEntries || updateBytes > this.limits.maxBytes ||
+      (this.strict && (entries > this.limits.maxEntries || bytes > this.limits.maxBytes)))
+      throw new Error("continuation_store_full");
+    const evictions: string[] = [];
+    for (const [key, entry] of this.entries) {
+      if (entries <= this.limits.maxEntries && bytes <= this.limits.maxBytes) break;
+      if (updates.has(key)) continue;
+      evictions.push(key);
+      entries--;
+      bytes -= entry.bytes;
+    }
+    return { updates, evictions, bytes };
   }
   get<K extends keyof Values>(kind: K, id: string): Values[K] | undefined {
     const key = `${kind}:${id}`,

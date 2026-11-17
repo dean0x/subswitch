@@ -1,4 +1,6 @@
 import { boundTcpConnect } from "./tcp-connect.js";
+import { observeNodeResponse } from "./limit-http-observer.js";
+import { LimitWebSocketObserver } from "./limit-websocket-observer.js";
 import { WebSocketBudget } from "./websocket-budget.js";
 import { openaiErrorBody } from "./errors.js";
 import http from "node:http";
@@ -82,8 +84,10 @@ export function createOpenaiPassthrough(
     events: { timeout: "openai_upstream_timeout", error: "openai_upstream_error" } as const,
   };
   const forwarders = {
-    subscription: createRawHttpForwarder({ ...options, baseUrl: config.subscriptionBaseUrl }),
-    api: createRawHttpForwarder({ ...options, baseUrl: config.apiBaseUrl }),
+    subscription: createRawHttpForwarder({ ...options, baseUrl: config.subscriptionBaseUrl,
+      limitContext: { provider: "codex", product: "chatgpt-codex", protocol: "responses" } }),
+    api: createRawHttpForwarder({ ...options, baseUrl: config.apiBaseUrl,
+      limitContext: { provider: "codex", product: "openai-api", protocol: "responses" } }),
   };
   const sockets = new Set<Duplex>();
   const pending = new Set<http.ClientRequest>();
@@ -139,6 +143,7 @@ export function createOpenaiPassthrough(
             return;
           }
           settled = true;
+          observeNodeResponse(logger, { provider: "codex", product: mode === "subscription" ? "chatgpt-codex" : "openai-api", protocol: "responses" }, response);
           // A rejected upgrade is still an upstream HTTP response. Relay its status,
           // error body and Retry-After through Node so chunk framing remains correct.
           const downstream = new http.ServerResponse(req);
@@ -172,6 +177,13 @@ export function createOpenaiPassthrough(
           for (let i = 0; i < headers.length; i += 2) wire += `${headers[i]}: ${headers[i + 1]}\r\n`;
           socket.write(`${wire}\r\n`);
           // Preserve bytes already read during both upgrade handshakes before piping.
+          if (logger.recordLimit) {
+            const observer = new LimitWebSocketObserver(logger, { provider: "codex",
+              product: mode === "subscription" ? "chatgpt-codex" : "openai-api", protocol: "responses" });
+            if (upstreamHead.length) observer.write(upstreamHead);
+            upstreamSocket.pause();
+            upstreamSocket.on("data", chunk => observer.write(Buffer.from(chunk)));
+          }
           if (upstreamHead.length) socket.write(upstreamHead);
           if (head.length) upstreamSocket.write(head);
           upstreamSocket.pipe(socket);

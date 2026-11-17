@@ -1,0 +1,17 @@
+{
+  "configVersion": 2,
+  "accessProfiles": {
+    "claude-subscription": { "provider": "claude", "product": "claude-code", "billing": "subscription", "account": "personal-claude", "credential": { "kind": "native-oauth", "authFile": "~/.claude/.credentials.json" } },
+    "codex-subscription": { "provider": "codex", "product": "chatgpt-codex", "billing": "subscription", "account": "personal-codex", "credential": { "kind": "native-oauth", "authFile": "~/.codex/auth.json" } }
+  },
+  "routes": {
+    "subscription-work": {
+      "clients": ["claude-code"],
+      "primary": { "profile": "claude-subscription", "model": "claude-sonnet-5-5", "effort": "high" },
+      "fallbacks": [
+        { "profile": "codex-subscription", "model": "gpt-6-sol", "effort": "high" }
+      ],
+      "affinity": "native-or-explicit"
+    }
+  }
+}

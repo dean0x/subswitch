@@ -1,0 +1,513 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-11",
+  "releaseReady": false,
+  "records": [
+    {
+      "assertion": "Coding-plan keys support Messages and Responses; regional endpoints differ",
+      "urls": [
+        "https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html",
+        "https://www.kimi.com/code/docs/en/third-party-tools/codex.html"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "documentation observed 2026-10-11",
+      "product": "kimi-code",
+      "region": [
+        "global",
+        "mainland-cn"
+      ],
+      "credentialKind": "coding-plan-key",
+      "protocol": [
+        "messages",
+        "responses"
+      ],
+      "evidenceClass": "documented",
+      "liveVerified": false
+    },
+    {
+      "assertion": "Quota, entitlement, concurrency and overload are distinct",
+      "urls": [
+        "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "documentation observed 2026-10-11",
+      "product": "kimi-code",
+      "region": [
+        "global",
+        "mainland-cn"
+      ],
+      "credentialKind": "coding-plan-key",
+      "protocol": [
+        "messages",
+        "responses"
+      ],
+      "evidenceClass": "documented",
+      "fixture": "test/unit/wave1-routing.test.ts",
+      "fixtureClass": "synthetic"
+    },
+    {
+      "assertion": "Platform quota, rate-limit and engine-overload codes differ",
+      "urls": [
+        "https://platform.kimi.ai/docs/api/errors"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "documentation observed 2026-10-11",
+      "product": "kimi-platform",
+      "region": "global",
+      "credentialKind": "api-key",
+      "protocol": [
+        "messages",
+        "responses"
+      ],
+      "evidenceClass": "documented",
+      "liveVerified": false
+    },
+    {
+      "assertion": "Messages and Responses endpoint candidates",
+      "urls": [
+        "https://platform.kimi.ai/docs/api/messages",
+        "https://platform.kimi.ai/docs/api/responses"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "documentation observed 2026-10-11",
+      "product": "kimi-platform",
+      "region": "global",
+      "credentialKind": "api-key",
+      "protocol": [
+        "messages",
+        "responses"
+      ],
+      "evidenceClass": "documented",
+      "liveVerified": false
+    },
+    {
+      "assertion": "Current Codex fake control executes tool, child, follow-up and parent delivery",
+      "urls": [
+        "https://github.com/openai/codex"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "codex-cli 0.162.1; synthetic catalog based on captured 0.153.3 metadata",
+      "product": "native-codex-control",
+      "region": "loopback",
+      "credentialKind": "fabricated-api-key",
+      "protocol": [
+        "responses-http",
+        "responses-websocket"
+      ],
+      "evidenceClass": "native-observed",
+      "upstreamClass": "synthetic",
+      "providerCompatibilityVerified": false
+    },
+    {
+      "assertion": "The default catalog rejected a foreign spawn override; explicit model_catalog_json restores the original Claude child gate",
+      "urls": [
+        "https://github.com/openai/codex"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "codex-cli 0.162.1",
+      "product": "native-codex-control",
+      "region": "loopback",
+      "credentialKind": "fabricated-api-key",
+      "protocol": "responses-websocket",
+      "evidenceClass": "native-observed",
+      "upstreamClass": "synthetic",
+      "blockedOverride": "claude-sonnet-5",
+      "requiredSetting": "model_catalog_json"
+    },
+    {
+      "assertion": "Native Claude subscription reads an unpredictable file through a child and delivers the result to its parent",
+      "urls": [
+        "https://code.claude.com/docs/en/cli-reference"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "Claude Code 2.1.296",
+      "product": "claude-code",
+      "region": "vendor-default",
+      "credentialKind": "native-oauth",
+      "protocol": "messages",
+      "evidenceClass": "live-observed",
+      "report": "native-claude-live-2026-10-11.json",
+      "fixtureClass": "live-provider-with-isolated-file-fixture"
+    },
+    {
+      "assertion": "Native Claude child reads and continues through the existing OpenAI subscription translator",
+      "urls": [
+        "https://github.com/dean0x/subswitch"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "Claude Code 2.1.296; production legacy translator",
+      "product": "chatgpt-codex",
+      "region": "vendor-default",
+      "credentialKind": "native-oauth",
+      "protocol": "responses",
+      "evidenceClass": "live-observed",
+      "report": "native-claude-openai-2026-10-11.json",
+      "fixtureClass": "live-provider-with-isolated-file-fixture"
+    },
+    {
+      "assertion": "Native Codex subscription parent, Claude child tools, same-child follow-up and parent delivery pass through production gateway",
+      "urls": [
+        "https://github.com/dean0x/subswitch"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "Codex CLI 0.162.1; parent gpt-6-sol; production gateway working tree",
+      "product": [
+        "chatgpt-codex",
+        "claude-code"
+      ],
+      "region": "vendor-default",
+      "credentialKind": "native-oauth",
+      "protocol": [
+        "responses-websocket",
+        "responses-http",
+        "messages-sse"
+      ],
+      "evidenceClass": "live-observed",
+      "reports": [
+        "native-codex-live-ws-2026-10-11.json",
+        "native-codex-live-http-2026-10-11.json"
+      ],
+      "triggerClass": "HTTP gate injects synthetic WebSocket 426; WS gate has no injected failure",
+      "observationNote": "HTTP report is a prior successful observation. The latest review HTTP run failed its same-child follow-up; see native-codex-http-review-failure-2026-10-11.json. Current WebSocket review run passed."
+    },
+    {
+      "assertion": "GPT-6 Sol supports Responses and the configured high effort",
+      "urls": [
+        "https://developers.openai.com/api/docs/models/gpt-6-sol"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "official OpenAI documentation observed 2026-10-11",
+      "product": "openai-api",
+      "region": "vendor-default",
+      "credentialKind": "api-key",
+      "protocol": "responses",
+      "evidenceClass": "documented",
+      "liveVerified": false
+    },
+    {
+      "assertion": "Native Claude child executes a real file read and continues through configVersion 2 explicit OpenAI subscription profile",
+      "urls": [
+        "https://github.com/dean0x/subswitch"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "Claude Code 2.1.296; production explicit-profile dispatcher working tree",
+      "product": "chatgpt-codex",
+      "region": "vendor-default",
+      "credentialKind": "native-oauth",
+      "protocol": "responses-http-sse",
+      "evidenceClass": "live-observed",
+      "report": "native-claude-openai-profiles-2026-10-11.json",
+      "fixtureClass": "real-provider-with-isolated-file-fixture",
+      "transportNote": "SSE bytes validated independently of subscription response MIME; no MIME assertion for Kimi"
+    },
+    {
+      "assertion": "Current native Codex tool execution, child follow-up, parent delivery and explicit action closure pass through lazy routing",
+      "urls": [
+        "https://github.com/dean0x/subswitch"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "Codex CLI0.162.1; individual reports retain their harness SHA256; current native-codex.ts SHA256 a95296e139df11e27528d8291d51dbe5141f97ab7ea8ac4dfd4eca960e945c5e",
+      "product": "native-codex-control",
+      "region": "loopback",
+      "credentialKind": "fabricated-api-key",
+      "protocol": [
+        "responses-websocket",
+        "responses-http"
+      ],
+      "evidenceClass": "native-observed",
+      "upstreamClass": "synthetic",
+      "providerCompatibilityVerified": false,
+      "reports": [
+        "native-codex-ws-explicit-synthetic-2026-10-11.json",
+        "native-codex-http-explicit-synthetic-2026-10-11.json",
+        "native-codex-ws-scoped-synthetic-2026-10-11.json",
+        "native-codex-http-scoped-synthetic-2026-10-11.json"
+      ],
+      "transportLimitation": {
+        "triggerClass": "synthetic upstream 426 before inference",
+        "lazyUpgradeRejections": 14,
+        "rawControlUpgradeRejections": 2,
+        "lazyClientRetryEvents": 4,
+        "rawControlClientRetryEvents": 0,
+        "result": "native client eventually uses HTTP; lazy accepted-socket fallback adds retry latency",
+        "sourceInspected": "openai/codex 8c0f7011674145da7e10627769fb221c74fbf7a0; codex-rs/codex-api/src/endpoint/responses_websocket.rs and codex-rs/core/src/client.rs",
+        "url": "https://github.com/openai/codex/tree/8c0f7011674145da7e10627769fb221c74fbf7a0",
+        "sourceUrls": [
+          "https://raw.githubusercontent.com/openai/codex/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/codex-api/src/endpoint/responses_websocket.rs",
+          "https://raw.githubusercontent.com/openai/codex/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/core/src/client.rs"
+        ]
+      }
+    },
+    {
+      "assertion": "Current live subscription HTTP fallback rejects unsupported mid-history instructions during same-child follow-up",
+      "urls": [
+        "https://github.com/dean0x/subswitch"
+      ],
+      "date": "2026-10-11",
+      "sourceVersion": "Codex CLI0.162.1; native-production.ts SHA256 e839c88c5c415809183129cd97f7bd875598bbc6424510d97917e8c0da8e8db2",
+      "product": [
+        "chatgpt-codex",
+        "claude-code"
+      ],
+      "region": "vendor-default",
+      "credentialKind": "native-oauth",
+      "protocol": [
+        "responses-http",
+        "messages-sse"
+      ],
+      "evidenceClass": "live-observed",
+      "report": "native-codex-http-review-failure-2026-10-11.json",
+      "passed": false,
+      "triggerClass": "synthetic upstream426 before real provider inference",
+      "result": "three review runs fail same-child follow-up; safely translated native history for this instruction-bearing update remains unsupported",
+      "diagnosticReports": [
+        "native-codex-http-review-observed-failure-2026-10-11.json",
+        "native-codex-http-review-source-observed-failure-2026-10-11.json"
+      ],
+      "observedBoundary": {
+        "role": "developer",
+        "index": 12,
+        "classification": "instruction_unrecognized",
+        "matchesInitialInstruction": false,
+        "recognizedSourceMarkers": []
+      }
+    },
+    {
+      "assertion": "Installed Kimi CLI completes headless inference and native unpredictable file read with configured OAuth access",
+      "urls": [
+        "https://github.com/MoonshotAI/kimi-code"
+      ],
+      "date": "2026-10-12",
+      "sourceVersion": "@moonshot-ai/kimi-code2.1.1; installed main.mjs SHA256 2563a338c94868a34e1bfd2e5579067d5a472acf4cb0bf350a3bfe1092bbe59d",
+      "product": "kimi-code",
+      "region": "not independently verified",
+      "credentialKind": "native-oauth",
+      "protocol": "native CLI inference; wire protocol not captured",
+      "evidenceClass": "live-observed",
+      "report": "native-kimi-headless-live-2026-10-12.json",
+      "configuredModel": "kimi-for-coding",
+      "subswitchCompatibilityVerified": false,
+      "k3EntitlementVerified": false,
+      "platformAccessVerified": false
+    },
+    {
+      "assertion": "Serve records sanitized upstream limit/error formats without changing native responses or enabling unknown failure fallback",
+      "urls": [
+        "https://github.com/dean0x/subswitch"
+      ],
+      "date": "2026-10-12",
+      "sourceVersion": "working-tree implementation; module SHA256 values recorded",
+      "sourceSha256": {
+        "src/limit-observation.ts": "dbf14713a0ab37ac60a317dbed66e4a44ea2654adc6d0fb3f0dd9a16320ed8d2",
+        "src/limit-http-observer.ts": "16edfdc1e6c9d6a0dbfb8bbb1f8de947fffdba07615862857d58921df72459a9",
+        "src/limit-websocket-observer.ts": "88a455f166f164603e22150bb2d9e83ae0ac5e250cc34075cbdaa1ae783c63b2",
+        "src/limit-recorder.ts": "71de09ce294c82fab5a1d12fc8a6008e43d87bb3ca77d4b197eb02ea88b0a4d8"
+      },
+      "product": [
+        "kimi-code",
+        "kimi-platform",
+        "chatgpt-codex",
+        "openai-api",
+        "claude-code",
+        "anthropic-api",
+        "anthropic-unknown"
+      ],
+      "region": "configured region when available",
+      "credentialKind": "configured credential kind when available; no credential material",
+      "protocol": [
+        "messages",
+        "responses",
+        "native-websocket"
+      ],
+      "evidenceClass": "source-inspected",
+      "fixtures": [
+        "test/unit/limit-observation.test.ts",
+        "test/integration/limit-recording.test.ts"
+      ],
+      "fixtureClass": "synthetic",
+      "naturalQuotaVerified": false,
+      "automaticSessionResumeImplemented": false,
+      "bounds": {
+        "bodyBytes": 65536,
+        "projectionDepth": 5,
+        "projectionNodes": 128,
+        "pendingWrites": 32,
+        "files": 4,
+        "bytesPerFile": 2097152
+      },
+      "partialCoverage": [
+        "raw compressed WebSocket payloads",
+        "native compressed SSE payloads",
+        "cancelled/truncated upstream error bodies"
+      ]
+    }
+  ],
+  "historicalProbes": [
+    {
+      "id": "sse-ordering",
+      "outcome": "unresolved live gate independently for Messages and Responses; bounded incremental implementation, no aggregation repair"
+    },
+    {
+      "id": "oauth-device-headers",
+      "outcome": "OAuth inference disabled; coding-plan-key support uses no fabricated device identity"
+    },
+    {
+      "id": "count-tokens",
+      "outcome": "local estimate with x-subswitch-token-count: estimated; vendor count path unresolved"
+    },
+    {
+      "id": "thinking-parameters-replay",
+      "outcome": "profile-specific effort, no fixed temperature or keep; cross-owner opaque replay rejected; live Kimi replay unresolved"
+    },
+    {
+      "id": "terminal-precedence",
+      "outcome": "partial tools withheld until valid completion; unknown/inconsistent terminals fail; live Kimi terminal contracts unresolved"
+    }
+  ],
+  "unresolved": [
+    "Subswitch Kimi Code credential contract and K3 entitlement (native CLI OAuth access is now observed)",
+    "Kimi Platform credentials and K3 entitlement",
+    "k3/kimi-k3 exact equivalence",
+    "coding-key cloud usage contract",
+    "Kimi OAuth inference identity",
+    "certified native action boundary",
+    "live cross-profile reasoning portability",
+    "both-client Kimi native orchestration",
+    "ordinary OpenAI/Claude API profile live gates",
+    "current Codex native HTTP same-child follow-up: unsupported new mid-history developer instructions"
+  ],
+  "deepSeekImplementationPermitted": false,
+  "userDeferredGates": [],
+  "validation": {
+    "date": "2026-10-11",
+    "check": {
+      "tests": 1116,
+      "failures": 0,
+      "skipped": 0
+    },
+    "build": "passed",
+    "sseBenchmark": "linearity passed",
+    "parkedToolRecovery": "synthetic acceptance passed for Messages and Responses",
+    "KimiLive": "native OAuth CLI access verified2026-10-12; Subswitch Code/Platform Messages/Responses and K3 gates remain pending",
+    "ordinaryApiProfilesLive": "no declared credentials",
+    "routingQuotaBenchmark": {
+      "evidenceClass": "synthetic",
+      "scopes": [
+        512,
+        1024,
+        2048,
+        4096
+      ],
+      "fixedWorkUpdateRatio4096To512": 0.56,
+      "byteSizeAt4096Scopes": 1253536,
+      "result": "passed"
+    },
+    "architectureReview": {
+      "date": "2026-10-11",
+      "evidenceClass": "source-inspected",
+      "featureDirectory": "src/routing",
+      "corrections": [
+        "separate lifecycle control, HTTP delivery, request adaptation and provider stream validation",
+        "atomic replay and continuation publication",
+        "owned recovery reservations and Retry-After precedence",
+        "bounded pending tool events and terminal identity validation",
+        "incremental quota byte accounting",
+        "structural content validation with native system-role support",
+        "cancellation listener and wrapper setup cleanup",
+        "preserve classified failures in routed WebSocket errors",
+        "product-specific failure classification isolation"
+      ],
+      "secondPass": {
+        "date": "2026-10-11",
+        "evidenceClass": "source-inspected",
+        "reviewAreas": [
+          "security and credential isolation",
+          "regression and lifecycle",
+          "reuse, complexity and protocol codecs",
+          "root integration and performance"
+        ],
+        "corrections": [
+          "detect JWT-only native account replacement and identity disappearance",
+          "coordinate same-lineage refresh across native store aliases and legacy/profile managers",
+          "preserve physical credential files, symlinks and private atomic persistence",
+          "read only explicitly declared record properties",
+          "isolate local continuations by scope, protocol, logical route, conversation and branch",
+          "expand local warmup history without inference or quota",
+          "validate known candidate capabilities before credential resolution",
+          "withhold executable completion until replay and continuation publication succeeds",
+          "index and validate terminal tool identity and reject ambiguous or duplicate completions",
+          "preserve native tool-result error flags and streamed refusal text",
+          "classify pre-commit source transport failures separately from parser/protocol failures",
+          "reject reasoning-type relabeling and foreign signatures",
+          "use quota failure revisions to reject same-millisecond stale metadata",
+          "restore lazy native WebSocket bounded auth retry, truthful errors and subprotocol forwarding",
+          "contain continuation-resolution errors within WebSocket requests",
+          "single-flight invocation completion/cancellation and signal outcome handling",
+          "apply explicit action admission, cancellation and draining to native passthrough",
+          "extract generic cancellation waiting from authentication modules",
+          "idempotent action release and delivered WebSocket error drain before finalization"
+        ],
+        "tests": [
+          "test/unit/wave1-auth-review.test.ts",
+          "test/unit/wave1-codec-review.test.ts",
+          "test/unit/wave1-quota-review.test.ts",
+          "test/integration/wave1-action-review.test.ts",
+          "test/integration/wave1-continuation-review.test.ts",
+          "test/integration/wave1-ws-review.test.ts",
+          "test/integration/wave1-native-lifecycle-review.test.ts",
+          "test/unit/action-store-review.test.ts",
+          "test/unit/native-history-observer.test.ts"
+        ],
+        "fixtureClass": "synthetic; native and live-provider observations recorded separately",
+        "refusalTranslation": "Late Claude refusal maps to a relay-synthesized Responses incomplete/content_filter terminal; this is not vendor semantic equivalence.",
+        "diagnosticObserver": {
+          "source": "e2e/gates/native-history-observer.ts",
+          "test": "test/unit/native-history-observer.test.ts",
+          "rawAndDecodedBodyCapBytes": 4194304,
+          "requestCap": 32,
+          "itemCap": 512,
+          "observationCapBytes": 65536,
+          "allowlistedOutputOnly": true,
+          "adversarialContentTest": "passed",
+          "inferenceClassification": "live provider; connection-phase426 synthetic"
+        }
+      }
+    },
+    "nativeRetests": {
+      "codexWebSocketSimulated": "passed on 0.162.1",
+      "claudeOpenaiExplicitProfileLive": "passed on 2.1.296 after shared authentication review; preceding protocol rejection retained",
+      "observedProtocolRejection": "one preceding live run failed closed with inconsistent_provider_tool; its precise field was not captured",
+      "codexExplicitWebSocketSimulated": "passed on 0.162.1 with unrelated explicit route",
+      "codexExplicitHttpSimulated": "passed on 0.162.1 with injected upstream 426; bounded client retry latency remains",
+      "codexActionScopedSimulated": "both transports pass on0.162.1 after final translated lifecycle correction; action_state_lost proves final closure",
+      "claudeSubscriptionLive": "passed on 2.1.296 after shared authentication review",
+      "codexProductionWebSocketLive": "passed after authentication/cancellation review; current Codex0.162.1 parent, Claude child, native tools and same-child follow-up",
+      "codexProductionHttpLive": "three review runs failed closed with mid_history_instructions_unimplemented; unrecognized new developer instructions at follow-up. Initial child read passes; safe ordered translation remains unsupported.",
+      "kimiHeadlessCliLive": {
+        "date": "2026-10-12",
+        "result": "passed on2.1.1: text request and native unpredictable file read",
+        "credentialKind": "configured native-oauth",
+        "throughSubswitch": false,
+        "wireProtocolVerified": false
+      }
+    },
+    "limitRecording": {
+      "date": "2026-10-12",
+      "fixtureClass": "synthetic",
+      "tests": "targeted recorder/native-byte preservation/first-event/CLI/fallback/Retry-After scenarios passed",
+      "benchmarks": "linear SSE and native WS inspection; normal output not recorded",
+      "naturalProviderLimits": "pending actual observations",
+      "stateSource": "recordings are diagnostic only; readiness and continuation are not restored from them",
+      "targetedTests": 27,
+      "observerBenchmark": {
+        "fixtureClass": "synthetic",
+        "sseMillisecondsAt8MiB": 21.8,
+        "nativeWsMillisecondsAt8MiB": 27.0,
+        "linearity": "passed",
+        "normalOutputRecorded": false
+      },
+      "sseRetryAfterConstraint": "injected clock regression passed; one-hour constraint respected"
+    }
+  },
+  "updatedAt": "2026-10-12"
+}

@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-12",
+  "evidenceClass": "live-observed",
+  "nativeClient": "kimi",
+  "clientVersion": "2.1.1",
+  "product": "kimi-code",
+  "region": "not independently verified",
+  "credentialKind": "native-oauth",
+  "configuredModel": "kimi-for-coding",
+  "configuredProviderType": "kimi",
+  "configuredEndpointHost": "api.kimi.ai",
+  "protocol": "native CLI inference; wire protocol not captured",
+  "source": {
+    "package": "@moonshot-ai/kimi-code",
+    "version": "2.1.1",
+    "installedEntrypointSha256": "2563a338c94868a34e1bfd2e5579067d5a472acf4cb0bf350a3bfe1092bbe59d",
+    "url": "https://github.com/MoonshotAI/kimi-code",
+    "runner": "e2e/gates/native-process.ts",
+    "runnerSha256": "5f49722817a6810885b162b95bfdcd00497ffb0e91d39d1962fe407225fee9e1"
+  },
+  "invocation": {
+    "command": "kimi",
+    "arguments": [
+      "--prompt",
+      "<isolated file-read prompt>",
+      "--output-format",
+      "stream-json"
+    ],
+    "workingDirectory": "temporary isolated directory",
+    "nativeAuthenticatedStorage": "existing CLI storage; credentials not exposed or copied into probe files"
+  },
+  "headlessText": {
+    "exitCode": 0,
+    "knownMarkerReturned": true,
+    "stdoutBytes": 32,
+    "stderrBytes": 176
+  },
+  "headlessNativeFileRead": {
+    "schemaVersion": 1,
+    "date": "2026-10-12T11:48:28.999Z",
+    "client": "kimi",
+    "clientVersion": "2.1.1",
+    "headless": true,
+    "isolatedWorkingDirectory": true,
+    "exitCode": 0,
+    "failure": null,
+    "nativeToolCalls": 1,
+    "toolResultContainsUnpredictableValue": true,
+    "finalAnswerContainsUnpredictableValue": true,
+    "success": true,
+    "stdoutBytes": 825,
+    "stderrBytes": 0,
+    "originatingThroughSubswitch": false,
+    "providerProtocolVerified": false
+  },
+  "rejectedProbeOptions": {
+    "options": [
+      "--prompt",
+      "--auto"
+    ],
+    "exitCode": 1,
+    "classification": "client-option-conflict-before-inference",
+    "sourceEvidence": "installed validateOptions rejects combining prompt and auto; corrected file-read invocation omits auto"
+  },
+  "scope": {
+    "cliAuthorizationAndNativeToolUseVerified": true,
+    "subswitchDestinationVerified": false,
+    "messagesProtocolVerified": false,
+    "responsesProtocolVerified": false,
+    "k3EntitlementVerified": false,
+    "platformAccessVerified": false,
+    "sameModelEquivalenceVerified": false,
+    "oauthProfileImplemented": false
+  },
+  "success": true
+}

@@ -19,8 +19,9 @@ permissions, and execution loop.
   Messages. OpenAI models continue to OpenAI. Reverse-enabled sessions adapt the
   collaboration namespace so cross-provider task messages are readable.
 
-SubSwitch does not switch models or billing modes after a failure. Unknown models
-retain their originating provider's fallback behavior, except that an unregistered
+Default routing does not switch models or billing modes after a failure.
+Opt-in explicit routes can select another subscription profile before response commitment.
+Unknown models retain their originating provider's fallback behavior, except that an unregistered
 `claude-*` or `claude:*` name sent by Codex is refused rather than forwarded to OpenAI. Native
 settings and client binaries are not patched or downgraded.
 
@@ -102,6 +103,10 @@ Commands:
   init      Interactive setup — wires the selected client(s)
   models    Show effective alias table (registry × aliases)
             --json   Output model registry as JSON (no color, no TTY check)
+            --schema-version 3 --client <client> --json   Common route discovery
+  limits    Show recorded upstream limit/error formats (--json, --port <n>)
+  run-action --client <client> [--conversation <id>] -- <native command>
+            Scope one native invocation, including its tools and children
 
 Flags (global):
   -h, --help       Show this help message
@@ -137,6 +142,9 @@ Environment:
   NO_COLOR      Disable color output (also respected as standard)
   FORCE_COLOR   Force color output even when not a TTY
   CI            Non-interactive detection — init refuses without --yes
+  SUBSWITCH_LIMIT_RECORDING=0   Disable private limit observations (enabled by default)
+  SUBSWITCH_LIMIT_DIR           Override private observation root directory
+
 ```
 
 **Exit codes:**
@@ -153,6 +161,40 @@ Environment:
 | unknown command or flag | always | 1 |
 
 `doctor` exits 1 whenever any preflight check fails — use it as a gate in scripts. `init` without `--yes` refuses to write anything when stdin is not a TTY (e.g. in CI) and exits 1 immediately with no filesystem side effects.
+
+### Recording real request limits
+
+`serve` automatically saves private, sanitized observations of upstream HTTP errors,
+SSE errors and native WebSocket errors. View the latest records with:
+
+```sh
+subswitch limits --json
+subswitch limits --json --port 8080
+```
+
+Records live under `~/.cache/subswitch/limits/<port>/` (four files, at most 8 MiB per
+port). They include provider/access product, available target/attempt metadata,
+status, validated retry/reset headers and the sanitized JSON structure. Known public
+error codes and known limit-message prefixes are retained. Arbitrary strings,
+unknown field names, prompts, tool contents and credentials are omitted; unknown
+string codes receive a fingerprint. No raw body archive is created.
+
+Set `SUBSWITCH_LIMIT_DIR` to choose the storage root or
+`SUBSWITCH_LIMIT_RECORDING=0` to disable recording. Files use owner-only permissions.
+Observation does not change provider responses, trigger retries or authorize paid
+fallback. Unknown formats remain unknown until their contract is verified.
+
+Body capture is capped at 64 KiB. Oversized, truncated or undecodable errors are
+marked explicitly. Compressed HTTP error bodies are decoded within that cap;
+compressed native SSE and raw compressed WebSocket messages are not inspected.
+A native WebSocket coverage gap produces `limit_observation_partial`. Recording
+covers traffic through the relay; direct native-client traffic is outside its view.
+Programmatic servers can opt in by supplying a logger from `withLimitRecorder`.
+
+Automatic subscription re-entry applies to explicit routes on a subsequent eligible
+action, using one ordinary request to check recovery. Active fallback actions remain
+pinned. It does not restart an interrupted response, rerun completed tools, retry a
+finished invocation indefinitely, or restore relay state after a restart.
 
 ### Advanced: manual setup
 
@@ -203,8 +245,9 @@ Claude Code integration together. The default `init` behavior remains Claude Cod
 Codex setup changes only the user-level `openai_base_url` value, preserving other
 TOML settings and comments. It writes SubSwitch's user config to
 `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`).
-Project configuration merges over this fallback; explicit `SUBSWITCH_CONFIG`
-remains authoritative. Start the proxy before launching Codex. Existing custom
+Permitted project settings merge over this fallback; explicit `SUBSWITCH_CONFIG`
+remains authoritative. Profiles and routes require the user file or an explicit file.
+Start the proxy before launching Codex. Existing custom
 providers are not replaced. A custom upstream is preserved only when it is loopback or
 you have explicitly set `codexIngress.allowInsecureBaseUrl: true` in the SubSwitch config.
 Setup names an unapproved host and stops before writing files.
@@ -309,13 +352,24 @@ default.
 The config file is located by the following precedence (highest wins):
 
 1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
-2. `subswitch.config.json` in the current working directory, merged over the user fallback
+2. Permitted settings from `subswitch.config.json` in the current directory, merged over the user fallback
 3. `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`), then built-in defaults
 
 An explicit `SUBSWITCH_CONFIG` file is authoritative and is not merged with the user fallback.
-This merge applies to all commands, including forward-only use. `doctor` displays every
-loaded source, and errors identify source paths. Explicit config paths passed by callers
-of `loadConfig` also bypass the merge.
+Explicit config paths passed by callers of `loadConfig` also bypass the merge.
+`doctor` displays every loaded source, and errors identify source paths.
+
+`accessProfiles` and `routes` load only from the user configuration or an explicit file.
+This rule includes each profile's `allowInsecureBaseUrl` value.
+A project file that declares either key fails with an error, even for an empty value.
+Move those keys to the user file, or select the file with `SUBSWITCH_CONFIG`.
+Use `configVersion: 2` for explicit profiles and routes.
+The [Wave 1 example](subswitch.wave1.example.json) shows their format.
+
+Other project settings retain their merge behavior, except the `run-action` port.
+`run-action` uses the user or explicit file's port, then the built-in default.
+It does not use the project port to select an existing proxy.
+Set the same port in the user file or `SUBSWITCH_CONFIG` when an action must use a custom-port proxy.
 
 **An unrecognised key is rejected, not ignored.** Two checks run against the raw file
 before it is parsed, and a hit on either is a hard load failure — subswitch prints the
@@ -789,3 +843,13 @@ local development.
 ## License
 
 [MIT](LICENSE) © 2026 dean0x
+
+### Wave 1 explicit routes
+
+Version 2 access profiles, action-scoped failover, recovery behavior, configuration examples
+and current evidence gates are described in [the Wave 1 notes](e2e/gates/wave1.md).
+Explicit routes use Claude and Codex subscription sign-ins only.
+Fallback between subscription profiles remains available.
+Kimi needs the subscription sign-in; this version does not provide it.
+A Kimi profile fails config load. See [Kimi route status](e2e/gates/kimi-readiness.md).
+The [evidence manifest](e2e/gates/wave1-evidence.json) contains past runs, not current Kimi qualification.

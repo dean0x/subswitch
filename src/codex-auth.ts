@@ -1,10 +1,12 @@
 import { open, readFile, rename, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { Logger } from "./logger.js";
 import type { ProviderAuth, ProviderCredential } from "./provider-auth.js";
 import type { ProviderEvents } from "./provider-events.js";
 import { AuthFileSchema, TokenResponseSchema, type AuthFile, type TokenResponse } from "./wire-types.js";
+import { coordinateNativeRefresh, nativeAuthFilePath } from "./native-auth-coordination.js";
 
 export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
@@ -51,57 +53,64 @@ const toCredentialResult = (
 ): Result<ProviderCredential<"codex">, ProxyError> => (result.ok ? ok(toCredential(result.value)) : result);
 
 export interface AuthFileStore {
+  readonly coordinationKey?: string;
   read(): Promise<Result<string, ProxyError>>;
   writeAtomic(content: string): Promise<Result<void, ProxyError>>;
 }
 
-export const createFsAuthFileStore = (path: string): AuthFileStore => ({
-  async read() {
-    try {
-      return ok(await readFile(path, "utf8"));
-    } catch {
-      return err({ kind: "auth", message: `cannot read codex auth file at ${path} — run \`codex login\`` });
-    }
-  },
-  async writeAtomic(content) {
-    const tmpPath = `${path}.subswitch-${process.pid}.tmp`;
-    // Helper: open tmpPath with O_EXCL; on EEXIST (stale temp from a prior crashed run),
-    // unlink the stale file and retry ONCE. If the retry also fails (e.g., because a
-    // concurrent process raced to recreate the path), the error propagates to the outer
-    // catch. This is a bounded, single-retry — not a loop.
-    //
-    // O_EXCL (the "x" in "wx") ensures the open fails if a file already exists at that
-    // path. Without it, an attacker who pre-creates this path keeps their own mode on the
-    // file and receives the token material before the rename places it over auth.json.
-    // 0o600 grants only the process owner read/write access on the freshly-created file.
-    // Cleanup idiom (unlink-in-catch) mirrors the makeRealFsDeps.writeFile in src/init.ts.
-    const openExclusive = async () => {
+export const createFsAuthFileStore = (path: string): AuthFileStore => {
+  // Reads, atomic replacement and coordination must refer to the same physical file.
+  // Renaming over the input alias would replace a file symlink and split the store.
+  const storagePath = nativeAuthFilePath(path);
+  return {
+    coordinationKey: `file:${storagePath}`,
+    async read() {
       try {
-        return await open(tmpPath, "wx", 0o600);
-      } catch (e: unknown) {
-        if ((e as { code?: string }).code !== "EEXIST") throw e;
-        // Stale temp from a prior crash or another process that did not clean up.
-        // Unlink it (the unlink may silently fail if another process races) then retry.
+        return ok(await readFile(storagePath, "utf8"));
+      } catch {
+        return err({ kind: "auth", message: `cannot read codex auth file at ${path} — run \`codex login\`` });
+      }
+    },
+    async writeAtomic(content) {
+      const tmpPath = `${storagePath}.subswitch-${process.pid}.tmp`;
+      // Helper: open tmpPath with O_EXCL; on EEXIST (stale temp from a prior crashed run),
+      // unlink the stale file and retry ONCE. If the retry also fails (e.g., because a
+      // concurrent process raced to recreate the path), the error propagates to the outer
+      // catch. This is a bounded, single-retry — not a loop.
+      //
+      // O_EXCL (the "x" in "wx") ensures the open fails if a file already exists at that
+      // path. Without it, an attacker who pre-creates this path keeps their own mode on the
+      // file and receives the token material before the rename places it over auth.json.
+      // 0o600 grants only the process owner read/write access on the freshly-created file.
+      // Cleanup idiom (unlink-in-catch) mirrors the makeRealFsDeps.writeFile in src/init.ts.
+      const openExclusive = async () => {
+        try {
+          return await open(tmpPath, "wx", 0o600);
+        } catch (e: unknown) {
+          if ((e as { code?: string }).code !== "EEXIST") throw e;
+          // Stale temp from a prior crash or another process that did not clean up.
+          // Unlink it (the unlink may silently fail if another process races) then retry.
+          await unlink(tmpPath).catch(() => undefined);
+          return open(tmpPath, "wx", 0o600);
+        }
+      };
+      try {
+        const handle = await openExclusive();
+        try {
+          await handle.writeFile(content, "utf8");
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+        await rename(tmpPath, storagePath);
+        return ok(undefined);
+      } catch {
         await unlink(tmpPath).catch(() => undefined);
-        return open(tmpPath, "wx", 0o600);
+        return err({ kind: "auth", message: `cannot write codex auth file at ${path}` });
       }
-    };
-    try {
-      const handle = await openExclusive();
-      try {
-        await handle.writeFile(content, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await rename(tmpPath, path);
-      return ok(undefined);
-    } catch {
-      await unlink(tmpPath).catch(() => undefined);
-      return err({ kind: "auth", message: `cannot write codex auth file at ${path}` });
-    }
-  },
-});
+    },
+  };
+};
 
 const decodeJwtPayload = (token: string): Record<string, unknown> | undefined => {
   const payload = token.split(".")[1];
@@ -140,6 +149,19 @@ const parseAuthFile = (raw: string): Result<AuthFile, ProxyError> => {
   return ok(parsed.data);
 };
 
+const accountIdentityFrom = (file: AuthFile): Result<string, ProxyError> => {
+  const accountId = file.tokens.account_id ?? jwtAccountId(file.tokens.access_token);
+  return accountId === undefined
+    ? err({ kind: "auth", message: "codex account id not found in auth file or token — run `codex login`" })
+    : ok(accountId);
+};
+
+/** The same effective identity used to authenticate, including native files without account_id. */
+export const readCodexAccountIdentity = (raw: string): Result<string, ProxyError> => {
+  const file = parseAuthFile(raw);
+  return file.ok ? accountIdentityFrom(file.value) : file;
+};
+
 interface CachedTokenMaterial {
   readonly material: CodexTokenMaterial;
   readonly expiresAtMs: number;
@@ -147,12 +169,10 @@ interface CachedTokenMaterial {
 
 const materialFrom = (file: AuthFile): Result<CachedTokenMaterial, ProxyError> => {
   const accessToken = file.tokens.access_token;
-  const accountId = file.tokens.account_id ?? jwtAccountId(accessToken);
-  if (accountId === undefined) {
-    return err({ kind: "auth", message: "codex account id not found in auth file or token — run `codex login`" });
-  }
+  const account = accountIdentityFrom(file);
+  if (!account.ok) return account;
   return ok({
-    material: { accessToken, accountId },
+    material: { accessToken, accountId: account.value },
     expiresAtMs: jwtExpiryMs(accessToken) ?? Number.POSITIVE_INFINITY,
   });
 };
@@ -260,10 +280,31 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
 
   /** Single-flight: concurrent callers share one refresh cycle. */
   private refresh(): Promise<Result<CodexTokenMaterial, ProxyError>> {
-    this.refreshInflight ??= this.doRefresh().finally(() => {
+    this.refreshInflight ??= this.coordinatedRefresh().finally(() => {
       this.refreshInflight = undefined;
     });
     return this.refreshInflight;
+  }
+
+  private async coordinatedRefresh(): Promise<Result<CodexTokenMaterial, ProxyError>> {
+    const raw = await this.store.read();
+    if (!raw.ok) return raw;
+    const file = parseAuthFile(raw.value);
+    if (!file.ok) return file;
+    const owner = createHash("sha256").update(JSON.stringify([
+      this.oauthTokenUrl,
+      file.value.tokens.account_id,
+      file.value.tokens.access_token,
+      file.value.tokens.refresh_token,
+    ])).digest("hex");
+    const result = await coordinateNativeRefresh(
+      "codex", this.store.coordinationKey, owner, () => this.doRefresh(),
+    );
+    if (result.ok) this.cached = {
+      material: result.value,
+      expiresAtMs: jwtExpiryMs(result.value.accessToken) ?? Number.POSITIVE_INFINITY,
+    };
+    return result;
   }
 
   private async doRefresh(): Promise<Result<CodexTokenMaterial, ProxyError>> {

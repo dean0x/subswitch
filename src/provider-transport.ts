@@ -86,29 +86,39 @@ export const createFrameWriter = (
  * truncated to `maxBytes` — a truncated body may not be valid JSON; the caller
  * must handle that possibility.
  */
-export const readBoundedText = async (body: Response["body"], maxBytes: number): Promise<string> => {
-  if (body === null) return "";
+export interface BoundedText { text: string; truncated: boolean; complete: boolean }
+export const readBoundedBody = async (body: Response["body"], maxBytes = 64 * 1024,
+  signal?: AbortSignal): Promise<BoundedText> => {
+  if (body === null) return { text: "", truncated: false, complete: true };
   const reader = body.getReader();
   const parts: Buffer[] = [];
   let total = 0;
+  let complete = false, truncated = false;
+  const abort = () => { void reader.cancel().catch(() => undefined); };
+  signal?.addEventListener("abort", abort, { once: true });
   try {
-    while (total < maxBytes) {
+    while (true) {
+      signal?.throwIfAborted();
       const { done, value } = await reader.read();
-      if (done) break;
-      parts.push(Buffer.from(value));
+      if (done) { complete = true; break; }
+      const remaining = maxBytes - total;
+      parts.push(Buffer.from(value.subarray(0, remaining)));
       total += value.byteLength;
+      if (total > maxBytes) { truncated = true; break; }
+      // At the exact boundary we must observe EOF before claiming a complete envelope.
     }
   } finally {
-    await reader.cancel().catch(() => undefined);
+    signal?.removeEventListener("abort", abort);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([reader.cancel().catch(() => undefined),
+      new Promise<void>(resolve => { timer = setTimeout(resolve, 100).unref(); })]);
+    clearTimeout(timer);
   }
-  // .slice(0, maxBytes) operates on a JS string, so the unit here is UTF-16 code
-  // units, not bytes. This is intentional: the enforcing byte bound is the read
-  // loop above (total < maxBytes on value.byteLength). The slice is a belt-and-
-  // suspenders trim for multi-byte sequences that straddle the chunk boundary and
-  // inflate the string past maxBytes — tolerable because the caller already guards
-  // against truncated JSON.
-  return Buffer.concat(parts).toString("utf8").slice(0, maxBytes);
+  return { text: Buffer.concat(parts).toString("utf8"), truncated, complete };
 };
+/** Compatibility wrapper. Routing classifiers always consume the completeness flags. */
+export const readBoundedText = async (body: Response["body"], maxBytes: number): Promise<string> =>
+  (await readBoundedBody(body, maxBytes)).text;
 
 /**
  * The two bounds on draining an upload the relay has already answered with a

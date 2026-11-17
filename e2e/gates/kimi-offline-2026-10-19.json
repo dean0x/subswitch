@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-19",
+  "evidenceClass": "synthetic",
+  "sourceBase": "0183d6de0edfc6229cbd54c932f76e2d136c5ffa",
+  "sourceBlobs": {
+    "package.json": "bf2a60cb80cb695755df7127b47e8c8a8561e5f0",
+    "src/routing/destination-catalog.ts": "af92833a9c66e78b004693d3455a49bc17b79c30",
+    "src/routing/routing-config.ts": "de3feba3890779971870f37a8b4e14cbd674870c",
+    "src/routing/profile-auth.ts": "84831bcff2abc77049eddb44a561ebd157c27d6c",
+    "test/unit/kimi-auth.test.ts": "2a14546324f0202f419370d36efd48c7c0b3826d",
+    "test/integration/kimi-qualification.test.ts": "bae74cc8ce7f639dccd7312dfa236a6d8bebff35",
+    "e2e/gates/kimi-readiness.md": "9e33b6d7c616b9748c0cd835925d9b24feb69136"
+  },
+  "scope": {
+    "vendorInferenceCalls": 0,
+    "nativeClientsExecuted": false,
+    "nativeCredentialStoresRead": false,
+    "sharedProxyChanged": false,
+    "otherCheckoutsChanged": false,
+    "network": "ephemeral loopback fixture only",
+    "credentials": "fabricated environment keys",
+    "clientState": "disposable fixture-owned directory"
+  },
+  "authentication": {
+    "supportedKimi": "environment coding-plan or Platform API key with explicit product/region",
+    "nativeKimiOAuth": "unsupported; no credential conversion implemented",
+    "beforeFixRegression": "Original audit: two unsupported OAuth profiles reached a fabricated authFile getter. Independent review: both fabricated Kimi OAuth products reused a pending supported refresh instead of rejecting.",
+    "afterFix": "Unsupported OAuth rejects before credential path, manager cache or pending-refresh cache access; refresh retains its rejected-promise API.",
+    "refreshReviewResolution": {
+      "finding": "KIMI-REVIEW-1",
+      "reviewedHead": "264dab7f31f62d7cc34149b3d0b26caeadd0b4c9",
+      "evidence": "Two warm pending-cache regressions fail before the entry guard and pass afterwards; two additional supported-provider regressions preserve deduplication, waiter cancellation and completed-cache cleanup.",
+      "realAuthOrNetworkUsed": false
+    }
+  },
+  "qualification": {
+    "command": "npm run probe:kimi:offline",
+    "tests": 27,
+    "passed": 27,
+    "failed": 0,
+    "skipped": 0,
+    "cases": {
+      "authBoundary": 10,
+      "productRegionProtocol": 8,
+      "toolContinuationAfterFallback": 2,
+      "recoveryWithParkedFallback": 1,
+      "nonFallbackAuthUnknownFailures": 3,
+      "redirectRefusal": 1,
+      "committedFailureNoSwitch": 1,
+      "disconnectCancellation": 1
+    },
+    "unknownQuotaCode": "HTTP429 usage_limit_reached stays unclassified; no guessed fallback"
+  },
+  "checks": {
+    "typecheck": "passed",
+    "fullSuite": {
+      "tests": 1158,
+      "passed": 1158,
+      "failed": 0,
+      "skipped": 0
+    },
+    "build": "passed",
+    "heavySuiteLock": "/usr/bin/lockf -t 0 on workspace heavy-tests.lock",
+    "review": "Independent read-only source review found KIMI-REVIEW-1; resolved with red/green warm-cache regressions. Author re-reviewed auth behavior and fabricated fixture/path/cache boundaries; no GitHub approval claimed.",
+    "targetedAuthAndRouting": {
+      "command": "node --import tsx --test --test-reporter=spec --test-timeout=30000 test/unit/kimi-auth.test.ts test/unit/wave1-auth-review.test.ts test/integration/kimi-qualification.test.ts",
+      "tests": 47,
+      "passed": 47,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "livePlan": {
+    "document": "kimi-readiness.md",
+    "executed": false,
+    "product": "kimi-code",
+    "region": "global",
+    "model": "kimi-for-coding",
+    "effort": "high",
+    "credentialReference": "SUBSWITCH_KIMI_CODE_KEY",
+    "maxInferenceAttempts": 18,
+    "maxRequestedOutputTokens": 4608,
+    "maxOutputTokensPerCall": 256,
+    "overallDeadlineSeconds": 420
+  },
+  "remaining": [
+    "approved live credential binding and allowance",
+    "supported native-client disposable configuration and explicit output-token cap",
+    "coordinator-qualified separate startup/restart continuity correction",
+    "recorded native Codex HTTP instruction-history follow-up gate",
+    "live Kimi relay protocol/tool/native orchestration and product-specific quota/recovery evidence"
+  ],
+  "notEstablished": [
+    "native OAuth integration",
+    "live Kimi contract",
+    "ChatGPT subscription live quota envelope",
+    "Platform access",
+    "K3 entitlement or subscription/API equivalence"
+  ],
+  "reviewFixBase": "264dab7f31f62d7cc34149b3d0b26caeadd0b4c9"
+}
