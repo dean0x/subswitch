@@ -7,7 +7,8 @@ import { ReverseState } from "../claude-state.js";
 import { ReasoningCache } from "../reasoning-cache.js";
 import { object } from "../plain-object.js";
 import { validateTargetCapabilities } from "./target-capabilities.js";
-import { foreignThinking, rememberThinking, sameThinking, thinkingSignature } from "./signed-thinking.js";
+import { foreignThinking, recordedThinking, rememberThinking, sameThinking, thinkingSignature } from "./signed-thinking.js";
+import { StagedCache } from "./replay-cache.js";
 import { validatesNativeThinking } from "./destination-catalog.js";
 import {
   renderResponsesHistory,
@@ -85,10 +86,7 @@ export function adaptRequest(request: RequestAdaptation): {
           const signature = thinkingSignature(b);
           const recorded =
             typeof signature === "string"
-              ? stage.get(
-                  "snapshot",
-                  `signature:${owner}:${conversation}:${signature}`,
-                )?.input[0]
+              ? recordedThinking(stage, signature, owner, conversation)
               : undefined;
           if (signature === undefined)
             throw new RoutingError("foreign_opaque_state", 409);
@@ -100,6 +98,7 @@ export function adaptRequest(request: RequestAdaptation): {
               throw new RoutingError("foreign_opaque_state", 409);
             // Anthropic validates cold history. Emitted provenance permits only its original
             // scope; failed/cancelled attempts never publish imported scoped blocks.
+            if (!(stage instanceof StagedCache)) throw new RoutingError("invalid_replay_stage", 500);
             rememberThinking(stage, owner, conversation, b);
           }
         }

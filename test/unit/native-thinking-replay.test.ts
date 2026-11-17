@@ -6,7 +6,7 @@ import { adaptRequest } from "../../src/routing/request-adapter.js";
 import { decodePortableHistory } from "../../src/routing/portable-history.js";
 import { foreignThinking, observeThinking, rememberThinking } from "../../src/routing/signed-thinking.js";
 import { StagedCache } from "../../src/routing/replay-cache.js";
-import type { AccessProfile, Item, WireProtocol } from "../../src/routing/routing-types.js";
+import { RoutingError, type AccessProfile, type Item, type WireProtocol } from "../../src/routing/routing-types.js";
 
 const profile: AccessProfile = {
   provider: "claude", product: "anthropic-api", billing: "api", account: "fabricated",
@@ -15,18 +15,18 @@ const profile: AccessProfile = {
 const thinking = { type: "thinking", thinking: "fabricated thought", signature: "fabricated-signature" };
 
 function adapt(options: {
-  block?: Item; stage?: ClaudeCache; allow?: boolean; profile?: AccessProfile;
+  block?: Item; blocks?: Item[]; stage?: ClaudeCache; allow?: boolean; profile?: AccessProfile;
   destination?: WireProtocol; priorOwner?: string; conversation?: string;
 } = {}) {
   const body = { model: "work", messages: [
-    { role: "assistant", content: [options.block ?? thinking] }, { role: "user", content: "continue" },
+    { role: "assistant", content: options.blocks ?? [options.block ?? thinking] }, { role: "user", content: "continue" },
   ] };
   return adaptRequest({
     body, profile: options.profile ?? profile,
     target: { profile: "fabricated", model: "claude-sonnet-5", effort: "high" },
     ingress: "messages", protocol: options.destination ?? "messages",
     transcript: decodePortableHistory(body, "messages"),
-    stage: options.stage ?? new ClaudeCache(), state: new ReverseState(),
+    stage: options.stage ?? new StagedCache(new ClaudeCache()), state: new ReverseState(),
     owner: "original-owner", conversation: options.conversation ?? "original-conversation",
     sessionId: "fabricated", allowNativeThinkingReplay: options.allow ?? true,
     ...(options.priorOwner ? { priorOwner: options.priorOwner } : {}),
@@ -66,11 +66,77 @@ describe("native thinking import boundary", () => {
   });
 
   it("preserves known conversation ownership while accepting a recorded exact replay", () => {
-    const stage = new ClaudeCache();
+    const stage = new StagedCache(new ClaudeCache());
     rememberThinking(stage, "original-owner", "original-conversation", thinking);
     assert.doesNotThrow(() => adapt({ stage }));
     assert.throws(() => adapt({ stage, conversation: "another-conversation" }), /foreign_opaque_state/);
     assert.throws(() => adapt({ stage, block: { ...thinking, thinking: "tampered" } }), /foreign_opaque_state/);
+  });
+
+  it("keeps 1025 emitted native signatures in 1025 shared entries", () => {
+    const shared = new ClaudeCache({ maxEntries: 2048, maxBytes: 32 * 1024 * 1024 });
+    for (let index = 0; index < 1025; index++) {
+      const stage = new StagedCache(shared);
+      const block = { ...thinking, signature: `emitted-${index}` };
+      observeThinking(stage, "original-owner", "original-conversation", block);
+      rememberThinking(stage, "original-owner", "original-conversation", block);
+      stage.commit();
+    }
+    assert.equal(shared.size, 1025);
+    assert.doesNotThrow(() => adapt({ stage: new StagedCache(shared),
+      block: { ...thinking, signature: "emitted-0" }, allow: false }));
+  });
+
+  it("imports 2048 native signatures in the existing replay partition", () => {
+    const shared = new ClaudeCache({ maxEntries: 2048, maxBytes: 32 * 1024 * 1024 });
+    const stage = new StagedCache(shared);
+    const blocks = Array.from({ length: 2048 }, (_, index) => ({ ...thinking, signature: `import-${index}` }));
+    assert.doesNotThrow(() => adapt({ stage, blocks }));
+    stage.preflight();
+    stage.commit();
+    assert.equal(shared.size, 2048);
+    assert.doesNotThrow(() => adapt({ stage: new StagedCache(shared), blocks, allow: false }));
+  });
+
+  for (const bound of ["entries", "bytes"] as const) {
+    it(`checks the complete import ${bound} budget before any shared write`, () => {
+      const shared = new ClaudeCache({ maxEntries: bound === "entries" ? 2 : 2048,
+        maxBytes: bound === "bytes" ? 1024 : 32 * 1024 * 1024 });
+      shared.put("adapted", "prior", true);
+      const bytes = shared.byteSize;
+      const stage = new StagedCache(shared);
+      const blocks = Array.from({ length: 3 }, (_, index) => ({ ...thinking,
+        signature: `import-${index}`, thinking: bound === "bytes" ? "x".repeat(512) : "thought" }));
+      assert.doesNotThrow(() => adapt({ stage, blocks }));
+      assert.equal(shared.size, 1, "imports must stay local until budget preflight");
+      assert.equal(shared.byteSize, bytes);
+      assert.throws(() => stage.preflight(), (error: unknown) => error instanceof RoutingError &&
+        error.code === "continuation_store_full" && error.status === 503);
+      stage.discard();
+      assert.equal(shared.size, 1);
+      assert.equal(shared.byteSize, bytes);
+      assert.equal(shared.get("adapted", "prior"), true);
+    });
+  }
+
+  it("rejects a non-staged import without an ownership write", () => {
+    const shared = new ClaudeCache();
+    assert.throws(() => {
+      // @ts-expect-error Client imports require an attempt-local stage.
+      rememberThinking(shared, "original-owner", "original-conversation", thinking);
+    }, (error: unknown) => error instanceof RoutingError && error.code === "invalid_replay_stage");
+    assert.equal(shared.size, 0);
+    assert.equal(shared.byteSize, 0);
+  });
+
+  it("maps a full local import partition to 503 without shared residue", () => {
+    const shared = new ClaudeCache(), stage = new StagedCache(shared);
+    const blocks = Array.from({ length: 2049 }, (_, index) => ({ ...thinking, signature: `import-${index}` }));
+    assert.throws(() => adapt({ stage, blocks }), (error: unknown) => error instanceof RoutingError &&
+      error.code === "continuation_store_full" && error.status === 503);
+    stage.discard();
+    assert.equal(shared.size, 0);
+    assert.equal(shared.byteSize, 0);
   });
 
   it("gives unvalidated emitted signatures no native ownership claim", () => {
@@ -96,9 +162,11 @@ describe("native thinking import boundary", () => {
     const shared = new ClaudeCache({ maxEntries: 1, maxBytes: 4096 }, true);
     const stage = new StagedCache(shared);
     stage.reserveSnapshot("claim", { request: { owner: "original" }, input: [] });
+    stage.preflight();
     assert.equal(shared.size, 1);
     const competing = new StagedCache(shared);
-    assert.throws(() => competing.reserveSnapshot("other-claim", { request: {}, input: [] }), /continuation_store_full/);
+    competing.reserveSnapshot("other-claim", { request: {}, input: [] });
+    assert.throws(() => competing.preflight(), /continuation_store_full/);
     competing.discard();
     stage.put("snapshot", "scoped-block", { request: {}, input: [thinking] });
     assert.throws(() => stage.commit(), /continuation_store_full/);

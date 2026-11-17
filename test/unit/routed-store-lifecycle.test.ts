@@ -231,6 +231,55 @@ describe("routed replay lifetime", () => {
     assert.equal(shared.get("replay", "abandoned"), undefined);
   });
 
+  it("maps local write exhaustion to 503 and releases the active reservation", () => {
+    const shared = new ClaudeCache(), stage = new StagedCache(shared);
+    stage.reserveSnapshot("claim", { request: { owner: "original" }, input: [] });
+    stage.preflight();
+    assert.equal(shared.size, 1);
+    for (let index = 1; index < 2048; index++) stage.put("adapted", `local-${index}`, true);
+    assert.throws(() => stage.put("adapted", "overflow", true),
+      (error: unknown) => error instanceof RoutingError && error.code === "continuation_store_full" && error.status === 503);
+    stage.discard();
+    assert.equal(shared.size, 0);
+    assert.equal(shared.byteSize, 0);
+  });
+
+  it("maps active-history read exhaustion to the same 503 without a shared write", () => {
+    const shared = new ClaudeCache(), stage = new StagedCache(shared);
+    shared.put("adapted", "prior", true);
+    const bytes = shared.byteSize;
+    for (let index = 0; index < 2048; index++) stage.put("adapted", `local-${index}`, true);
+    assert.throws(() => stage.get("adapted", "prior"),
+      (error: unknown) => error instanceof RoutingError && error.code === "continuation_store_full" && error.status === 503);
+    stage.discard();
+    assert.equal(shared.size, 1);
+    assert.equal(shared.byteSize, bytes);
+    assert.equal(shared.get("adapted", "prior"), true);
+  });
+
+  for (const operation of ["put", "reserveSnapshot", "retainSnapshot", "commit"] as const) {
+    it(`refuses ${operation} after discard without changing shared state`, () => {
+      const shared = new ClaudeCache(), stage = new StagedCache(shared);
+      shared.put("adapted", "prior", true);
+      const bytes = shared.byteSize;
+      stage.reserveSnapshot("claim", { request: { owner: "original" }, input: [] });
+      stage.preflight();
+      stage.discard();
+      const write = () => {
+        if (operation === "put") stage.put("snapshot", "after-discard", { request: {}, input: [] });
+        else if (operation === "commit") stage.commit();
+        else stage[operation]("after-discard", { request: {}, input: [] });
+      };
+      assert.throws(write, (error: unknown) => error instanceof RoutingError &&
+        error.code === "request_cancelled" && error.status === 499);
+      assert.equal(shared.size, 1);
+      assert.equal(shared.byteSize, bytes);
+      assert.equal(shared.get("adapted", "prior"), true);
+      assert.equal(shared.get("snapshot", "claim"), undefined);
+      assert.equal(shared.get("snapshot", "after-discard"), undefined);
+    });
+  }
+
   it("checks a strict shared budget before inference without publishing or evicting", () => {
     const shared = new ClaudeCache({ maxEntries: 1, maxBytes: 4096 }, true);
     shared.put("adapted", "prior", true);

@@ -9,6 +9,7 @@ import { RoutingError } from "./routing-types.js";
 /** Attempt-local replay writes; exclusive pending claims roll back on abandonment. */
 export class StagedCache extends ClaudeCache {
   private writes = new Map<string, CacheWrite>();
+  private pendingReservations = new Map<string, Snapshot>();
   private reservations = new Map<string, Snapshot>();
   private closed = false;
   constructor(private shared: ClaudeCache) {
@@ -24,7 +25,11 @@ export class StagedCache extends ClaudeCache {
     if (value === undefined) return undefined;
     // Active history stays attempt-local even if another response reclaims shared LRU state.
     const snapshot = structuredClone(value);
-    super.put(kind, id, snapshot);
+    try {
+      super.put(kind, id, snapshot);
+    } catch {
+      throw new RoutingError("continuation_store_full", 503);
+    }
     return snapshot;
   }
   override put<K extends keyof ClaudeCacheValues>(
@@ -33,30 +38,42 @@ export class StagedCache extends ClaudeCache {
     value: ClaudeCacheValues[K],
   ): void {
     if (this.closed) throw new RoutingError("request_cancelled", 499);
-    super.put(kind, id, value);
+    try {
+      super.put(kind, id, value);
+    } catch {
+      throw new RoutingError("continuation_store_full", 503);
+    }
     this.writes.set(`${kind}:${id}`, { kind, id, value } as CacheWrite);
   }
   preflight(): void {
+    if (this.closed) throw new RoutingError("request_cancelled", 499);
+    for (const id of this.pendingReservations.keys())
+      if (this.shared.get("snapshot", id))
+        throw new RoutingError("foreign_opaque_state", 409);
+    const pending: CacheWrite[] = [...this.pendingReservations].map(([id, value]) => ({
+      kind: "snapshot", id, value,
+    }));
     try {
-      this.shared.checkBatch([...this.writes.values()]);
+      const writes = [...this.writes.values()];
+      // Bound the complete import batch and its pending form before any shared write.
+      this.shared.checkBatch(writes);
+      this.shared.checkBatch([...writes, ...pending]);
+      this.shared.putBatch(pending);
     } catch {
       throw new RoutingError("continuation_store_full", 503);
     }
+    for (const [id, value] of this.pendingReservations) this.reservations.set(id, value);
+    this.pendingReservations.clear();
   }
-  /** Exclusive claims use the existing shared byte/entry budget before dispatch. */
+  /** Import claims stay local until preflight checks the full byte/entry budget. */
   reserveSnapshot(id: string, value: Snapshot): void {
-    if (this.shared.get("snapshot", id))
+    if (this.closed) throw new RoutingError("request_cancelled", 499);
+    if (this.shared.get("snapshot", id) || this.pendingReservations.has(id))
       throw new RoutingError("foreign_opaque_state", 409);
     this.put("snapshot", id, value);
-    const reservation = {
-      request: { ...value.request, pending: true }, input: value.input,
-    };
-    try {
-      this.shared.put("snapshot", id, reservation);
-    } catch {
-      throw new RoutingError("continuation_store_full", 503);
-    }
-    this.reservations.set(id, reservation);
+    this.pendingReservations.set(id, {
+      request: { ...value.request, pending: true }, input: [],
+    });
   }
   /** Observed provenance survives discard; it is not a usable scoped replay record. */
   retainSnapshot(id: string, value: Snapshot): void {
@@ -66,11 +83,13 @@ export class StagedCache extends ClaudeCache {
     } catch {
       throw new RoutingError("continuation_store_full", 503);
     }
+    this.pendingReservations.delete(id);
     this.reservations.delete(id);
   }
   commit(): void {
     try {
       if (this.closed) throw new RoutingError("request_cancelled", 499);
+      if (this.pendingReservations.size) this.preflight();
       // Validation and publication are synchronous. A foreign attempt cannot acquire
       // this signature between the ownership check and the atomic batch write.
       for (const [id, reservation] of this.reservations)
@@ -89,6 +108,7 @@ export class StagedCache extends ClaudeCache {
     for (const [id, reservation] of this.reservations)
       if (this.shared.get("snapshot", id) === reservation)
         this.shared.delete("snapshot", id);
+    this.pendingReservations.clear();
     this.reservations.clear();
     this.writes.clear();
     this.closed = true;
