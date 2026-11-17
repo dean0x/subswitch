@@ -102,8 +102,13 @@ describe("native Messages aggregation", () => {
       await assert.rejects(async () => {
         for await (const event of validatedProviderEvents(response, profile, "messages", controller.signal, controller,
           systemClock, final => completed.push(final))) emitted.push(JSON.parse(event.data) as Item);
-      }, (error: unknown) => error instanceof RoutingError && error.status === 502 &&
-        ["invalid_provider_block", "invalid_provider_delta"].includes(error.code));
+      }, (error: unknown) => {
+        assert.ok(error instanceof RoutingError);
+        assert.equal(error.status, 502);
+        assert.equal(error.code, testCase.code);
+        assert.equal(error.message, testCase.code);
+        return true;
+      });
       assert.deepEqual(completed, []);
       assert.equal(emitted.some(event => event.type === "content_block_stop" && event.index === 1), false);
       assert.equal(emitted.some(event => event.type === "message_stop"), false);
