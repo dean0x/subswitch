@@ -13,6 +13,7 @@ import { createRawHttpForwarder } from "../../src/raw-http-passthrough.js";
 import { createOpenaiPassthrough } from "../../src/openai-passthrough.js";
 import { loadConfig } from "../../src/config.js";
 import { SharedRouting } from "../../src/routing/shared-routing.js";
+import { AttemptFailure } from "../../src/routing/attempt-failure.js";
 import {
   LimitRecorder,
   readLimitObservations,
@@ -451,16 +452,22 @@ describe("explicit route observations and inspection", () => {
     );
     try {
       const action = router.actions.create("codex", "thread");
-      await assert.rejects(async () => {
-        for await (const event of router.events(
-          { model: "work", input: "synthetic" },
-          "codex",
-          "work",
-          new AbortController().signal,
-          router.actions.context(action.id, "codex"),
-        ))
-          void event;
-      });
+      await assert.rejects(
+        async () => {
+          for await (const event of router.events(
+            { model: "work", input: "synthetic" },
+            "codex",
+            "work",
+            new AbortController().signal,
+            router.actions.context(action.id, "codex"),
+          ))
+            void event;
+        },
+        (error: unknown) =>
+          error instanceof AttemptFailure &&
+          error.failure.kind === "unknown" &&
+          error.failure.status === 403,
+      );
       assert.equal(calls, 1);
       assert.equal(records.length, 1);
       assert.equal(records[0]!.candidate, "possible-limit");
@@ -490,15 +497,21 @@ describe("explicit route observations and inspection", () => {
       { CODE_KEY: "synthetic" },
     );
     try {
-      await assert.rejects(async () => {
-        for await (const event of router.events(
-          { model: "work" },
-          "codex",
-          "work",
-          new AbortController().signal,
-        ))
-          void event;
-      });
+      await assert.rejects(
+        async () => {
+          for await (const event of router.events(
+            { model: "work" },
+            "codex",
+            "work",
+            new AbortController().signal,
+          ))
+            void event;
+        },
+        (error: unknown) =>
+          error instanceof AttemptFailure &&
+          error.failure.kind === "quota" &&
+          error.failure.status === 403,
+      );
       const credential = await router.attempts.auth.get(
           "code",
           new AbortController().signal,
@@ -532,16 +545,22 @@ describe("explicit route observations and inspection", () => {
       );
       try {
         const action = router.actions.create("codex", "thread");
-        await assert.rejects(async () => {
-          for await (const event of router.events(
-            { model: "work" },
-            "codex",
-            "work",
-            new AbortController().signal,
-            router.actions.context(action.id, "codex"),
-          ))
-            void event;
-        });
+        await assert.rejects(
+          async () => {
+            for await (const event of router.events(
+              { model: "work" },
+              "codex",
+              "work",
+              new AbortController().signal,
+              router.actions.context(action.id, "codex"),
+            ))
+              void event;
+          },
+          (error: unknown) =>
+            error instanceof AttemptFailure &&
+            error.failure.kind === "unknown" &&
+            error.failure.status === 429,
+        );
       } finally {
         router.close();
       }

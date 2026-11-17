@@ -418,7 +418,13 @@ describe("Wave 1 native action lifecycle", () => {
           "first",
         );
         assert.equal((await rig.control(`/${action.id}/cancel`)).status, 200);
-        await assert.rejects(reader.read());
+        await assert.rejects(reader.read(), (error: unknown) =>
+          error instanceof TypeError &&
+          error.message === "terminated" &&
+          error.cause instanceof Error &&
+          "code" in error.cause &&
+          error.cause.code === "UND_ERR_SOCKET",
+        );
         await until(() => upstreamClosed);
       } finally {
         await rig.close();
@@ -475,7 +481,13 @@ describe("Wave 1 native action lifecycle", () => {
     try {
       const action = await rig.action(),
         request = post(rig, action.ingressPrefix);
-      const rejected = assert.rejects(request);
+      const rejected = assert.rejects(request, (error: unknown) =>
+        error instanceof TypeError &&
+        error.message === "fetch failed" &&
+        error.cause instanceof Error &&
+        "code" in error.cause &&
+        error.cause.code === "UND_ERR_SOCKET",
+      );
       await until(() => rig.authCalls === 1);
       assert.equal((await rig.control(`/${action.id}/cancel`)).status, 200);
       await rejected;
