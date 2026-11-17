@@ -21,7 +21,13 @@ export async function inspectKimiProfiles(profiles: Readonly<Record<string, Acce
       continue;
     }
     try {
-      const record = await createKimiAuthStore(profile.credential.authFile).read(AbortSignal.timeout(1000));
+      const store = createKimiAuthStore(profile.credential.authFile), signal = AbortSignal.timeout(1000);
+      if (await store.inspectLock(signal)) {
+        write(`${id} OAuth: lock present; renewal blocked; inspect the managed store lock before retry`);
+        exit = 1;
+        continue;
+      }
+      const record = await store.read(signal);
       if (record.region !== profile.region) throw new Error("region");
       write(`${id} OAuth: ${record.tokens.expires_at * 1000 > Date.now() ? "stored" : "expired (refresh required)"}; service identity acceptance unverified`);
     } catch { write(`${id} OAuth: unavailable (explicit owned store required)`); exit = 1; }

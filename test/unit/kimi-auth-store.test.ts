@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, it } from "node:test";
 import { createKimiAuthStore, type KimiAuthRecord } from "../../src/kimi-auth-store.js";
+import { inspectKimiProfiles } from "../../src/kimi-doctor.js";
+import type { AccessProfile } from "../../src/routing/routing-types.js";
 
 const signal = () => new AbortController().signal;
 const fabricated = (revision = randomUUID()): KimiAuthRecord => ({
@@ -32,6 +34,30 @@ describe("owned Kimi credential store", () => {
       assert.throws(() => createKimiAuthStore(path), /kimi_auth_store_invalid_path/);
     }
   });
+
+  it("refuses Windows storage before credential access or directory creation", async () => fixture(async (directory, authFile) => {
+    const { store, value } = await seed(authFile);
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      assert.throws(() => createKimiAuthStore(authFile), { message: "kimi_auth_store_platform_unsupported" });
+      await assert.rejects(store.read(signal()), { message: "kimi_auth_store_platform_unsupported" });
+      await assert.rejects(store.write(fabricated(), signal()), { message: "kimi_auth_store_platform_unsupported" });
+      await assert.rejects(store.withLock(async () => assert.fail("unsupported lock"), signal()), { message: "kimi_auth_store_platform_unsupported" });
+      assert.throws(() => createKimiAuthStore(join(directory, "absent", "auth.json")), { message: "kimi_auth_store_platform_unsupported" });
+    } finally { Object.defineProperty(process, "platform", platform); }
+    assert.deepEqual(await store.read(signal()), value);
+    assert.deepEqual(await readdir(directory), ["owned"]);
+    assert.deepEqual(await readdir(join(directory, "owned")), ["auth.json"]);
+  }));
+
+  it("refuses storage when the platform has no uid API", async () => fixture(async (directory, authFile) => {
+    const getuid = Object.getOwnPropertyDescriptor(process, "getuid")!;
+    Object.defineProperty(process, "getuid", { value: undefined });
+    try { assert.throws(() => createKimiAuthStore(authFile), { message: "kimi_auth_store_platform_unsupported" }); }
+    finally { Object.defineProperty(process, "getuid", getuid); }
+    assert.deepEqual(await readdir(directory), []);
+  }));
 
   it("reports missing read-only state without creating the directory or lock", async () => fixture(async (directory, authFile) => {
     const store = createKimiAuthStore(authFile);
@@ -202,6 +228,53 @@ describe("owned Kimi credential store", () => {
     assert.equal((await lstat(`${authFile}.lock`)).mode & 0o777, 0o644);
     await assert.rejects(store.withLock(async () => undefined, signal()), /kimi_auth_store_unsafe_path/);
     assert.equal((await lstat(`${authFile}.lock`)).mode & 0o777, 0o644);
+  }));
+
+  for (const mode of [0o720, 0o702]) it(`rejects writable ancestor mode ${mode.toString(8)} without repair`, async () => fixture(async (directory, authFile) => {
+    const { store, value } = await seed(authFile);
+    await chmod(directory, mode);
+    try {
+      assert.equal((await lstat(directory)).mode & 0o7777, mode);
+      await assert.rejects(store.read(signal()), /kimi_auth_store_unsafe_path/);
+      await assert.rejects(store.write(fabricated(), signal()), /kimi_auth_store_unsafe_path/);
+      assert.equal((await lstat(directory)).mode & 0o7777, mode);
+      assert.deepEqual(await readdir(join(directory, "owned")), ["auth.json"]);
+    } finally { await chmod(directory, 0o700); }
+    assert.deepEqual(await store.read(signal()), value);
+  }));
+
+  it("allows sticky writable ancestors without changing their modes", async () => fixture(async (directory, authFile) => {
+    await chmod(directory, 0o1777);
+    const { store, value } = await seed(authFile);
+    assert.deepEqual(await store.read(signal()), value);
+    assert.equal((await lstat(directory)).mode & 0o7777, 0o1777);
+    assert.deepEqual(await readdir(join(directory, "owned")), ["auth.json"]);
+  }));
+
+  it("removes its new lock after mode validation fails and permits a later writer", async () => fixture(async (_directory, authFile) => {
+    const { store, value } = await seed(authFile);
+    const mask = process.umask(0o777);
+    try {
+      await assert.rejects(store.withLock(async () => assert.fail("invalid lock accepted"), signal()), /kimi_auth_store_unsafe_path/);
+    } finally { process.umask(mask); }
+    assert.deepEqual(await readdir(join(authFile, "..")), ["auth.json"]);
+    await store.withLock(async () => assert.deepEqual(await store.read(signal()), value), signal());
+    assert.deepEqual(await store.read(signal()), value);
+  }));
+
+  it("doctor reports a retained managed lock without changing files or exposing paths", async () => fixture(async (_directory, authFile) => {
+    const { value } = await seed(authFile);
+    const profile: AccessProfile = { provider: "kimi", product: "kimi-code", region: "global", billing: "subscription", account: "synthetic",
+      credential: { kind: "native-oauth", authFile } };
+    const lines: string[] = [];
+    assert.equal(await inspectKimiProfiles({ managed: profile }, line => lines.push(line)), 0);
+    await writeFile(`${authFile}.lock`, "synthetic-holder", { mode: 0o600 });
+    assert.equal(await inspectKimiProfiles({ managed: profile }, line => lines.push(line)), 1);
+    assert.equal(lines.at(-1), "managed OAuth: lock present; renewal blocked; inspect the managed store lock before retry");
+    assert.doesNotMatch(lines.join("\n"), /synthetic-access|synthetic-refresh|synthetic-holder|auth\.json|subswitch-kimi-store/);
+    assert.equal(await readFile(`${authFile}.lock`, "utf8"), "synthetic-holder");
+    assert.deepEqual(JSON.parse(await readFile(authFile, "utf8")), value);
+    assert.deepEqual((await readdir(join(authFile, ".."))).sort(), ["auth.json", "auth.json.lock"]);
   }));
 
   it("checks literal backslash directory names on POSIX without treating them as separators", { skip: process.platform === "win32" }, async () => fixture(async (directory) => {

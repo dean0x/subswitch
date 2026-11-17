@@ -29,12 +29,18 @@ export interface NativeAttempt {
   failures: number;
 }
 
+function storageUid(): number {
+  if (process.platform === "win32" || typeof process.getuid !== "function") throw nativeFailure("platform_unsupported");
+  return process.getuid();
+}
 function safeNode(stat: Stats, directory: boolean, privateMode = true): void {
+  const uid = storageUid();
   if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1) ||
-      (process.platform !== "win32" && (stat.uid !== process.getuid?.() ||
-        (privateMode ? (stat.mode & 0o7777) !== (directory ? 0o700 : 0o600) : (stat.mode & 0o022) !== 0)))) throw nativeFailure("unsafe_path");
+      stat.uid !== uid ||
+      (privateMode ? (stat.mode & 0o7777) !== (directory ? 0o700 : 0o600) : (stat.mode & 0o022) !== 0)) throw nativeFailure("unsafe_path");
 }
 async function directories(directory: string, signal: AbortSignal, privateMode = true): Promise<Map<string, Stats>> {
+  const uid = storageUid();
   const result = new Map<string, Stats>(), root = parse(directory).root;
   let current = root;
   for (const part of ["", ...directory.slice(root.length).split(sep).filter(Boolean)]) {
@@ -43,8 +49,8 @@ async function directories(directory: string, signal: AbortSignal, privateMode =
     const stat = await lstat(current);
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw nativeFailure("unsafe_path");
     if (current === directory) safeNode(stat, true, privateMode);
-    else if (process.platform !== "win32" && ((stat.uid !== process.getuid?.() && stat.uid !== 0) ||
-      ((stat.mode & 0o022) !== 0 && (stat.mode & 0o1000) === 0))) throw nativeFailure("unsafe_path");
+    else if ((stat.uid !== uid && stat.uid !== 0) ||
+      ((stat.mode & 0o022) !== 0 && (stat.mode & 0o1000) === 0)) throw nativeFailure("unsafe_path");
     result.set(current, stat);
   }
   return result;
@@ -124,7 +130,6 @@ export interface NativeStoreHooks {
  * lease is preserved. Verify ownership at every persistence boundary.
  */
 export async function withNativeLease<T>(authFile: string, signal: AbortSignal, operation: (lease: NativeLease) => Promise<T>, hooks?: NativeStoreHooks): Promise<T> {
-  if (process.platform === "win32") throw nativeFailure("locking_unsupported");
   const parents = await directories(dirname(authFile), signal);
   const home = dirname(dirname(authFile)), directory = join(home, "oauth"), name = basename(authFile, ".json");
   try { await mkdir(directory, { mode: 0o700 }); } catch (error) { if (!hasCode(error, "EEXIST")) throw error; }

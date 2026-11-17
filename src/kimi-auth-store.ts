@@ -30,6 +30,11 @@ export interface KimiAuthStore {
   compareAndSwap(expectedRevision: string, next: KimiAuthRecord, signal: AbortSignal): Promise<boolean>;
 }
 
+export interface InspectableKimiAuthStore extends KimiAuthStore {
+  /** Read-only presence check. Never opens, acquires or removes a lock. */
+  inspectLock(signal: AbortSignal): Promise<boolean>;
+}
+
 const MAX_BYTES = 64 * 1024;
 const LOCK_WAIT_MS = 5_000;
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
@@ -38,6 +43,10 @@ function fail(code: string): Error {
   const error = new Error(`kimi_auth_store_${code}`);
   safeErrors.add(error);
   return error;
+}
+function storageUid(): number {
+  if (process.platform === "win32" || typeof process.getuid !== "function") throw fail("platform_unsupported");
+  return process.getuid();
 }
 function cancelled(signal: AbortSignal): void {
   if (!signal.aborted) return;
@@ -85,24 +94,24 @@ interface Lock { stat: Stats; active: boolean; observed?: Snapshot }
  * owned by this uid or root. Writable ancestors require sticky-bit protection.
  * Cross-process writers must use the lock. No stale lock is ever taken over.
  */
-export function createKimiAuthStore(authFile: string): KimiAuthStore {
+export function createKimiAuthStore(authFile: string): InspectableKimiAuthStore {
+  const uid = storageUid();
   if (typeof authFile !== "string" || !isAbsolute(authFile) || resolve(authFile) !== authFile || authFile === parse(authFile).root ||
       authFile.includes("\0")) throw fail("invalid_path");
   const directory = dirname(authFile), lockFile = `${authFile}.lock`;
   const context = new AsyncLocalStorage<Lock>();
-  const uid = process.getuid?.();
-  const posix = process.platform !== "win32";
   let directoryIdentity: Stats | undefined;
 
   function privateNode(stat: Stats, directoryNode: boolean): void {
     if (stat.isSymbolicLink() || (directoryNode ? !stat.isDirectory() : !stat.isFile()) ||
         (!directoryNode && stat.nlink !== 1) ||
-        (posix && (stat.uid !== uid || (stat.mode & 0o7777) !== (directoryNode ? 0o700 : 0o600)))) {
+        stat.uid !== uid || (stat.mode & 0o7777) !== (directoryNode ? 0o700 : 0o600)) {
       throw fail("unsafe_path");
     }
   }
 
   async function checkDirectory(create: boolean, signal: AbortSignal): Promise<void> {
+    storageUid();
     const root = parse(directory).root;
     let current = root;
     for (const part of ["", ...directory.slice(root.length).split(sep).filter(Boolean)]) {
@@ -121,8 +130,8 @@ export function createKimiAuthStore(authFile: string): KimiAuthStore {
         privateNode(stat, true);
         if (directoryIdentity && !sameFile(directoryIdentity, stat)) throw fail("changed");
         directoryIdentity = stat;
-      } else if (posix && ((stat.uid !== uid && stat.uid !== 0) ||
-          ((stat.mode & 0o022) !== 0 && (stat.mode & 0o1000) === 0))) {
+      } else if ((stat.uid !== uid && stat.uid !== 0) ||
+          ((stat.mode & 0o022) !== 0 && (stat.mode & 0o1000) === 0)) {
         throw fail("unsafe_path");
       }
     }
@@ -180,7 +189,7 @@ export function createKimiAuthStore(authFile: string): KimiAuthStore {
   }
 
   async function withLock<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
-    let handle: FileHandle | undefined, lock: Lock | undefined;
+    let handle: FileHandle | undefined, lock: Lock | undefined, created: Stats | undefined;
     try {
       cancelled(signal);
       if (context.getStore()?.active) throw fail("lock_required");
@@ -200,9 +209,9 @@ export function createKimiAuthStore(authFile: string): KimiAuthStore {
           catch { cancelled(signal); throw fail("io"); }
           continue;
         }
-        const stat = await handle.stat();
-        privateNode(stat, false);
-        lock = { stat, active: true };
+        created = await handle.stat();
+        privateNode(created, false);
+        lock = { stat: created, active: true };
         break;
       }
       const held = lock;
@@ -215,6 +224,11 @@ export function createKimiAuthStore(authFile: string): KimiAuthStore {
       if (lock) lock.active = false;
       try {
         if (lock) await removeOwned(lockFile, lock.stat);
+        else if (created) {
+          // O_EXCL and the open descriptor prove identity even if mode validation fails.
+          const current = await optionalStat(lockFile);
+          if (current && sameFile(created, current)) await unlink(lockFile);
+        }
       } catch { /* Never remove a replaced lock, or disclose cleanup errors. */ }
       await handle?.close().catch(() => undefined);
     }
@@ -257,6 +271,14 @@ export function createKimiAuthStore(authFile: string): KimiAuthStore {
 
   return {
     coordinationKey: `kimi-owned:${authFile}`,
+    async inspectLock(signal) {
+      try {
+        await checkDirectory(false, signal);
+        const present = await optionalStat(lockFile);
+        cancelled(signal);
+        return present !== undefined;
+      } catch (error) { cancelled(signal); throw sanitized(error); }
+    },
     async read(signal) {
       try {
         const value = await snapshot(signal), lock = context.getStore();

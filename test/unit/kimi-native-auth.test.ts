@@ -1,5 +1,6 @@
 /** Fabricated private files only. No installed client, native home or network. */
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { renameSync, writeFileSync } from "node:fs";
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { KimiNativeAuthManager, kimiNativeTokenFilename } from "../../src/kimi-native-auth.js";
 import { inspectKimiProfiles } from "../../src/kimi-doctor.js";
+import { readNativeAttempt, readNativeSnapshot, withNativeLease } from "../../src/kimi-native-store.js";
 import { loadConfig } from "../../src/config.js";
 import { ProfileAuth } from "../../src/routing/profile-auth.js";
 import { RoutedAttempts } from "../../src/routing/routed-attempt.js";
@@ -195,6 +197,59 @@ test("wrong region and unsupported slots are rejected before reading files", () 
   for (const path of ["relative/credentials/kimi-code.json", "/fabricated/credentials/kimi-code.json", "/fabricated/other/" + kimiNativeTokenFilename("global"), "/fabricated/credentials/../credentials/" + kimiNativeTokenFilename("global"), "/fabricated/credentials/" + kimiNativeTokenFilename("global") + "\0"]) {
     assert.throws(() => new KimiNativeAuthManager(path, "global"), /kimi_native_region_store_mismatch/);
   }
+});
+
+test("native storage refuses Windows before any credential or renewal access", async t => {
+  const { root, directory, authFile, raw } = await fixture(t);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    for (const path of [authFile, join(root, "absent", "auth.json")]) {
+      await assert.rejects(readNativeSnapshot(path, signal()), { message: "kimi_native_platform_unsupported" });
+      await assert.rejects(readNativeAttempt(path, signal()), { message: "kimi_native_platform_unsupported" });
+      await assert.rejects(withNativeLease(path, signal(), async () => assert.fail("unsupported lease")), { message: "kimi_native_platform_unsupported" });
+    }
+  } finally { Object.defineProperty(process, "platform", platform); }
+  assert.equal(await readFile(authFile, "utf8"), raw);
+  assert.deepEqual(await readdir(root), ["credentials"]);
+  assert.deepEqual(await readdir(directory), [kimiNativeTokenFilename("global")]);
+});
+
+test("native storage refuses platforms without a uid API", async t => {
+  const { root, authFile } = await fixture(t);
+  const getuid = Object.getOwnPropertyDescriptor(process, "getuid")!;
+  Object.defineProperty(process, "getuid", { value: undefined });
+  try {
+    await assert.rejects(readNativeSnapshot(authFile, signal()), { message: "kimi_native_platform_unsupported" });
+    await assert.rejects(readNativeAttempt(authFile, signal()), { message: "kimi_native_platform_unsupported" });
+    await assert.rejects(withNativeLease(authFile, signal(), async () => assert.fail("unsupported lease")), { message: "kimi_native_platform_unsupported" });
+  } finally { Object.defineProperty(process, "getuid", getuid); }
+  assert.deepEqual(await readdir(root), ["credentials"]);
+});
+
+for (const mode of [0o720, 0o702]) test(`native storage rejects writable ancestor mode ${mode.toString(8)} without repair`, async t => {
+  const { root, directory, authFile, raw } = await fixture(t);
+  await chmod(root, mode);
+  try {
+    assert.equal((await lstat(root)).mode & 0o7777, mode);
+    await assert.rejects(readNativeSnapshot(authFile, signal()), /kimi_native_unsafe_path/);
+    await assert.rejects(withNativeLease(authFile, signal(), async () => assert.fail("unsafe lease")), /kimi_native_unsafe_path/);
+    assert.equal((await lstat(root)).mode & 0o7777, mode);
+    assert.deepEqual(await readdir(root), ["credentials"]);
+  } finally { await chmod(root, 0o700); }
+  assert.equal(await readFile(authFile, "utf8"), raw);
+  assert.deepEqual(await readdir(directory), [kimiNativeTokenFilename("global")]);
+});
+
+test("native storage allows sticky writable ancestors without changing their modes", async t => {
+  const { root, authFile } = await fixture(t);
+  await chmod(root, 0o1777);
+  const previous = await readNativeSnapshot(authFile, signal()), nextAccess = randomUUID();
+  await withNativeLease(authFile, signal(), async lease => {
+    assert.equal(await lease.replace(previous, { ...previous.record, access_token: nextAccess }), true);
+  });
+  assert.equal((await readNativeSnapshot(authFile, signal())).record.access_token, nextAccess);
+  assert.equal((await lstat(root)).mode & 0o7777, 0o1777);
 });
 
 test("native reader rejects symlink files and ancestors without changing targets", async t => {
