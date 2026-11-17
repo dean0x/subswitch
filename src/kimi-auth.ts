@@ -19,6 +19,15 @@ type Region = KimiAuthRecord["region"];
 type Data = Record<string, unknown>;
 class OAuthFailure extends RoutingError {}
 const fail = (code: string, status = 503) => new OAuthFailure(`kimi_oauth_${code}`, status);
+// Only local transport/deadline evidence can preserve a verified binding.
+const transientFailures = new WeakSet<RoutingError>();
+export function kimiTransientFailure<T extends RoutingError>(error: T): T {
+  transientFailures.add(error);
+  return error;
+}
+export function isKimiTransientFailure(error: unknown): boolean {
+  return error instanceof RoutingError && transientFailures.has(error);
+}
 export interface KimiOAuthDiagnostic {
   readonly stage: "verification_uri";
   readonly reason: "invalid_uri" | "insecure_scheme" | "unsafe_uri" | "embedded_credentials" | "prohibited_characters";
@@ -81,18 +90,30 @@ function tokens(data: Data, now: number, previous?: KimiAuthRecord["tokens"]): K
 /** Every operation has a deadline, bounded response and sanitized failures. No automatic retries. */
 async function post(options: Options, path: string, params: Data, deviceId: string, signal: AbortSignal): Promise<{ status: number; data: Data }> {
   const wait = AbortSignal.any([signal, AbortSignal.timeout(10000)]);
+  let status: number | undefined;
   try {
     const response = await run(() => (options.transport ?? fetch)(origin(options) + path, {
       method: "POST", redirect: "error", signal: wait,
       headers: { ...kimiIdentityHeaders(deviceId), "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
       body: new URLSearchParams({ client_id: KIMI_OAUTH_CLIENT_ID, ...params } as Record<string, string>),
     }), wait);
+    status = response.status;
     const body = await readBoundedBody(response.body, 16 * 1024, wait);
+    wait.throwIfAborted();
     if (!body.complete || body.truncated) throw fail("invalid_response");
     const data: unknown = JSON.parse(body.text);
     if (!data || typeof data !== "object" || Array.isArray(data)) throw fail("invalid_response");
     return { status: response.status, data: data as Data };
-  } catch { throw fail(wait.aborted ? "cancelled" : "request_failed", wait.aborted ? 499 : 503); }
+  } catch (error) {
+    // The public operation alone knows whether its caller cancelled.
+    if (wait.aborted) {
+      const error = fail("timeout", 504);
+      throw status !== undefined && status >= 400 && status < 500 && status !== 429 ? error : kimiTransientFailure(error);
+    }
+    const failure = fail("request_failed");
+    throw (status === undefined && error instanceof TypeError) || (status !== undefined && status >= 500)
+      ? kimiTransientFailure(failure) : failure;
+  }
 }
 export interface KimiCredential extends ProviderCredential<"kimi"> {
   /** Local login lineage, not an asserted provider account identifier. */
@@ -100,6 +121,7 @@ export interface KimiCredential extends ProviderCredential<"kimi"> {
   readonly deviceId: string;
 }
 export class KimiAuthManager {
+  private readonly rejectedAccess = new Set<string>();
   constructor(private readonly options: Options) { origin(options); }
   private owner(record: KimiAuthRecord): void {
     if (record.region !== this.options.region) throw fail("region_mismatch");
@@ -111,33 +133,51 @@ export class KimiAuthManager {
       this.owner(initial);
       const now = this.options.now ?? Date.now;
       let selected = initial;
-      if (force || initial.tokens.expires_at * 1000 <= now() + 120000) {
-        // A cancelled waiter cannot cancel another caller's shared refresh.
-        selected = await run(() => coordinateNativeRefresh("kimi", this.options.store.coordinationKey, JSON.stringify([initial.generation, initial.region, initial.deviceId]), async () => {
-          const signal = AbortSignal.timeout(15000);
-          return locked(this.options, async () => {
-            const current = await this.options.store.read(signal);
-            this.owner(current);
-            if (current.generation !== initial.generation || current.deviceId !== initial.deviceId) throw fail("owner_changed", 409);
-            if (current.tokens.expires_at * 1000 > now() + 120000 && (!force || current.revision !== initial.revision)) return current;
-            const response = await post(this.options, "/api/oauth/token", { grant_type: "refresh_token", refresh_token: current.tokens.refresh_token }, current.deviceId, signal);
-            if (response.status !== 200) throw fail("refresh_failed");
-            const next: KimiAuthRecord = { ...current, revision: randomUUID(), tokens: tokens(response.data, now(), current.tokens) };
-            if (!await this.options.store.compareAndSwap(current.revision, next, signal)) throw fail("owner_changed", 409);
-            const published = await this.options.store.read(signal);
-            if (published.generation !== initial.generation || published.revision !== next.revision) throw fail("owner_changed", 409);
-            return published;
-          }, signal);
-        }), wait);
+      if (force) this.rejectedAccess.add(initial.tokens.access_token);
+      if (force || this.rejectedAccess.has(initial.tokens.access_token) || initial.tokens.expires_at * 1000 <= now() + 120000) {
+        try {
+          // A cancelled waiter cannot cancel another caller's shared refresh.
+          selected = await run(() => coordinateNativeRefresh("kimi", this.options.store.coordinationKey, JSON.stringify([initial.generation, initial.region, initial.deviceId]), async () => {
+            const signal = AbortSignal.timeout(15000);
+            return locked(this.options, async () => {
+              const current = await this.options.store.read(signal);
+              this.owner(current);
+              if (current.generation !== initial.generation || current.deviceId !== initial.deviceId) throw fail("owner_changed", 409);
+              if (!this.rejectedAccess.has(current.tokens.access_token) && current.tokens.expires_at * 1000 > now() + 120000 && (!force || current.revision !== initial.revision)) return current;
+              const response = await post(this.options, "/api/oauth/token", { grant_type: "refresh_token", refresh_token: current.tokens.refresh_token }, current.deviceId, signal);
+              if (response.status !== 200) {
+                const error = fail("refresh_failed");
+                if (response.status >= 500 || response.status === 429) throw kimiTransientFailure(error);
+                this.rejectedAccess.add(current.tokens.access_token);
+                throw error;
+              }
+              const next: KimiAuthRecord = { ...current, revision: randomUUID(), tokens: tokens(response.data, now(), current.tokens) };
+              if (!await this.options.store.compareAndSwap(current.revision, next, signal)) throw fail("owner_changed", 409);
+              const published = await this.options.store.read(signal);
+              if (published.generation !== initial.generation || published.revision !== next.revision) throw fail("owner_changed", 409);
+              return published;
+            }, signal);
+          }), wait);
+        } catch (error) {
+          wait.throwIfAborted();
+          if (force || this.rejectedAccess.has(initial.tokens.access_token) || !isKimiTransientFailure(error) || initial.tokens.expires_at * 1000 <= now()) throw error;
+          // Re-read after failure. Never retain a replaced login or an unverified store.
+          selected = await run(() => this.options.store.read(wait), wait);
+          this.owner(selected);
+          if (selected.revision !== initial.revision || selected.generation !== initial.generation || selected.deviceId !== initial.deviceId)
+            throw fail("owner_changed", 409);
+        }
       }
       wait.throwIfAborted();
       this.owner(selected);
       if (selected.generation !== initial.generation || selected.deviceId !== initial.deviceId) throw fail("owner_changed", 409);
+      if (this.rejectedAccess.has(selected.tokens.access_token)) throw fail("refresh_failed");
       if (selected.tokens.expires_at * 1000 <= now()) throw fail("expired");
       return { provider: "kimi", generation: selected.generation, deviceId: selected.deviceId,
         authHeaders: { authorization: `Bearer ${selected.tokens.access_token}` } };
     } catch (error) {
-      if (wait.aborted) throw fail("cancelled", 499);
+      if (caller.aborted) throw fail("cancelled", 499);
+      if (wait.aborted) throw kimiTransientFailure(fail("timeout", 504));
       if (error instanceof OAuthFailure) throw error;
       throw fail("unavailable");
     }
@@ -201,7 +241,8 @@ export async function loginKimi(options: Options & {
     }
     throw fail("expired");
   } catch (error) {
-    if (signal.aborted) throw fail("cancelled", 499);
+    if (options.signal.aborted) throw fail("cancelled", 499);
+    if (signal.aborted) throw kimiTransientFailure(fail("timeout", 504));
     if (error instanceof OAuthFailure) throw error;
     throw fail("login_failed");
   }

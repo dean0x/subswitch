@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import type { KimiCredential } from "./kimi-auth.js";
-import { KIMI_OAUTH_CLIENT_ID, KIMI_OAUTH_ORIGINS, kimiIdentityHeaders } from "./kimi-auth.js";
+import { KIMI_OAUTH_CLIENT_ID, KIMI_OAUTH_ORIGINS, kimiIdentityHeaders, isKimiTransientFailure, kimiTransientFailure } from "./kimi-auth.js";
 import { abortable } from "./abortable.js";
 import { coordinateNativeRefresh } from "./native-auth-coordination.js";
 import { readBoundedBody } from "./provider-transport.js";
@@ -40,6 +40,8 @@ export class KimiNativeAuthManager {
   readonly coordinationKey: string;
   private readonly deviceId = randomUUID();
   private readonly rejectedAccess = new Set<string>();
+  // A transient refresh can leave a protected grant, but not reject its bearer.
+  private transientGrant: string | undefined;
   // Only a successful refresh of the unchanged, locked grant proves continuity.
   private readonly lineages = new Map<string, string>();
   constructor(private readonly authFile: string, private readonly region: Region,
@@ -64,14 +66,17 @@ export class KimiNativeAuthManager {
       const grant = fingerprint(current.record), prior = await lease.readAttempt();
       if (prior?.grant === grant) {
         if (prior.outcome === "denied") throw fail("reauthorization_required", 401);
-        if (prior.outcome === "pending") throw fail("refresh_recovery_required");
-        if (prior.retryAt > this.now()) throw fail("refresh_busy");
+        if (prior.outcome === "pending" || prior.retryAt > this.now()) {
+          const error = fail(prior.outcome === "pending" ? "refresh_recovery_required" : "refresh_busy");
+          throw this.transientGrant === grant ? kimiTransientFailure(error) : error;
+        }
       }
       if (!token(current.record.refresh_token)) throw fail("reauthorization_required", 401);
       const failures = prior?.grant === grant ? Math.min(prior.failures + 1, 5) : 1;
       const backoff = async () => lease.writeAttempt(grant, "busy", this.now() + Math.min(300000, 30000 * 2 ** (failures - 1)), failures);
       // Persist before dispatch: never replay a potentially rotated grant after
       // transport loss, malformed success, cancellation or process restart.
+      this.transientGrant = undefined;
       await lease.writeAttempt(grant, "prepared", this.now() + 30000, failures);
       await lease.verify();
       await lease.writeAttempt(grant, "pending", 0, failures);
@@ -88,8 +93,9 @@ export class KimiNativeAuthManager {
         }), signal);
       } catch (error) {
         if (signal.aborted && !deadline.aborted) throw fail("lock_lost");
-        if (notDispatched(error)) { await backoff(); throw fail("refresh_unavailable"); }
-        throw fail("refresh_recovery_required");
+        if (notDispatched(error)) { await backoff(); throw kimiTransientFailure(fail("refresh_unavailable")); }
+        const failure = fail("refresh_recovery_required");
+        throw deadline.aborted || error instanceof TypeError ? kimiTransientFailure(failure) : failure;
       }
       // Record the definite rejection as soon as headers arrive, before a slow
       // or broken error body can exhaust the lease deadline.
@@ -103,7 +109,9 @@ export class KimiNativeAuthManager {
         if (signal.aborted && !deadline.aborted) throw fail("lock_lost");
         // Headers alone prove the 429 cooldown. Every other incomplete reply
         // leaves grant consumption unknown, including a lost success body.
-        throw fail(response.status === 429 ? "refresh_busy" : "refresh_recovery_required");
+        const failure = fail(response.status === 429 ? "refresh_busy" : "refresh_recovery_required");
+        throw response.status === 429 || response.status >= 500 || (deadline.aborted && response.status === 200)
+          ? kimiTransientFailure(failure) : failure;
       }
       let data: Record<string, unknown> | undefined;
       try { const value: unknown = JSON.parse(body.text); if (value && typeof value === "object" && !Array.isArray(value)) data = value as Record<string, unknown>; } catch { /* fixed safe failure below */ }
@@ -121,8 +129,10 @@ export class KimiNativeAuthManager {
           (data?.["error"] === "invalid_client" || data?.["error"] === "unauthorized_client") &&
           data["access_token"] === undefined && data["refresh_token"] === undefined;
         if (authenticationRejected) await backoff();
-        if (response.status === 429 || authenticationRejected) throw fail(response.status === 429 ? "refresh_busy" : "refresh_rejected");
-        throw fail("refresh_recovery_required");
+        if (response.status === 429) throw kimiTransientFailure(fail("refresh_busy"));
+        if (authenticationRejected) throw fail("refresh_rejected");
+        const failure = fail("refresh_recovery_required");
+        throw response.status >= 500 ? kimiTransientFailure(failure) : failure;
       }
       if (response.status !== 200) throw fail("refresh_recovery_required");
       const seconds = data?.["expires_in"], refresh = data?.["refresh_token"] ?? current.record.refresh_token;
@@ -155,8 +165,19 @@ export class KimiNativeAuthManager {
           if (result.predecessor) this.lineages.set(nativeFingerprint(result.snapshot.record.access_token), this.lineages.get(result.predecessor) ?? result.predecessor);
           return result;
         });
-        const result = await abortable(pending, signal);
-        selected = result.snapshot;
+        try {
+          const result = await abortable(pending, signal);
+          selected = result.snapshot;
+        } catch (error) {
+          signal.throwIfAborted();
+          if (!isKimiTransientFailure(error)) throw error;
+          this.transientGrant = fingerprint(selected.record);
+          if (force || this.rejectedAccess.has(previousAccess) || selected.record.expires_at * 1000 <= this.now() + 30000) throw error;
+          // Re-check the source after failure; a changed owner cannot use fallback.
+          const observed = await readNativeSnapshot(this.authFile, signal);
+          if (fingerprint(observed.record) !== fingerprint(selected.record)) throw fail("changed");
+          selected = observed;
+        }
       }
       const access = nativeFingerprint(selected.record.access_token);
       if (selected.record.expires_at * 1000 <= this.now() + 30000 || this.rejectedAccess.has(access)) throw fail("refresh_rejected");
@@ -164,7 +185,8 @@ export class KimiNativeAuthManager {
       return { provider: "kimi", generation: this.lineages.get(access) ?? access, deviceId: this.deviceId,
         authHeaders: { authorization: `Bearer ${selected.record.access_token}` } };
     } catch (error) {
-      if (signal.aborted) throw fail("cancelled", 499);
+      if (caller.aborted) throw fail("cancelled", 499);
+      if (signal.aborted) throw kimiTransientFailure(fail("timeout", 504));
       if (error instanceof KimiNativeError) throw error;
       throw fail("unavailable");
     }

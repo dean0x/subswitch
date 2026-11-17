@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   DESTINATIONS,
   defaultBase,
+  isDefaultEndpoint,
   modelEfforts,
   supportsNativeOAuth,
   VERIFIED_MODEL_EQUIVALENCES,
@@ -97,7 +98,7 @@ export function validateExplicitConfig(
         try { validateKimiNativePath(p.credential.authFile, p.region!); }
         catch { errors.push(`${id}: kimi_native_region_store_mismatch`); }
       }
-      if (url.href !== expected.href && url.href !== expected.href + "/") errors.push(`${id}: kimi_oauth_endpoint_mismatch`);
+      if (!isDefaultEndpoint(p)) errors.push(`${id}: kimi_oauth_endpoint_mismatch`);
     }
     const knownHosts =
       p.provider === "kimi"

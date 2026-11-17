@@ -66,6 +66,75 @@ test("invalid grants refuse the rejected token until its native owner replaces i
   assert.notEqual(first.generation, next.generation); assert.equal(first.deviceId, next.deviceId);
 });
 
+for (const failure of ["network", "socket", "503", "timeout"] as const) test(`native proactive ${failure} keeps a valid bearer without replaying the grant`, async t => {
+  const { authFile } = await fixture(t); let now = Date.now(), calls = 0;
+  const deadline = new AbortController(), timeout = AbortSignal.timeout.bind(AbortSignal);
+  const mockedTimeout = t.mock.method(AbortSignal, "timeout", (ms: number) => ms === 20000 ? deadline.signal : timeout(ms));
+  const manager = new KimiNativeAuthManager(authFile, "global", () => now, async () => {
+    calls++;
+    if (failure === "network" || failure === "socket") throw new TypeError("fake private network error", {
+      cause: Object.assign(new Error("fake cause"), { code: failure === "network" ? "ENOTFOUND" : "ECONNRESET" }),
+    });
+    if (failure === "timeout") { deadline.abort(new DOMException("fake deadline", "TimeoutError")); return new Promise<Response>(() => {}); }
+    return new Response("{}", { status: 503 });
+  });
+  const first = await manager.credentials(signal()); now += 2000000;
+  const current = await manager.credentials(signal());
+  assert.equal(current.generation, first.generation);
+  assert.equal(current.authHeaders.authorization, "Bearer fabricated-access");
+  mockedTimeout.mock.restore();
+  assert.equal((await manager.credentials(signal())).generation, first.generation);
+  assert.equal(calls, 1, "the failed refresh grant stays protected");
+});
+
+for (const failure of ["network", "503"]) test(`native proactive ${failure} does not invalidate a sibling binding`, async t => {
+  const { authFile, profile } = await fixture(t);
+  t.mock.method(globalThis, "fetch", async () => {
+    if (failure === "network") throw new TypeError("fake private network failure");
+    return new Response("{}", { status: 503 });
+  });
+  const auth = new ProfileAuth({ first: profile, alias: profile }, noopLogger, {});
+  const sibling = await auth.get("alias", signal());
+  await writeFile(authFile, JSON.stringify(token("fabricated-access", Math.floor(Date.now() / 1000) + 90)));
+  assert.equal((await auth.get("first", signal())).authHeaders.authorization, "Bearer fabricated-access");
+  assert.doesNotThrow(() => auth.validate(sibling));
+});
+
+for (const mode of ["forced", "expired", "owner-changed", "malformed", "denied"] as const)
+test(`native ${mode} never falls back to the previous bearer`, async t => {
+  const { authFile } = await fixture(t); let now = Date.now();
+  const manager = new KimiNativeAuthManager(authFile, "global", () => now, async () => {
+    if (mode === "owner-changed") await writeFile(authFile, JSON.stringify(token("fabricated-peer")));
+    if (mode === "malformed") return new Response("not-json");
+    if (mode === "denied") return new Response('{"error":"invalid_grant"}', { status: 400 });
+    throw new TypeError("fake private network error", { cause: Object.assign(new Error("fake cause"), { code: "ENOTFOUND" }) });
+  });
+  const first = await manager.credentials(signal()); now += mode === "expired" ? 4000000 : 2000000;
+  await assert.rejects(manager.credentials(signal(), mode === "forced", first.generation));
+});
+
+test("native definite rejection clears earlier transient fallback evidence", async t => {
+  const { authFile } = await fixture(t); let now = Date.now(), calls = 0;
+  const manager = new KimiNativeAuthManager(authFile, "global", () => now, async () => {
+    if (++calls === 1) throw new TypeError("fake private network error", { cause: Object.assign(new Error("fake cause"), { code: "ENOTFOUND" }) });
+    return new Response('{"error":"invalid_client"}', { status: 401 });
+  });
+  await manager.credentials(signal()); now += 2000000;
+  assert.equal((await manager.credentials(signal())).authHeaders.authorization, "Bearer fabricated-access");
+  now += 31000;
+  await assert.rejects(manager.credentials(signal()), { code: "kimi_native_refresh_rejected" });
+  await assert.rejects(manager.credentials(signal()), { code: "kimi_native_refresh_busy" });
+  assert.equal(calls, 2);
+});
+
+test("native internal deadline reports timeout, not caller cancellation", async t => {
+  const { authFile } = await fixture(t), deadline = new AbortController(), timeout = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(AbortSignal, "timeout", (ms: number) => ms === 25000 ? deadline.signal : timeout(ms));
+  const manager = new KimiNativeAuthManager(authFile, "global", Date.now, async () => assert.fail("unexpected renewal"));
+  deadline.abort(new DOMException("fake deadline", "TimeoutError"));
+  await assert.rejects(manager.credentials(new AbortController().signal), { code: "kimi_native_timeout", status: 504 });
+});
+
 test("native force requires an exact failed credential, not the last observed bearer", async t => {
   const { authFile, raw } = await fixture(t);
   const manager = new KimiNativeAuthManager(authFile, "global");

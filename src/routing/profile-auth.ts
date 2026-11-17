@@ -17,11 +17,11 @@ import type { ProxyError } from "../errors.js";
 import { providerEvents } from "../provider-events.js";
 import { object, ownValue } from "../plain-object.js";
 import { abortable } from "../abortable.js";
-import { KimiAuthManager, kimiIdentityHeaders, type KimiCredential } from "../kimi-auth.js";
+import { KimiAuthManager, kimiIdentityHeaders, isKimiTransientFailure, type KimiCredential } from "../kimi-auth.js";
 import { createKimiAuthStore } from "../kimi-auth-store.js";
 import { KimiNativeAuthManager } from "../kimi-native-auth.js";
 import { nativeFingerprint } from "../kimi-native-store.js";
-import { defaultBase, supportsNativeOAuth } from "./destination-catalog.js";
+import { isDefaultEndpoint, supportsNativeOAuth } from "./destination-catalog.js";
 import {
   allowanceScope,
   RoutingError,
@@ -186,7 +186,7 @@ export class ProfileAuth {
   }
   private async kimiCredential(id: string, p: AccessProfile, signal: AbortSignal, refresh: boolean, failedGeneration?: string) {
     if (p.credential.kind !== "native-oauth") throw new RoutingError("credential_product_mismatch");
-    if (p.product !== "kimi-code" || !p.region || (p.baseUrl && p.baseUrl.replace(/\/$/, "") !== defaultBase(p))) throw new RoutingError("kimi_oauth_endpoint_mismatch");
+    if (p.product !== "kimi-code" || !p.region || !isDefaultEndpoint(p)) throw new RoutingError("kimi_oauth_endpoint_mismatch");
     const binding = this.binding(id, p);
     let cached = this.kimiManagers.get(id);
     if (!cached || cached.binding !== binding) {
@@ -209,7 +209,7 @@ export class ProfileAuth {
     let credential;
     try { credential = await cached.manager.credentials(signal, refresh, failedGeneration); }
     catch (error) {
-      if (!signal.aborted && (this.kimiPublished.get(storage) ?? 0) <= sequence) this.invalidateNativeStore(storage);
+      if (!signal.aborted && (refresh || !isKimiTransientFailure(error)) && (this.kimiPublished.get(storage) ?? 0) <= sequence) this.invalidateNativeStore(storage);
       throw error;
     }
     if (this.binding(id, ownValue(this.profiles, id)!) !== binding) throw new RoutingError("credential_binding_mismatch", 409);

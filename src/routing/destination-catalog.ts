@@ -88,6 +88,14 @@ export function defaultBase(profile: AccessProfile): string {
       return `https://api.moonshot.${profile.region === "mainland-cn" ? "cn" : "ai"}`;
   }
 }
+/** Use the same canonical endpoint check at startup and before credential access. */
+export function isDefaultEndpoint(profile: AccessProfile): boolean {
+  try {
+    const actual = new URL(profile.baseUrl ?? defaultBase(profile)).href;
+    const expected = new URL(defaultBase(profile)).href;
+    return actual === expected || actual === expected + "/";
+  } catch { return false; }
+}
 export function destinationUrl(
   profile: AccessProfile,
   protocol: WireProtocol,
