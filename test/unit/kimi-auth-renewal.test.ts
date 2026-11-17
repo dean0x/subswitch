@@ -88,6 +88,19 @@ test("managed HTTP401 headers with a body timeout never preserve the bearer", as
   await assert.rejects(manager.credentials(signal()), { code: "kimi_oauth_timeout", status: 504 });
 });
 
+for (const [operation, unavailable] of [["credentials", "kimi_oauth_unavailable"], ["login", "kimi_oauth_login_failed"]] as const) {
+  for (const busy of [true, false]) test(`${operation} ${busy ? "lock contention reports a distinct code" : "unrecognized store failures stay sanitized"}`, async () => {
+    const f = fixture(); f.expire();
+    f.store.withLock = async () => { throw new Error(busy ? "kimi_auth_store_lock_timeout" : "fabricated-private-store-detail"); };
+    const options = { store: f.store, region: "global" as const, now: f.now,
+      transport: async () => assert.fail("store refusal must precede OAuth transport") };
+    const pending = operation === "credentials" ? new KimiAuthManager(options).credentials(signal())
+      : loginKimi({ ...options, signal: signal(), onVerification: () => assert.fail("unexpected verification") });
+    const code = busy ? "kimi_oauth_lock_busy" : unavailable;
+    await assert.rejects(pending, { code, message: code, status: 503 });
+  });
+}
+
 for (const milliseconds of [10000, 15000]) test(`managed internal ${milliseconds}ms deadline reports timeout, not cancellation`, async t => {
   const f = fixture(); f.expire(); const expire = deadline(t, milliseconds);
   const manager = new KimiAuthManager({ store: f.store, region: "global", now: f.now,

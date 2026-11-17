@@ -270,7 +270,7 @@ describe("owned Kimi credential store", () => {
     assert.equal(await inspectKimiProfiles({ managed: profile }, line => lines.push(line)), 0);
     await writeFile(`${authFile}.lock`, "synthetic-holder", { mode: 0o600 });
     assert.equal(await inspectKimiProfiles({ managed: profile }, line => lines.push(line)), 1);
-    assert.equal(lines.at(-1), "managed OAuth: lock present; renewal blocked; inspect the managed store lock before retry");
+    assert.equal(lines.at(-1), "managed OAuth: lock present (kimi_oauth_lock_busy); renewal blocked; inspect the managed store lock before retry");
     assert.doesNotMatch(lines.join("\n"), /synthetic-access|synthetic-refresh|synthetic-holder|auth\.json|subswitch-kimi-store/);
     assert.equal(await readFile(`${authFile}.lock`, "utf8"), "synthetic-holder");
     assert.deepEqual(JSON.parse(await readFile(authFile, "utf8")), value);

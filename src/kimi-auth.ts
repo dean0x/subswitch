@@ -70,7 +70,10 @@ async function locked<T>(options: Options, operation: () => Promise<T>, signal: 
   const result = await options.store.withLock(async () => {
     try { return { ok: true as const, value: await operation() }; }
     catch (error) { return { ok: false as const, error }; }
-  }, signal);
+  }, signal).catch((error: unknown) => {
+    if (error instanceof Error && error.message === "kimi_auth_store_lock_timeout") throw fail("lock_busy");
+    throw error;
+  });
   if (!result.ok) throw result.error;
   return result.value;
 }

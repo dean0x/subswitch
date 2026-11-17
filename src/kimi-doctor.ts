@@ -23,7 +23,7 @@ export async function inspectKimiProfiles(profiles: Readonly<Record<string, Acce
     try {
       const store = createKimiAuthStore(profile.credential.authFile), signal = AbortSignal.timeout(1000);
       if (await store.inspectLock(signal)) {
-        write(`${id} OAuth: lock present; renewal blocked; inspect the managed store lock before retry`);
+        write(`${id} OAuth: lock present (kimi_oauth_lock_busy); renewal blocked; inspect the managed store lock before retry`);
         exit = 1;
         continue;
       }

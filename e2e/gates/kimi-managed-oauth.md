@@ -113,6 +113,10 @@ which remains separate from the native file format. The directory requires mode 
 owned by the current user. Symlinks, insecure permissions and concurrent
 replacement fail closed. An abandoned lock needs operator investigation;
 elapsed time alone never authorizes removing it.
+A managed lock wait that expires reports `kimi_oauth_lock_busy` (HTTP 503).
+The `kimi-login` command reports the same code. The `doctor` command names this
+code when a managed lock is present. Inspect the lock before the next attempt;
+Subswitch never removes an abandoned managed lock automatically.
 
 Use an explicit access profile:
 
