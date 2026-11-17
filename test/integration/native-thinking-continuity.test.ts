@@ -11,6 +11,7 @@ import { SharedRouting } from "../../src/routing/shared-routing.js";
 import type { Item } from "../../src/routing/routing-types.js";
 import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
 import { messageFrames, nativeEvents } from "../fixtures/native-messages.js";
+import { nativeCredential } from "../fixtures/native-profile.js";
 
 const thought = {
   type: "thinking",
@@ -51,7 +52,7 @@ function config(root: string, origin = injectedOrigin) {
         oauthTokenUrl: `${origin}/unexpected/codex-refresh`, authFile: join(root, "absent-codex.json"),
       } },
       codexIngress: {
-        subscriptionBaseUrl: `${origin}/unexpected/subscription`, apiBaseUrl: `${origin}/unexpected/openai-api`,
+        subscriptionBaseUrl: `${origin}/unexpected/subscription`, apiBaseUrl: `${origin}/unexpected/api`,
         claude: {
           baseUrl: `${origin}/unexpected/claude`, oauthTokenUrl: `${origin}/unexpected/claude-refresh`,
           authFile: join(root, "absent-claude.json"), configDir: join(root, "absent-claude-config"),
@@ -59,14 +60,14 @@ function config(root: string, origin = injectedOrigin) {
       },
       accessProfiles: {
         native: {
-          provider: "claude", product: "anthropic-api", billing: "api", account: "original",
+          provider: "claude", product: "claude-code", billing: "subscription", account: "original",
           baseUrl: "https://api.anthropic.com",
-          credential: { kind: "env", name: "FABRICATED_CLAUDE_KEY" },
+          credential: nativeCredential("claude", "fabricated-original"),
         },
         other: {
-          provider: "claude", product: "anthropic-api", billing: "api", account: "other",
+          provider: "claude", product: "claude-code", billing: "subscription", account: "other",
           baseUrl: "https://api.anthropic.com",
-          credential: { kind: "env", name: "FABRICATED_OTHER_KEY" },
+          credential: nativeCredential("claude", "fabricated-other"),
         },
       },
       routes: {
@@ -116,9 +117,11 @@ function rig(response: (request: Item, number: number, signal: AbortSignal) => R
   const auth: string[] = [];
   const routing = new SharedRouting(config(root), noopLogger, undefined, restrictedFetch(async (_url, init) => {
     requests.push(JSON.parse(String(init?.body)));
-    auth.push(new Headers(init?.headers).get("x-api-key") ?? "");
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("x-api-key"), null);
+    auth.push(headers.get("authorization") ?? "");
     return response(requests.at(-1)!, requests.length, init!.signal!);
-  }), { FABRICATED_CLAUDE_KEY: "fabricated-original", FABRICATED_OTHER_KEY: "fabricated-other" });
+  }));
   return { routing, requests, auth, close() { routing.close(); rmSync(root, { recursive: true, force: true }); } };
 }
 
@@ -147,7 +150,11 @@ describe("native Claude full-history continuity (offline)", () => {
         assert.equal(path.startsWith(`${root}/`), true);
         assert.equal(existsSync(path), false);
       }
-      for (const profile of Object.values(fixture.accessProfiles!)) assert.equal(profile.credential.kind, "env");
+      for (const profile of Object.values(fixture.accessProfiles!)) {
+        assert.equal(profile.credential.kind, "native-oauth");
+        assert.equal(profile.credential.authFile.startsWith(join(tmpdir(), "subswitch-synthetic-native-")), true);
+        assert.equal(existsSync(profile.credential.authFile), true);
+      }
       let calls = 0;
       const allowed = restrictedFetch(async () => { calls++; return reply(); });
       for (const url of ["https://unexpected.example/v1/messages", `${injectedOrigin}/unexpected/anthropic/v1/messages`])
@@ -156,7 +163,7 @@ describe("native Claude full-history continuity (offline)", () => {
       assert.equal(calls, 0);
       await allowed("https://api.anthropic.com/v1/messages", { redirect: "error" });
       assert.equal(calls, 1);
-      const deps = buildDeps(fixture, noopLogger, { fetchImpl: allowed, env: {} });
+      const deps = buildDeps(fixture, noopLogger, { fetchImpl: allowed });
       assert.ok(deps.ok);
       deps.value.sharedRouting?.close();
       deps.value.forwardOpenai?.close();
@@ -176,7 +183,7 @@ describe("native Claude full-history continuity (offline)", () => {
       assert.equal(requests.length, 2);
       assert.deepEqual(requests[0]?.messages, history);
       assert.deepEqual(requests[1]?.messages, followup);
-      assert.deepEqual(auth, ["fabricated-original", "fabricated-original"]);
+      assert.deepEqual(auth, ["Bearer fabricated-original", "Bearer fabricated-original"]);
     } finally { close(); }
   });
 
@@ -360,7 +367,6 @@ describe("native Claude full-history continuity (offline)", () => {
       try {
         for (let restart = 0; restart < 2; restart++) {
           const deps = buildDeps(config(root, originUrl), noopLogger, {
-            env: { FABRICATED_CLAUDE_KEY: "fabricated-original" },
             // Assert the first-party destination, then use only the owned loopback transport.
             fetchImpl: restrictedFetch((_url, init) => fetch(`${originUrl}/native/v1/messages`, init)),
           });
@@ -384,8 +390,8 @@ describe("native Claude full-history continuity (offline)", () => {
               if (streaming) assert.match(await response.text(), /event: message_stop/);
               else assert.equal((await response.json() as Item).stop_reason, "end_turn");
               assert.deepEqual(received.at(-1)?.body.messages, messages);
-              assert.equal(received.at(-1)?.key, "fabricated-original");
-              assert.equal(received.at(-1)?.authorization, undefined);
+              assert.equal(received.at(-1)?.key, undefined);
+              assert.equal(received.at(-1)?.authorization, "Bearer fabricated-original");
             }
             assert.equal(rejected.length, restart, "explicit routes never reach legacy endpoints");
             // Deliberately exercise the production route-miss branch. It must reject

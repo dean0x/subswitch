@@ -3,14 +3,15 @@ import { describe, it } from "node:test";
 import { ClaudeCache } from "../../src/claude-cache.js";
 import { ReverseState } from "../../src/claude-state.js";
 import { adaptRequest } from "../../src/routing/request-adapter.js";
+import { validatesNativeThinking } from "../../src/routing/destination-catalog.js";
 import { decodePortableHistory } from "../../src/routing/portable-history.js";
 import { foreignThinking, observeThinking, rememberThinking } from "../../src/routing/signed-thinking.js";
 import { StagedCache } from "../../src/routing/replay-cache.js";
 import { RoutingError, type AccessProfile, type Item, type WireProtocol } from "../../src/routing/routing-types.js";
 
 const profile: AccessProfile = {
-  provider: "claude", product: "anthropic-api", billing: "api", account: "fabricated",
-  credential: { kind: "env", name: "FABRICATED_KEY" },
+  provider: "claude", product: "claude-code", billing: "subscription", account: "fabricated",
+  credential: { kind: "native-oauth", authFile: "/fabricated/never-read.json" },
 };
 const thinking = { type: "thinking", thinking: "fabricated thought", signature: "fabricated-signature" };
 
@@ -37,14 +38,10 @@ describe("native thinking import boundary", () => {
   it("requires the dispatcher's authorization and native Claude Messages on both sides", () => {
     assert.throws(() => adapt({ allow: false }), /foreign_opaque_state/);
     assert.throws(() => adapt({ destination: "responses" }), /foreign_opaque_state/);
-    assert.throws(() => adapt({ profile: { ...profile, provider: "kimi", product: "kimi-platform", region: "global" } }), /foreign_opaque_state/);
+    assert.throws(() => adapt({ profile: { ...profile, provider: "kimi", product: "kimi-code", region: "global" } }), /foreign_opaque_state/);
     assert.throws(() => adapt({ priorOwner: "different-owner" }), /foreign_opaque_state/);
     const { outbound } = adapt();
     assert.deepEqual((outbound.messages as Item[])[0]?.content, [thinking]);
-    assert.doesNotThrow(() => adapt({ profile: {
-      ...profile, product: "claude-code", billing: "subscription",
-      credential: { kind: "native-oauth", authFile: "/fabricated/never-read.json" },
-    } }));
   });
 
   it("refuses cold imports at a custom origin, path, port or scheme", () => {
@@ -53,6 +50,24 @@ describe("native thinking import boundary", () => {
       "https://api.anthropic.com:8443", "http://api.anthropic.com",
     ]) assert.throws(() => adapt({ profile: { ...profile, baseUrl } }), /foreign_opaque_state/);
     assert.doesNotThrow(() => adapt({ profile: { ...profile, baseUrl: "https://api.anthropic.com/" } }));
+  });
+
+  it("keeps exact same-scope Kimi replay without a native ownership claim or cross-scope import", () => {
+    // Exercise destination rules directly. This stack cannot load a Kimi sign-in profile.
+    const kimi: AccessProfile = { ...profile, provider: "kimi", product: "kimi-code", region: "global" };
+    const shared = new ClaudeCache(), stage = new StagedCache(shared);
+    observeThinking(stage, "original-owner", "original-conversation", thinking, validatesNativeThinking(kimi));
+    rememberThinking(stage, "original-owner", "original-conversation", thinking, validatesNativeThinking(kimi));
+    stage.commit();
+    assert.equal(foreignThinking(shared, thinking.signature, "original-owner", "original-conversation"), true);
+    assert.deepEqual((adapt({ profile: kimi, stage: new StagedCache(shared), allow: false }).outbound.messages as Item[])[0]?.content,
+      [thinking]);
+    for (const destination of [kimi, profile]) {
+      assert.throws(() => adapt({ profile: destination, stage: new StagedCache(shared), conversation: "another-conversation" }),
+        (error: unknown) => error instanceof RoutingError && error.code === "foreign_opaque_state" && error.status === 409);
+    }
+    assert.throws(() => adapt({ profile: kimi, stage: new StagedCache(shared), block: { ...thinking, thinking: "tampered" } }),
+      (error: unknown) => error instanceof RoutingError && error.code === "foreign_opaque_state" && error.status === 409);
   });
 
   it("does not mistake malformed native blocks for cache misses that can be imported", () => {
