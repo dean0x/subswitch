@@ -39,6 +39,7 @@ import { systemClock, type RoutingClock } from "./clock.js";
 import { codexTransportConstants, buildHeaders } from "../codex-handler.js";
 import { StagedCache, type OrderedReplayDiagnostics } from "./replay-cache.js";
 import { adaptRequest } from "./request-adapter.js";
+import { rememberThinking } from "./signed-thinking.js";
 import { deriveConversationKey } from "../conversation-key.js";
 import { recordLimitFailure, type LimitContext } from "../limit-observation.js";
 import { abortable } from "../abortable.js";
@@ -69,6 +70,7 @@ export interface AttemptRequest {
   admissionSignal?: AbortSignal;
   /** Resolved internally by SharedRouting; checked against the real action again here. */
   selection?: Readonly<DestinationSelection>;
+  allowNativeThinkingReplay?: boolean;
 }
 export interface RoutedPrepared {
   events: AsyncIterable<ClientEvent>;
@@ -155,8 +157,33 @@ export class RoutedAttempts {
     const orderedLeases: OrderedLeases = [];
     let ordered: ReturnType<typeof prepareOrderedReplay> | undefined;
     let outbound: Item = {}, reverse: ReturnType<typeof adaptRequest>["reverse"];
-    // Keep the selected preparation itself inside disposal, including pre-dispatch refusal.
+    let exec: KimiExecStream | undefined, transaction: KimiExecTransaction | undefined;
+    let completion: { final: Item; calls: readonly Item[] } | undefined;
+    let completionLease: KimiExecReservation | undefined;
+    let publicationReady = false, disposed = false, orderedReady = false, stageClosed = false;
+    const controller = new AbortController(),
+      combined = AbortSignal.any([signal, controller.signal, ...(admissionSignal ? [admissionSignal] : []), ...(p.provider === "kimi" && p.credential.kind === "native-oauth" ? [AbortSignal.timeout(30000)] : [])]);
+    const clearCompletion = () => {
+      completion = undefined;
+      completionLease?.release(); completionLease = undefined;
+    };
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      combined.removeEventListener("abort", dispose);
+      clearCompletion();
+      ordered = undefined; outbound = {};
+      if (!stageClosed) {
+        stageClosed = true;
+        stage.dispose();
+      }
+      for (const lease of orderedLeases) lease.release();
+      orderedLeases.length = 0;
+    };
+    combined.addEventListener("abort", dispose, { once: true });
+    // All attempts close their stage, including ordinary native imports and pre-dispatch refusal.
     try {
+    combined.throwIfAborted();
     if (orderedPending) {
       stage.attachPending(orderedPending);
       holdOrderedJson(request.body, orderedPending, orderedLeases); // retained original controls/history
@@ -188,29 +215,6 @@ export class RoutedAttempts {
       outbound = { ...outbound, input: ordered.input };
       holdOrderedJson(outbound, orderedPending, orderedLeases);
     }
-    } catch (error) {
-      ordered = undefined; outbound = {}; stage.dispose();
-      for (const lease of orderedLeases) lease.release();
-      throw error;
-    }
-    let exec: KimiExecStream | undefined, transaction: KimiExecTransaction | undefined;
-    let completion: { final: Item; calls: readonly Item[] } | undefined;
-    let completionLease: KimiExecReservation | undefined;
-    let publicationReady = false, disposed = false, orderedReady = false;
-    const clearCompletion = () => {
-      completion = undefined;
-      completionLease?.release(); completionLease = undefined;
-    };
-    const dispose = () => {
-      if (!exec && !codec) return;
-      disposed = true;
-      clearCompletion();
-      ordered = undefined; outbound = {};
-      stage.dispose();
-      for (const lease of orderedLeases) lease.release();
-      orderedLeases.length = 0;
-    };
-    try {
     // All original capability/history/opaque/credential guards above run first.
     const pending = codec ? undefined : this.createKimiExecPending?.();
     // The validated inventory includes late inline tools. Only proven absence
@@ -224,8 +228,6 @@ export class RoutedAttempts {
       transaction = mapped.transaction;
       exec = new KimiExecStream(pending);
     }
-    const controller = new AbortController(),
-      combined = AbortSignal.any([signal, controller.signal, ...(admissionSignal ? [admissionSignal] : []), ...(p.provider === "kimi" && p.credential.kind === "native-oauth" ? [AbortSignal.timeout(30000)] : [])]);
     if (orderedPending) orderedLeases.push(orderedPending.reserve(2 * orderedJsonBytes(outbound) + 3));
     const encodedRequest = JSON.stringify(outbound);
     const serializedCap: unknown = this.beforeDispatch
@@ -320,14 +322,8 @@ export class RoutedAttempts {
     const stageSnapshots = (final: Item) => {
         if (Array.isArray(final["content"]))
           for (const value of final["content"]) {
-            const item = object(value),
-              signature = item?.["signature"] ?? item?.["data"];
-            if (typeof signature === "string")
-              stage.put(
-                "snapshot",
-                `signature:${owner}:${conversation}:${signature}`,
-                { request: {}, input: [item!] },
-              );
+            const item = object(value);
+            if (item) rememberThinking(stage, owner, conversation, item);
           }
         if (Array.isArray(final["output"])) {
           const output = final["output"] as Item[],
@@ -417,24 +413,25 @@ export class RoutedAttempts {
         },
       } } : {}),
       commit: () => {
-        if (action && !codec) {
+        try {
           combined.throwIfAborted();
-          validateAction();
-        }
-        if (codec) {
-          if (!orderedReady || disposed) throw new RoutingError("invalid_codec_publication", 500);
-          combined.throwIfAborted();
-          this.auth.validate(credential);
-          validateAction();
-          if (ownerKey(p, t, protocol, credential.generation, codec) !== owner)
-            throw new RoutingError("credential_owner_changed", 409);
-          combined.throwIfAborted();
-        }
-        if (exec && (!publicationReady || disposed)) throw new RoutingError("invalid_codec_publication", 500);
-        stage.commit();
+          if (action && !codec) validateAction();
+          if (codec) {
+            if (!orderedReady || disposed) throw new RoutingError("invalid_codec_publication", 500);
+            this.auth.validate(credential);
+            validateAction();
+            if (ownerKey(p, t, protocol, credential.generation, codec) !== owner)
+              throw new RoutingError("credential_owner_changed", 409);
+            combined.throwIfAborted();
+          }
+          if (exec && (!publicationReady || disposed)) throw new RoutingError("invalid_codec_publication", 500);
+          stage.commit();
+          // A successful pending commit already closes the stage itself.
+          stageClosed = !!exec || !!codec;
+        } finally { dispose(); }
       },
       cancel: async () => {
-        try {
+        dispose();
         controller.abort();
         // Returning the generator clears idle timers and pipeline listeners even when
         // cancellation arrives while downstream is parked at a delivered event.
@@ -452,7 +449,6 @@ export class RoutedAttempts {
           }),
         ]);
         clearTimeout(timer);
-        } finally { dispose(); }
       },
     };
     } catch (error) { dispose(); throw error; }

@@ -9,6 +9,7 @@
   "files": [
     "dist",
     "subswitch.config.example.json",
+    "subswitch.wave1.example.json",
     "NOTICE"
   ],
   "keywords": [

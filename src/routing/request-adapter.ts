@@ -9,6 +9,7 @@ import { object } from "../plain-object.js";
 import { validateTargetCapabilities } from "./target-capabilities.js";
 import type { DestinationSelection } from "./destination-catalog.js";
 import { renderKimiResponsesRequest, type KimiResponsesRequest } from "./kimi-responses-request.js";
+import { knownThinking, rememberThinking, sameThinking, thinkingSignature } from "./signed-thinking.js";
 import {
   renderResponsesHistory,
   type PortableTranscript,
@@ -36,6 +37,8 @@ interface RequestAdaptation {
   sessionId: string;
   priorOwner?: string | undefined;
   selection?: Readonly<DestinationSelection>;
+  /** Only the dispatcher may authorize native imports on a single-target route. */
+  allowNativeThinkingReplay?: boolean | undefined;
 }
 
 /** Product parameters and ingress codecs; no auth, network, output, or route selection. */
@@ -73,6 +76,9 @@ export function adaptRequest(request: RequestAdaptation): {
       : request.body),
     model: t.model,
   };
+  const switched = priorOwner !== undefined && priorOwner !== owner;
+  const nativeImport = request.allowNativeThinkingReplay === true &&
+    p.provider === "claude" && ingress === "messages" && protocol === "messages" && !switched;
   if (ingress === "messages" && Array.isArray(body["messages"])) {
     for (const message of body["messages"]) {
       const m = object(message);
@@ -80,7 +86,7 @@ export function adaptRequest(request: RequestAdaptation): {
       for (const block of m["content"]) {
         const b = object(block);
         if (b?.["type"] === "thinking" || b?.["type"] === "redacted_thinking") {
-          const signature = b[b["type"] === "thinking" ? "signature" : "data"];
+          const signature = thinkingSignature(b);
           const recorded =
             typeof signature === "string"
               ? stage.get(
@@ -88,24 +94,22 @@ export function adaptRequest(request: RequestAdaptation): {
                   `signature:${owner}:${conversation}:${signature}`,
                 )?.input[0]
               : undefined;
-          if (
-            !recorded ||
-            b["type"] !== recorded["type"] ||
-            (b["type"] === "thinking"
-              ? typeof b["thinking"] !== "string" ||
-                b["thinking"] !== recorded["thinking"] ||
-                b["signature"] !== recorded["signature"] ||
-                b["data"] !== undefined
-              : b["data"] !== recorded["data"] ||
-                b["signature"] !== undefined ||
-                b["thinking"] !== undefined)
-          )
+          if (signature === undefined)
             throw new RoutingError("foreign_opaque_state", 409);
+          if (recorded) {
+            if (!sameThinking(b, recorded))
+              throw new RoutingError("foreign_opaque_state", 409);
+          } else {
+            if (!nativeImport || knownThinking(stage, signature))
+              throw new RoutingError("foreign_opaque_state", 409);
+            // A cache miss is not proof that native Claude history is foreign. Preserve it
+            // for that upstream to validate; failed/cancelled attempts never commit this import.
+            rememberThinking(stage, owner, conversation, b);
+          }
         }
       }
     }
   }
-  const switched = priorOwner !== undefined && priorOwner !== owner;
   // Target-owned opaque history is separate from portable text/tools. Cross-target reasoning
   // portability is disabled pending exact provider evidence.
   if (switched && (transcript.hasOpaqueReasoning || transcript.hasThinking))

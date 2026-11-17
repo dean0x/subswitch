@@ -3,6 +3,7 @@ import {
   type CacheWrite,
   type ClaudeCacheValues,
   type KimiOrderedAssociation,
+  type Snapshot,
 } from "../claude-cache.js";
 import { RoutingError } from "./routing-types.js";
 import type { KimiExecPending, KimiExecReservation } from "./kimi-exec-pending.js";
@@ -111,11 +112,12 @@ export class OrderedReplayDiagnostics {
   }
 }
 
-/** Attempt-local replay writes. Abandoned attempts never publish to the shared cache. */
+/** Attempt-local replay writes; exclusive pending claims roll back on abandonment. */
 export class StagedCache extends ClaudeCache {
   private writes = new Map<string, CacheWrite>();
   private pending: KimiExecPending | undefined;
   private leases = new Map<string, { entry: KimiExecReservation; write: KimiExecReservation }>();
+  private reservations = new Map<string, Snapshot>();
   private disposed = false;
   constructor(private shared: ClaudeCache, private readonly diagnostics?: OrderedReplayDiagnostics) {
     super({ maxEntries: 2048, maxBytes: 32 * 1024 * 1024 }, true);
@@ -177,6 +179,22 @@ export class StagedCache extends ClaudeCache {
       if (ordered) this.observeStaged(ordered);
     } catch (error) { this.release(leases); throw error; }
   }
+  /** Exclusive claims use the existing shared byte/entry budget before dispatch. */
+  reserveSnapshot(id: string, value: Snapshot): void {
+    this.checkOpen();
+    if (this.shared.get("snapshot", id))
+      throw new RoutingError("foreign_opaque_state", 409);
+    this.put("snapshot", id, value);
+    const reservation = {
+      request: { ...value.request, pending: true }, input: value.input,
+    };
+    try {
+      this.shared.put("snapshot", id, reservation);
+    } catch {
+      throw new RoutingError("continuation_store_full", 503);
+    }
+    this.reservations.set(id, reservation);
+  }
   commit(): void {
     this.checkOpen();
     let writes: CacheWrite[] | undefined;
@@ -188,6 +206,10 @@ export class StagedCache extends ClaudeCache {
         lease = this.pending.reserve(bytes + 1);
       }
       writes = [...this.writes.values()];
+      // Ownership validation and atomic publication are synchronous.
+      for (const [id, reservation] of this.reservations)
+        if (this.shared.get("snapshot", id) !== reservation)
+          throw new RoutingError("foreign_opaque_state", 409);
       try { this.shared.putBatch(writes, this.pending); }
       catch (error) {
         try { this.diagnostics?.publicationResult(this, writes, false); } catch {}
@@ -196,18 +218,25 @@ export class StagedCache extends ClaudeCache {
           throw new RoutingError("continuity_unavailable", 409);
         throw new RoutingError("continuation_store_full", 503);
       }
+      // Published writes replace the claims; disposal must not roll them back.
+      this.reservations.clear();
       // Only a successful return from the actual atomic shared publication counts.
       try { this.diagnostics?.publicationResult(this, writes, true); } catch {}
     } finally { writes = undefined; lease?.release(); }
     if (this.pending) this.dispose();
     else this.writes.clear();
   }
-  /** Clears only this attempt; shared publication is never rolled back. */
+  /** Clears this attempt and its pending claims, never a successful publication. */
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const [id, reservation] of this.reservations)
+      if (this.shared.get("snapshot", id) === reservation)
+        this.shared.delete("snapshot", id);
+    this.reservations.clear();
     this.writes.clear();
     this.clearEntries();
     this.release(this.leases);
-    this.disposed = true;
     try { this.diagnostics?.aborted(this); } catch {}
   }
   private observeStaged(write: CacheWrite): void {
