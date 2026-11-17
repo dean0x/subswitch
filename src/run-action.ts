@@ -107,8 +107,6 @@ export async function runAction(
     }
     const base = `http://127.0.0.1:${port}${action.ingressPrefix}`;
     const env = { ...process.env };
-    for (const profile of Object.values(config.accessProfiles ?? {}))
-      if (profile.credential.kind === "env") delete env[profile.credential.name];
     const args = native.slice(1);
     if (client === "claude-code") env["ANTHROPIC_BASE_URL"] = base;
     else {

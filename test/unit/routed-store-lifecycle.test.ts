@@ -1,3 +1,4 @@
+import { nativeCredential } from "../fixtures/native-profile.js";
 /** Synthetic store bounds and upstreams; no live inference or credentials. */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -20,13 +21,13 @@ function router(fetchImpl: typeof fetch, nativeMessages = false): SharedRouting 
   const loaded = loadConfig({ configPath: "/synthetic/config.json", env: {}, readFile: () => JSON.stringify({
     configVersion: 2,
     accessProfiles: { api: { provider: nativeMessages ? "claude" : "codex",
-      product: nativeMessages ? "anthropic-api" : "openai-api", billing: "api", account: "synthetic",
-      credential: { kind: "env", name: "SYNTHETIC_KEY" } } },
+      product: nativeMessages ? "claude-code" : "chatgpt-codex", billing: "subscription", account: "synthetic",
+      credential: nativeCredential(nativeMessages ? "claude" : "codex", "synthetic-key") } },
     routes: { work: { clients: ["codex", "claude-code"], primary: { profile: "api",
       model: nativeMessages ? "claude-sonnet-5-5" : "gpt-6-sol", effort: "high" } } },
   }) });
   if (!loaded.ok) assert.fail(loaded.error.message);
-  return new SharedRouting(loaded.value.config, noopLogger, undefined, fetchImpl, { SYNTHETIC_KEY: "synthetic" });
+  return new SharedRouting(loaded.value.config, noopLogger, undefined, fetchImpl);
 }
 async function collect(events: AsyncIterable<Item>): Promise<Item[]> {
   const values: Item[] = [];

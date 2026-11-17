@@ -2,7 +2,6 @@ import type { Config } from "../config.js";
 import {
   DESTINATIONS,
   defaultBase,
-  KIMI_MODELS,
 } from "./destination-catalog.js";
 import { MODEL_REGISTRY } from "../models.js";
 import { CLAUDE_MODELS } from "../claude-models.js";
@@ -20,13 +19,11 @@ export function routingDiscovery(
     client,
     providers: DESTINATIONS.map((d) => ({
       ...d,
-      compatibility:
-        d.id === "kimi" ? "live-unverified" : "existing-translators",
+      compatibility: "existing-translators",
     })),
     models: {
       codex: MODEL_REGISTRY.map((m) => m.id),
       claude: CLAUDE_MODELS.map((m) => m.id),
-      kimi: KIMI_MODELS,
     },
     profiles: Object.entries(config.accessProfiles ?? {}).map(([id, p]) => ({
       id,

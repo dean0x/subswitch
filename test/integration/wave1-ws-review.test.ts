@@ -1,3 +1,4 @@
+import { nativeCredential } from "../fixtures/native-profile.js";
 /** Synthetic native passthrough regressions with unrelated explicit routes configured. */
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -94,13 +95,13 @@ async function fixture(
           claude: { enabled: bridge === "legacy" },
         },
         accessProfiles: {
-          kimi: {
-            provider: "kimi",
-            product: "kimi-code",
-            region: "global",
+          primarySubscription: {
+            provider: "codex",
+            product: "chatgpt-codex",
+
             billing: "subscription",
             account: "synthetic",
-            credential: { kind: "env", name: "SYNTHETIC_KIMI_KEY" },
+            credential: nativeCredential("codex", "synthetic-unused"),
           },
         },
         routes:
@@ -108,7 +109,7 @@ async function fixture(
             ? {
                 unrelated: {
                   clients: ["codex"],
-                  primary: { profile: "kimi", model: "k3", effort: "high" },
+                  primary: { profile: "primarySubscription", model: "gpt-6-sol", effort: "high" },
                 },
               }
             : {},
@@ -121,9 +122,7 @@ async function fixture(
     undefined,
     async () => {
       throw new Error("unexpected routed inference");
-    },
-    {},
-  );
+    });
   const gateway = new CodexGateway({
     config: loaded.value.config,
     logger: noopLogger,
