@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { once } from "node:events";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadConfig } from "../../src/config.js";
 import {
@@ -35,6 +35,12 @@ async function until(condition: () => boolean): Promise<void> {
     assert.ok(Date.now() < deadline, "native lifecycle fixture timed out");
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+}
+async function settleCredentials(pending: Promise<unknown>): Promise<void> {
+  await pending;
+  // The transport is closed. Drain the credential promise and its continuations.
+  for (let turn = 0; turn < 4; turn++)
+    await new Promise<void>((resolve) => setImmediate(resolve));
 }
 async function fixture(
   options: {
@@ -86,6 +92,8 @@ async function fixture(
   const address = backend.address();
   if (!address || typeof address === "string") throw new Error();
   const upstream = `http://127.0.0.1:${address.port}`;
+  const upstreamPort = String(address.port);
+  const requestSpy = mock.method(http, "request");
   const loaded = loadConfig({
     configPath: "/synthetic/config.json",
     env: {},
@@ -300,6 +308,15 @@ async function fixture(
     connect,
     routing,
     nativeSockets,
+    get upstreamStarts() {
+      // Both native HTTP and WS call http.request before TCP starts.
+      return requestSpy.mock.calls.filter(({ arguments: [options] }) =>
+        typeof options === "object" &&
+        options !== null &&
+        "port" in options &&
+        String(options.port) === upstreamPort,
+      ).length;
+    },
     get authCalls() {
       return authCalls;
     },
@@ -346,6 +363,7 @@ async function fixture(
             new Promise<void>((resolve) => server.close(() => resolve())),
         ),
       );
+      requestSpy.mock.restore();
     },
   };
 }
@@ -492,8 +510,8 @@ describe("Wave 1 native action lifecycle", () => {
       assert.equal((await rig.control(`/${action.id}/cancel`)).status, 200);
       await rejected;
       release(credential);
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      assert.equal(rig.httpCalls, 0);
+      await settleCredentials(pending);
+      assert.equal(rig.upstreamStarts, 0);
     } finally {
       release(credential);
       await rig.close();
@@ -616,8 +634,8 @@ describe("Wave 1 native action lifecycle", () => {
       assert.equal((await rig.control(`/${action.id}/cancel`)).status, 200);
       await closed;
       release(credential);
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      assert.equal(rig.wsCalls, 0);
+      await settleCredentials(pending);
+      assert.equal(rig.upstreamStarts, 0);
     } finally {
       release(credential);
       await rig.close();
