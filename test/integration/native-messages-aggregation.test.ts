@@ -30,8 +30,11 @@ async function fixture(output = nativeEvents()) {
   }) });
   assert.ok(loaded.ok);
   const requests: Item[] = [];
+  const upstreams: string[] = [];
   const deps = buildDeps(loaded.value.config, noopLogger, { env: { FABRICATED_KEY: "fabricated-profile-key" }, fetchImpl: async (url, init) => {
-    assert.equal(String(url), `${origin}/native/v1/messages`, "unexpected upstream blocked before any socket");
+    assert.ok([`${origin}/native/v1/messages`, `${origin}/other/v1/messages`].includes(String(url)),
+      "unexpected upstream blocked before any socket");
+    upstreams.push(String(url));
     assert.equal(init?.redirect, "error");
     const headers = new Headers(init?.headers);
     assert.equal(headers.get("authorization"), null);
@@ -49,6 +52,8 @@ async function fixture(output = nativeEvents()) {
   assert.ok(address && typeof address !== "string");
   return {
     requests,
+    upstreams,
+    origin,
     async send(messages: Item[], stream = false, model = "native") {
       return fetch(`http://127.0.0.1:${address.port}/v1/messages`, { method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer fabricated-incoming" },
@@ -151,10 +156,13 @@ describe("native Messages HTTP aggregation", () => {
         messages.push({ role: "assistant", content: [nativeContent[0]!, nativeContent[3]!] }, { role: "user", content: [
           { type: "tool_result", tool_use_id: "toolu_fixture", content: "fabricated file content" },
         ] });
-        const replay = await rig.send(messages);
-        assert.equal(replay.status, 409);
-        assert.match(await replay.text(), /foreign_opaque_state/);
-        assert.equal(rig.requests.length, 1, "failed output must not publish usable signed replay");
+        // A published prefix would belong to the native owner, so another profile would get 409.
+        // An unpublished prefix is a cold native import that only its own upstream can validate.
+        const replay = await rig.send(messages, false, "other");
+        assert.equal(replay.status, 200, "failed output must not publish usable signed replay");
+        await replay.text();
+        assert.deepEqual(rig.upstreams, [`${rig.origin}/native/v1/messages`, `${rig.origin}/other/v1/messages`]);
+        assert.deepEqual(rig.requests[1]!.messages, messages);
       } finally { await rig.close(); }
     });
   }
