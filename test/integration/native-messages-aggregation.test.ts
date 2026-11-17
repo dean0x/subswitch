@@ -140,6 +140,19 @@ describe("native Messages HTTP aggregation", () => {
     });
   }
 
+  it("returns the matched native stop sequence in a nonstream response", async () => {
+    const events = nativeEvents([{ type: "text", text: "Complete" }]);
+    events[events.length - 2]!.delta = { stop_reason: "stop_sequence", stop_sequence: "\nEND α" };
+    const rig = await fixture(events);
+    try {
+      const response = await rig.send([{ role: "user", content: "Fixture" }]);
+      assert.equal(response.status, 200);
+      const message = await response.json() as Item;
+      assert.equal(message.stop_reason, "stop_sequence");
+      assert.equal(message.stop_sequence, "\nEND α");
+    } finally { await rig.close(); }
+  });
+
   for (const testCase of invalidSignedCases) {
     it(`returns 502 for ${testCase.name} without publishing the valid signed prefix`, async () => {
       const rig = await fixture(invalidSignedEvents(testCase));

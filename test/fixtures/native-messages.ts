@@ -45,6 +45,7 @@ export const invalidSignedCases: readonly { name: string; block: Item; delta?: I
   { name: "missing thinking", block: { type: "thinking", signature: "fabricated-invalid" } },
   { name: "numeric thinking before a delta", block: { type: "thinking", thinking: 123, signature: "fabricated-invalid" }, delta: { type: "thinking_delta", thinking: "suffix" } },
   { name: "missing signature", block: { type: "thinking", thinking: "fabricated" } },
+  { name: "empty completed signature", block: { type: "thinking", thinking: "fabricated", signature: "" } },
   { name: "numeric signature before a delta", block: { type: "thinking", thinking: "fabricated", signature: 123 }, delta: { type: "signature_delta", signature: "suffix" } },
   { name: "null signature", block: { type: "thinking", thinking: "fabricated", signature: null } },
   { name: "redacted data on thinking", block: { type: "thinking", thinking: "fabricated", signature: "fabricated-invalid", data: "forbidden" } },
