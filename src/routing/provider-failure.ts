@@ -164,26 +164,15 @@ export function classifyFailure(
     const candidates = [type, code].filter(
       (v): v is string => typeof v === "string" && /^[a-z_]{1,80}$/.test(v),
     );
-    const platform: Record<string, { kind: FailureKind; status: number }> = {
-      exceeded_current_quota_error: { kind: "quota", status: 429 },
-      rate_limit_reached_error: { kind: "rate_limit", status: 429 },
-      engine_overloaded_error: { kind: "overload", status: 429 },
-      invalid_authentication_error: { kind: "auth", status: 401 },
-      permission_denied_error: { kind: "permission", status: 403 },
-      invalid_request_error: { kind: "invalid_request", status: 400 },
+    const foreignCodes: Record<string, FailureKind> = {
+      exceeded_current_quota_error: "quota",
+      rate_limit_reached_error: "rate_limit",
+      engine_overloaded_error: "overload",
+      invalid_authentication_error: "auth",
+      permission_denied_error: "permission",
+      invalid_request_error: "invalid_request",
     };
-    if (profile.product === "kimi-platform") {
-      const matches = candidates
-        .map((c) => platform[c])
-        .filter((v) => v !== undefined);
-      if (
-        matches.length &&
-        matches.every((v) => v.status === status && v.kind === matches[0]?.kind)
-      ) {
-        kind = matches[0]!.kind;
-        providerCode = candidates.find((c) => platform[c]?.status === status);
-      }
-    } else if (profile.product === "kimi-code") {
+    if (profile.product === "kimi-code") {
       const signatures: [RegExp, number, FailureKind, string?][] = [
         [
           /^You've reached your 5-hour usage limit\./,
@@ -233,9 +222,9 @@ export function classifyFailure(
         providerCode = `kimi_code_${kind}`;
       }
       // A conflicting code must not activate fallback.
-      if (candidates.some((c) => platform[c] && platform[c]!.kind !== kind))
+      if (candidates.some((c) => foreignCodes[c] && foreignCodes[c] !== kind))
         kind = "unknown";
-    } else {
+    } else if (profile.product === "claude-code" || profile.product === "chatgpt-codex") {
       const common: Record<string, FailureKind> = {
         insufficient_quota: "quota",
         rate_limit_error: "rate_limit",

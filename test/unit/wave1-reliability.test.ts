@@ -74,6 +74,14 @@ describe("routing reliability and isolation", () => {
       "unknown",
     );
   });
+  for (const product of ["kimi-platform", "openai-api", "anthropic-api"]) {
+    it(`does not activate fallback for removed product ${product}`, () => {
+      const body = { text: JSON.stringify({ error: {
+        type: product === "kimi-platform" ? "exceeded_current_quota_error" : "insufficient_quota",
+      } }), complete: true, truncated: false };
+      assert.equal(classifyFailure({ ...profile, product }, 429, body, 1000).kind, "unknown");
+    });
+  }
   it("publishes no partial replay state when a staged batch exceeds the shared budget", () => {
     const cache = new ClaudeCache({ maxEntries: 2, maxBytes: 4096 }, true);
     cache.put("adapted", "existing", true);
