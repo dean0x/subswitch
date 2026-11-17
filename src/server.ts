@@ -103,7 +103,7 @@ const createCodexProvider = (config: Config, logger: Logger, auth: ProviderAuth<
  * do not call `buildDeps` and are unaffected.
  */
 export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel),
-  routingOptions: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {}): Result<ServerDeps, string> => {
+  routingOptions: { fetchImpl?: typeof fetch } = {}): Result<ServerDeps, string> => {
 
   if (config.codexIngress.enabled && config.codexIngress.claude.enabled && !hasNativeDecoders())
     return err("Codex → Claude routing requires native zstd support. Use Node 22.15 or newer; forward routing remains available.");
@@ -169,7 +169,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
   const resolveClaude = claudeResolver(config.codexIngress.claude.aliases);
   if (resolveClaude.rejectedAliases.length) return err(`Invalid Claude aliases: ${resolveClaude.rejectedAliases.join(", ")}`);
   const codexAuth = createCodexAuth(config, logger);
-  const sharedRouting = new SharedRouting(config, logger, undefined, routingOptions.fetchImpl, routingOptions.env);
+  const sharedRouting = new SharedRouting(config, logger, undefined, routingOptions.fetchImpl);
 
   return ok({
     config,

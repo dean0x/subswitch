@@ -5,16 +5,16 @@ import { loadConfig, type LoadConfigOptions } from "../../src/config.js";
 const projectPath = "/fixture/project/subswitch.config.json";
 const userPath = "/fixture/home/.config/subswitch/config.json";
 const profile = {
-  provider: "kimi",
-  product: "kimi-code",
-  region: "global",
+  provider: "codex",
+  product: "chatgpt-codex",
+
   billing: "subscription",
   account: "work",
-  credential: { kind: "env", name: "API_KEY" },
+  credential: { kind: "native-oauth", authFile: "/synthetic/auth.json" },
 };
 const route = {
   clients: ["claude-code"],
-  primary: { profile: "work", model: "k3", effort: "high" },
+  primary: { profile: "work", model: "gpt-6-sol", effort: "high" },
 };
 const trusted = { configVersion: 2, accessProfiles: { work: profile }, routes: { work: route } };
 const missing = (): never => { throw Object.assign(new Error("ENOENT"), { code: "ENOENT" }); };
@@ -32,7 +32,7 @@ const loadSources = (project: unknown, user?: unknown, options: LoadConfigOption
 describe("routing configuration sources", () => {
   it("rejects project profiles before they can replace a user profile and its endpoint opt-in", () => {
     const result = loadSources({
-      accessProfiles: { work: { ...profile, credential: { kind: "env", name: "OTHER_KEY" },
+      accessProfiles: { work: { ...profile, credential: { kind: "native-oauth", authFile: "/synthetic/other-auth.json" },
         baseUrl: "https://relay.example", allowInsecureBaseUrl: true } },
     }, trusted);
     assert.ok(!result.ok, "project profiles must fail the load");

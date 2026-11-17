@@ -69,7 +69,6 @@ export class ProfileAuth {
   constructor(
     private readonly profiles: Readonly<Record<string, AccessProfile>>,
     private readonly logger: Logger,
-    private readonly env: NodeJS.ProcessEnv = process.env,
   ) {}
   private binding(id: string, p: AccessProfile): string {
     return digest([id, p]);
@@ -175,9 +174,7 @@ export class ProfileAuth {
   has(id: string): boolean {
     const p = ownValue(this.profiles, id);
     if (!p) return false;
-    return p.credential.kind === "native-oauth"
-      ? supportsNativeOAuth(p) && existsSync(expandHome(p.credential.authFile))
-      : !!ownValue(this.env, p.credential.name);
+    return supportsNativeOAuth(p) && existsSync(expandHome(p.credential.authFile));
   }
   async get(
     id: string,
@@ -187,76 +184,52 @@ export class ProfileAuth {
     const p = ownValue(this.profiles, id);
     if (!p) throw new RoutingError("unknown_profile");
     let headers: Readonly<Record<string, string>>, owner: string;
-    if (p.credential.kind === "env") {
-      const key = ownValue(this.env, p.credential.name);
-      if (!key) throw new RoutingError("profile_credentials_missing", 503);
-      if (!/^[!-~]{1,8192}$/.test(key))
-        throw new RoutingError("invalid_profile_credential", 503);
-      headers =
-        p.provider === "claude"
-          ? { "x-api-key": key }
-          : { authorization: `Bearer ${key}` };
-      owner = digest(key);
-    } else {
-      if (!supportsNativeOAuth(p))
-        throw new RoutingError("credential_product_mismatch");
-      if (p.provider === "codex") {
-        const store = createFsAuthFileStore(expandHome(p.credential.authFile));
-        const storage = this.bindNativeStore(id, p, store.coordinationKey);
-        const read = await abortable(
-          store.read(),
-          AbortSignal.any([signal, AbortSignal.timeout(10000)]),
-        );
-        const account = read.ok ? readCodexAccountIdentity(read.value) : read;
-        if (!account.ok) {
-          // Losing a provable identity must invalidate previously bound credentials,
-          // rather than leave the manager's cached account available for authentication.
-          this.invalidateNativeStore(storage);
-          this.fileAccounts.delete(storage);
-          throw new RoutingError("profile_auth_unavailable", 503);
-        }
-        if (
-          this.fileAccounts.has(storage) &&
-          this.fileAccounts.get(storage) !== account.value
-        )
-          this.invalidateNativeStore(storage);
-        this.fileAccounts.set(storage, account.value);
-      }
-      const manager = this.manager(id, p);
-      const result = await abortable(
-        refresh ? manager.forceRefresh() : manager.getCredentials(),
+    if (!supportsNativeOAuth(p))
+      throw new RoutingError("credential_product_mismatch");
+    if (p.provider === "codex") {
+      const store = createFsAuthFileStore(expandHome(p.credential.authFile));
+      const storage = this.bindNativeStore(id, p, store.coordinationKey);
+      const read = await abortable(
+        store.read(),
         AbortSignal.any([signal, AbortSignal.timeout(10000)]),
       );
-      signal.throwIfAborted();
-      if (!result.ok) throw new RoutingError("profile_auth_unavailable", 503);
-      if (result.value.provider !== p.provider)
-        throw new RoutingError("credential_binding_mismatch", 503);
-      headers = result.value.authHeaders;
-      // Native account identifiers, when supplied, survive refresh. Profile scope remains
-      // conservative for Claude, whose native auth contract exposes no account header.
-      if (p.provider === "claude") {
-        const observed = this.claudeOwners.get(this.nativeStores.get(id) ?? id);
-        if (
-          !observed ||
-          headers["authorization"] !== `Bearer ${observed.access}`
-        )
-          throw new RoutingError("credential_owner_changed", 409);
-        owner = observed.owner;
-      } else owner = headers["chatgpt-account-id"] ?? p.account;
+      const account = read.ok ? readCodexAccountIdentity(read.value) : read;
+      if (!account.ok) {
+        // Losing a provable identity must invalidate previously bound credentials,
+        // rather than leave the manager's cached account available for authentication.
+        this.invalidateNativeStore(storage);
+        this.fileAccounts.delete(storage);
+        throw new RoutingError("profile_auth_unavailable", 503);
+      }
+      if (
+        this.fileAccounts.has(storage) &&
+        this.fileAccounts.get(storage) !== account.value
+      )
+        this.invalidateNativeStore(storage);
+      this.fileAccounts.set(storage, account.value);
     }
+    const manager = this.manager(id, p);
+    const result = await abortable(
+      refresh ? manager.forceRefresh() : manager.getCredentials(),
+      AbortSignal.any([signal, AbortSignal.timeout(10000)]),
+    );
+    signal.throwIfAborted();
+    if (!result.ok) throw new RoutingError("profile_auth_unavailable", 503);
+    if (result.value.provider !== p.provider)
+      throw new RoutingError("credential_binding_mismatch", 503);
+    headers = result.value.authHeaders;
+    // Native account identifiers, when supplied, survive refresh. Profile scope remains
+    // conservative for Claude, whose native auth contract exposes no account header.
+    if (p.provider === "claude") {
+      const observed = this.claudeOwners.get(this.nativeStores.get(id) ?? id);
+      if (
+        !observed ||
+        headers["authorization"] !== `Bearer ${observed.access}`
+      )
+        throw new RoutingError("credential_owner_changed", 409);
+      owner = observed.owner;
+    } else owner = headers["chatgpt-account-id"] ?? p.account;
     const generation = digest([this.binding(id, p), owner]);
-    const previous = this.generations.get(id);
-    if (
-      p.credential.kind === "env" &&
-      previous !== undefined &&
-      previous !== generation
-    ) {
-      const group = this.allowanceGroup(p);
-      this.allowanceEpochs.set(
-        group,
-        (this.allowanceEpochs.get(group) ?? 0) + 1,
-      );
-    }
     this.generations.set(id, generation);
     return {
       provider: p.provider,
@@ -281,15 +254,6 @@ export class ProfileAuth {
       this.generations.get(credential.profile) !== credential.generation
     )
       throw new RoutingError("credential_binding_mismatch", 503);
-    if (
-      p.credential.kind === "env" &&
-      credential.generation !==
-        digest([
-          this.binding(credential.profile, p),
-          digest(ownValue(this.env, p.credential.name)),
-        ])
-    )
-      throw new RoutingError("credential_owner_changed", 409);
     if (p.credential.kind === "native-oauth") {
       const storage = this.nativeStores.get(credential.profile);
       const owner =

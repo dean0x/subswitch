@@ -1,3 +1,4 @@
+import { nativeCredential } from "../fixtures/native-profile.js";
 /** Synthetic native WebSocket regressions. No live provider access. */
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -56,18 +57,18 @@ async function fixture(onRequest?: (socket: WebSocket, body: Event) => void, sco
       configVersion: 2,
       codexIngress: { enabled: true, subscriptionBaseUrl: base },
       accessProfiles: {
-        kimi: {
-          provider: "kimi", product: "kimi-code", region: "global", billing: "subscription",
-          account: "synthetic", credential: { kind: "env", name: "SYNTHETIC_KIMI_KEY" },
+        primarySubscription: {
+          provider: "codex", product: "chatgpt-codex", billing: "subscription",
+          account: "synthetic", credential: nativeCredential("codex", "synthetic-unused"),
         },
       },
-      routes: { unrelated: { clients: ["codex"], primary: { profile: "kimi", model: "k3", effort: "high" } } },
+      routes: { unrelated: { clients: ["codex"], primary: { profile: "primarySubscription", model: "gpt-6-sol", effort: "high" } } },
     }),
   });
   assert.ok(loaded.ok);
   const routing = new SharedRouting(loaded.value.config, noopLogger, undefined, async () => {
     throw new Error("unexpected routed inference");
-  }, {});
+  });
   const gateway = new CodexGateway({
     config: loaded.value.config,
     logger: noopLogger,

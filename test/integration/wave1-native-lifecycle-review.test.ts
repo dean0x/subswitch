@@ -1,3 +1,4 @@
+import { nativeCredential } from "../fixtures/native-profile.js";
 /** Synthetic upstreams and credentials exercise scoped native admission in production wiring. */
 import assert from "node:assert/strict";
 import http from "node:http";
@@ -131,18 +132,18 @@ async function fixture(
           ? {
               accessProfiles: {
                 code: {
-                  provider: "kimi",
-                  product: "kimi-code",
-                  region: "global",
+                  provider: "codex",
+                  product: "chatgpt-codex",
+
                   billing: "subscription",
                   account: "synthetic",
-                  credential: { kind: "env", name: "SYNTHETIC_CODE_KEY" },
+                  credential: nativeCredential("codex", "synthetic-code"),
                 },
               },
               routes: {
                 work: {
                   clients: ["codex"],
-                  primary: { profile: "code", model: "k3", effort: "high" },
+                  primary: { profile: "code", model: "gpt-6-sol", effort: "high" },
                 },
               },
             }
@@ -155,7 +156,6 @@ async function fixture(
     noopLogger,
     options.routed
       ? {
-          env: { SYNTHETIC_CODE_KEY: "synthetic-key" },
           fetchImpl: async () => {
             routedCalls++;
             if (options.routedPaused) {

@@ -367,7 +367,7 @@ const FileConfigSchema = z.strictObject({
   if ((Object.keys(file.accessProfiles).length || Object.keys(file.routes).length) && file.configVersion !== 2)
     ctx.addIssue({ code: "custom", message: "explicit profiles/routes require configVersion: 2" });
   for (const route of Object.values(file.routes)) {
-    for (const target of [route.primary, ...(route.sameModelApi ? [route.sameModelApi] : []), ...route.fallbacks]) {
+    for (const target of [route.primary, ...route.fallbacks]) {
       const profile = ownValue(file.accessProfiles, target.profile);
       const aliases = profile?.provider === "codex" ? file.providers.codex.aliases :
         profile?.provider === "claude" ? file.codexIngress.claude.aliases : {};

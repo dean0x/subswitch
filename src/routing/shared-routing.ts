@@ -56,13 +56,12 @@ export class SharedRouting {
     readonly logger: Logger,
     readonly clock: RoutingClock = systemClock,
     fetchImpl: typeof fetch = fetch,
-    env: NodeJS.ProcessEnv = process.env,
     usageDriver?: UsageDriver,
   ) {
     this.quota = new QuotaStore(clock);
     this.usage = new UsageCoordinator(this.quota, usageDriver);
     this.attempts = new RoutedAttempts(
-      new ProfileAuth(config.accessProfiles ?? {}, logger, env),
+      new ProfileAuth(config.accessProfiles ?? {}, logger),
       logger,
       fetchImpl,
       clock,

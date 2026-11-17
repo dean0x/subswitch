@@ -37,7 +37,7 @@ function clockFixture() {
 
 async function fixture(store = new ActionStore()) {
   const ingress = new ActionIngress(store);
-  const operations: string[] = [], captured: unknown[] = [];
+  const operations: string[] = [];
   let ready!: () => void;
   const readiness = new Promise<void>((resolve) => { ready = resolve; });
   const server = http.createServer(async (req, res) => {
@@ -45,12 +45,6 @@ async function fixture(store = new ActionStore()) {
       req.resume();
       res.end();
       ready();
-    } else if (req.url?.endsWith("/capture")) {
-      const parts: Buffer[] = [];
-      for await (const part of req) parts.push(part);
-      const body: unknown = JSON.parse(Buffer.concat(parts).toString("utf8"));
-      captured.push(body);
-      res.end();
     } else {
       if (req.url?.endsWith("/cancel")) operations.push("cancel");
       if (req.url?.endsWith("/complete")) operations.push("complete");
@@ -72,7 +66,6 @@ async function fixture(store = new ActionStore()) {
     config: loaded.value.config,
     readControl: async () => ({ port, capability: store.capability }),
     operations,
-    captured,
     readiness,
     create(ownerPid: unknown) {
       return fetch(`http://127.0.0.1:${port}/__subswitch/actions`, {
@@ -97,57 +90,6 @@ async function fixture(store = new ActionStore()) {
 const readyProgram = 'fetch(process.env.ANTHROPIC_BASE_URL + "/ready").then(() => new Promise(resolve => setTimeout(resolve, 1000)));';
 
 describe("native action child boundary", () => {
-  it("omits every env profile variable and keeps the parent environment intact", async (t) => {
-    const values = {
-      ACTION_TEST_CODE_KEY: "synthetic-code",
-      ACTION_TEST_PLATFORM_KEY: "synthetic-platform",
-      ACTION_TEST_KEEP: "synthetic-keep",
-    };
-    for (const [name, value] of Object.entries(values)) {
-      const original = process.env[name];
-      process.env[name] = value;
-      t.after(() => {
-        if (original === undefined) delete process.env[name];
-        else process.env[name] = original;
-      });
-    }
-    const rig = await fixture();
-    const config = {
-      ...rig.config,
-      accessProfiles: {
-        code: {
-          provider: "kimi", product: "kimi-code", billing: "subscription",
-          account: "synthetic",
-          credential: { kind: "env", name: "ACTION_TEST_CODE_KEY" },
-        },
-        platform: {
-          provider: "kimi", product: "kimi-platform", billing: "api",
-          account: "synthetic",
-          credential: { kind: "env", name: "ACTION_TEST_PLATFORM_KEY" },
-        },
-        oauth: {
-          provider: "claude", product: "claude-code", billing: "subscription",
-          account: "synthetic",
-          credential: { kind: "native-oauth", authFile: "/synthetic/auth.json" },
-        },
-      },
-    } satisfies typeof rig.config;
-    const program = `fetch(process.env.ANTHROPIC_BASE_URL + "/capture", {method:"POST",body:JSON.stringify({code:process.env.ACTION_TEST_CODE_KEY ?? null,platform:process.env.ACTION_TEST_PLATFORM_KEY ?? null,keep:process.env.ACTION_TEST_KEEP})});`;
-    try {
-      assert.equal(await runAction(
-        config, "claude-code", [process.execPath, "-e", program], "synthetic",
-        { readControl: rig.readControl },
-      ), 0);
-      assert.deepEqual(rig.captured, [
-        { code: null, platform: null, keep: "synthetic-keep" },
-      ]);
-      for (const [name, value] of Object.entries(values))
-        assert.equal(process.env[name], value);
-    } finally {
-      await rig.close();
-    }
-  });
-
   it("records the wrapper process as the action owner", async () => {
     const time = clockFixture(), observed: number[] = [];
     const store = new ActionStore(time.clock, (pid) => {

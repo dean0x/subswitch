@@ -56,9 +56,7 @@
     "prepack": "npm run build",
     "prepublishOnly": "npm run check",
     "probe:native-reverse": "tsx e2e/gates/native-reverse.ts",
-    "probe:native-production": "tsx e2e/gates/native-production.ts",
-    "probe:kimi": "tsx e2e/gates/kimi-probe.ts",
-    "probe:kimi:offline": "node --import tsx --test --test-timeout=30000 test/unit/kimi-auth.test.ts test/integration/kimi-qualification.test.ts"
+    "probe:native-production": "tsx e2e/gates/native-production.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
