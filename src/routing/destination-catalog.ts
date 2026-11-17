@@ -48,6 +48,10 @@ export function destinationUrl(
   if (profile.product === "chatgpt-codex") return base + "/responses";
   return base + (protocol === "responses" ? "/v1/responses" : "/v1/messages");
 }
+/** Only the first-party Messages endpoint can validate native Claude imports. */
+export const validatesNativeThinking = (profile: AccessProfile): boolean =>
+  profile.provider === "claude" &&
+  new URL(destinationUrl(profile, "messages")).href === "https://api.anthropic.com/v1/messages";
 
 /** Prefer a native ingress protocol when the destination has a documented codec for it. */
 export function destinationProtocol(

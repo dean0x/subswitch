@@ -11,7 +11,11 @@ import { buildDeps, createProxyServer, listenServer } from "../../src/server.js"
 import { invalidSignedCases, invalidSignedEvents, messageFrames, nativeContent, nativeEvents } from "../fixtures/native-messages.js";
 import { nativeCredential } from "../fixtures/native-profile.js";
 
-async function fixture(output = nativeEvents()) {
+async function fixture(
+  output = nativeEvents(),
+  destination: "anthropic" | "custom" = "anthropic",
+  followup?: (request: Item) => Response,
+) {
   const root = mkdtempSync(join(tmpdir(), "subswitch-native-aggregate-"));
   const origin = "http://127.0.0.1:1";
   const loaded = loadConfig({ configPath: join(root, "config.json"), env: {}, readFile: () => JSON.stringify({
@@ -21,23 +25,30 @@ async function fixture(output = nativeEvents()) {
     codexIngress: { subscriptionBaseUrl: `${origin}/unexpected-subscription`, apiBaseUrl: `${origin}/unexpected-api`,
       claude: { baseUrl: `${origin}/unexpected-claude`, oauthTokenUrl: `${origin}/unexpected-claude-refresh`,
         authFile: join(root, "absent-claude.json"), configDir: join(root, "absent-claude") } },
-    accessProfiles: Object.fromEntries(["native", "other"].map(account => [account, {
+    accessProfiles: Object.fromEntries(["native", "other", "origin"].map(account => [account, {
       provider: "claude", product: "claude-code", billing: "subscription", account,
-      baseUrl: `${origin}/${account}`, credential: nativeCredential("claude", "fabricated-profile-token"),
+      baseUrl: destination === "anthropic" || account === "origin" ? "https://api.anthropic.com" : `${origin}/${account}`,
+      credential: nativeCredential("claude", "fabricated-profile-token"),
     }])),
-    routes: Object.fromEntries(["native", "other"].map(profile => [profile, {
+    routes: Object.fromEntries(["native", "other", "origin"].map(profile => [profile, {
       clients: ["claude-code"], primary: { profile, model: "claude-sonnet-5", effort: "high" },
     }])),
   }) });
   assert.ok(loaded.ok);
   const requests: Item[] = [];
+  const upstreams: string[] = [];
   const deps = buildDeps(loaded.value.config, noopLogger, { fetchImpl: async (url, init) => {
-    assert.equal(String(url), `${origin}/native/v1/messages`, "unexpected upstream blocked before any socket");
+    assert.ok(["https://api.anthropic.com/v1/messages",
+      ...(destination === "anthropic" ? [] : [`${origin}/native/v1/messages`, `${origin}/other/v1/messages`])].includes(String(url)),
+      "unexpected upstream blocked before any socket");
+    upstreams.push(String(url));
     assert.equal(init?.redirect, "error");
     const headers = new Headers(init?.headers);
     assert.equal(headers.get("authorization"), "Bearer fabricated-profile-token");
     assert.equal(headers.get("x-api-key"), null);
-    requests.push(JSON.parse(String(init?.body)) as Item);
+    const request = JSON.parse(String(init?.body)) as Item;
+    requests.push(request);
+    if (requests.length > 1 && followup) return followup(request);
     return new Response(messageFrames(requests.length === 1 ? output : nativeEvents([{ type: "text", text: "Complete" }])).join(""), {
       headers: { "content-type": "text/event-stream" },
     });
@@ -50,6 +61,8 @@ async function fixture(output = nativeEvents()) {
   assert.ok(address && typeof address !== "string");
   return {
     requests,
+    upstreams,
+    origin,
     async send(messages: Item[], stream = false, model = "native") {
       return fetch(`http://127.0.0.1:${address.port}/v1/messages`, { method: "POST",
         headers: { "content-type": "application/json", authorization: "Bearer fabricated-incoming" },
@@ -125,6 +138,29 @@ describe("native Messages HTTP aggregation", () => {
     });
   }
 
+  it("keeps exact same-scope custom continuation and rejects another scope before dispatch", async () => {
+    const rig = await fixture(nativeEvents(), "custom");
+    try {
+      const messages: Item[] = [{ role: "user", content: "Read fixture.txt" }];
+      const content = await contentOf(await rig.send(messages), false);
+      messages.push({ role: "assistant", content }, { role: "user", content: [
+        { type: "tool_result", tool_use_id: "toolu_fixture", content: "fabricated file content" },
+      ] });
+      const foreign = await rig.send(messages, false, "other");
+      assert.equal(foreign.status, 409);
+      assert.match(await foreign.text(), /foreign_opaque_state/);
+      assert.equal(rig.requests.length, 1);
+      assert.deepEqual(await contentOf(await rig.send(messages), false), [{ type: "text", text: "Complete" }]);
+      assert.deepEqual(rig.requests[1]!.messages, messages);
+      assert.deepEqual(rig.upstreams, Array(2).fill(`${rig.origin}/native/v1/messages`));
+      // Unvalidated output has no native ownership claim, even at an Anthropic destination.
+      const nativeImport = await rig.send(messages, false, "origin");
+      assert.equal(nativeImport.status, 409);
+      assert.match(await nativeImport.text(), /foreign_opaque_state/);
+      assert.equal(rig.requests.length, 2, "unvalidated cross-scope history must not dispatch");
+    } finally { await rig.close(); }
+  });
+
   for (const stream of [false, true]) {
     it(`preserves an empty thought with a delta-only signature with stream=${stream}`, async () => {
       const content = [{ type: "thinking", thinking: "", signature: "fabricated-deferred-signature" }];
@@ -154,7 +190,16 @@ describe("native Messages HTTP aggregation", () => {
 
   for (const testCase of invalidSignedCases) {
     it(`returns 502 for ${testCase.name} without publishing the valid signed prefix`, async () => {
-      const rig = await fixture(invalidSignedEvents(testCase));
+      const rig = await fixture(invalidSignedEvents(testCase), "anthropic", request => {
+        const messages = request.messages as Item[];
+        const content = messages[1]!.content as Item[];
+        if (content[0]!.thinking === "Changed failed prefix") return new Response(
+          '{"error":{"type":"invalid_request_error"}}', { status: 400 },
+        );
+        return new Response(messageFrames(nativeEvents([{ type: "text", text: "Complete" }])).join(""), {
+          headers: { "content-type": "text/event-stream" },
+        });
+      });
       try {
         const messages: Item[] = [{ role: "user", content: "Read fixture.txt" }];
         const response = await rig.send(messages);
@@ -163,10 +208,20 @@ describe("native Messages HTTP aggregation", () => {
         messages.push({ role: "assistant", content: [nativeContent[0]!, nativeContent[3]!] }, { role: "user", content: [
           { type: "tool_result", tool_use_id: "toolu_fixture", content: "fabricated file content" },
         ] });
-        const replay = await rig.send(messages);
-        assert.equal(replay.status, 409);
-        assert.match(await replay.text(), /foreign_opaque_state/);
-        assert.equal(rig.requests.length, 1, "failed output must not publish usable signed replay");
+        const foreign = await rig.send(messages, false, "other");
+        assert.equal(foreign.status, 409, "emitted provenance must survive a failed response");
+        assert.match(await foreign.text(), /foreign_opaque_state/);
+        assert.equal(rig.requests.length, 1, "another account must not dispatch");
+        // A scoped record would reject this change locally. Provenance alone leaves validation to Anthropic.
+        const changed = structuredClone(messages);
+        (changed[1]!.content as Item[])[0]!.thinking = "Changed failed prefix";
+        const unvalidated = await rig.send(changed);
+        assert.equal(unvalidated.status, 400, "failed output must not publish a scoped signed block");
+        assert.match(await unvalidated.text(), /invalid_request/);
+        assert.deepEqual(rig.requests[1]!.messages, changed);
+        assert.deepEqual(await contentOf(await rig.send(messages), false), [{ type: "text", text: "Complete" }]);
+        assert.deepEqual(rig.requests[2]!.messages, messages);
+        assert.deepEqual(rig.upstreams, Array(3).fill("https://api.anthropic.com/v1/messages"));
       } finally { await rig.close(); }
     });
   }

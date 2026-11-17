@@ -25,6 +25,7 @@ export async function* validatedProviderEvents(
   onComplete: (final: Item) => void,
   logger?: Logger,
   limitContext?: LimitContext,
+  onSignedBlock?: (block: Item) => void,
 ): AsyncGenerator<SseEvent> {
   if (!response.body) throw new RoutingError("missing_provider_body", 502);
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
@@ -277,6 +278,8 @@ export async function* validatedProviderEvents(
         if ((block.type === "thinking" || block.type === "redacted_thinking") && !isValidNativeSignedBlock(block.content, "complete"))
           throw new RoutingError("invalid_provider_block", 502);
         block.closed = true;
+        if (block.type === "thinking" || block.type === "redacted_thinking")
+          onSignedBlock?.(block.content);
         if (block.type === "tool_use") {
           try {
             if (

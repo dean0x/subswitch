@@ -331,6 +331,25 @@ broader content/tool support in [#48](https://github.com/dean0x/subswitch/issues
 These are not included in the parity release. Missing reverse continuation state
 produces an explicit error; keep the proxy running during active translated sessions.
 
+A single-target explicit Claude route to `https://api.anthropic.com` can accept
+complete native Messages history from before proxy startup, after a restart, or after
+cache eviction. Signed blocks reach Anthropic unchanged for validation. An active
+cold import reserves its signatures until that attempt completes or releases them.
+Emitted signatures retain their provenance through a failed or cancelled response.
+SubSwitch records signature ownership only for first-party destinations that validate signatures.
+Other destinations get no ownership claim, so replay from another scope fails with 409.
+Claude subscription routes with custom endpoints retain exact same-scope continuation after a successful response.
+Cross-scope replay returns 409 without an upstream request.
+Kimi routes need the subscription sign-in, which this version does not provide.
+This does not restore translated continuation handles or import signed history into
+fallback routes. Later system-role messages remain a separate unsupported case on
+explicit Messages routes.
+
+The [2026-10-19 offline record](e2e/gates/native-thinking-continuity-offline-2026-10-19.json)
+describes source commit `a1e2471` only. Its hashes and results do not qualify the current
+HEAD. The run does not cover `test/integration/native-messages-aggregation.test.ts` or
+later replay changes.
+
 ## Effort control
 
 The optional `effort` frontmatter field works on the Codex leg too. Claude Code

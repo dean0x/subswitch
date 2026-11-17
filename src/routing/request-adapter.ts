@@ -7,6 +7,9 @@ import { ReverseState } from "../claude-state.js";
 import { ReasoningCache } from "../reasoning-cache.js";
 import { object } from "../plain-object.js";
 import { validateTargetCapabilities } from "./target-capabilities.js";
+import { foreignThinking, recordedThinking, rememberThinking, sameThinking, thinkingSignature } from "./signed-thinking.js";
+import { StagedCache } from "./replay-cache.js";
+import { validatesNativeThinking } from "./destination-catalog.js";
 import {
   renderResponsesHistory,
   type PortableTranscript,
@@ -32,6 +35,8 @@ interface RequestAdaptation {
   conversation: string;
   sessionId: string;
   priorOwner?: string | undefined;
+  /** Only the dispatcher may authorize native imports on a single-target route. */
+  allowNativeThinkingReplay?: boolean | undefined;
 }
 
 /** Product parameters and ingress codecs; no auth, network, output, or route selection. */
@@ -68,6 +73,9 @@ export function adaptRequest(request: RequestAdaptation): {
   };
   if (protocol === "messages" && ingress === "messages")
     body = normalizeMessagesInstructions(body);
+  const switched = priorOwner !== undefined && priorOwner !== owner;
+  const nativeImport = request.allowNativeThinkingReplay === true &&
+    validatesNativeThinking(p) && ingress === "messages" && protocol === "messages" && !switched;
   if (ingress === "messages" && Array.isArray(body["messages"])) {
     for (const message of body["messages"]) {
       const m = object(message);
@@ -75,32 +83,28 @@ export function adaptRequest(request: RequestAdaptation): {
       for (const block of m["content"]) {
         const b = object(block);
         if (b?.["type"] === "thinking" || b?.["type"] === "redacted_thinking") {
-          const signature = b[b["type"] === "thinking" ? "signature" : "data"];
+          const signature = thinkingSignature(b);
           const recorded =
             typeof signature === "string"
-              ? stage.get(
-                  "snapshot",
-                  `signature:${owner}:${conversation}:${signature}`,
-                )?.input[0]
+              ? recordedThinking(stage, signature, owner, conversation)
               : undefined;
-          if (
-            !recorded ||
-            b["type"] !== recorded["type"] ||
-            (b["type"] === "thinking"
-              ? typeof b["thinking"] !== "string" ||
-                b["thinking"] !== recorded["thinking"] ||
-                b["signature"] !== recorded["signature"] ||
-                b["data"] !== undefined
-              : b["data"] !== recorded["data"] ||
-                b["signature"] !== undefined ||
-                b["thinking"] !== undefined)
-          )
+          if (signature === undefined)
             throw new RoutingError("foreign_opaque_state", 409);
+          if (recorded) {
+            if (!sameThinking(b, recorded))
+              throw new RoutingError("foreign_opaque_state", 409);
+          } else {
+            if (!nativeImport || foreignThinking(stage, signature, owner, conversation))
+              throw new RoutingError("foreign_opaque_state", 409);
+            // Anthropic validates cold history. Emitted provenance permits only its original
+            // scope; failed/cancelled attempts never publish imported scoped blocks.
+            if (!(stage instanceof StagedCache)) throw new RoutingError("invalid_replay_stage", 500);
+            rememberThinking(stage, owner, conversation, b);
+          }
         }
       }
     }
   }
-  const switched = priorOwner !== undefined && priorOwner !== owner;
   // Target-owned opaque history is separate from portable text/tools. Cross-target reasoning
   // portability is disabled pending exact provider evidence.
   if (switched && (transcript.hasOpaqueReasoning || transcript.hasThinking))

@@ -22,9 +22,13 @@ function router(fetchImpl: typeof fetch, nativeMessages = false): SharedRouting 
     configVersion: 2,
     accessProfiles: { api: { provider: nativeMessages ? "claude" : "codex",
       product: nativeMessages ? "claude-code" : "chatgpt-codex", billing: "subscription", account: "synthetic",
-      credential: nativeCredential(nativeMessages ? "claude" : "codex", "synthetic-key") } },
+      credential: nativeCredential(nativeMessages ? "claude" : "codex", "synthetic-key") },
+      ...(nativeMessages ? { other: { provider: "claude", product: "claude-code", billing: "subscription", account: "other",
+        credential: nativeCredential("claude", "synthetic-other") } } : {}) },
     routes: { work: { clients: ["codex", "claude-code"], primary: { profile: "api",
-      model: nativeMessages ? "claude-sonnet-5-5" : "gpt-6-sol", effort: "high" } } },
+      model: nativeMessages ? "claude-sonnet-5-5" : "gpt-6-sol", effort: "high" } },
+      ...(nativeMessages ? { other: { clients: ["claude-code"], primary: {
+        profile: "other", model: "claude-sonnet-5-5", effort: "high" } } } : {}) },
   }) });
   if (!loaded.ok) assert.fail(loaded.error.message);
   return new SharedRouting(loaded.value.config, noopLogger, undefined, fetchImpl);
@@ -107,9 +111,12 @@ describe("routed replay lifetime", () => {
     } finally { routing.close(); }
   });
 
-  it("reclaims Claude Code replay entries and rejects an evicted signature before inference", async () => {
+  it("reimports evicted Claude Code history in the same scope and rejects another scope before inference", async () => {
     let calls = 0;
-    const routing = router(async () => {
+    const requests: Item[] = [];
+    const routing = router(async (url, init) => {
+      assert.equal(String(url), "https://api.anthropic.com/v1/messages");
+      requests.push(JSON.parse(String(init?.body)) as Item);
       calls++;
       const events: Item[] = [{ type: "message_start", message: {
         id: `message-${calls}`, type: "message", role: "assistant", content: [],
@@ -131,12 +138,19 @@ describe("routed replay lifetime", () => {
         const events = await collect(routing.events(body, "claude-code", "work", new AbortController().signal));
         assert.equal(events.at(-1)?.type, "message_stop");
       }
-      await assert.rejects(collect(routing.events({ ...body, messages: [
+      const followup = { ...body, messages: [
         ...body.messages, { role: "assistant", content: [{ type: "thinking", thinking: "synthetic", signature: "1:0" }] },
         { role: "user", content: "follow up" },
-      ] }, "claude-code", "work", new AbortController().signal)),
+      ] };
+      // An LRU miss has the same import contract as a fresh process at the Anthropic origin.
+      const replay = await collect(routing.events(followup, "claude-code", "work", new AbortController().signal));
+      assert.equal(replay.at(-1)?.type, "message_stop");
+      assert.equal(calls, 4, "same-scope history must reach Anthropic for validation");
+      assert.deepEqual(requests[3]!.messages, followup.messages);
+      await assert.rejects(collect(routing.events({ ...followup, model: "other" },
+        "claude-code", "other", new AbortController().signal)),
       (error: unknown) => error instanceof RoutingError && error.code === "foreign_opaque_state" && error.status === 409);
-      assert.equal(calls, 3);
+      assert.equal(calls, 4, "known other-scope history must not reach inference");
     } finally { routing.close(); }
   });
 
@@ -217,6 +231,55 @@ describe("routed replay lifetime", () => {
     assert.equal(shared.byteSize, 0);
     assert.equal(shared.get("replay", "abandoned"), undefined);
   });
+
+  it("maps local write exhaustion to 503 and releases the active reservation", () => {
+    const shared = new ClaudeCache(), stage = new StagedCache(shared);
+    stage.reserveSnapshot("claim", { request: { owner: "original" }, input: [] });
+    stage.preflight();
+    assert.equal(shared.size, 1);
+    for (let index = 1; index < 2048; index++) stage.put("adapted", `local-${index}`, true);
+    assert.throws(() => stage.put("adapted", "overflow", true),
+      (error: unknown) => error instanceof RoutingError && error.code === "continuation_store_full" && error.status === 503);
+    stage.discard();
+    assert.equal(shared.size, 0);
+    assert.equal(shared.byteSize, 0);
+  });
+
+  it("maps active-history read exhaustion to the same 503 without a shared write", () => {
+    const shared = new ClaudeCache(), stage = new StagedCache(shared);
+    shared.put("adapted", "prior", true);
+    const bytes = shared.byteSize;
+    for (let index = 0; index < 2048; index++) stage.put("adapted", `local-${index}`, true);
+    assert.throws(() => stage.get("adapted", "prior"),
+      (error: unknown) => error instanceof RoutingError && error.code === "continuation_store_full" && error.status === 503);
+    stage.discard();
+    assert.equal(shared.size, 1);
+    assert.equal(shared.byteSize, bytes);
+    assert.equal(shared.get("adapted", "prior"), true);
+  });
+
+  for (const operation of ["put", "reserveSnapshot", "retainSnapshot", "commit"] as const) {
+    it(`refuses ${operation} after discard without changing shared state`, () => {
+      const shared = new ClaudeCache(), stage = new StagedCache(shared);
+      shared.put("adapted", "prior", true);
+      const bytes = shared.byteSize;
+      stage.reserveSnapshot("claim", { request: { owner: "original" }, input: [] });
+      stage.preflight();
+      stage.discard();
+      const write = () => {
+        if (operation === "put") stage.put("snapshot", "after-discard", { request: {}, input: [] });
+        else if (operation === "commit") stage.commit();
+        else stage[operation]("after-discard", { request: {}, input: [] });
+      };
+      assert.throws(write, (error: unknown) => error instanceof RoutingError &&
+        error.code === "request_cancelled" && error.status === 499);
+      assert.equal(shared.size, 1);
+      assert.equal(shared.byteSize, bytes);
+      assert.equal(shared.get("adapted", "prior"), true);
+      assert.equal(shared.get("snapshot", "claim"), undefined);
+      assert.equal(shared.get("snapshot", "after-discard"), undefined);
+    });
+  }
 
   it("checks a strict shared budget before inference without publishing or evicting", () => {
     const shared = new ClaudeCache({ maxEntries: 1, maxBytes: 4096 }, true);
