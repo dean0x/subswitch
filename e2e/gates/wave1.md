@@ -8,8 +8,11 @@ their existing provider handlers and passthrough behavior.
 This branch is not ready to merge: Kimi live acceptance is pending, and the current
 Codex HTTP same-child follow-up control exposes unsupported instruction history.
 
-Use `subswitch.wave1.example.json` as a starting point. Model aliases resolve at config
-load; route references and alias chains are rejected. Each target pins its effort.
+Use `subswitch.wave1.example.json` as a starting point.
+Put `accessProfiles` and `routes` in the user configuration, or select a file with `SUBSWITCH_CONFIG`.
+Project files cannot declare these keys, including profile endpoint opt-ins.
+A declaration fails the load even when its value is empty.
+Model aliases resolve at config load; route references and alias chains are rejected. Each target pins its effort.
 Identical targets are deduplicated, with a maximum of eight unique targets. Different
 profiles remain distinct. Subscription and billed API credentials are separate profiles.
 The `baseUrl` override is a product root, before `/v1/responses` or `/v1/messages` (or
@@ -84,6 +87,9 @@ replay benchmarks pass. `npm run bench:replay` checks fixed commit work as cache
 history grows. These synthetic checks do not resolve the live acceptance gates below.
 
 ## Actions and history
+
+`run-action` selects an existing proxy with the user or explicit configuration port, then the built-in default.
+It ignores the project port. Set a custom port in the user file or `SUBSWITCH_CONFIG`.
 
 Run one native invocation as an action:
 
