@@ -4,20 +4,16 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { RoutingError } from "./routing-types.js";
 
-export const actionControlPath = (port: number): string =>
-  join(
-    homedir(),
-    ".cache",
-    "subswitch",
-    "actions",
-    String(port),
-    "control.json",
-  );
+export const actionControlPath = (
+  port: number,
+  directory = join(homedir(), ".cache", "subswitch", "actions"),
+): string => join(directory, String(port), "control.json");
 export async function publishActionControl(
   port: number,
   capability: string,
+  actionsDirectory?: string,
 ): Promise<() => Promise<void>> {
-  const path = actionControlPath(port),
+  const path = actionControlPath(port, actionsDirectory),
     directory = join(path, "..");
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const stat = await lstat(directory);
@@ -49,15 +45,18 @@ export async function publishActionControl(
     await unlink(temporary).catch(() => undefined);
   }
   return async () => {
-    const current = await readActionControl(port).catch(() => undefined);
+    const current = await readActionControl(port, actionsDirectory).catch(
+      () => undefined,
+    );
     if (current?.capability === capability)
       await unlink(path).catch(() => undefined);
   };
 }
 export async function readActionControl(
   port: number,
+  actionsDirectory?: string,
 ): Promise<{ port: number; capability: string } | undefined> {
-  const path = actionControlPath(port);
+  const path = actionControlPath(port, actionsDirectory);
   let stat;
   try {
     stat = await lstat(path);
