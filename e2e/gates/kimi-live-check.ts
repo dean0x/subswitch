@@ -161,16 +161,16 @@ function inspectHistory(body: Record<string, unknown>, facts: RunFacts, route: s
 }
 
 async function runLive(args: LiveArguments): Promise<boolean> {
-  const startedAt = new Date().toISOString(), snapshotDir = join(args.evidenceDir, ".claude-snapshot");
+  const startedAt = new Date().toISOString();
   const originalFetch = globalThis.fetch, previousLimitDir = process.env["SUBSWITCH_LIMIT_DIR"];
   const stop = new AbortController();
   let failed = false, cleanupOk = true, evidenceOk = true, refusedFetchCalls = 0;
   const fail = () => { failed = true; stop.abort(); };
   const signal = () => fail();
-  process.on("SIGINT", signal); process.on("SIGTERM", signal);
+  process.on("SIGINT", signal); process.on("SIGTERM", signal); process.on("SIGHUP", signal);
   const limitDir = join(args.evidenceDir, "limit-store");
   process.env["SUBSWITCH_LIMIT_DIR"] = limitDir;
-  let proxy: Server | undefined, temp: string | undefined, loopbackOrigin = "";
+  let proxy: Server | undefined, temp: string | undefined, snapshotDir: string | undefined, loopbackOrigin = "";
   let counts = emptyCounts(), active = newRun(1), nonce = "", file = "";
   const runs: RunFacts[] = [], dispatches: Dispatch[] = [], events: Record<string, unknown>[] = [], childEnvNames: string[] = [];
   let digest: string | undefined, beforeRefresh: Awaited<ReturnType<typeof lstat>> | undefined;
@@ -266,7 +266,9 @@ async function runLive(args: LiveArguments): Promise<boolean> {
     // Keychain on macOS only. Never fall back to a credential file on another OS.
     if (process.platform !== "darwin") throw new Error("claude_keychain_required");
     const headers = await probeHeaders({ provider: "claude", auth: "subscription" });
-    const authFile = await claudeSnapshot(snapshotDir, headers);
+    // The token folder stays outside the evidence folder, so a crash leaves no token in the evidence.
+    snapshotDir = await mkdtemp(join(tmpdir(), "subswitch-kimi-claude-"));
+    const authFile = await claudeSnapshot(join(snapshotDir, "snapshot"), headers);
     const config = loadConfig({ env: {}, configPath: join(temp, "inline.json"), readFile: () => JSON.stringify({
       configVersion: 2, providers: { codex: { authFile: join(work, "disabled-codex-auth.json") } },
       codexIngress: { enabled: false }, accessProfiles: {
@@ -354,7 +356,7 @@ async function runLive(args: LiveArguments): Promise<boolean> {
     globalThis.fetch = originalFetch;
     if (previousLimitDir === undefined) delete process.env["SUBSWITCH_LIMIT_DIR"];
     else process.env["SUBSWITCH_LIMIT_DIR"] = previousLimitDir;
-    process.removeListener("SIGINT", signal); process.removeListener("SIGTERM", signal);
+    process.removeListener("SIGINT", signal); process.removeListener("SIGTERM", signal); process.removeListener("SIGHUP", signal);
   }
   const report = { schemaVersion: 1, success: !failed && cleanupOk && evidenceOk && runs.length === 2,
     startedAt, endedAt: new Date().toISOString(), cleanupOk, evidenceOk, bearerChanged, storeChanged,
