@@ -8,7 +8,8 @@
   },
   "files": [
     "dist",
-    "subswitch.config.example.json"
+    "subswitch.config.example.json",
+    "subswitch.wave1.example.json"
   ],
   "keywords": [
     "claude",
