@@ -3,7 +3,11 @@ export function abortable<T>(
   promise: Promise<T>,
   signal: AbortSignal,
 ): Promise<T> {
-  signal.throwIfAborted();
+  if (signal.aborted) {
+    // The operation can still fail after its caller cancels.
+    void promise.catch(() => undefined);
+    return Promise.reject(signal.reason);
+  }
   return new Promise((resolve, reject) => {
     const cleanup = () => signal.removeEventListener("abort", abort);
     const abort = () => {

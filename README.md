@@ -244,8 +244,9 @@ Claude Code integration together. The default `init` behavior remains Claude Cod
 Codex setup changes only the user-level `openai_base_url` value, preserving other
 TOML settings and comments. It writes SubSwitch's user config to
 `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`).
-Project configuration merges over this fallback; explicit `SUBSWITCH_CONFIG`
-remains authoritative. Start the proxy before launching Codex. Existing custom
+Permitted project settings merge over this fallback; explicit `SUBSWITCH_CONFIG`
+remains authoritative. Profiles and routes require the user file or an explicit file.
+Start the proxy before launching Codex. Existing custom
 providers are not replaced. A custom upstream is preserved only when it is loopback or
 you have explicitly set `codexIngress.allowInsecureBaseUrl: true` in the SubSwitch config.
 Setup names an unapproved host and stops before writing files.
@@ -350,13 +351,24 @@ default.
 The config file is located by the following precedence (highest wins):
 
 1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
-2. `subswitch.config.json` in the current working directory, merged over the user fallback
+2. Permitted settings from `subswitch.config.json` in the current directory, merged over the user fallback
 3. `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`), then built-in defaults
 
 An explicit `SUBSWITCH_CONFIG` file is authoritative and is not merged with the user fallback.
-This merge applies to all commands, including forward-only use. `doctor` displays every
-loaded source, and errors identify source paths. Explicit config paths passed by callers
-of `loadConfig` also bypass the merge.
+Explicit config paths passed by callers of `loadConfig` also bypass the merge.
+`doctor` displays every loaded source, and errors identify source paths.
+
+`accessProfiles` and `routes` load only from the user configuration or an explicit file.
+This rule includes each profile's `allowInsecureBaseUrl` value.
+A project file that declares either key fails with an error, even for an empty value.
+Move those keys to the user file, or select the file with `SUBSWITCH_CONFIG`.
+Use `configVersion: 2` for explicit profiles and routes.
+The [Wave 1 example](subswitch.wave1.example.json) shows their format.
+
+Other project settings retain their merge behavior, except the `run-action` port.
+`run-action` uses the user or explicit file's port, then the built-in default.
+It does not use the project port to select an existing proxy.
+Set the same port in the user file or `SUBSWITCH_CONFIG` when an action must use a custom-port proxy.
 
 **An unrecognised key is rejected, not ignored.** Two checks run against the raw file
 before it is parsed, and a hit on either is a hard load failure — subswitch prints the

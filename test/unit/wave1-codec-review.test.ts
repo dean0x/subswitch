@@ -15,6 +15,7 @@ import { noopLogger } from "../../src/logger.js";
 import { validatedProviderEvents } from "../../src/routing/provider-stream.js";
 import { systemClock } from "../../src/routing/clock.js";
 import { AttemptFailure } from "../../src/routing/attempt-failure.js";
+import { RoutingError } from "../../src/routing/routing-types.js";
 import { translateClaudeStream } from "../../src/claude-stream.js";
 import type { AccessProfile, Item } from "../../src/routing/routing-types.js";
 
@@ -580,17 +581,20 @@ describe("reviewed source transport classification", () => {
       (error: unknown) =>
         error instanceof AttemptFailure && error.failure.kind === "transport",
     );
-    for (const malformed of [
-      "data: invalid JSON\n\n",
-      `data: ${"x".repeat(4 * 1024 * 1024 + 1)}\n\n`,
-    ]) {
+    for (const [malformed, expected] of [
+      ["data: invalid JSON\n\n", { code: "invalid_provider_event", status: 502 }],
+      [
+        `data: ${"x".repeat(4 * 1024 * 1024 + 1)}\n\n`,
+        { name: "Error", message: "sse_event_too_large" },
+      ],
+    ] as const) {
       await assert.rejects(
         consume(
           new Response(malformed, {
             headers: { "content-type": "text/event-stream" },
           }),
         ),
-        (error: unknown) => !(error instanceof AttemptFailure),
+        expected,
       );
     }
   });
@@ -662,7 +666,10 @@ describe("reviewed source transport classification", () => {
     controller.abort();
     await assert.rejects(
       pending,
-      (error: unknown) => !(error instanceof AttemptFailure),
+      (error: unknown) =>
+        error instanceof RoutingError &&
+        error.code === "provider_stream_timeout_or_cancelled" &&
+        error.status === 504,
     );
   });
 

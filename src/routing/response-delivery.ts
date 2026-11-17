@@ -29,6 +29,7 @@ export async function* deliverResponse(
     finished = false;
   while (true) {
     delivery.checkDeadline();
+    delivery.signal.throwIfAborted();
     const next = await abortable(iterator.next(), delivery.signal);
     if (next.done) break;
     let event = next.value.payload;

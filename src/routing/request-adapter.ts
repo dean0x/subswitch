@@ -176,6 +176,9 @@ export function adaptRequest(request: RequestAdaptation): {
     }
   }
   outbound = { ...outbound, model: t.model, stream: true };
+  const originProvider = ingress === "messages" ? "claude" : "codex";
+  // Client metadata stays with its origin vendor, even if the wire protocol matches.
+  if (p.provider !== originProvider) delete outbound["metadata"];
   if (protocol === "responses") {
     delete outbound["previous_response_id"];
     delete outbound["conversation"];

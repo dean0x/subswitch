@@ -8,8 +8,11 @@ their existing provider handlers and passthrough behavior.
 This branch is not ready to merge: Kimi live acceptance is pending, and the current
 Codex HTTP same-child follow-up control exposes unsupported instruction history.
 
-Use `subswitch.wave1.example.json` as a starting point. Model aliases resolve at config
-load; route references and alias chains are rejected. Each target pins its effort.
+Use `subswitch.wave1.example.json` as a starting point.
+Put `accessProfiles` and `routes` in the user configuration, or select a file with `SUBSWITCH_CONFIG`.
+Project files cannot declare these keys, including profile endpoint opt-ins.
+A declaration fails the load even when its value is empty.
+Model aliases resolve at config load; route references and alias chains are rejected. Each target pins its effort.
 Identical targets are deduplicated, with a maximum of eight unique targets. Different
 profiles remain distinct. Subscription and billed API credentials are separate profiles.
 The `baseUrl` override is a product root, before `/v1/responses` or `/v1/messages` (or
@@ -85,6 +88,9 @@ history grows. These synthetic checks do not resolve the live acceptance gates b
 
 ## Actions and history
 
+`run-action` selects an existing proxy with the user or explicit configuration port, then the built-in default.
+It ignores the project port. Set a custom port in the user file or `SUBSWITCH_CONFIG`.
+
 Run one native invocation as an action:
 
 ```sh
@@ -119,10 +125,14 @@ and does not add response deadlines to bare native passthrough.
 Routed Responses IDs are local and expanded before upstream inference. Unknown,
 foreign, lost, oversized or incompatible continuation state fails explicitly.
 Thinking/signatures are target and branch owned; cross-profile opaque replay remains
-disabled. The process shares a strict 64 MiB / 4,096-entry allowance across two bounded
-continuation/replay partitions. Active actions and affinities have separate admission
-bounds and are never evicted into new identities. Supported routed content is text and
-native tools; unsupported multimodal and compaction content is rejected before inference.
+disabled. The process shares a 64 MiB / 4,096-entry allowance across two bounded
+continuation/replay partitions. Each partition reclaims completed LRU entries at
+publication. Evicted response IDs return `409 continuation_state_lost`; missing replay
+state also fails with 409. Active requests retain independent history and replay copies.
+Known continuation and replay sizes are checked before inference. A response that alone
+exceeds its partition still fails explicitly. Active actions and affinities have separate
+admission bounds and are never evicted into new identities. Supported routed content is
+text and native tools; unsupported multimodal and compaction content is rejected before inference.
 
 ## Selection and recovery
 

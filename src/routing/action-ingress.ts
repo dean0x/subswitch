@@ -103,7 +103,8 @@ export class ActionIngress {
         if (
           !body ||
           !["claude-code", "codex"].includes(String(body["client"])) ||
-          typeof body["conversationId"] !== "string"
+          typeof body["conversationId"] !== "string" ||
+          (body["ownerPid"] !== undefined && typeof body["ownerPid"] !== "number")
         )
           throw new RoutingError("invalid_action_context");
         respondJson(
@@ -113,6 +114,8 @@ export class ActionIngress {
             this.store.create(
               body["client"] as OriginatingClient,
               body["conversationId"],
+              "explicit",
+              body["ownerPid"],
             ),
           ),
         );

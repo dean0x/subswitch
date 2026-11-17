@@ -15,7 +15,14 @@ export class StagedCache extends ClaudeCache {
     kind: K,
     id: string,
   ): ClaudeCacheValues[K] | undefined {
-    return super.get(kind, id) ?? this.shared.get(kind, id);
+    const local = super.get(kind, id);
+    if (local !== undefined) return local;
+    const value = this.shared.get(kind, id);
+    if (value === undefined) return undefined;
+    // Active history stays attempt-local even if another response reclaims shared LRU state.
+    const snapshot = structuredClone(value);
+    super.put(kind, id, snapshot);
+    return snapshot;
   }
   override put<K extends keyof ClaudeCacheValues>(
     kind: K,
@@ -24,6 +31,13 @@ export class StagedCache extends ClaudeCache {
   ): void {
     super.put(kind, id, value);
     this.writes.set(`${kind}:${id}`, { kind, id, value } as CacheWrite);
+  }
+  preflight(): void {
+    try {
+      this.shared.checkBatch([...this.writes.values()]);
+    } catch {
+      throw new RoutingError("continuation_store_full", 503);
+    }
   }
   commit(): void {
     try {
