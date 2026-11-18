@@ -235,6 +235,39 @@ it("TP-62/63 invalid JSON and body-read errors do not write or expose body text"
     f.poller.stop();
   }
 });
+for (const outcome of ["timeout", "stop"] as const) {
+  it(`credential wait ends on ${outcome} without a late usage request`, async (t) => {
+    const records: unknown[] = [];
+    const f = fixture(undefined, { log: (level, event, fields) => records.push({ level, event, fields }) });
+    const getCredentials = f.auth.getCredentials.bind(f.auth);
+    let finish!: (value: Awaited<ReturnType<typeof getCredentials>>) => void;
+    let loads = 0;
+    t.mock.method(f.auth, "getCredentials", () => ++loads === 1
+      ? new Promise<Awaited<ReturnType<typeof getCredentials>>>((resolve) => { finish = resolve; }) : getCredentials());
+    f.writer.record({ snapshot: { ...expectedUsage, source: "response-headers", windows: [{ window_minutes: 300, used_percent: 1, resets_at: 1800000060 }] }, resetRejected: false });
+    await f.writer.flush();
+    try {
+      f.poller.start(); await settle();
+      f.setNow(NOW + 10000);
+      if (outcome === "timeout") f.timers.find((timer) => timer.delay === 10000 && !timer.cancelled)!.callback();
+      else f.poller.stop();
+      await settle();
+      assert.deepEqual(records, outcome === "timeout"
+        ? [{ level: "warn", event: "codex_usage_poll_failed", fields: { errorCode: "timeout" } }] : [], "wait ends before the credential resolves");
+      assert.equal(f.calls.length, 0, "no request before credentials");
+      if (outcome === "timeout") {
+        await f.tick(NOW + 129999);
+        assert.equal(loads, 1, "failure backoff starts at timeout");
+        await f.tick(NOW + 130000);
+        assert.equal(loads, 2, "timeout releases the poll slot");
+        assert.equal(f.calls.length, 1, "a later eligible poll can proceed");
+      }
+      finish(await getCredentials()); await settle();
+      assert.equal(f.calls.length, outcome === "timeout" ? 1 : 0, "late credentials never dispatch the cancelled poll");
+      assert.equal(f.refreshes, 0, "poll never forces refresh");
+    } finally { f.poller.stop(); }
+  });
+}
 it("TP-59 a transport that resolves after timeout still takes one failure step", async () => {
   let finish: ((response: Response) => void) | undefined;
   const f = fixture(() => new Promise<Response>((resolve) => { finish = resolve; }));

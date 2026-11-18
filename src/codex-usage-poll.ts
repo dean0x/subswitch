@@ -1,3 +1,4 @@
+import { abortable } from "./abortable.js";
 import { BoundedCapture } from "./bounded-capture.js";
 import { isCodexQuotaSource, parseCodexUsageBody, type CodexQuotaPollWriter } from "./codex-quota-snapshot.js";
 import type { ProviderAuth } from "./provider-auth.js";
@@ -130,7 +131,8 @@ export class CodexUsagePoller {
     this.cancelTimeout = scheduleRoutingTimer(this.options.clock, () => { timedOut = true; controller.abort(); }, TIMEOUT_MS);
     let failureCode: FailureCode = "network";
     try {
-      const credential = await this.options.auth.getCredentials();
+      // The shared credential store owns refresh; this poll owns only its wait.
+      const credential = await abortable(this.options.auth.getCredentials(), controller.signal);
       if (this.ignoreResult(controller.signal)) return;
       if (!credential.ok) { this.fail("codex_usage_poll_failed", { errorCode: "network" }); return; }
       const response = await this.options.fetchImpl(this.options.url, { method: "GET", redirect: "error", signal: controller.signal,
