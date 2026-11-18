@@ -66,12 +66,40 @@ const buildTable = (
 // ---------------------------------------------------------------------------
 
 describe("F2 — family alias resolution", () => {
+  for (const [family, id] of [
+    ["sol", "gpt-6.2-sol"],
+    ["astra", "gpt-6.2-astra"],
+    ["terra", "gpt-6.1-terra"],
+  ] as const) {
+    it(`resolves ${family} and its qualified family to ${id}`, () => {
+      const { table } = buildRoutingTable(MODEL_REGISTRY, NO_ALIASES);
+      assert.deepEqual(table.byFamily.get(family), {
+        kind: "unique", model: { id, provider: "codex", family },
+      });
+      for (const name of [family, `codex:${family}`])
+        assert.deepEqual(resolveModel(table, name), {
+          kind: "resolved", target: { id, provider: "codex", family },
+        });
+    });
+
+    it(`resolves the exact and qualified ${id} IDs`, () => {
+      const { table } = buildRoutingTable(MODEL_REGISTRY, NO_ALIASES);
+      for (const name of [id, `codex:${id}`])
+        assert.deepEqual(resolveModel(table, name), {
+          kind: "resolved", target: { id, provider: "codex", family },
+        });
+    });
+  }
+
   it("F2: resolves Astra by canonical id, bare/qualified family, and qualified id", () => {
     const { table } = buildRoutingTable(MODEL_REGISTRY, NO_ALIASES);
-    for (const name of ["gpt-6-astra", "astra", "codex:gpt-6-astra", "codex:astra"]) {
+    for (const [name, expected] of [
+      ["gpt-6-astra", "gpt-6-astra"], ["codex:gpt-6-astra", "gpt-6-astra"],
+      ["astra", "gpt-6.2-astra"], ["codex:astra", "gpt-6.2-astra"],
+    ] as const) {
       const resolution = resolveModel(table, name);
       assert.equal(resolution.kind, "resolved", name);
-      assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-6-astra");
+      assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, expected);
     }
   });
 
@@ -81,9 +109,9 @@ describe("F2 — family alias resolution", () => {
       ["gpt-6.1-sol", "gpt-6.1-sol"],
       ["codex:gpt-6.1-sol", "gpt-6.1-sol"],
       ["gpt-6-sol", "gpt-6-sol"],
-      ["sol", "gpt-6.1-sol"],
+      ["sol", "gpt-6.2-sol"],
       ["codex:gpt-6-sol", "gpt-6-sol"],
-      ["codex:sol", "gpt-6.1-sol"],
+      ["codex:sol", "gpt-6.2-sol"],
       ["gpt-6-luna", "gpt-6-luna"],
       ["luna", "gpt-6-luna"],
       ["codex:gpt-6-luna", "gpt-6-luna"],
@@ -96,12 +124,15 @@ describe("F2 — family alias resolution", () => {
     }
   });
 
-  it("F2: GPT-6 ships no Terra, so 'terra' and 'codex:terra' stay on gpt-5.6-terra", () => {
+  it("F2: Terra family names advance while the older exact ID stays pinned", () => {
     const { table } = buildRoutingTable(MODEL_REGISTRY, NO_ALIASES);
-    for (const name of ["terra", "codex:terra"]) {
+    for (const [name, expected] of [
+      ["terra", "gpt-6.1-terra"], ["codex:terra", "gpt-6.1-terra"],
+      ["gpt-5.6-terra", "gpt-5.6-terra"], ["codex:gpt-5.6-terra", "gpt-5.6-terra"],
+    ] as const) {
       const resolution = resolveModel(table, name);
       assert.equal(resolution.kind, "resolved", name);
-      assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-5.6-terra", name);
+      assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, expected, name);
     }
   });
 
@@ -118,11 +149,11 @@ describe("F2 — family alias resolution", () => {
     assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-5.6-sol");
   });
 
-  it("F2: real MODEL_REGISTRY — 'sol' resolves to gpt-6.1-sol (current generation)", () => {
+  it("F2: real MODEL_REGISTRY — 'sol' resolves to gpt-6.2-sol (current generation)", () => {
     const { table } = buildRoutingTable(MODEL_REGISTRY, NO_ALIASES);
     const resolution = resolveModel(table, "sol");
     assert.equal(resolution.kind, "resolved");
-    assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-6.1-sol");
+    assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-6.2-sol");
   });
 });
 

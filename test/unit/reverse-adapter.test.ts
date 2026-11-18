@@ -189,6 +189,30 @@ describe("experimental reverse native contract", () => {
     assert.equal(translated.body["tool_choice"], undefined);
   });
 
+  for (const tool_choice of ["required", { type: "function", namespace: "functions", name: "read" }]) {
+    it(`refuses Fable 5.2 forced tool choice ${JSON.stringify(tool_choice)} locally`, () => {
+      const failure = rejectsWith(
+        () => reverseRequest({ ...request(), model: "claude-fable-5-2", tool_choice }),
+        "tool_choice_unsupported_by_model",
+      );
+      assert.equal(failure.status, 400);
+      assert.match(failure.message, /claude-fable-5-2/);
+    });
+  }
+
+  it("refuses disabled thinking on Fable 5.2 locally", () => {
+    const failure = rejectsWith(
+      () => reverseRequest({ ...request(), model: "claude-fable-5-2", reasoning: { effort: "none" } }),
+      "reasoning_effort_unsupported_by_model",
+    );
+    assert.equal(failure.status, 400);
+    assert.match(failure.message, /claude-fable-5-2/);
+  });
+
+  it("caps Fable 5.2 max_tokens at 128000", () => {
+    assert.equal(reverseRequest({ ...request(), model: "claude-fable-5-2", max_output_tokens: 500_000 }).body["max_tokens"], 128_000);
+  });
+
   it("clamps max_tokens to the resolved model's output ceiling", () => {
     assert.equal(reverseRequest({ ...request(), model: "claude-opus-5-5", max_output_tokens: 500_000 }).body["max_tokens"], 128_000);
     assert.equal(reverseRequest({ ...request(), model: "claude-sonnet-5", max_output_tokens: 128_001 }).body["max_tokens"], 128_000);

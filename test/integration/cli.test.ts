@@ -477,18 +477,20 @@ describe("CLI models --json", () => {
     assert.deepEqual(solModel.gen, [5, 6], "gen for gpt-5.6-sol must be [5, 6]");
   });
 
-  it("lists gpt-6-astra with its Astra family alias, gen tuple and declared reasoningEfforts", async () => {
+  it("lists the Astra family default and keeps GPT-6 Astra's generation and efforts", async () => {
     const result = await runCli(["models", "--json"]);
     const parsed = JSON.parse(result.stdout) as {
       models: Array<{ id: string; gen?: number[]; aliases?: Array<{ name: string }>; reasoningEfforts?: string[] }>;
     };
     const astra = parsed.models.find((model) => model.id === "gpt-6-astra");
     assert.ok(astra !== undefined, "models must include gpt-6-astra");
+    const latestAstra = parsed.models.find((model) => model.id === "gpt-6.2-astra");
     assert.ok(
-      astra.aliases?.some((alias) => alias.name === "astra"),
-      "gpt-6-astra must carry its derived 'astra' family alias",
+      latestAstra?.aliases?.some((alias) => alias.name === "astra"),
+      "gpt-6.2-astra must carry its derived 'astra' family alias",
     );
-    // Single-element gen tuple — the only one in the registry, so nothing else pins this shape.
+    assert.equal(astra.aliases?.some((alias) => alias.name === "astra"), false);
+    // Keep the single-element generation tuple covered for the older exact ID.
     assert.deepEqual(astra.gen, [6], "gen for gpt-6-astra must be [6]");
     // The registry's narrowed effort vocabulary must reach the machine-readable registry:
     // a consumer that cannot see it will offer efforts this model rejects. (avoids PF-004)
@@ -499,22 +501,22 @@ describe("CLI models --json", () => {
     );
   });
 
-  it("lists Sol 6.1 and Luna 6 holding their aliases, with generations and reasoning efforts", async () => {
+  it("lists current family defaults with their generations and reasoning efforts", async () => {
     const result = await runCli(["models", "--json"]);
     const parsed = JSON.parse(result.stdout) as {
       models: Array<{ id: string; gen?: number[]; aliases?: Array<{ name: string }>; reasoningEfforts?: string[] }>;
     };
-    for (const [id, family, gen] of [["gpt-6.1-sol", "sol", [6, 1]], ["gpt-6-luna", "luna", [6]]] as const) {
+    for (const [id, family, gen] of [["gpt-6.2-sol", "sol", [6, 2]], ["gpt-6.2-astra", "astra", [6, 2]], ["gpt-6.1-terra", "terra", [6, 1]], ["gpt-6-luna", "luna", [6]]] as const) {
       const model = parsed.models.find((m) => m.id === id);
       assert.ok(model !== undefined, `models must include ${id}`);
       assert.ok(model.aliases?.some((alias) => alias.name === family), `${id} must carry the derived '${family}' alias`);
       assert.deepEqual(model.gen, gen, `gen for ${id}`);
       assert.deepEqual(model.reasoningEfforts, ["low", "medium", "high", "xhigh", "max"], `${id} reasoningEfforts`);
     }
-    for (const id of ["gpt-6-sol", "gpt-5.6-sol"]) {
+    for (const id of ["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol"]) {
       const oldSol = parsed.models.find((m) => m.id === id);
       assert.ok(oldSol !== undefined, `models must still include ${id}`);
-      assert.equal(oldSol.aliases?.some((alias) => alias.name === "sol"), false, "'sol' must have moved to gpt-6.1-sol");
+      assert.equal(oldSol.aliases?.some((alias) => alias.name === "sol"), false, "'sol' must have moved to gpt-6.2-sol");
     }
   });
 

@@ -31,7 +31,7 @@ describe("routableModelCount", () => {
     // Update the literal — never the registry — when MODEL_REGISTRY changes.
     assert.equal(
       routableModelCount(MODEL_REGISTRY, "codex"),
-      7,
+      10,
       "update this literal when MODEL_REGISTRY changes",
     );
   });
@@ -122,12 +122,12 @@ describe("formatModelsReport", () => {
     const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
     const text = result.join("\n");
     assert.ok(text.includes("sol"), "should mention 'sol' alias");
-    assert.ok(text.includes("gpt-6.1-sol"), "should mention 'gpt-6.1-sol' canonical");
+    assert.ok(text.includes("gpt-6.2-sol"), "should mention 'gpt-6.2-sol' canonical");
   });
 
   it("marks alias as 'enabled' for non-retired models", () => {
     const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
-    const solLine = result.find((l) => l.includes("sol") && l.includes("gpt-6.1-sol"));
+    const solLine = result.find((l) => l.includes("sol") && l.includes("gpt-6.2-sol"));
     assert.ok(solLine !== undefined, "should have a line covering the sol alias");
     assert.ok(solLine.includes("enabled"), "sol alias should be marked enabled");
   });
@@ -178,14 +178,14 @@ describe("formatModelsReport", () => {
   });
 
   it("does not emit a '(direct)' row for an id already covered as a canonical of an alias row", () => {
-    // gpt-6.1-sol is the canonical of the 'sol' derived alias row — no double-listing.
+    // gpt-6.2-sol is the canonical of the 'sol' derived alias row — no double-listing.
     const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
-    const solDirectLines = result.filter((l) => l.includes("gpt-6.1-sol") && l.includes("(direct)"));
-    assert.equal(solDirectLines.length, 0, "gpt-6.1-sol is already the canonical of the sol alias row — no extra (direct) row");
+    const solDirectLines = result.filter((l) => l.includes("gpt-6.2-sol") && l.includes("(direct)"));
+    assert.equal(solDirectLines.length, 0, "gpt-6.2-sol is already the canonical of the sol alias row — no extra (direct) row");
   });
 
   it("keeps a superseded family member visible as a '(direct)' row", () => {
-    // gpt-5.6-sol lost the 'sol' alias to gpt-6.1-sol but is still served and routable by
+    // gpt-5.6-sol lost the 'sol' alias to gpt-6.2-sol but is still served and routable by
     // exact id, so the table must still list it — otherwise a pinned agent's model vanishes.
     const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { codex: {} } });
     const directLine = result.find((l) => l.includes("gpt-5.6-sol") && l.includes("(direct)"));
@@ -479,12 +479,12 @@ describe("canary — current generation resolution via routing table (update whe
     return resolution.kind === "resolved" ? resolution.target.id : undefined;
   };
 
-  it("'sol' resolves to gpt-6.1-sol — GPT-6 generation", () => {
-    assert.equal(resolvedId("sol"), "gpt-6.1-sol");
+  it("'sol' resolves to gpt-6.2-sol — GPT-6 generation", () => {
+    assert.equal(resolvedId("sol"), "gpt-6.2-sol");
   });
 
-  it("'terra' resolves to gpt-5.6-terra — GPT-6 has no Terra, so 5.6 keeps the alias", () => {
-    assert.equal(resolvedId("terra"), "gpt-5.6-terra");
+  it("'terra' resolves to gpt-6.1-terra — current generation", () => {
+    assert.equal(resolvedId("terra"), "gpt-6.1-terra");
   });
 
   it("'luna' resolves to gpt-6-luna — GPT-6 generation", () => {
