@@ -1,6 +1,7 @@
 import { createColors } from "picocolors";
 import { resolveColorEnabled } from "./tty.js";
 import type { LimitObservation } from "./limit-observation.js";
+import type { CodexQuotaSink } from "./codex-quota-snapshot.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -58,9 +59,11 @@ export interface LogFields extends Partial<ProviderErrorHints> {
 
 export interface Logger {
   log(level: LogLevel, event: string, fields?: LogFields): void;
-  /** Separate private diagnostic artifacts; accepts only the sanitized projection. */
+  /** events.jsonl is a private diagnostic; accepts only the sanitized projection. */
   recordLimit?(observation: LimitObservation): void;
   trackLimitTask?(task: Promise<void>): void;
+  /** codex-quota.json is a public snapshot contract for status lines. */
+  codexQuota?: CodexQuotaSink;
 }
 
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };

@@ -1,7 +1,8 @@
 import { constants } from "node:fs";
 import { mkdir, open, rename, unlink, lstat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { CodexQuotaWriter, writeCodexQuotaFile } from "./codex-quota-snapshot.js";
 import type { Logger } from "./logger.js";
 import type { LimitObservation } from "./limit-observation.js";
 
@@ -24,10 +25,23 @@ export class LimitRecorder {
   private queued = 0;
   private warned = false;
   private readonly tasks = new Set<Promise<void>>();
+  readonly codexQuota?: CodexQuotaWriter;
   constructor(
     readonly directory: string,
     private readonly logger: Logger,
-  ) {}
+    options: { codexQuota?: { path: string; credentialFile: string; now?: () => number } } = {},
+  ) {
+    const quota = options.codexQuota;
+    if (quota && isAbsolute(quota.path)) {
+      const directoryState = { initialized: false };
+      this.codexQuota = new CodexQuotaWriter({
+        credentialFile: quota.credentialFile,
+        now: quota.now ?? Date.now,
+        logger,
+        write: (text) => writeCodexQuotaFile(quota.path, text, directoryState),
+      });
+    }
+  }
   readonly record = (observation: LimitObservation): void => {
     const line = JSON.stringify(observation) + "\n";
     if (Buffer.byteLength(line) > RECORD_BYTES || this.queued >= 32) {
@@ -119,6 +133,7 @@ export class LimitRecorder {
   async flush(): Promise<void> {
     await Promise.allSettled([...this.tasks]);
     await this.pending;
+    await this.codexQuota?.flush();
   }
 }
 export function withLimitRecorder(
@@ -129,6 +144,7 @@ export function withLimitRecorder(
     log: (level, event, fields) => logger.log(level, event, fields),
     recordLimit: recorder.record,
     trackLimitTask: recorder.track,
+    ...(recorder.codexQuota ? { codexQuota: recorder.codexQuota } : {}),
   };
 }
 export async function readLimitObservations(
