@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { gzipSync } from "node:zlib";
 import { describe, it } from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
@@ -272,7 +272,9 @@ describe("production native limit observation", () => {
 describe("explicit route observations and inspection", () => {
   it("automatically records a naturally arriving failure in the serve entrypoint", async () => {
     const dir = await mkdtemp(join(tmpdir(), "subswitch-limit-serve-"));
-    const backend = http.createServer((_req, res) => {
+    let usageRequests = 0;
+    const backend = http.createServer((req, res) => {
+      if (req.url === "/backend-api/wham/usage") usageRequests++;
       res.writeHead(429, { "retry-after": "60" });
       res.end(error);
     });
@@ -283,11 +285,14 @@ describe("explicit route observations and inspection", () => {
     await close(reserve);
     let child: ReturnType<typeof spawn> | undefined;
     try {
+      await mkdir(join(dir, ".codex"), { mode: 0o700 });
+      await writeFile(join(dir, ".codex", "auth.json"), '{"tokens":{"access_token":"fixture-not-jwt","refresh_token":"fixture-refresh","account_id":"fixture-account"}}', { mode: 0o600 });
       await writeFile(
         join(dir, "subswitch.config.json"),
         JSON.stringify({
           port: Number(port),
           anthropic: { baseUrl: upstream },
+          providers: { codex: { usagePoll: false, baseUrl: upstream + "/backend-api/codex", oauthTokenUrl: upstream + "/token", authFile: join(dir, ".codex", "auth.json") } },
         }),
       );
       child = spawn(
@@ -323,6 +328,7 @@ describe("explicit route observations and inspection", () => {
       child.kill("SIGTERM");
       const [code] = await exited;
       assert.equal(code, 0);
+      assert.equal(usageRequests, 0, "disabled poll sends no usage request");
       const records = await readLimitObservations(join(dir, "limits", port));
       assert.equal(records.length, 1);
       assert.equal(records[0]!.status, 429);
