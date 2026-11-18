@@ -146,6 +146,37 @@ export type ModelResolution =
  * supported when using Codex with a ChatGPT account"), not a 404.
  */
 export const MODEL_REGISTRY: readonly ModelEntry[] = [
+  // Checked 2026-11-18. Both models have 1,050,000 context and 128,000 max output tokens.
+  // https://developers.openai.com/api/docs/models/gpt-6.2-sol
+  // https://developers.openai.com/api/docs/models/gpt-6.2-astra
+  // The API rejects effort `none`; the pages give no per-model effort list.
+  // Use the Codex levels from https://learn.chatgpt.com/docs/models, without client-only Ultra.
+  // `xhigh` and `max` are not confirmed per model for 6.2. This set is not live-verified.
+  // The pages list Astra and Sol in ChatGPT Work and Codex on supported plans and clients.
+  {
+    id: "gpt-6.2-sol",
+    provider: "codex",
+    family: "sol",
+    gen: [6, 2],
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    id: "gpt-6.2-astra",
+    provider: "codex",
+    family: "astra",
+    gen: [6, 2],
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  },
+  // https://developers.openai.com/api/docs/models/gpt-6.1-terra lists none/low/medium/high/xhigh/max.
+  // Omit `none`: the Codex catalog does not list it, and Claude Code subagent frontmatter cannot send it.
+  // https://learn.chatgpt.com/docs/models requires Codex CLI 0.159.0 or later for Terra 6.1.
+  {
+    id: "gpt-6.1-terra",
+    provider: "codex",
+    family: "terra",
+    gen: [6, 1],
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+  },
   // Released 2026-09-29. The [6, 1] generation advances `sol` automatically;
   // older Sol ids remain routable for explicitly pinned agents.
   // https://developers.openai.com/api/docs/models/gpt-6.1-sol
@@ -172,9 +203,8 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
     // to disagree. (avoids PF-004, PF-023)
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
   },
-  // GPT-6 Sol and Luna (released 2026-09-22; GPT-6 has no Terra, so `terra` stays on
-  // gpt-5.6-terra). Gen [6] beats [5, 6], so these two take over the `sol` and `luna`
-  // family aliases; gpt-5.6-sol and gpt-5.6-luna remain routable by exact id.
+  // GPT-6 Sol and Luna (released 2026-09-22). Gen [6] beats [5, 6].
+  // Family aliases select the newest generation; older entries remain routable by exact id.
   //
   // Five efforts, for the same reason as Astra above. The Codex catalog lists
   // low/medium/high/xhigh/max for both; Sol's catalog also shows a client-only `ultra`
