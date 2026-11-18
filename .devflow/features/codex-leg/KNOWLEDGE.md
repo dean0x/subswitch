@@ -409,17 +409,19 @@ native requests with substituted credentials may refresh and retry once after 40
 to the registry (`astra`, and any future one) is automatically reserved against
 `codexIngress.claude.aliases` with no corresponding code change required.
 
-`CLAUDE_MODELS` (2026-09-26): claude-sonnet-5, claude-opus-5, claude-opus-5-5, claude-fable-5,
-claude-fable-5-1. Family winners by `gen`: `opus` -> claude-opus-5-5 (claude-opus-5 stays
-reachable by exact id), `fable` -> claude-fable-5-1, `sonnet` -> claude-sonnet-5. Every entry
-must declare its capabilities, and `claude-adapter.ts` enforces them on the resolved id:
-effort `none` on a `thinkingAlwaysOn` model (fable-5, fable-5-1, opus-5-5) is a 400
-`reasoning_effort_unsupported_by_model`, and a forced tool choice (`required` or a named tool)
-on a model with `forcedToolChoice: false` (fable-5-1, opus-5-5) is a 400
-`tool_choice_unsupported_by_model` - refused, never rewritten, and only when tools are sent.
-Outgoing `max_tokens` is clamped to the entry's `maxOutputTokens`; an alias-bridged target
-with no catalog entry is neither clamped nor refused (no data). `ReverseContractError` takes
-an optional `detail` that `claudeFailure` renders instead of the generic message.
+`CLAUDE_MODELS` (2026-11-18): claude-sonnet-5, claude-sonnet-5-5, claude-haiku-5-5,
+claude-opus-5, claude-opus-5-5, claude-fable-5, claude-fable-5-1, claude-fable-5-2.
+Family defaults by `gen`: `opus` -> claude-opus-5-5, `fable` -> claude-fable-5-2,
+`sonnet` -> claude-sonnet-5-5, `haiku` -> claude-haiku-5-5. Older exact IDs remain routable.
+Each entry declares its capabilities. `claude-adapter.ts` enforces them on the resolved ID.
+Effort `none` on a `thinkingAlwaysOn` model returns a 400 `reasoning_effort_unsupported_by_model`.
+These models are fable-5, fable-5-1, fable-5-2, opus-5-5, and sonnet-5-5.
+Forced tool choice (`required` or a named tool) returns a 400 `tool_choice_unsupported_by_model` when tools are present.
+This applies to fable-5-1, fable-5-2, opus-5-5, and sonnet-5-5 (`forcedToolChoice: false`).
+The adapter refuses the request; it does not rewrite it.
+The adapter caps `max_tokens` at the entry's `maxOutputTokens`.
+A target with no catalog entry has no capability data, so these limits do not apply.
+`ReverseContractError` accepts an optional `detail` that `claudeFailure` uses instead of the generic message.
 
 A `claude-*`/`claude:*` name (case-insensitive) that is neither a catalog id nor a configured
 alias or target resolves to `{ kind: "unregistered" }`, which `decideCodexRoute` turns into a

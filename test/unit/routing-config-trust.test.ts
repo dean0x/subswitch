@@ -29,6 +29,37 @@ const loadSources = (project: unknown, user?: unknown, options: LoadConfigOption
     ...options,
   });
 
+describe("new catalog route targets", () => {
+  for (const model of ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "claude-fable-5-2"]) {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+      it(`loads ${model} as a Claude Code primary with effort ${effort}`, () => {
+        const work = model.startsWith("claude-")
+          ? { ...profile, provider: "claude", product: "claude-code" }
+          : profile;
+        const result = loadSources({}, {
+          ...trusted, accessProfiles: { work },
+          routes: { work: { ...route, primary: { profile: "work", model, effort } } },
+        });
+        assert.ok(result.ok, result.ok ? "" : result.error.message);
+        assert.deepEqual(result.value.config.routes?.work?.primary, { profile: "work", model, effort });
+      });
+    }
+  }
+
+  for (const model of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
+    for (const effort of ["none", "minimal"]) {
+      it(`refuses effort ${effort} on ${model} with unsupported_effort`, () => {
+        const result = loadSources({}, {
+          ...trusted, routes: { work: { ...route, primary: { profile: "work", model, effort } } },
+        });
+        assert.ok(!result.ok);
+        assert.match(result.error.message, /unsupported_effort/);
+        assert.doesNotMatch(result.error.message, /invalid_target_model/);
+      });
+    }
+  }
+});
+
 describe("routing configuration sources", () => {
   it("rejects project profiles before they can replace a user profile and its endpoint opt-in", () => {
     const result = loadSources({

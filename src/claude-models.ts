@@ -8,7 +8,7 @@ export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_EFFORTS)[number];
 /**
  * One reverse-leg destination. Every capability field is REQUIRED, so a new model
  * cannot be catalogued without deciding each one.
- * Values come from platform.claude.com (latest additions checked 2026-10-08).
+ * Values come from platform.claude.com (latest additions checked 2026-11-18).
  */
 export interface ClaudeModel {
   readonly id: string;
@@ -26,6 +26,18 @@ export interface ClaudeModel {
 }
 
 export const CLAUDE_MODELS: readonly ClaudeModel[] = [
+  // Released 2026-11-09. https://platform.claude.com/docs/en/models/fable-5-2/overview
+  // Always-on thinking; forced tool use (`any` and `tool`) returns a 400.
+  {
+    id: "claude-fable-5-2",
+    family: "fable",
+    gen: [5, 2],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    thinkingAlwaysOn: true,
+    forcedToolChoice: false,
+    defaultEffort: "high",
+  },
   // https://platform.claude.com/docs/en/models/sonnet-5-5/whats-new-sonnet-5-5
   // `disabled` thinking and forced tool choice are rejected. `between_tools`
   // still permits thinking between calls, so it cannot honour effort `none`.

@@ -287,10 +287,12 @@ translated Claude inference uses the configured subscription, with no billing fa
 | `claude-opus-5` | — | no | yes | `high` |
 | `claude-opus-5-5` | `opus` | yes | no | `medium` |
 | `claude-fable-5` | — | yes | yes | `high` |
-| `claude-fable-5-1` | `fable` | yes | no | `high` |
+| `claude-fable-5-1` | — | yes | no | `high` |
+| `claude-fable-5-2` | `fable` | yes | no | `high` |
 
-`sonnet` resolves to Sonnet 5.5 and `opus` to Opus 5.5; use `claude-sonnet-5` or
-`claude-opus-5` to keep the earlier model. Sonnet 5.5 rejects disabled thinking;
+`sonnet` resolves to Sonnet 5.5, `opus` to Opus 5.5, and `fable` to Fable 5.2.
+Use an exact ID, such as `claude-sonnet-5`, `claude-opus-5`, or `claude-fable-5-1`, to keep an earlier model.
+Sonnet 5.5 rejects disabled thinking;
 its upstream `between_tools` setting is not exposed as effort `none`, because it
 still permits thinking between tool calls. Native
 model discovery advertises each model's default effort, and outgoing `max_tokens` is
@@ -358,11 +360,17 @@ The optional `effort` frontmatter field works on the Codex leg too. Claude Code
 sends it as `output_config.effort`, and subswitch forwards it as Responses
 `reasoning.effort`. The GPT-5.6 models and `gpt-5.5` retain the backend set:
 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` (Claude Code itself
-emits only the last five). The GPT-6 models (`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`,
-`gpt-6-luna`) accept `low`, `medium`, `high`, `xhigh`, and `max`; `none` and
-`minimal` are dropped. An unsupported value is dropped with an
-`unsupported_effort_dropped` warning and the backend default applies. When effort
-is forwarded, subswitch logs `codex_effort_applied`.
+emits only the last five). The GPT-6 entries register `low`, `medium`, `high`, `xhigh`, and `max`:
+`gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, and `gpt-6-luna`.
+The registry excludes `none` and `minimal` for these entries.
+The Codex leg drops an unsupported value with an `unsupported_effort_dropped` warning.
+The backend default then applies.
+Explicit `routes` targets instead reject an unsupported value with `unsupported_effort` at config load.
+For a forwarded effort, subswitch logs `codex_effort_applied`.
+
+Sol 6.2 and Astra 6.2 use the Codex effort set.
+Their model pages do not confirm `xhigh` or `max` per model.
+These two effort sets are not live-verified.
 
 ## Configuration
 
@@ -413,7 +421,8 @@ to run on the raw file first and why a refusal to start is the better failure.
 
 ### Routable set and aliases
 
-The routable set is the **built-in model registry** — `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`,
+The routable set is the **built-in model registry**:
+`gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`,
 `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Routing follows
 the registry so a new model becomes available on upgrade with no config edit, and
 unconfigured names outside it pass through to Anthropic. The registry itself is not
@@ -433,19 +442,30 @@ SubSwitch. Upgrading SubSwitch advances these defaults without editing agents.
 The proxy does not poll provider catalogs or guess future model IDs at startup.
 Config aliases override family defaults, and exact canonical IDs stay pinned.
 
-Defaults verified against the [OpenAI catalog](https://developers.openai.com/api/docs/models)
-and [Claude catalog](https://platform.claude.com/docs/en/models/overview) on 2026-10-08:
+Defaults verified against the [Codex catalog](https://learn.chatgpt.com/docs/models)
+and [Claude catalog](https://platform.claude.com/docs/en/models/overview) on 2026-11-18:
 
 | Client | Agent model | Default upstream model |
 | --- | --- | --- |
-| Claude Code | `sol` | `gpt-6.1-sol` |
-| Claude Code | `astra` | `gpt-6-astra` |
+| Claude Code | `sol` | `gpt-6.2-sol` |
+| Claude Code | `astra` | `gpt-6.2-astra` |
 | Claude Code | `luna` | `gpt-6-luna` |
 | Claude Code | `terra` | `gpt-5.6-terra` |
 | Codex (Claude routing enabled) | `sonnet` | `claude-sonnet-5-5` |
 | Codex (Claude routing enabled) | `opus` | `claude-opus-5-5` |
-| Codex (Claude routing enabled) | `fable` | `claude-fable-5-1` |
+| Codex (Claude routing enabled) | `fable` | `claude-fable-5-2` |
 | Codex (Claude routing enabled) | `haiku` | `claude-haiku-5-5` |
+
+The date above applies to every row except `terra`.
+The `terra` row retains `gpt-5.6-terra`, which was not checked again on 2026-11-18.
+
+The Codex catalog requires Codex CLI 0.159.0 or later for Terra 6.1.
+Subswitch sends `codex_cli_rs/0.144.6` as its default user agent.
+Access to the new Codex models with this value is not verified.
+Set `providers.codex.userAgent` to change this value.
+Terra 6.1 stays available by exact ID only because its documented client floor exceeds the default user agent.
+The `terra` family default stays on `gpt-5.6-terra`.
+Catalog registration does not verify live provider access.
 
 Run `subswitch models --client all` to see both catalogs and effective aliases,
 or add `--json` for machine-readable output. Older registered IDs such as
@@ -618,11 +638,11 @@ subswitch models --json | jq .models[].id
   ],
   "models": [
     {
-      "id": "gpt-6.1-sol",
+      "id": "gpt-6.2-sol",
       "provider": "codex",
       "aliases": [{ "name": "sol", "source": "derived" }],
       "family": "sol",
-      "gen": [6, 1],
+      "gen": [6, 2],
       "reasoningEfforts": ["low", "medium", "high", "xhigh", "max"],
       "routable": true,
       "preview": false,
@@ -658,8 +678,7 @@ subswitch models --json | jq .models[].id
 - `reasoningEfforts` is an array of strings, present only when the registry entry
   narrows the accepted Responses effort vocabulary below the backend default
   (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). Absence means the
-  full backend set applies. The GPT-6 entries (`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`,
-  `gpt-6-luna`) declare `low`, `medium`, `high`, `xhigh`, `max`.
+  full backend set applies. Every GPT-6 entry declares `low`, `medium`, `high`, `xhigh`, `max`.
 - Anthropic appears in `providers` with zero model rows. subswitch cannot enumerate Claude
   model names — it prefix-matches them and relays verbatim — so including a fabricated list
   would be a lie that consumers might cache. The `fallbackProvider: "anthropic"` field
