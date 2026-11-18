@@ -29,6 +29,11 @@ Opus 5.5, so the `opus` command below exercises Opus 5.5. The GPT-5.5 row predat
 that model's retirement (Codex stops serving it on 2026-10-14); the non-v2 parent
 variant below now uses `gpt-5.6-luna`, whose catalog entry is multi-agent v1.
 
+**Catalog note — 2026-11-18:** The `fable` command below now tests `claude-fable-5-2`.
+The `probe:native-claude -- --openai` command now tests `gpt-6.2-sol` through the `sol` alias.
+The tables retain their historical model IDs and results.
+This note adds no live evidence for the new models.
+
 The files contain unpredictable values absent from the prompts. Success requires
 real Codex tool execution and the correct values reaching the parent. A later
 Sonnet follow-up run also observed prompt-cache reads. The existing Claude Code →

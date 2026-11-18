@@ -363,11 +363,12 @@ sends it as `output_config.effort`, and subswitch forwards it as Responses
 emits only the last five). The GPT-6 entries register `low`, `medium`, `high`, `xhigh`, and `max`:
 `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, and `gpt-6-luna`.
 The registry excludes `none` and `minimal` for these entries.
-The Codex leg drops an unsupported value with an `unsupported_effort_dropped` warning; the backend default then applies.
+The Codex leg drops an unsupported value with an `unsupported_effort_dropped` warning.
+The backend default then applies.
 Explicit `routes` targets instead reject an unsupported value with `unsupported_effort` at config load.
 For a forwarded effort, subswitch logs `codex_effort_applied`.
 
-Sol 6.2 and Astra 6.2 use the Codex level set.
+Sol 6.2 and Astra 6.2 use the Codex effort set.
 Their model pages do not confirm `xhigh` or `max` per model.
 These two effort sets are not live-verified.
 
@@ -441,7 +442,7 @@ SubSwitch. Upgrading SubSwitch advances these defaults without editing agents.
 The proxy does not poll provider catalogs or guess future model IDs at startup.
 Config aliases override family defaults, and exact canonical IDs stay pinned.
 
-Defaults verified against the [OpenAI catalog](https://developers.openai.com/api/docs/models)
+Defaults verified against the [Codex catalog](https://learn.chatgpt.com/docs/models)
 and [Claude catalog](https://platform.claude.com/docs/en/models/overview) on 2026-11-18:
 
 | Client | Agent model | Default upstream model |
@@ -449,13 +450,21 @@ and [Claude catalog](https://platform.claude.com/docs/en/models/overview) on 202
 | Claude Code | `sol` | `gpt-6.2-sol` |
 | Claude Code | `astra` | `gpt-6.2-astra` |
 | Claude Code | `luna` | `gpt-6-luna` |
-| Claude Code | `terra` | `gpt-6.1-terra` |
+| Claude Code | `terra` | `gpt-5.6-terra` |
 | Codex (Claude routing enabled) | `sonnet` | `claude-sonnet-5-5` |
 | Codex (Claude routing enabled) | `opus` | `claude-opus-5-5` |
 | Codex (Claude routing enabled) | `fable` | `claude-fable-5-2` |
 | Codex (Claude routing enabled) | `haiku` | `claude-haiku-5-5` |
 
+The date above applies to every row except `terra`.
+The `terra` row retains `gpt-5.6-terra`, which was not checked again on 2026-11-18.
+
 The Codex catalog requires Codex CLI 0.159.0 or later for Terra 6.1.
+Subswitch sends `codex_cli_rs/0.144.6` as its default user agent.
+Access to the new Codex models with this value is not verified.
+Set `providers.codex.userAgent` to change this value.
+Terra 6.1 stays available by exact ID only because its documented client floor exceeds the default user agent.
+The `terra` family default stays on `gpt-5.6-terra`.
 Catalog registration does not verify live provider access.
 
 Run `subswitch models --client all` to see both catalogs and effective aliases,

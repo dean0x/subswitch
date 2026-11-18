@@ -10,12 +10,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Register `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, and `claude-fable-5-2` in the built-in catalogs.
   Explicit `routes` targets accept these IDs with efforts `low`, `medium`, `high`, `xhigh`, and `max`.
-- Advance the `sol`, `astra`, `terra`, and `fable` family defaults to these models.
-  Older exact IDs remain routable. Model lists, doctor, and native discovery use the same catalogs.
-- Apply the Fable 5.2 limits locally: reject disabled thinking and forced tool choice; cap output at 128,000 tokens.
+  Model lists and doctor use these catalogs.
+  Native Codex discovery preserves OpenAI's own rows and adds Claude rows from `CLAUDE_MODELS`.
+- Keep Terra 6.1 available by exact ID only through a preview entry.
+  The `terra` default stays on `gpt-5.6-terra`.
+  The Codex catalog requires Codex CLI 0.159.0 or later for Terra 6.1.
+- Apply Fable 5.2 limits on each translated path:
+  - The Codex-client reverse leg rejects disabled thinking and forced tool choice with 400.
+    It caps output at 128,000 tokens.
+  - Claude Code explicit routes reject disabled thinking, forced tool choice, and `max_tokens` above 128,000 with 422 `target_capability_unavailable`.
+  - The default Anthropic passthrough applies no local limit.
+- Use the Codex effort set for Sol 6.2 and Astra 6.2.
+  Their model pages do not confirm `xhigh` or `max` per model.
+  These sets are not live-verified.
+- Subswitch sends `codex_cli_rs/0.144.6` as its default user agent.
+  Access to the new Codex models with this value is not verified.
+  Set `providers.codex.userAgent` to change this value.
 
-Sol 6.2 and Astra 6.2 use the Codex effort set; their model pages do not confirm `xhigh` or `max` per model.
-These sets are not live-verified. Terra 6.1 requires Codex CLI 0.159.0 or later, per the Codex catalog.
+### Changed
+
+- **The `sol` and `astra` family aliases now resolve to `gpt-6.2-sol` and `gpt-6.2-astra`.**
+  Older exact IDs remain routable.
+- **The `fable` alias on the Codex-client reverse leg now resolves to `claude-fable-5-2`.**
+  Older Fable exact IDs remain routable.
 
 ## [0.6.1] - 2026-10-19
 
