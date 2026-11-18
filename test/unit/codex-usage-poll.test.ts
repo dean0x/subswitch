@@ -60,6 +60,9 @@ it("TP-54/57/73 pure decisions enforce floor, flight, wait and rolling bounds", 
   assert.deepEqual(nextPollDecision(state({ resetsAt: [1800000060] }), 1800000120000, 1800000120000), { kind: "poll", dueResets: [1800000060] }, "reset grace boundary");
   assert.equal(nextPollDecision(state({ resetsAt: [1800000060], usedResets: [1800000060] }), 1800000120000, 1800000120000).kind, "wait", "consumed reset cannot trigger twice");
 });
+it("a 300 second old snapshot prevents a stale poll at process age 900 seconds", () => {
+  assert.equal(nextPollDecision(state({ startedAt: 0, observedAt: Math.floor((NOW + 600000) / 1000) }), NOW + 900000, 900000).kind, "wait", "a fresh snapshot prevents the process-age stale trigger");
+});
 it("TP-61 unsupported URL logs a fixed info code and valid builder uses supplied auth", async () => {
   const records: unknown[] = [];
   const f = fixture();
@@ -109,11 +112,18 @@ it("TP-53 builder gates switch, recording, writer and account without auth I/O",
   const f = fixture();
   for (const override of [{ enabled: false }, { recording: false }, { writer: undefined }, { authFile: "/fixture/other.json" }, { baseUrl: BASE + "/responses" }]) {
     assert.doesNotThrow(() => { assert.equal(buildCodexUsagePoller({ ...f.options, enabled: true, recording: true, authFile: FILE, baseUrl: BASE, ...override }), undefined, "each disabled gate builds no poller"); }, "disabled builder is total");
-    for (let n = 0; n < 10; n++) { f.setNow(NOW + n * 900000); f.poller.tick(); }
   }
   await settle();
   assert.equal(f.calls.length, 0, "disabled builder sends nothing");
   assert.equal(f.credentials, 0, "disabled builder loads no credential");
+});
+it("a tick before start sends nothing", async () => {
+  const f = fixture();
+  try {
+    for (let n = 0; n < 10; n++) await f.tick(NOW + n * 900000);
+    assert.equal(f.calls.length, 0, "ticks before start send no request");
+    assert.equal(f.credentials, 0, "ticks before start load no credential");
+  } finally { f.poller.stop(); }
 });
 it("TP-53 buildDeps alone never starts a poll", async () => {
   const dir = await mkdtemp(join(tmpdir(), "subswitch-poll-build-"));
@@ -143,8 +153,13 @@ it("TP-54 start runs once and fresh headers prevent stale polls", async () => {
   assert.equal(f.timers.filter((timer) => timer.delay === 60000 && !timer.cancelled).length, 1, "one repeating timer");
   f.setNow(NOW + 60000); f.timers.find((timer) => timer.delay === 60000)!.callback(); await settle();
   assert.equal(f.timers.filter((timer) => timer.delay === 60000 && !timer.cancelled).length, 1, "tick reschedules one timer");
-  await f.tick(NOW + 899000);
-  assert.equal(f.calls.length, 1, "fresh snapshot prevents stale trigger");
+  f.setNow(NOW + 600000);
+  f.writer.record({ snapshot: { ...expectedUsage, observed_at: Math.floor(f.now / 1000), source: "response-headers" }, resetRejected: false });
+  await f.writer.flush();
+  await f.tick(NOW + 900000);
+  assert.equal(f.calls.length, 1, "a 300 s old header snapshot prevents the stale poll");
+  await f.tick(NOW + 1500000);
+  assert.equal(f.calls.length, 2, "the header snapshot becomes stale at 900 s");
   f.poller.stop();
 });
 it("TP-55 stale activity and idle processes both poll at 900 seconds", async () => {
@@ -212,19 +227,20 @@ it("TP-57 floor and in-flight state block extra attempts", async () => {
   f.poller.stop();
   assert.equal(nextPollDecision(state({ startPending: true, lastStart: NOW - 59999 }), NOW, NOW).kind, "wait", "60 second floor");
 });
-it("TP-58 rate limit keeps header bytes and uses bounded Retry-After with backoff", async () => {
-  for (const [retry, delay] of [["3600", 3600000], ["60", 120000], ["3601", 120000], ["1.5", 120000]] as const) {
+for (const [retry, delay] of [["3600", 3600000], ["60", 120000], ["3601", 120000], ["1.5", 120000]] as const) {
+  it(`TP-58 rate limit keeps header bytes and uses bounded Retry-After ${retry} with backoff`, async () => {
     let fail = true;
     const f = fixture(async () => fail ? new Response("private body", { status: 429, headers: { "retry-after": retry } }) : Response.json(usageBody()));
-    f.writer.record({ snapshot: { ...expectedUsage, source: "response-headers" }, resetRejected: false }); await f.writer.flush();
-    const before = f.writes[0]; f.poller.start(); await settle();
-    assert.equal(f.writes.length, 1, "failure never writes"); assert.equal(f.writes[0], before, "header bytes stay unchanged");
-    await f.tick(NOW + delay - 1); assert.equal(f.calls.length, 1, "larger wait is enforced");
-    fail = false; await f.tick(NOW + Math.max(delay, 900000));
-    assert.equal(f.calls.length, 2, "retry after wait");
-    f.poller.stop();
-  }
-});
+    f.writer.record({ snapshot: { ...expectedUsage, source: "response-headers", windows: [{ window_minutes: 300, used_percent: 1, resets_at: 1800000000 }] }, resetRejected: false }); await f.writer.flush();
+    try {
+      const before = f.writes[0]; f.poller.start(); await settle();
+      assert.equal(f.writes.length, 1, "failure never writes"); assert.equal(f.writes[0], before, "header bytes stay unchanged");
+      await f.tick(NOW + delay - 1); assert.equal(f.calls.length, 1, "the larger wait blocks a due reset until its boundary");
+      fail = false; await f.tick(NOW + delay);
+      assert.equal(f.calls.length, 2, "a due reset polls at the larger wait boundary");
+    } finally { f.poller.stop(); }
+  });
+}
 for (const failure of ["network", "timeout", "500", "401", "403", "auth"] as const) {
   it(`TP-59 ${failure} gives one failure step without forceRefresh`, async () => {
     const f = fixture(async (init) => {
