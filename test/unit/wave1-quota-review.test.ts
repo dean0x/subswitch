@@ -10,10 +10,10 @@ import type { AllowanceScope } from "../../src/routing/routing-types.js";
 
 it("retains a newer inference blocker when metadata was requested in the same clock millisecond", async () => {
   const scope: AllowanceScope = {
-    provider: "kimi",
-    product: "kimi-code",
+    provider: "codex",
+    product: "chatgpt-codex",
     account: "synthetic",
-    allowanceGroup: "kimi-code",
+    allowanceGroup: "chatgpt-codex",
   };
   const quota = new QuotaStore({
     now: () => 1000,

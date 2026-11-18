@@ -6,10 +6,7 @@ import { reverseRequest } from "../../src/claude-adapter.js";
 import { ClaudeCache } from "../../src/claude-cache.js";
 import { ReverseState } from "../../src/claude-state.js";
 import { adaptRequest } from "../../src/routing/request-adapter.js";
-import {
-  decodePortableHistory,
-  renderResponsesHistory,
-} from "../../src/routing/portable-history.js";
+import { decodePortableHistory } from "../../src/routing/portable-history.js";
 import { SharedRouting } from "../../src/routing/shared-routing.js";
 import { loadConfig } from "../../src/config.js";
 import { noopLogger } from "../../src/logger.js";
@@ -990,11 +987,6 @@ describe("reviewed refusal text and terminals", () => {
       }
       assert.deepEqual((calls[1]!["input"] as Item[])[1], refusal);
       assert.equal(calls[1]!["previous_response_id"], undefined);
-      const transcript = decodePortableHistory(calls[1]!, "responses");
-      assert.deepEqual(
-        (renderResponsesHistory(transcript)["input"] as Item[])[1],
-        refusal,
-      );
       const converted = reverseRequest({
         ...calls[1],
         model: "claude-sonnet-5",

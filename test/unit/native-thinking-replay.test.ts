@@ -38,7 +38,7 @@ describe("native thinking import boundary", () => {
   it("requires the dispatcher's authorization and native Claude Messages on both sides", () => {
     assert.throws(() => adapt({ allow: false }), /foreign_opaque_state/);
     assert.throws(() => adapt({ destination: "responses" }), /foreign_opaque_state/);
-    assert.throws(() => adapt({ profile: { ...profile, provider: "kimi", product: "kimi-code", region: "global" } }), /foreign_opaque_state/);
+    assert.throws(() => adapt({ profile: { ...profile, provider: "codex", product: "chatgpt-codex" }, destination: "responses" }), /foreign_opaque_state/);
     assert.throws(() => adapt({ priorOwner: "different-owner" }), /foreign_opaque_state/);
     const { outbound } = adapt();
     assert.deepEqual((outbound.messages as Item[])[0]?.content, [thinking]);
@@ -52,21 +52,20 @@ describe("native thinking import boundary", () => {
     assert.doesNotThrow(() => adapt({ profile: { ...profile, baseUrl: "https://api.anthropic.com/" } }));
   });
 
-  it("keeps exact same-scope Kimi replay without a native ownership claim or cross-scope import", () => {
-    // Exercise destination rules directly. This stack cannot load a Kimi sign-in profile.
-    const kimi: AccessProfile = { ...profile, provider: "kimi", product: "kimi-code", region: "global" };
+  it("keeps exact same-scope replay at a custom Claude endpoint without a native ownership claim or cross-scope import", () => {
+    const custom: AccessProfile = { ...profile, baseUrl: "https://gateway.example" };
     const shared = new ClaudeCache(), stage = new StagedCache(shared);
-    observeThinking(stage, "original-owner", "original-conversation", thinking, validatesNativeThinking(kimi));
-    rememberThinking(stage, "original-owner", "original-conversation", thinking, validatesNativeThinking(kimi));
+    observeThinking(stage, "original-owner", "original-conversation", thinking, validatesNativeThinking(custom));
+    rememberThinking(stage, "original-owner", "original-conversation", thinking, validatesNativeThinking(custom));
     stage.commit();
     assert.equal(foreignThinking(shared, thinking.signature, "original-owner", "original-conversation"), true);
-    assert.deepEqual((adapt({ profile: kimi, stage: new StagedCache(shared), allow: false }).outbound.messages as Item[])[0]?.content,
+    assert.deepEqual((adapt({ profile: custom, stage: new StagedCache(shared), allow: false }).outbound.messages as Item[])[0]?.content,
       [thinking]);
-    for (const destination of [kimi, profile]) {
+    for (const destination of [custom, profile]) {
       assert.throws(() => adapt({ profile: destination, stage: new StagedCache(shared), conversation: "another-conversation" }),
         (error: unknown) => error instanceof RoutingError && error.code === "foreign_opaque_state" && error.status === 409);
     }
-    assert.throws(() => adapt({ profile: kimi, stage: new StagedCache(shared), block: { ...thinking, thinking: "tampered" } }),
+    assert.throws(() => adapt({ profile: custom, stage: new StagedCache(shared), block: { ...thinking, thinking: "tampered" } }),
       (error: unknown) => error instanceof RoutingError && error.code === "foreign_opaque_state" && error.status === 409);
   });
 

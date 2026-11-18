@@ -15,12 +15,12 @@ import {
 } from "../../src/routing/routing-types.js";
 
 const profile: AccessProfile = {
-  provider: "kimi", product: "kimi-code", region: "global", billing: "subscription",
+  provider: "claude", product: "claude-code", billing: "subscription",
   account: "fabricated", credential: { kind: "native-oauth", authFile: "/fabricated/never-read.json" },
 };
 function adapt(body: Item, priorOwner?: string, stage = new ClaudeCache()) {
   return adaptRequest({
-    profile, target: { profile: "fixture", model: "kimi-for-coding", effort: "high" },
+    profile, target: { profile: "fixture", model: "claude-sonnet-5", effort: "high" },
     body, ingress: "messages", protocol: "messages",
     transcript: decodePortableHistory(body, "messages"), stage,
     state: new ReverseState(undefined, undefined, stage),

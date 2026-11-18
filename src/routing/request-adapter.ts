@@ -7,12 +7,10 @@ import { ReverseState } from "../claude-state.js";
 import { ReasoningCache } from "../reasoning-cache.js";
 import { object } from "../plain-object.js";
 import { validateTargetCapabilities } from "./target-capabilities.js";
-import { validatesNativeThinking, type DestinationSelection } from "./destination-catalog.js";
-import { renderKimiResponsesRequest, type KimiResponsesRequest } from "./kimi-responses-request.js";
+import { validatesNativeThinking } from "./destination-catalog.js";
 import { foreignThinking, recordedThinking, rememberThinking, sameThinking, thinkingSignature } from "./signed-thinking.js";
 import { StagedCache } from "./replay-cache.js";
 import {
-  renderResponsesHistory,
   type PortableTranscript,
 } from "./portable-history.js";
 import {
@@ -37,7 +35,6 @@ interface RequestAdaptation {
   conversation: string;
   sessionId: string;
   priorOwner?: string | undefined;
-  selection?: Readonly<DestinationSelection>;
   /** Only the dispatcher may authorize native imports on a single-target route. */
   allowNativeThinkingReplay?: boolean | undefined;
 }
@@ -46,7 +43,6 @@ interface RequestAdaptation {
 export function adaptRequest(request: RequestAdaptation): {
   outbound: Item;
   reverse?: ReturnType<typeof reverseRequest> | undefined;
-  orderedRender?: KimiResponsesRequest | undefined;
 } {
   const {
     profile: p,
@@ -61,8 +57,6 @@ export function adaptRequest(request: RequestAdaptation): {
     sessionId,
     priorOwner,
   } = request;
-  if (request.selection && request.selection.protocol !== protocol)
-    throw new RoutingError("destination_selection_mismatch", 409);
   validateTargetCapabilities(
     p,
     t,
@@ -72,9 +66,7 @@ export function adaptRequest(request: RequestAdaptation): {
     transcript.tools.length > 0,
   );
   let body: Item = {
-    ...(p.provider === "kimi" && ingress === "responses"
-      ? renderResponsesHistory(transcript, protocol === "responses")
-      : request.body),
+    ...request.body,
     model: t.model,
   };
   const switched = priorOwner !== undefined && priorOwner !== owner;
@@ -137,7 +129,6 @@ export function adaptRequest(request: RequestAdaptation): {
   }
   let outbound: Item = body;
   let reverse: ReturnType<typeof reverseRequest> | undefined;
-  let orderedRender: KimiResponsesRequest | undefined;
   if (protocol === "messages" && ingress === "responses") {
     reverse = reverseRequest(
       { ...body, reasoning: { effort: t.effort } },
@@ -148,49 +139,41 @@ export function adaptRequest(request: RequestAdaptation): {
     );
     outbound = reverse.body;
   } else if (protocol === "responses" && ingress === "messages") {
-    if (request.selection?.codec) {
-      // Original opaque and ownership guards above must run before this renderer.
-      const rendered = renderKimiResponsesRequest(body);
-      if (!rendered.ok) throw new RoutingError(`kimi_ordered_request_${rendered.error}`, 422);
-      outbound = rendered.value.body;
-      orderedRender = rendered.value;
-    } else {
-      const parsed = AnthropicRequestSchema.safeParse(body);
-      if (!parsed.success) throw new RoutingError("invalid_routed_messages");
-      // Unknown/multimodal content is refused before a legacy translator could drop it.
-      class ScopedReasoning extends ReasoningCache {
-        constructor() {
-          super(1, 1);
-        }
-        override get(id: string): readonly unknown[] | undefined {
-          return stage.get("snapshot", `reasoning:${owner}:${conversation}:${id}`)
-            ?.input;
-        }
+    const parsed = AnthropicRequestSchema.safeParse(body);
+    if (!parsed.success) throw new RoutingError("invalid_routed_messages");
+    // Unknown/multimodal content is refused before a legacy translator could drop it.
+    class ScopedReasoning extends ReasoningCache {
+      constructor() {
+        super(1, 1);
       }
-      const translated = translateRequest(
-        parsed.data,
-        new ScopedReasoning(),
-        conversation,
-      );
-      if (
-        !translated.ok ||
-        translated.value.warnings.some((w) => w !== "unsupported_effort_dropped")
-      )
-        throw new RoutingError("continuity_unavailable", 409);
-      outbound = translated.value.body;
-      if (transcript?.toolErrors.size && Array.isArray(outbound["input"])) {
-        outbound["input"] = outbound["input"].map((value) => {
-          const entry = object(value);
-          return entry &&
-            entry["type"] === "function_call_output" &&
-            transcript!.toolErrors.has(String(entry["call_id"]))
-            ? {
-                ...entry,
-                output: `[Tool execution failed]\n${String(entry["output"])}`,
-              }
-            : value;
-        });
+      override get(id: string): readonly unknown[] | undefined {
+        return stage.get("snapshot", `reasoning:${owner}:${conversation}:${id}`)
+          ?.input;
       }
+    }
+    const translated = translateRequest(
+      parsed.data,
+      new ScopedReasoning(),
+      conversation,
+    );
+    if (
+      !translated.ok ||
+      translated.value.warnings.some((w) => w !== "unsupported_effort_dropped")
+    )
+      throw new RoutingError("continuity_unavailable", 409);
+    outbound = translated.value.body;
+    if (transcript?.toolErrors.size && Array.isArray(outbound["input"])) {
+      outbound["input"] = outbound["input"].map((value) => {
+        const entry = object(value);
+        return entry &&
+          entry["type"] === "function_call_output" &&
+          transcript!.toolErrors.has(String(entry["call_id"]))
+          ? {
+              ...entry,
+              output: `[Tool execution failed]\n${String(entry["output"])}`,
+            }
+          : value;
+      });
     }
   }
   outbound = { ...outbound, model: t.model, stream: true };
@@ -206,24 +189,13 @@ export function adaptRequest(request: RequestAdaptation): {
     outbound["store"] = false;
     outbound["reasoning"] = { effort: t.effort };
     if (p.product === "chatgpt-codex") outbound["prompt_cache_key"] = sessionId;
-    if (p.provider === "kimi") {
-      delete outbound["include"];
-      if (orderedRender) outbound["include"] = ["reasoning.encrypted_content"];
-    }
   } else {
     outbound["output_config"] = {
       ...object(outbound["output_config"]),
       effort: t.effort,
     };
-    if (p.provider === "kimi") {
-      // The configured target effort owns thinking. A caller's disabled mode
-      // can reject K3.1 or silently route older models to non-thinking K2.8.
-      outbound["thinking"] = { type: "enabled" };
-      delete outbound["cache_control"];
-      delete outbound["temperature"];
-    }
   }
-  return { outbound, reverse, orderedRender };
+  return { outbound, reverse };
 }
 
 /** Claude's native child harness uses leading system-role messages. Messages APIs use `system`. */

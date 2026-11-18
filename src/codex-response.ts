@@ -24,12 +24,7 @@ export interface SseEvent {
 }
 
 // Provenance lives outside wire fields and does not change the record shape.
-// Only this parser can register its synthetic no-data records; a provider event
-// named __subswitch_comment cannot acquire this identity through SSE/JSON.
-const parserComments = new WeakSet<SseEvent>();
-export const isParserComment = (event: SseEvent): boolean => parserComments.has(event);
-
-/** Shared record grammar/provenance; callers own framing and allocation accounting. */
+/** Shared record grammar; callers own framing and allocation accounting. */
 export function parseSseRecord(raw: string, includeComments: boolean): SseEvent | undefined {
   let eventName: string | undefined;
   const dataLines: string[] = [];
@@ -39,9 +34,7 @@ export function parseSseRecord(raw: string, includeComments: boolean): SseEvent 
   }
   if (dataLines.length === 0) {
     if (!includeComments) return undefined;
-    const comment = { event: "__subswitch_comment", data: raw };
-    parserComments.add(comment);
-    return comment;
+    return { event: "__subswitch_comment", data: raw };
   }
   return { event: eventName, data: dataLines.join("\n") };
 }
