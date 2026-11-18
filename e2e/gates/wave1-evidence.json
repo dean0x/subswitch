@@ -4,83 +4,6 @@
   "releaseReady": false,
   "records": [
     {
-      "assertion": "Coding-plan keys support Messages and Responses; regional endpoints differ",
-      "urls": [
-        "https://www.kimi.com/code/docs/en/third-party-tools/claude-code.html",
-        "https://www.kimi.com/code/docs/en/third-party-tools/codex.html"
-      ],
-      "date": "2026-10-11",
-      "sourceVersion": "documentation observed 2026-10-11",
-      "product": "kimi-code",
-      "region": [
-        "global",
-        "mainland-cn"
-      ],
-      "credentialKind": "coding-plan-key",
-      "protocol": [
-        "messages",
-        "responses"
-      ],
-      "evidenceClass": "documented",
-      "liveVerified": false
-    },
-    {
-      "assertion": "Quota, entitlement, concurrency and overload are distinct",
-      "urls": [
-        "https://www.kimi.com/code/docs/en/kimi-code/error-reference.html"
-      ],
-      "date": "2026-10-11",
-      "sourceVersion": "documentation observed 2026-10-11",
-      "product": "kimi-code",
-      "region": [
-        "global",
-        "mainland-cn"
-      ],
-      "credentialKind": "coding-plan-key",
-      "protocol": [
-        "messages",
-        "responses"
-      ],
-      "evidenceClass": "documented",
-      "fixture": "test/unit/wave1-routing.test.ts",
-      "fixtureClass": "synthetic"
-    },
-    {
-      "assertion": "Platform quota, rate-limit and engine-overload codes differ",
-      "urls": [
-        "https://platform.kimi.ai/docs/api/errors"
-      ],
-      "date": "2026-10-11",
-      "sourceVersion": "documentation observed 2026-10-11",
-      "product": "kimi-platform",
-      "region": "global",
-      "credentialKind": "api-key",
-      "protocol": [
-        "messages",
-        "responses"
-      ],
-      "evidenceClass": "documented",
-      "liveVerified": false
-    },
-    {
-      "assertion": "Messages and Responses endpoint candidates",
-      "urls": [
-        "https://platform.kimi.ai/docs/api/messages",
-        "https://platform.kimi.ai/docs/api/responses"
-      ],
-      "date": "2026-10-11",
-      "sourceVersion": "documentation observed 2026-10-11",
-      "product": "kimi-platform",
-      "region": "global",
-      "credentialKind": "api-key",
-      "protocol": [
-        "messages",
-        "responses"
-      ],
-      "evidenceClass": "documented",
-      "liveVerified": false
-    },
-    {
       "assertion": "Current Codex fake control executes tool, child, follow-up and parent delivery",
       "urls": [
         "https://github.com/openai/codex"
@@ -198,7 +121,7 @@
       "evidenceClass": "live-observed",
       "report": "native-claude-openai-profiles-2026-10-11.json",
       "fixtureClass": "real-provider-with-isolated-file-fixture",
-      "transportNote": "SSE bytes validated independently of subscription response MIME; no MIME assertion for Kimi"
+      "transportNote": "SSE bytes validated independently of subscription response MIME"
     },
     {
       "assertion": "Current native Codex tool execution, child follow-up, parent delivery and explicit action closure pass through lazy routing",
@@ -273,24 +196,6 @@
       }
     },
     {
-      "assertion": "Installed Kimi CLI completes headless inference and native unpredictable file read with configured OAuth access",
-      "urls": [
-        "https://github.com/MoonshotAI/kimi-code"
-      ],
-      "date": "2026-10-12",
-      "sourceVersion": "@moonshot-ai/kimi-code2.1.1; installed main.mjs SHA256 2563a338c94868a34e1bfd2e5579067d5a472acf4cb0bf350a3bfe1092bbe59d",
-      "product": "kimi-code",
-      "region": "not independently verified",
-      "credentialKind": "native-oauth",
-      "protocol": "native CLI inference; wire protocol not captured",
-      "evidenceClass": "live-observed",
-      "report": "native-kimi-headless-live-2026-10-12.json",
-      "configuredModel": "kimi-for-coding",
-      "subswitchCompatibilityVerified": false,
-      "k3EntitlementVerified": false,
-      "platformAccessVerified": false
-    },
-    {
       "assertion": "Serve records sanitized upstream limit/error formats without changing native responses or enabling unknown failure fallback",
       "urls": [
         "https://github.com/dean0x/subswitch"
@@ -304,15 +209,12 @@
         "src/limit-recorder.ts": "71de09ce294c82fab5a1d12fc8a6008e43d87bb3ca77d4b197eb02ea88b0a4d8"
       },
       "product": [
-        "kimi-code",
-        "kimi-platform",
         "chatgpt-codex",
         "openai-api",
         "claude-code",
         "anthropic-api",
         "anthropic-unknown"
       ],
-      "region": "configured region when available",
       "credentialKind": "configured credential kind when available; no credential material",
       "protocol": [
         "messages",
@@ -348,31 +250,21 @@
       "outcome": "unresolved live gate independently for Messages and Responses; bounded incremental implementation, no aggregation repair"
     },
     {
-      "id": "oauth-device-headers",
-      "outcome": "OAuth inference disabled; coding-plan-key support uses no fabricated device identity"
-    },
-    {
       "id": "count-tokens",
       "outcome": "local estimate with x-subswitch-token-count: estimated; vendor count path unresolved"
     },
     {
       "id": "thinking-parameters-replay",
-      "outcome": "profile-specific effort, no fixed temperature or keep; cross-owner opaque replay rejected; live Kimi replay unresolved"
+      "outcome": "profile-specific effort, no fixed temperature or keep; cross-owner opaque replay rejected"
     },
     {
       "id": "terminal-precedence",
-      "outcome": "partial tools withheld until valid completion; unknown/inconsistent terminals fail; live Kimi terminal contracts unresolved"
+      "outcome": "partial tools withheld until valid completion; unknown/inconsistent terminals fail"
     }
   ],
   "unresolved": [
-    "Subswitch Kimi Code credential contract and K3 entitlement (native CLI OAuth access is now observed)",
-    "Kimi Platform credentials and K3 entitlement",
-    "k3/kimi-k3 exact equivalence",
-    "coding-key cloud usage contract",
-    "Kimi OAuth inference identity",
     "certified native action boundary",
     "live cross-profile reasoning portability",
-    "both-client Kimi native orchestration",
     "ordinary OpenAI/Claude API profile live gates",
     "current Codex native HTTP same-child follow-up: unsupported new mid-history developer instructions"
   ],
@@ -388,7 +280,6 @@
     "build": "passed",
     "sseBenchmark": "linearity passed",
     "parkedToolRecovery": "synthetic acceptance passed for Messages and Responses",
-    "KimiLive": "native OAuth CLI access verified2026-10-12; Subswitch Code/Platform Messages/Responses and K3 gates remain pending",
     "ordinaryApiProfilesLive": "no declared credentials",
     "routingQuotaBenchmark": {
       "evidenceClass": "synthetic",
@@ -482,14 +373,7 @@
       "codexActionScopedSimulated": "both transports pass on0.162.1 after final translated lifecycle correction; action_state_lost proves final closure",
       "claudeSubscriptionLive": "passed on 2.1.296 after shared authentication review",
       "codexProductionWebSocketLive": "passed after authentication/cancellation review; current Codex0.162.1 parent, Claude child, native tools and same-child follow-up",
-      "codexProductionHttpLive": "three review runs failed closed with mid_history_instructions_unimplemented; unrecognized new developer instructions at follow-up. Initial child read passes; safe ordered translation remains unsupported.",
-      "kimiHeadlessCliLive": {
-        "date": "2026-10-12",
-        "result": "passed on2.1.1: text request and native unpredictable file read",
-        "credentialKind": "configured native-oauth",
-        "throughSubswitch": false,
-        "wireProtocolVerified": false
-      }
+      "codexProductionHttpLive": "three review runs failed closed with mid_history_instructions_unimplemented; unrecognized new developer instructions at follow-up. Initial child read passes; safe ordered translation remains unsupported."
     },
     "limitRecording": {
       "date": "2026-10-12",

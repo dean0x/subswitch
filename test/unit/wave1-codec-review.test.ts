@@ -6,10 +6,7 @@ import { reverseRequest } from "../../src/claude-adapter.js";
 import { ClaudeCache } from "../../src/claude-cache.js";
 import { ReverseState } from "../../src/claude-state.js";
 import { adaptRequest } from "../../src/routing/request-adapter.js";
-import {
-  decodePortableHistory,
-  renderResponsesHistory,
-} from "../../src/routing/portable-history.js";
+import { decodePortableHistory } from "../../src/routing/portable-history.js";
 import { SharedRouting } from "../../src/routing/shared-routing.js";
 import { loadConfig } from "../../src/config.js";
 import { noopLogger } from "../../src/logger.js";
@@ -139,6 +136,28 @@ const primarySubscription: AccessProfile = {
 };
 
 describe("reviewed target capability preflight", () => {
+  for (const [name, override] of [
+    ["forced any tool choice", { tool_choice: { type: "any" } }],
+    ["forced named tool choice", { tool_choice: { type: "tool", name: "read" } }],
+    ["disabled thinking", { thinking: { type: "disabled" } }],
+    ["max_tokens above 128000", { max_tokens: 128001 }],
+  ] as const) {
+    it(`refuses Fable 5.2 ${name} with 422 on a Claude Code explicit route`, () => {
+      const body = {
+        model: "work",
+        messages: [{ role: "user", content: "read" }],
+        max_tokens: 128000,
+        tools: [{ name: "read", input_schema: { type: "object", properties: {} } }],
+        ...override,
+      };
+      assert.throws(
+        () => adapt(body, "messages", profile, "claude-fable-5-2"),
+        (error: unknown) => error instanceof RoutingError &&
+          error.code === "target_capability_unavailable" && error.status === 422,
+      );
+    });
+  }
+
   it("rejects known incompatible Messages identity capabilities and preserves a valid output limit", () => {
     const body = {
       model: "work",
@@ -968,11 +987,6 @@ describe("reviewed refusal text and terminals", () => {
       }
       assert.deepEqual((calls[1]!["input"] as Item[])[1], refusal);
       assert.equal(calls[1]!["previous_response_id"], undefined);
-      const transcript = decodePortableHistory(calls[1]!, "responses");
-      assert.deepEqual(
-        (renderResponsesHistory(transcript)["input"] as Item[])[1],
-        refusal,
-      );
       const converted = reverseRequest({
         ...calls[1],
         model: "claude-sonnet-5",

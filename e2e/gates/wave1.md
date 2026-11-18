@@ -8,7 +8,6 @@ their existing provider handlers and passthrough behavior.
 Claude Code is the primary originating client for new provider delivery. The root
 [AGENTS.md](../../AGENTS.md) and [CLAUDE.md](../../CLAUDE.md) define Codex-client
 maintenance mode; OpenAI/Codex remains an active destination for Claude Code.
-Relevant Claude Code Kimi fallback/recovery live evidence remains incomplete.
 The retained Codex HTTP history failure below is a known maintenance limitation,
 not a new-provider parity requirement for Claude Code.
 
@@ -19,11 +18,10 @@ A declaration fails the load even when its value is empty.
 Model aliases resolve at config load; route references and alias chains are rejected. Each target pins its effort.
 Identical targets are deduplicated, with a maximum of eight unique targets. Different
 profiles remain distinct. Each profile uses `native-oauth` and `billing: "subscription"`.
-The supported products are `claude-code`, `chatgpt-codex` and `kimi-code`.
+The supported products are `claude-code` and `chatgpt-codex`.
 Fallback may select another subscription profile. No explicit route uses a provider key.
-Removed products, environment credentials, API billing and `sameModelApi` fail config load.
+Removed products such as `kimi-code`, environment credentials, API billing and `sameModelApi` fail config load.
 The `baseUrl` override is a product root. Claude appends `/v1/messages`; Codex appends `/responses`.
-Kimi subscription endpoints are fixed by region. See [subscription OAuth boundaries](kimi-managed-oauth.md).
 HTTPS, loopback and host opt-in checks still apply. Unknown config keys fail the load.
 
 ## Code structure and reliability review
@@ -45,8 +43,7 @@ accounting now updates one scope rather than serializing the entire store. Regre
 coverage is in the repository's flat test directories. `npm run bench:routing` compares
 fixed update work at 512, 1,024, 2,048 and 4,096 scopes; `npm run bench:sse` checks the
 existing incremental parser. An earlier review check passed 1,089 tests with no failures
-or skipped tests; the build and both benchmarks pass. These checks do not establish
-live Kimi compatibility.
+or skipped tests; the build and both benchmarks pass.
 A preceding live explicit-profile run rejected an inconsistent tool terminal; the exact
 field was not captured. The relay stopped that response. Two subsequent native runs
 passed. This observation remains in the evidence manifest rather than being labelled
@@ -103,8 +100,7 @@ action receive `action_identity_required`. Native lifecycle certification remain
 unresolved; a provider terminal event completes a response, never the action. Installed
 Codex 0.162.1 needs an explicit `model_catalog_json` for foreign child model overrides.
 The repaired simulated harness now passes with a Claude child name when that catalog is
-configured. Automatic per-turn lifecycle certification remains pending; the production
-subscription orchestration controls below do not certify Kimi routing.
+configured. Automatic per-turn lifecycle certification remains pending.
 
 Control calls require a process-local capability. `POST /__subswitch/actions` accepts
 `client` and `conversationId`, and returns `id` and `ingressPrefix`. Completion closes
@@ -155,7 +151,7 @@ Local CLI-server usage remains a separate interface. Neither interface starts in
 
 Discovery is `subswitch models --schema-version 3 --client all --json`. Schemas 1/2
 are unchanged. Listing does not read credentials, refresh auth or query usage. Account
-availability is reported as unknown. Kimi is not a routable destination in this version.
+availability is reported as unknown.
 
 ## Natural limit-response recording — 2026-10-12
 
@@ -166,12 +162,12 @@ Error records live under `~/.cache/subswitch/limits/<port>/`. `SUBSWITCH_LIMIT_D
 Programmatic servers opt in to error records with `withLimitRecorder`. This wrapper alone enables neither the snapshot nor the poll.
 These diagnostics do not supply route selection or recovery state.
 
-Upstream HTTP, SSE and native WebSocket errors retain sanitized JSON structure,
-known public error codes and known Kimi limit-message prefixes. Retry/reset headers
-are allowlisted and value-checked. Available configured product, region, model,
-ingress/protocol, credential kind, attempt order and hashed profile/route/scope
-identify the observation. Free text, unknown string codes/field names, prompts,
-tools, credentials and opaque replay are excluded; unknown codes get fingerprints.
+Upstream HTTP, SSE and native WebSocket errors retain sanitized JSON structure
+and known public error codes. The recorder retains only allowed retry/reset headers
+with valid values. The configured product, model, ingress/protocol, credential kind,
+attempt order and hashed profile/route/scope identify the observation when available.
+The recorder excludes free text, unknown string codes/field names, prompts, tools,
+credentials and opaque replay. It uses fingerprints for unknown codes.
 Nothing is uploaded and no real quota is deliberately exhausted.
 
 Capture is capped at 64 KiB, projection at depth 5 / 128 nodes, pending writes at 32,
@@ -195,8 +191,7 @@ provider-specific window contract.
 Automatic re-entry selects a recovered subscription for a subsequent eligible
 explicit action, keeping active fallback actions pinned and completed tools intact.
 Queued-job/session auto-resume after exhaustion, interrupted-stream restart and
-durable relay restart/resume remain outside Wave 1. Direct Kimi CLI traffic is
-outside the recorder; its subscription integration belongs to a later change.
+durable relay restart/resume remain outside Wave 1.
 
 ## Codex quota snapshot gate
 
@@ -244,10 +239,10 @@ No CI job or smoke script sends a live usage request. A live check needs a separ
 
 ## Evidence and unresolved acceptance
 
-`wave1-evidence.json` records past product, region, protocol, credential kind, date, version
+`wave1-evidence.json` records past product, protocol, credential kind, date, version
 and evidence class. It is historical evidence, not current route qualification.
-The dated JSON evidence files retain their original facts. Unit fixtures are **synthetic**; Kimi documentation is not a live
-pass. The repaired Codex simulated control passes HTTP and WebSocket tool execution,
+The dated JSON evidence files retain their original facts. Unit fixtures are **synthetic**.
+The repaired Codex simulated control passes HTTP and WebSocket tool execution,
 child delivery, same-child follow-up and parent delivery on 0.162.1. The current live
 Claude subscription control and Claude → OpenAI subscription tool control also pass
 on Claude Code 2.1.296. The explicit OpenAI subscription profile also passes a real native
@@ -262,7 +257,7 @@ the accepted downstream socket before switching to HTTP. The native gate observe
 14 rejected upgrades and four client retry events versus two rejected upgrades and
 no retry events in the unscoped, non-explicit control. All rejected upgrades precede
 inference; tool execution and parent delivery still pass. Bare native passthrough
-retains its original connection-phase fallback. This limitation is not a Kimi live pass.
+retains its original connection-phase fallback.
 
 The recorded Codex
 production WebSocket control passes with real OpenAI/Claude subscriptions, including
@@ -279,40 +274,7 @@ replace the failed review evidence. The HTTP gate injects WebSocket 426;
 upstream inference is real. Basic protocol probes
 do not certify tools, replay, native orchestration, quota exhaustion or model equivalence.
 
-For the supported Claude Code Kimi route, retain the live tool/continuation evidence
-and qualify the configured existing-model fallback and subsequent-action recovery
-claims. Synthetic quota injection must remain distinct from real provider behavior.
-Codex-client Kimi parity is not required. This client policy does not waive the
-subscription-route gates: live Kimi Code access, tool/reasoning replay, usage
-contracts and the configured fallback/recovery flow remain pending where required.
-Provider-key profiles and paid fallback are outside the supported scope. Do not claim full Wave 1
-acceptance or general authentication/model acceptance from the bounded manual run.
-DeepSeek remains blocked on the relevant Wave 1 exit criteria.
-
+Provider-key profiles and paid fallback are outside the supported scope.
 Live evidence is required for the specific supported Claude Code route claims.
-The following earlier CLI observation is historical. On 2026-10-12, installed Kimi CLI 2.1.1
-completed a headless text request and read an unpredictable value from an isolated
-file through its native tool, then returned that value in its final answer. The
-configured default is `kimi-for-coding`, provider type `kimi`, OAuth access, endpoint
-host `api.kimi.ai`. The sanitized report is
-`native-kimi-headless-live-2026-10-12.json`. This establishes native CLI access and
-tool use. It does not establish K3 entitlement, regional endpoint equivalence, either
-Messages/Responses contract, or Subswitch destination compatibility.
-
-Use `kimi -p '<prompt>' --output-format stream-json` for headless native output.
-Version 2.1.1 rejects combining `--prompt` with `--auto`; the corrected probe used
-prompt mode alone. Working directories were isolated and native authenticated storage
-was reused without exposing credentials or copying them into probe files.
-
-The earlier key-only assessment is superseded by the implemented
-[Kimi Code subscription OAuth path](kimi-managed-oauth.md). The bounded manual
-Claude Code Agent/Read flow establishes two through-Subswitch Kimi HTTP200 sends,
-owned continuation and the exact parent answer. Its separate strict complete-child
-report fixture remains FAIL_SPENT, with an unresolved report-note/full-text mismatch.
-Neither the earlier CLI pass nor this manual demonstration establishes the configured
-existing-model fallback/recovery flow, general identity acceptance or live refresh.
-
-The 2026-10-19 offline audit records an earlier key-based implementation.
-Its fixtures and plan do not qualify the current subscription route.
-See [current Kimi route status](kimi-readiness.md) for supported access and evidence limits.
-No new live Kimi or native-client acceptance is claimed by that audit.
+Synthetic quota injection must remain distinct from real provider behavior.
+DeepSeek remains blocked on the relevant Wave 1 exit criteria.

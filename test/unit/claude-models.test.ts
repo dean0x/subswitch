@@ -103,7 +103,7 @@ describe("validClaudeAlias", () => {
 
 /**
  * Independent literal pin of every catalog entry's capabilities (avoids PF-011's
- * self-referential pin): these values come from platform.claude.com (checked 2026-10-08),
+ * self-referential pin): these values come from platform.claude.com (checked 2026-11-18),
  * not from CLAUDE_MODELS, so a wrong or drifted field turns this red.
  */
 const EXPECTED_CAPABILITIES = {
@@ -114,10 +114,11 @@ const EXPECTED_CAPABILITIES = {
   "claude-opus-5-5": { maxOutputTokens: 128_000, thinkingAlwaysOn: true, forcedToolChoice: false, defaultEffort: "medium" },
   "claude-fable-5": { maxOutputTokens: 128_000, thinkingAlwaysOn: true, forcedToolChoice: true, defaultEffort: "high" },
   "claude-fable-5-1": { maxOutputTokens: 128_000, thinkingAlwaysOn: true, forcedToolChoice: false, defaultEffort: "high" },
+  "claude-fable-5-2": { maxOutputTokens: 128_000, thinkingAlwaysOn: true, forcedToolChoice: false, defaultEffort: "high" },
 } as const;
 
 describe("CLAUDE_MODELS", () => {
-  it("registers the verified Claude catalog including Sonnet and Haiku 5.5", () => {
+  it("registers the published Claude catalog including Fable 5.2", () => {
     assert.deepEqual(CLAUDE_MODELS.map((model) => model.id).sort(), Object.keys(EXPECTED_CAPABILITIES).sort());
   });
 
@@ -146,7 +147,15 @@ describe("claudeResolver", () => {
     assert.equal(resolve("claude-opus-5-5"), "claude-opus-5-5");
     assert.equal(resolve("claude-opus-5"), "claude-opus-5");
     assert.equal(resolve("sonnet"), "claude-sonnet-5-5");
-    assert.equal(resolve("fable"), "claude-fable-5-1");
+    assert.equal(resolve("fable"), "claude-fable-5-2");
+  });
+
+  it("resolves fable to Fable 5.2 and keeps older exact IDs", () => {
+    const resolve = claudeResolver({});
+    for (const name of ["fable", "claude:fable", "claude-fable-5-2", "claude:claude-fable-5-2"])
+      assert.equal(resolve(name), "claude-fable-5-2", name);
+    for (const id of ["claude-fable-5", "claude-fable-5-1"])
+      assert.equal(resolve(id), id);
   });
 
   it("routes the latest Sonnet and Haiku by family, qualified family, and exact id", () => {
@@ -191,6 +200,16 @@ describe("augmentCodexModels", () => {
     assert.ok(rows.has("claude-opus-5-5"));
     assert.equal(rows.get("opus")?.["description"], "Claude via SubSwitch (claude-opus-5-5)");
     assert.ok(rows.has("claude-opus-5"), "Opus 5 keeps its exact-id row");
+  });
+
+  it("advertises Fable 5.2 and the advanced fable alias with its catalog limits", () => {
+    const rows = slugs();
+    for (const slug of ["claude-fable-5-2", "fable"]) {
+      assert.equal(rows.get(slug)?.["description"], "Claude via SubSwitch (claude-fable-5-2)");
+      assert.equal(rows.get(slug)?.["context_window"], 1_000_000);
+      assert.equal(rows.get(slug)?.["default_reasoning_level"], "high");
+    }
+    assert.ok(rows.has("claude-fable-5-1"));
   });
 
   it("advertises each model's own default reasoning level", () => {

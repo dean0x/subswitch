@@ -2,14 +2,11 @@ import { z } from "zod";
 import {
   DESTINATIONS,
   defaultBase,
-  isDefaultEndpoint,
   modelEfforts,
   supportsNativeOAuth,
 } from "./destination-catalog.js";
 import type { AccessProfile, RoutePolicy } from "./routing-types.js";
 import { object, ownValue } from "../plain-object.js";
-import { isAbsolute } from "node:path";
-import { validateKimiNativePath } from "../kimi-native-auth.js";
 
 const label = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/);
 const unsupportedValue = (field: string, value: unknown): string =>
@@ -20,11 +17,12 @@ export const AccessProfilesSchema = z
   .record(
     label,
     z.strictObject({
-      provider: z.enum(["codex", "claude", "kimi"]),
-      product: z.enum(["chatgpt-codex", "claude-code", "kimi-code"], {
+      provider: z.enum(["codex", "claude"], {
+        error: issue => unsupportedValue("provider", issue.input),
+      }),
+      product: z.enum(["chatgpt-codex", "claude-code"], {
         error: issue => unsupportedValue("product", issue.input),
       }),
-      region: z.enum(["mainland-cn", "global"]).optional(),
       billing: z.literal("subscription", {
         error: issue => unsupportedValue("billing", issue.input),
       }),
@@ -33,7 +31,6 @@ export const AccessProfilesSchema = z
         z.strictObject({
           kind: z.literal("native-oauth"),
           authFile: z.string().min(1),
-          source: z.literal("kimi-code").optional(),
         }),
       ], {
         error: issue => unsupportedValue("credential kind", object(issue.input)?.["kind"]),
@@ -74,28 +71,13 @@ export function validateExplicitConfig(
       )
     )
       errors.push(`${id}: invalid_product`);
-    if (p.provider === "kimi" ? !p.region : p.region !== undefined)
-      errors.push(`${id}: region_product_mismatch`);
-    if (
-      !supportsNativeOAuth(p)
-    )
+    if (!supportsNativeOAuth(p))
       errors.push(`${id}: credential_product_mismatch`);
     const url = new URL(p.baseUrl ?? defaultBase(p));
     const expected = new URL(defaultBase(p));
-    if (p.provider === "kimi" && p.credential.kind === "native-oauth") {
-      if (!isAbsolute(p.credential.authFile)) errors.push(`${id}: kimi_oauth_absolute_store_required`);
-      if (p.credential.source === "kimi-code") {
-        try { validateKimiNativePath(p.credential.authFile, p.region!); }
-        catch { errors.push(`${id}: kimi_native_region_store_mismatch`); }
-      }
-      if (!isDefaultEndpoint(p)) errors.push(`${id}: kimi_oauth_endpoint_mismatch`);
-    }
-    const knownHosts =
-      p.provider === "kimi"
-        ? ["api.kimi.ai", "api.kimi.com", "api.moonshot.ai", "api.moonshot.cn"]
-        : p.provider === "codex"
-          ? ["chatgpt.com", "api.openai.com"]
-          : ["api.anthropic.com"];
+    const knownHosts = p.provider === "codex"
+      ? ["chatgpt.com", "api.openai.com"]
+      : ["api.anthropic.com"];
     if (
       knownHosts.includes(url.hostname) &&
       (url.hostname !== expected.hostname ||
@@ -103,7 +85,7 @@ export function validateExplicitConfig(
           expected.pathname.replace(/\/$/, ""))
     )
       errors.push(
-        `${id}: endpoint_product_or_region_mismatch; baseUrl must be the product root`,
+        `${id}: endpoint_product_mismatch; baseUrl must be the product root`,
       );
     if (
       !["https:", "http:"].includes(url.protocol) ||

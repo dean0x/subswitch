@@ -20,9 +20,8 @@ import {
 } from "../../src/routing/routing-types.js";
 
 const profile: AccessProfile = {
-  provider: "kimi",
-  product: "kimi-code",
-  region: "global",
+  provider: "codex",
+  product: "chatgpt-codex",
   billing: "subscription",
   account: "synthetic",
   credential: { kind: "native-oauth", authFile: "/synthetic/never-read.json" },
@@ -56,28 +55,28 @@ describe("routing reliability and isolation", () => {
       classifyFailure(
         profile,
         429,
-        envelope({ type: "insufficient_quota" }),
+        envelope({ type: "exceeded_current_quota_error" }),
         1000,
       ).kind,
       "unknown",
     );
     assert.equal(
       classifyFailure(
-        { ...profile, product: "kimi-platform" },
+        profile,
         429,
         envelope({
-          type: "exceeded_current_quota_error",
-          code: "permission_denied_error",
+          type: "insufficient_quota",
+          code: "permission_error",
         }),
         1000,
       ).kind,
       "unknown",
     );
   });
-  for (const product of ["kimi-platform", "openai-api", "anthropic-api"]) {
+  for (const product of ["kimi-code", "kimi-platform", "openai-api", "anthropic-api"]) {
     it(`does not activate fallback for removed product ${product}`, () => {
       const body = { text: JSON.stringify({ error: {
-        type: product === "kimi-platform" ? "exceeded_current_quota_error" : "insufficient_quota",
+        type: "insufficient_quota",
       } }), complete: true, truncated: false };
       assert.equal(classifyFailure({ ...profile, product }, 429, body, 1000).kind, "unknown");
     });
@@ -281,7 +280,7 @@ describe("routing reliability and isolation", () => {
     const adapt = (source: typeof body) =>
       adaptRequest({
         profile,
-        target: { profile: "synthetic", model: "k3", effort: "high" },
+        target: { profile: "synthetic", model: "synthetic-model", effort: "high" },
         body: source,
         ingress: "messages",
         protocol: "messages",

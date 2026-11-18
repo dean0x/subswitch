@@ -208,7 +208,7 @@ describe("production reverse HTTP ingress", () => {
       assert.equal(response.status, 400);
       const { error } = await response.json() as { error: { code: string; message: string } };
       assert.equal(error.code, "reasoning_effort_unsupported_by_model");
-      assert.match(error.message, /`claude-fable-5-1`/);
+      assert.match(error.message, /`claude-fable-5-2`/);
       assert.equal(fixture.openai.requests.length + fixture.claude.requests.length, 0);
     } finally { await fixture.close(); }
   });

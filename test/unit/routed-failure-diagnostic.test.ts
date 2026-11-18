@@ -9,22 +9,26 @@ import { AttemptFailure, RoutedAttempts } from "../../src/routing/routed-attempt
 import { RoutingError, type AccessProfile, type Item, type WireProtocol } from "../../src/routing/routing-types.js";
 
 const secret = "fabricated-private-token-code-prompt";
-const profile: AccessProfile = {
-  provider: "kimi", product: "kimi-code", region: "global", billing: "subscription",
-  account: "fabricated", credential: nativeCredential("kimi", secret),
-};
 const sse = (event: Item) => new Response(`data: ${JSON.stringify(event)}\n\n`, {
   headers: { "content-type": "text/event-stream", "x-fabricated-secret": secret },
 });
 
 async function attempt(protocol: WireProtocol, transport: typeof fetch, logger: Logger, signal = AbortSignal.timeout(2000), bodyOverride?: Item) {
+  const profile: AccessProfile = protocol === "messages" ? {
+    provider: "claude", product: "claude-code", billing: "subscription",
+    account: "fabricated", credential: nativeCredential("claude", secret),
+  } : {
+    provider: "codex", product: "chatgpt-codex", billing: "subscription",
+    account: "fabricated", credential: nativeCredential("codex", secret),
+  };
+  const model = protocol === "messages" ? "claude-sonnet-5" : "gpt-6.2-sol";
   const auth = new ProfileAuth({ fixture: profile }, logger);
   const attempts = new RoutedAttempts(auth, logger, transport);
   const body: Item = protocol === "messages"
     ? { model: "fixture", max_tokens: 256, system: secret, messages: [{ role: "user", content: secret }] }
-    : { model: "fixture", max_output_tokens: 256, instructions: secret, input: [{ role: "user", content: secret }] };
+    : { model: "fixture", instructions: secret, input: [{ role: "user", content: secret }] };
   const prepared = await attempts.prepare({
-    profile, target: { profile: "fixture", model: "kimi-for-coding", effort: "high" },
+    profile, target: { profile: "fixture", model, effort: "high" },
     body: bodyOverride ?? body, protocol, conversation: "fabricated-conversation", signal, refreshes: new Set(),
   });
   try {
@@ -63,12 +67,9 @@ for (const protocol of ["messages", "responses"] as const) {
         return true;
       });
       assert.equal(calls, 1, "diagnostics must not retry");
-      const hints = origin === "http_response" ? {
-        rejectionEnvelope: "nested_error", rejectionReason: "unrecognized", rejectionField: "unknown", rejectionCode: "unrecognized",
-      } : {};
-      assert.deepEqual(fields, [{ eventType: origin, errorCode: "unknown", status: origin === "http_response" ? 400 : 200, ...hints }]);
+      assert.deepEqual(fields, [{ eventType: origin, errorCode: "unknown", status: origin === "http_response" ? 400 : 200 }]);
       assert.equal(lines.length, 1); assert.ok(!lines[0]!.includes(secret));
-      assert.equal(lines[0], `level=info event=route_provider_failure status=${origin === "http_response" ? 400 : 200} eventType=${origin} errorCode=unknown${origin === "http_response" ? " rejectionEnvelope=nested_error rejectionReason=unrecognized rejectionField=unknown rejectionCode=unrecognized" : ""}`);
+      assert.equal(lines[0], `level=info event=route_provider_failure status=${origin === "http_response" ? 400 : 200} eventType=${origin} errorCode=unknown`);
     });
   }
 }
@@ -139,7 +140,7 @@ test("transport, abort and malformed SSE keep their existing errors without a fa
   }
 });
 
-test("400 hints leave exact caller tools/history/request bytes, classifier and quota observations intact", async t => {
+test("400 diagnostics leave exact caller tools/history/request bytes, classifier and quota observations intact", async t => {
   t.mock.method(globalThis, "fetch", () => assert.fail("real transport forbidden"));
   const requests: string[] = [], failures: unknown[] = [], observations: unknown[] = [], fields: LogFields[] = [];
   const body: Item = { model: "fixture", instructions: secret, input: [{ role: "user", content: secret }],
@@ -176,19 +177,17 @@ test("400 hints leave exact caller tools/history/request bytes, classifier and q
     return rest;
   };
   assert.deepEqual(withoutTime(observations[0]), withoutTime(observations[1]));
-  assert.deepEqual(fields, [{ eventType: "http_response", errorCode: "unknown", status: 400,
-    rejectionEnvelope: "nested_error", rejectionReason: "unsupported_tool_type", rejectionField: "tools", rejectionCode: "invalid_value" }]);
+  assert.deepEqual(fields, [{ eventType: "http_response", errorCode: "unknown", status: 400 }]);
 });
 
-test("400 malformed and oversized bodies keep unknown failures and expose only safe envelope hints", async () => {
-  for (const [text, envelope] of [[`{${secret}`, "non_json"], [`<html>${secret}</html>`, "non_json"],
-    ["[]", "unrecognized"], [JSON.stringify({ error: { code: "invalid_client", message: secret.repeat(2000) } }), "incomplete"]]) {
+test("400 malformed and oversized bodies keep unknown failures and log only the HTTP outcome", async () => {
+  for (const text of [`{${secret}`, `<html>${secret}</html>`, "[]",
+    JSON.stringify({ error: { code: "invalid_client", message: secret.repeat(2000) } })]) {
     const fields: LogFields[] = [];
     await assert.rejects(attempt("responses", async () => new Response(text, { status: 400 }), {
       log(_level, _event, value) { fields.push(value!); },
     }), error => error instanceof AttemptFailure && error.clientCode === "route_unknown" && error.clientStatus === 400);
-    assert.deepEqual(fields, [{ eventType: "http_response", errorCode: "unknown", status: 400,
-      rejectionEnvelope: envelope, rejectionReason: "unrecognized", rejectionField: "unknown", rejectionCode: "unrecognized" }]);
+    assert.deepEqual(fields, [{ eventType: "http_response", errorCode: "unknown", status: 400 }]);
   }
 });
 

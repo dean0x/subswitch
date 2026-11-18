@@ -30,7 +30,6 @@ export function routingDiscovery(
       provider: p.provider,
       product: p.product,
       billing: p.billing,
-      region: p.region,
       endpoint: p.baseUrl ?? defaultBase(p),
       availability: "unknown",
     })),

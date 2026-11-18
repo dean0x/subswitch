@@ -83,8 +83,8 @@ it("TP-6 TP-9 refuses other products and paths before any header access", async 
   let accesses = 0;
   const h: QuotaHeaders = { get() { accesses++; return null; }, entries() { accesses++; return [][Symbol.iterator](); } };
   const others: LimitContext[] = [
-    { ...context, provider: "claude", product: "claude-code" }, { ...context, provider: "kimi", product: "kimi-code" },
-    { ...context, product: "openai-api" }, { ...context, provider: "kimi" },
+    { ...context, provider: "claude", product: "claude-code" }, { ...context, provider: "claude", product: "anthropic-unknown" },
+    { ...context, product: "openai-api" }, { ...context, provider: "claude" },
   ];
   for (const c of others) observeCodexQuota(d.logger, c, d.credentialFile, h);
   observeCodexQuota(d.logger, context, join(d.home, "other.json"), h);
