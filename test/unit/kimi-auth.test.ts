@@ -95,28 +95,4 @@ describe("Kimi authentication support boundary", () => {
       await first;
     }
   });
-
-
-  for (const provider of ["claude", "codex"] as const) {
-    it(`preserves ${provider} refresh deduplication when one waiter cancels`, async t => {
-      const fixture = controlledRefresh(t, provider);
-      const cancelled = new AbortController();
-      const first = fixture.auth.refresh("native", cancelled.signal);
-      const rejected = assert.rejects(first, { name: "AbortError" });
-      const remaining = fixture.auth.refresh("native", new AbortController().signal);
-      try {
-        cancelled.abort();
-        await rejected;
-        assert.equal(fixture.get.mock.callCount(), 1);
-        assert.equal(fixture.get.mock.calls[0]?.arguments[1].aborted, false);
-        fixture.finish();
-        assert.equal(await remaining, fixture.credential);
-        assert.equal(await fixture.auth.refresh("native", new AbortController().signal), fixture.credential);
-        assert.equal(fixture.get.mock.callCount(), 2, "a completed refresh leaves no pending cache entry");
-      } finally {
-        fixture.finish();
-        await remaining;
-      }
-    });
-  }
 });

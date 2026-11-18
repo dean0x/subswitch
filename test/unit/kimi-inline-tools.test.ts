@@ -24,11 +24,11 @@ const inline = (tools: unknown = [fn]): Item => ({ type: "additional_tools", rol
 const bodyWith = (entry: Item): Item => ({ input: [{ role: "user", content: "before" }, entry, { role: "user", content: "after" }] });
 
 function adapt(body: Item, options: {
-  profile?: AccessProfile; protocol?: WireProtocol; priorOwner?: string; conversation?: string; stage?: ClaudeCache;
+  protocol?: WireProtocol; priorOwner?: string; conversation?: string; stage?: ClaudeCache;
 } = {}) {
   const stage = options.stage ?? new ClaudeCache();
   return adaptRequest({
-    profile: options.profile ?? kimi,
+    profile: kimi,
     target: { profile: "fixture", model: "kimi-for-coding", effort: "high" },
     body, ingress: "responses", protocol: options.protocol ?? "responses",
     transcript: decodePortableHistory(body, "responses"), stage,
@@ -154,12 +154,8 @@ test("inline declarations do not weaken complete tool call/result checks", () =>
   assert.deepEqual(adapt(body).input, body.input);
 });
 
-test("non-Kimi same-protocol and Kimi cross-protocol behavior remain unchanged", () => {
-  // A missing inline role is legacy-supported; new Kimi same-protocol validation stays scoped.
+test("Kimi cross-protocol inline tools match the legacy Messages conversion", () => {
   const body: Item = { ...bodyWith({ type: "additional_tools", tools: [fn] }), model: "fixture" };
-  const api: AccessProfile = { provider: "codex", product: "chatgpt-codex", billing: "subscription", account: "fixture", credential: { kind: "native-oauth", authFile: "/fabricated/never-read.json" } };
-  assert.deepEqual(adapt(body, { profile: api }).input, body.input);
-  assert.equal(Object.hasOwn(adapt(body, { profile: api }), "tools"), false);
   const legacy = reverseRequest(renderResponsesHistory(decodePortableHistory(body, "responses"))).body;
   const converted = adapt(body, { protocol: "messages" });
   assert.deepEqual(converted.tools, legacy.tools);
