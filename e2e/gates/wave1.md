@@ -144,10 +144,10 @@ probe changes subsequent-action preference; active fallback affinities remain pi
 Independent quota observations survive success as historical blockers with a
 serviceability overlay. Reset timestamps are never manufactured from window names.
 
-The automatic metadata driver stays disabled. Recovery uses normal requests. The optional metadata coordinator
-supports single-flight queries with 60-second minimum spacing, 8-second timeout and
-four concurrent queries. Local CLI-server usage is a separate interface. No background
-inference, credit purchase, extra-usage enablement or spending-setting mutation occurs.
+The automatic metadata driver stays disabled. Recovery uses normal requests.
+The optional metadata coordinator supports single-flight queries, a 60 s minimum interval, an 8 s timeout and four concurrent queries.
+The separate Codex snapshot usage poll can run from `serve`. It does not supply recovery or route selection state.
+Local CLI-server usage remains a separate interface. Neither interface starts inference, buys credits, enables extra usage or changes spend controls.
 
 Discovery is `subswitch models --schema-version 3 --client all --json`. Schemas 1/2
 are unchanged. Listing does not read credentials, refresh auth or query usage. Account
@@ -155,11 +155,12 @@ availability is reported as unknown.
 
 ## Natural limit-response recording — 2026-10-12
 
-The serve entrypoint enables a private limit/error recorder. Inspect observations
-with `subswitch limits --json` (or `--port <n>`). Records live under
-`~/.cache/subswitch/limits/<port>/`; `SUBSWITCH_LIMIT_DIR` changes the root and
-`SUBSWITCH_LIMIT_RECORDING=0` disables recording. Programmatic servers opt in with
-`withLimitRecorder`. Recordings never supply routing or quota state.
+The `serve` entrypoint enables private limit/error records and a separate Codex quota snapshot.
+Inspect error observations with `subswitch limits --json` (or `--port <n>`).
+Error records live under `~/.cache/subswitch/limits/<port>/`. `SUBSWITCH_LIMIT_DIR` changes only the error record root.
+`SUBSWITCH_LIMIT_RECORDING=0` stops error records, snapshot writes and usage polls. It keeps the old snapshot.
+Programmatic servers opt in to error records with `withLimitRecorder`. This wrapper alone enables neither the snapshot nor the poll.
+These diagnostics do not supply route selection or recovery state.
 
 Upstream HTTP, SSE and native WebSocket errors retain sanitized JSON structure
 and known public error codes. The recorder retains only allowed retry/reset headers
@@ -191,6 +192,50 @@ Automatic re-entry selects a recovered subscription for a subsequent eligible
 explicit action, keeping active fallback actions pinned and completed tools intact.
 Queued-job/session auto-resume after exhaustion, interrupted-stream restart and
 durable relay restart/resume remain outside Wave 1.
+
+## Codex quota snapshot gate
+
+`serve` writes `$HOME/.cache/subswitch/codex-quota.json`. HOME selects this path; `SUBSWITCH_LIMIT_DIR` does not move it.
+Only the Codex CLI login account qualifies. Alternate auth paths, symlink aliases and `CODEX_HOME` accounts do not.
+HTTP response headers can update the snapshot. WebSocket frames and in-stream events do not.
+At least one complete, valid Codex window must exist. Empty data never replaces a good snapshot.
+A single window replaces the whole snapshot. A header snapshot wins a timestamp tie against a poll result.
+
+The snapshot version stays `1`. Base keys remain `version`, `observed_at`, `windows` and `rate_limit_reached_type`.
+The six additive keys are `source`, `plan_type`, `active_limit`, `limit_name`, `credits` and `additional_limits`.
+The current status-line reader ignores these keys. `source` is `response-headers` or `usage-endpoint`.
+Each additional limit has `limit_id`, `limit_name` and `windows`. Each window has `window_minutes`, `used_percent` and `resets_at`.
+
+**INFERRED units:** header `reset-at` and snapshot `resets_at` use Unix epoch seconds; header `window-minutes` uses minutes.
+The usage body uses `limit_window_seconds` in seconds and `reset_at` in Unix epoch seconds.
+Subswitch converts whole usage window seconds to snapshot minutes. `observed_at` uses whole Unix epoch seconds.
+
+The cache folder must belong to the current user and have mode `700`. A mode of `755` prevents snapshot writes.
+Repair that mode with `chmod 700 "$HOME/.cache/subswitch"`. The snapshot file uses mode `600` and atomic replacement.
+A hard kill can leave one temporary file or lose the newest update. The previous snapshot stays valid.
+Separate processes can replace the file. The last replacement wins.
+
+`providers.codex.usagePoll` defaults to `true`. Set this one key to `false` to stop usage requests and retain header snapshots.
+The poll requires `serve`, an active snapshot writer, the Codex CLI login path and a base URL suffix of `/backend-api/codex`.
+It replaces that suffix with `/backend-api/wham/usage`, keeps the same origin and refuses redirects.
+At serve start, it reads the login through the current credential store. That store can refresh a token near expiry.
+The poll uses the handler's auth instance and never forces refresh.
+
+Each serve process has its own poll state, cap and backoff:
+
+- Poll at start and once per distinct stored reset time, at least 60 s after reset.
+- Poll after Codex activity or while idle if the newest accepted snapshot is at least 900 s old.
+- Start at most one poll each 60 s and at most 48 in any 24 h. Count all triggers.
+- Allow one poll in flight, with a 10 s timeout and a 64 KiB body cap.
+- Use exponential backoff after failure, from 120 s to 3600 s.
+- On HTTP 429, accept integer `Retry-After` seconds from 0 to 3600. Use the longer of that delay or backoff.
+- Ignore date-form `Retry-After` values. Stop the poll before shutdown flush; abort the active request.
+
+The usage endpoint is undocumented and unversioned. It can change or stop. Its use can raise terms-of-use questions.
+**Not verified live:** header presence on the Claude Code path, HTTP 429 and HTTP 5xx; family header names;
+credit and plan formats; units; absence of headers on HTTP 429; usage body fields and required request headers.
+Offline tests use synthetic data. They do not establish these live provider contracts.
+No CI job or smoke script sends a live usage request. A live check needs a separate manual gate.
 
 ## Evidence and unresolved acceptance
 

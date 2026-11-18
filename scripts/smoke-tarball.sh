@@ -62,7 +62,7 @@ NODE
 
 # Ask the OS for an available port; never assume a developer port is unused.
 SMOKE_PORT="$(node -e 'const net=require("node:net"); const s=net.createServer(); s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close();});')"
-node -e 'const fs=require("node:fs");fs.writeFileSync("subswitch.config.json",JSON.stringify({port:Number(process.argv[1]),providers:{codex:{authFile:process.cwd()+"/unused-auth.json"}}}),{mode:0o600});' "${SMOKE_PORT}"
+node -e 'const fs=require("node:fs");fs.writeFileSync("subswitch.config.json",JSON.stringify({port:Number(process.argv[1]),providers:{codex:{usagePoll:false,authFile:process.cwd()+"/unused-auth.json"}}}),{mode:0o600});' "${SMOKE_PORT}"
 SUBSWITCH_CONFIG="${TMPDIR_INSTALL}/subswitch.config.json" node_modules/.bin/subswitch serve &
 SERVE_PID="$!"
 

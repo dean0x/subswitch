@@ -41,6 +41,7 @@ import { adaptRequest } from "./request-adapter.js";
 import { observeThinking, rememberThinking } from "./signed-thinking.js";
 import { deriveConversationKey } from "../conversation-key.js";
 import { recordLimitFailure, type LimitContext } from "../limit-observation.js";
+import { observeCodexQuota } from "../codex-quota-snapshot.js";
 import { abortable } from "../abortable.js";
 import { identifyProviderEvents } from "./provider-identity.js";
 
@@ -207,6 +208,7 @@ export class RoutedAttempts {
         ingress, configuredCredentialKind: "native-oauth",
         ...(request.scopeHash ? { scopeHash: request.scopeHash } : {}),
         ...(request.route ? { route: request.route } : {}), ...(request.attempt !== undefined ? { attempt: request.attempt } : {}) };
+      observeCodexQuota(this.logger, limitContext, p.credential.authFile, response.headers);
       if (!response.ok) {
         const body = await readBoundedBody(response.body, 64 * 1024, combined);
         recordLimitFailure(this.logger, limitContext, { transport: "http", status: response.status, committed: false,

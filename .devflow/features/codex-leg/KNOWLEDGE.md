@@ -1,14 +1,28 @@
 ---
 feature: codex-leg
 name: Codex translation leg (gpt-* → /responses)
-description: "Use when modifying Codex request translation, model alias resolution, session/cache key derivation, protocol headers, reasoning round-trips, count_tokens estimation, ambiguous-model routing policy, timeout asymmetry, or the codex-recorder dev tool. Keywords: codex, gpt, responses, conversation key, session_id, prompt_cache_key, reasoning, effort, translation, routing table, alias, family, canonical, buildRoutingTable, resolveModel, ModelResolution, buildHeaders, CodexTransportConstants, maxAggregateBytes, forceRefresh, count_tokens, estimateTokens, ambiguous_model_name, IngestError, readBodyForRouting, sniffLeadingModel, maxBufferedBodyBytes, bodyMode, anthropic:streamed, ADR-010, streamIdleTimeoutMs, astra, reasoningEfforts, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, unknownReasoningEfforts, buildOpenaiModelNamePredicate, createCodexRecorderServer, MAX_SSE_BUFFER_CHARS, allowInsecureUpstream."
+description: "Use when modifying Codex request translation, model alias resolution, session/cache key derivation, protocol headers, reasoning round-trips, count_tokens estimation, ambiguous-model routing policy, timeout asymmetry, the Codex quota snapshot and usage poll, or the codex-recorder dev tool. Keywords: codex, gpt, responses, conversation key, session_id, prompt_cache_key, reasoning, effort, translation, routing table, alias, family, canonical, buildRoutingTable, resolveModel, ModelResolution, buildHeaders, CodexTransportConstants, maxAggregateBytes, forceRefresh, count_tokens, estimateTokens, ambiguous_model_name, IngestError, readBodyForRouting, sniffLeadingModel, maxBufferedBodyBytes, bodyMode, anthropic:streamed, ADR-010, streamIdleTimeoutMs, astra, reasoningEfforts, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, unknownReasoningEfforts, buildOpenaiModelNamePredicate, createCodexRecorderServer, MAX_SSE_BUFFER_CHARS, allowInsecureUpstream, codex-quota.json, observeCodexQuota, CodexQuotaWriter, CodexUsagePoller, usagePoll, SUBSWITCH_LIMIT_RECORDING."
 category: domain-knowledge
 directories: [src]
 created: 2026-07-22
-updated: 2026-09-14
+updated: 2026-11-18
 ---
 
 # Codex Translation Leg (gpt-* → /responses)
+
+## Rules
+
+Rules for the Codex quota snapshot. The older Anti-Patterns and Gotchas sections below have no rule IDs yet.
+
+- **KB-AP-1** Do not call `observeCodexQuota` before the upstream fetch returns, after a body read, or outside its own try/catch. It must never throw, read credential content or change the response.
+- **KB-AP-2** Do not rename or remove a snapshot key, change a unit, or change the format version. The format stays at version 1 because other tools read the file. Write keys only through `serializeCodexQuota`.
+- **KB-AP-3** Do not convert units in the header path or accept a reset time without the range check. The header and usage units are inferred, not verified live.
+- **KB-AP-4** Do not give the usage poll its own credential or refresh path. It uses the shared `deps.codexAuth`.
+- **KB-AP-5** Do not write a snapshot for a credential file that is not the Codex CLI file at `$HOME/.codex/auth.json`.
+- **KB-INV-1** The snapshot is `$HOME/.cache/subswitch/codex-quota.json`. The folder has mode 0700 and the file has mode 0600. A folder that is unsafe gets no write, only a warning.
+- **KB-INV-2** `SUBSWITCH_LIMIT_RECORDING=0` stops the writer and the poll and keeps the old file. `SUBSWITCH_LIMIT_DIR` does not move the snapshot.
+- **KB-INV-3** `providers.codex.usagePoll: false` stops usage requests only. Header snapshots stay on.
+- **KB-INV-4** A usage-endpoint snapshot never replaces a header snapshot that is the same age or newer.
 
 ## Overview
 
@@ -219,6 +233,8 @@ IncomingMessage (Anthropic wire)
           ← outgoing order: authorization, chatgpt-account-id, openai-beta, originator,
              session_id, accept, content-type, user-agent; same sessionId both attempts
       → fetch POST /responses (controller.signal; 401 refresh bounded; forceRefresh 30s cooldown)
+      → observeCodexQuota(logger, context, authFile, upstream.headers) — right after fetch,
+        before the !ok branch and any body read (see "Codex quota snapshot")
       → createSseParser (chunk → SseEvent)
       → createAnthropicSseTranslator (SseEvent → Anthropic SSE frame)
           → MAX_CONTENT_BLOCKS cap; blockIndexByKey NOT pruned on content_block_stop
@@ -354,6 +370,8 @@ IncomingMessage (Anthropic wire)
 - `src/codex-handler.ts` — `createCodexHandler<P>(deps): ProviderHandler` entry point; `CodexHandlerDeps<P>`, `CodexTransportConstants` interface; `buildHeaders` (exported pure module-level fn); canonical substitution; sessionId before loop; bounded retry; `AbortController` above `auth.getCredentials()`; `handleCountTokens` (estimate, not forwarded)
 - `src/provider-transport.ts` — `createFrameWriter` (abort-safe, backpressure-aware); `respondJson`, `respondProxyError`, `readBoundedText`
 - `src/provider-handler.ts` — `ProviderHandler` interface; P4 contract documented
+- `src/codex-quota-snapshot.ts` — Quota snapshot: `codexQuotaSnapshotPaths`, `isCodexQuotaSource`, `observeCodexQuota`, `parseCodexQuotaHeaders`, `parseCodexUsageBody`, `serializeCodexQuota`, `CodexQuotaWriter` (latest-wins slot), `writeCodexQuotaFile` (folder checks, atomic write). Called from `codex-handler.ts` and `routing/routed-attempt.ts`
+- `src/codex-usage-poll.ts` — `CodexUsagePoller`, pure `nextPollDecision`, `deriveUsageUrl`, `buildCodexUsagePoller`. Pins: `test/unit/codex-usage-poll.test.ts`, `test/unit/codex-quota-snapshot.test.ts`, `test/integration/codex-quota-snapshot.test.ts`
 - `src/codex-request.ts` — All request translation logic; `translateRequest`, `translateEffort` (validates via `reasoningEffortsForModel(MODEL_REGISTRY, model)`), `estimateTokens` (chars/4 heuristic)
 - `src/anthropic-parse.ts` — `buildInstructions` (moved from `codex-request.ts`); `textOfBlocks`
 - `src/conversation-key.ts` — Deterministic v7-shaped UUID from sha256 of canonical request
@@ -393,7 +411,7 @@ IncomingMessage (Anthropic wire)
 - PF-022: A one-way "we have replied" latch cannot guard teardown — `codex-recorder.ts`'s `failExchange` predicate is independent of `res.headersSent`
 - PF-023: Prose drifts — cited by the `gpt-6-astra` registry comment for why no registry-vs-native-fixture equality test exists
 - PF-026: A loopback predicate must not be a prefix test — `codex-recorder.ts` reuses `isLoopbackHost` from `src/config.ts` rather than a hand-rolled check
-- `.devflow/features/cli-ux/KNOWLEDGE.md` — CLI UX layer; `subswitch models` command; doctor agent-scan; N-provider fan-out; `ProviderEvents<P>` compile-time log-injection control
+- `.devflow/features/cli-ux/KNOWLEDGE.md` — CLI UX layer; `subswitch models` command; doctor agent-scan; N-provider fan-out; `ProviderEvents<P>` compile-time log-injection control; `serve` wiring of the quota snapshot and usage poll
 
 ## Native Codex → Claude ingress (2026-09-08)
 
@@ -451,3 +469,74 @@ Native cancellation keeps an empty, bounded replay placeholder until a valid ter
 The ordered `<turn_aborted>` notice and readable partial history can then continue
 without replaying unfinished thinking or tools. Missing relay-side Claude credentials
 return 503 so native Codex does not refresh its unrelated OpenAI login.
+
+## Codex quota snapshot (2026-11-18)
+
+`src/codex-quota-snapshot.ts` writes the rate-limit state of the Codex CLI login account to
+`$HOME/.cache/subswitch/codex-quota.json`. Status lines read this file. The format version is 1.
+`serializeCodexQuota` is the only writer of keys: `version`, `observed_at`, `windows`
+(`window_minutes`, `used_percent`, `resets_at`), `rate_limit_reached_type`, `source`
+(`response-headers` or `usage-endpoint`), `plan_type`, `active_limit`, `limit_name`, `credits`
+and `additional_limits`. The status-line reader that exists today ignores `source`, `plan_type`,
+`active_limit`, `limit_name`, `credits` and `additional_limits`. The serialized text has a size cap.
+A larger snapshot is dropped with the warning `codex_quota_dropped`.
+
+```
+upstream response (headers only)
+  → observeCodexQuota                 codex-handler.ts, routing/routed-attempt.ts
+      → isCodexQuotaSource            provider codex + product chatgpt-codex + authFile resolves to $HOME/.codex/auth.json
+      → parseCodexQuotaHeaders        x-codex-* headers
+      → CodexQuotaWriter.record       latest-wins slot, no timer
+          → writeCodexQuotaFile       folder checks, temp file, rename
+CodexUsagePoller (optional)
+  → GET usage endpoint → parseCodexUsageBody → the same CodexQuotaWriter.record
+```
+
+**KB-AP-1 (call site).** Both call sites run right after the fetch returns. They run before the
+non-2xx branch and before any body read, so 429 responses give a snapshot and the response bytes
+stay unchanged. `observeCodexQuota` compares file paths only. It does not open the credential file.
+The integration test "writes the literal snapshot before body access and preserves bytes" pins this.
+
+**KB-AP-5 (account gate).** `isCodexQuotaSource` accepts only provider `codex`, product
+`chatgpt-codex` and a credential file that resolves to the Codex CLI file `$HOME/.codex/auth.json`.
+A custom `providers.codex.authFile` gives no snapshot and no poll. `buildCodexUsagePoller` uses the same gate.
+
+**KB-AP-3 (units are inferred).** Header `reset-at` is Unix epoch seconds. Header `window-minutes` is
+minutes. The usage body gives `limit_window_seconds` (seconds; the parser converts only a whole
+number of minutes) and `reset_at` (epoch seconds). None of these units is verified live. A reset time
+outside the range around now (see `parseWindowValues`) rejects that window and gives one warning
+`codex_quota_reset_out_of_range`. `used_percent` is clamped to 0 through 100. The header scan has fixed
+bounds for entries and extra limit families; the constants are in `parseCodexQuotaHeaders`.
+
+**KB-INV-4 (writer order).** `CodexQuotaWriter` keeps one slot. A snapshot with an older `observed_at`
+loses. A usage-endpoint snapshot loses to a header snapshot that is the same age or newer. A write
+whose content is the same as the last write (ignoring `observed_at`) is skipped inside the duplicate
+window in `drain`. Each warning code logs once for each process. The writer has no timer: `flush()`
+waits for the drain.
+
+**KB-INV-1 (file safety).** `writeCodexQuotaFile` creates the folder with mode 0700. Before each
+write it checks that the folder is a real directory, not a symlink, owned by the current user, with
+no group or other bits. If not, it writes nothing and warns `codex_quota_directory_unsafe`. The
+temp file opens with `wx` and mode 0600, is synced, checked (regular file, one link, same owner), and
+renamed over the target. Repair command for a wrong mode: `chmod 700 "$HOME/.cache/subswitch"`.
+
+**KB-AP-4 (usage poll).** `providers.codex.usagePoll` is a strict-schema boolean with default `true`.
+`buildCodexUsagePoller` starts a poller only when the switch is on, recording is on, a writer exists,
+the account gate passes and `deriveUsageUrl` works. The Codex base URL must end in
+`/backend-api/codex`; the poll URL is `/backend-api/wham/usage` on the same origin. Any other base URL
+logs `codex_usage_poll_unsupported_base_url` and starts no poll. The poll sends a GET with
+`redirect: "error"` and the credentials from the shared `deps.codexAuth` (`ServerDeps.codexAuth`), so
+the credential store keeps sole ownership of token refresh. `nextPollDecision` is pure. It allows a
+poll for the first start, a passed reset time plus grace, or a stale snapshot, and never inside the
+minimum gap, the daily start cap, a failure backoff or an in-flight poll. The constants are `FLOOR_MS`,
+`DAILY_STARTS`, `STALE_MS`, `RESET_GRACE_SEC`, `TIMEOUT_MS` and `BODY_BYTES` in `codex-usage-poll.ts`;
+`test/unit/codex-usage-poll.test.ts` pins the behavior. Failures back off; a 429 `retry-after` is
+honored within a bound. Each failure kind logs one warning for each process: `codex_usage_poll_failed`,
+`codex_usage_poll_rejected`, `codex_usage_poll_rate_limited`, `codex_usage_poll_body_too_large`.
+
+**KB-INV-2 / KB-INV-3 (switches).** `SUBSWITCH_LIMIT_RECORDING=0` stops error records, snapshot
+updates and usage requests, and keeps the old snapshot file. `SUBSWITCH_LIMIT_DIR` moves only the
+observation root; the snapshot path follows `HOME`. `usagePoll: false` stops usage requests only.
+
+**Not verified live.** Header formats and the usage endpoint behavior come from the code and the
+CHANGELOG, not from a live capture.

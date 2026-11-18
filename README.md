@@ -142,8 +142,20 @@ Environment:
   NO_COLOR      Disable color output (also respected as standard)
   FORCE_COLOR   Force color output even when not a TTY
   CI            Non-interactive detection — init refuses without --yes
-  SUBSWITCH_LIMIT_RECORDING=0   Disable private limit observations (enabled by default)
-  SUBSWITCH_LIMIT_DIR           Override private observation root directory
+  SUBSWITCH_LIMIT_RECORDING=0   Disable limit observations, quota snapshot and usage poll
+  SUBSWITCH_LIMIT_DIR           Override limit observation root only
+  Codex quota snapshot: $HOME/.cache/subswitch/codex-quota.json (follows HOME)
+  SUBSWITCH_LIMIT_DIR does not move the snapshot.
+  SUBSWITCH_LIMIT_RECORDING=0 stops the snapshot and keeps the old file.
+  providers.codex.usagePoll defaults to true; set false to stop usage requests.
+  Header snapshots stay on when usagePoll is false.
+  At most one poll start each 60 s; at most 48 in 24 h per process; failures use backoff.
+  Snapshot version stays 1. Additive keys: source, plan_type, active_limit,
+  limit_name, credits, additional_limits. The current reader ignores these keys.
+  INFERRED header units: reset-at epoch seconds; window-minutes minutes.
+  INFERRED usage units: reset_at epoch seconds; limit_window_seconds seconds.
+  Cache folder repair: chmod 700 "$HOME/.cache/subswitch"
+  Header formats and usage endpoint behavior are not verified live.
 
 ```
 
@@ -162,10 +174,11 @@ Environment:
 
 `doctor` exits 1 whenever any preflight check fails — use it as a gate in scripts. `init` without `--yes` refuses to write anything when stdin is not a TTY (e.g. in CI) and exits 1 immediately with no filesystem side effects.
 
-### Recording real request limits
+### Private limit observations
 
-`serve` automatically saves private, sanitized observations of upstream HTTP errors,
-SSE errors and native WebSocket errors. View the latest records with:
+`serve` saves private, sanitized observations of upstream HTTP errors, SSE errors and native WebSocket errors.
+It also writes a separate Codex quota snapshot and can poll usage. See the next section.
+View the latest error records with:
 
 ```sh
 subswitch limits --json
@@ -179,22 +192,115 @@ error codes and known limit-message prefixes are retained. Arbitrary strings,
 unknown field names, prompts, tool contents and credentials are omitted; unknown
 string codes receive a fingerprint. No raw body archive is created.
 
-Set `SUBSWITCH_LIMIT_DIR` to choose the storage root or
-`SUBSWITCH_LIMIT_RECORDING=0` to disable recording. Files use owner-only permissions.
-Observation does not change provider responses, trigger retries or authorize paid
-fallback. Unknown formats remain unknown until their contract is verified.
+Set `SUBSWITCH_LIMIT_DIR` to choose the error record root. It does not move the Codex quota snapshot.
+Set `SUBSWITCH_LIMIT_RECORDING=0` to stop error records, snapshot writes and the usage poll.
+This switch keeps the old snapshot file. Files use owner-only permissions.
+Error observation does not change provider responses, trigger retries or authorize paid fallback.
+Unknown formats remain unknown until their contract is verified.
 
 Body capture is capped at 64 KiB. Oversized, truncated or undecodable errors are
 marked explicitly. Compressed HTTP error bodies are decoded within that cap;
 compressed native SSE and raw compressed WebSocket messages are not inspected.
 A native WebSocket coverage gap produces `limit_observation_partial`. Recording
 covers traffic through the relay; direct native-client traffic is outside its view.
-Programmatic servers can opt in by supplying a logger from `withLimitRecorder`.
+Programmatic servers can opt in to error records with a logger from `withLimitRecorder`.
+This wrapper alone does not enable the Codex quota snapshot or the usage poll.
 
 Automatic subscription re-entry applies to explicit routes on a subsequent eligible
 action, using one ordinary request to check recovery. Active fallback actions remain
 pinned. It does not restart an interrupted response, rerun completed tools, retry a
 finished invocation indefinitely, or restore relay state after a restart.
+
+### Codex quota snapshot and usage poll
+
+`serve` writes `$HOME/.cache/subswitch/codex-quota.json` for status lines. The path follows HOME, not `SUBSWITCH_LIMIT_DIR`.
+The CLI writes this snapshot only from `serve`. `withLimitRecorder` alone does not enable it.
+The snapshot describes only the Codex CLI login account at `$HOME/.codex/auth.json`.
+Other auth file paths, symlink aliases and `CODEX_HOME` accounts do not qualify.
+The path check compares text and does not open credentials. The usage poll reads credentials as described below.
+
+Codex response headers can update the snapshot on the Claude Code to Codex path, for success and error responses.
+A response needs at least one complete, valid Codex window. Empty or invalid data keeps the old file.
+A new snapshot replaces the whole file. A single window does not preserve a second window from an older response.
+HTTP response headers and the usage poll supply data. WebSocket frames and in-stream events do not.
+This data does not drive route selection, retries, fallback or purchases. `subswitch limits` still shows error records only.
+
+The format version stays `1`. The base keys are `version`, `observed_at`, `windows` and `rate_limit_reached_type`.
+`observed_at` uses whole Unix epoch seconds. `windows` holds only Codex windows, from shortest to longest `window_minutes`.
+Each window has `window_minutes`, `used_percent` and `resets_at`. Window duration, not the primary or secondary slot, defines its type.
+Absent or invalid optional values become `null`. The six additive snapshot keys are:
+
+| Key | Value |
+| --- | --- |
+| `source` | `response-headers` or `usage-endpoint` |
+| `plan_type` | Validated plan label, or `null` |
+| `active_limit` | Validated active limit identifier, or `null` |
+| `limit_name` | Validated limit label, or `null` |
+| `credits` | `has_credits`, `unlimited` and `balance`, or `null` |
+| `additional_limits` | Named families with `limit_id`, `limit_name` and `windows`; defaults to `[]` |
+
+The current status-line reader ignores these six keys. Each additional family uses the same window shape.
+A named family without a valid Codex window cannot replace the snapshot.
+A header snapshot takes precedence over a usage poll result with the same or an older timestamp.
+
+**INFERRED units, not verified live:** header `reset-at` values and snapshot `resets_at` use Unix epoch seconds.
+Header `window-minutes` values and snapshot `window_minutes` use minutes.
+The usage body uses seconds for `limit_window_seconds` and Unix epoch seconds for `reset_at`.
+Subswitch converts whole usage window seconds to minutes. Percent values use the range 0 to 100.
+
+The writer uses atomic replacement, a file mode of `600` and a cache folder mode of `700`.
+The cache folder must belong to the current user. A folder with mode `755` prevents writes and produces one warning.
+If the cache folder has mode `755`, repair its mode:
+
+```sh
+chmod 700 "$HOME/.cache/subswitch"
+```
+
+The writer checks the cache folder, not its parent folders. It limits the snapshot to 4 KiB.
+A hard kill can leave one temporary file and lose the newest update. The old snapshot stays valid.
+Two processes can replace the file; the last replacement wins. Identical content can leave `observed_at` up to 30 s behind.
+
+#### Usage poll
+
+`providers.codex.usagePoll` defaults to `true`. Set this one key to `false` to stop usage requests:
+
+```json
+{
+  "providers": {
+    "codex": { "usagePoll": false }
+  }
+}
+```
+
+Header snapshots stay on with this key set to `false`. `SUBSWITCH_LIMIT_RECORDING=0` stops both paths and keeps the old file.
+The poll runs only from `serve`, with a snapshot writer and the Codex CLI login path.
+The configured base URL must end in `/backend-api/codex`.
+The poll replaces that suffix with `/backend-api/wham/usage` and keeps the same origin.
+It refuses redirects. A different base URL suffix disables the poll.
+The endpoint is undocumented and unversioned. It can change or stop without notice. Its use can raise terms-of-use questions.
+
+At serve start, the poll reads the Codex login through the current credential store.
+That store can refresh a token near expiry. The poll uses the handler's own auth instance and never forces refresh.
+It sends credential headers and fixed transport headers only to the derived same-origin URL.
+
+Poll triggers and bounds apply to each serve process:
+
+- Poll at serve start.
+- Poll once for each distinct stored reset time, at least 60 s after that time.
+- Poll when the newest accepted snapshot is at least 900 s old, after Codex activity or while idle.
+- Start at most one poll each 60 s. Allow at most one poll in flight.
+- Start at most 48 polls in any 24 h per process. Count every trigger toward this cap.
+- Use a 10 s timeout and a 64 KiB response body cap.
+- After each failure, use exponential backoff from 120 s to 3600 s. A valid poll response clears backoff.
+- For HTTP 429, accept only integer `Retry-After` seconds from 0 to 3600. Wait for the longer of backoff or that delay.
+- Ignore `Retry-After` dates and values outside that range.
+
+Each process has its own cap and backoff. Config does not expose the timer values.
+Poll errors do not change client responses. Shutdown stops the poll and aborts its active request before the final snapshot flush.
+
+**Not verified live:** header presence on the Claude Code path, HTTP 429 and HTTP 5xx; named family header names;
+credit and plan value formats; units; absence of headers on HTTP 429; usage endpoint body fields and required request headers.
+Offline fixtures do not prove these provider behaviors. No CI job or smoke script sends a live usage request.
 
 ### Advanced: manual setup
 
@@ -514,6 +620,7 @@ All keys and their defaults:
 | `providers.codex.oauthTokenUrl` | `"https://auth.openai.com/oauth/token"` | Token refresh endpoint for the Codex OAuth flow |
 | `providers.codex.authFile` | `"~/.codex/auth.json"` | Path to the Codex credential file written by `codex login` |
 | `providers.codex.userAgent` | `"codex_cli_rs/0.144.6"` | User-agent string sent on Codex leg requests |
+| `providers.codex.usagePoll` | `true` | Enable the bounded quota snapshot usage poll in `serve`. Set `false` to stop usage requests; header snapshots stay on. |
 | `providers.codex.aliases` | `{}` | Custom alias overrides — map a short name to a canonical model id. Wins over derived family aliases; loses to exact registry ids. |
 | `providers.codex.reasoningCache.maxEntries` | `4096` | Maximum LRU entries in the reasoning round-trip cache |
 | `providers.codex.reasoningCache.maxBytes` | `67108864` (64 MiB) | Maximum total byte footprint of the reasoning cache |

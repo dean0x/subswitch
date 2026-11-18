@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import { CLIENT_IDS, parseClientSelection, selectedClients, type ClientId, type ClientSelection as Client } from "./clients.js";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { codexQuotaSnapshotPaths } from "./codex-quota-snapshot.js";
+import { buildCodexUsagePoller } from "./codex-usage-poll.js";
+import { systemClock } from "./routing/clock.js";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
@@ -96,8 +100,20 @@ Environment:
   NO_COLOR      Disable color output (also respected as standard)
   FORCE_COLOR   Force color output even when not a TTY
   CI            Non-interactive detection — init refuses without --yes
-  SUBSWITCH_LIMIT_RECORDING=0   Disable private limit observations (enabled by default)
-  SUBSWITCH_LIMIT_DIR           Override private observation root directory
+  SUBSWITCH_LIMIT_RECORDING=0   Disable limit observations, quota snapshot and usage poll
+  SUBSWITCH_LIMIT_DIR           Override limit observation root only
+  Codex quota snapshot: $HOME/.cache/subswitch/codex-quota.json (follows HOME)
+  SUBSWITCH_LIMIT_DIR does not move the snapshot.
+  SUBSWITCH_LIMIT_RECORDING=0 stops the snapshot and keeps the old file.
+  providers.codex.usagePoll defaults to true; set false to stop usage requests.
+  Header snapshots stay on when usagePoll is false.
+  At most one poll start each 60 s; at most 48 in 24 h per process; failures use backoff.
+  Snapshot version stays 1. Additive keys: source, plan_type, active_limit,
+  limit_name, credits, additional_limits. The current reader ignores these keys.
+  INFERRED header units: reset-at epoch seconds; window-minutes minutes.
+  INFERRED usage units: reset_at epoch seconds; limit_window_seconds seconds.
+  Cache folder repair: chmod 700 "$HOME/.cache/subswitch"
+  Header formats and usage endpoint behavior are not verified live.
 `;
 
 // ---------------------------------------------------------------------------
@@ -303,7 +319,9 @@ const serve = async (
   const effectiveConfig = { ...config, logLevel, port: effectivePort };
 
   const baseLogger = createConsoleLogger(logLevel);
-  const recorder = process.env["SUBSWITCH_LIMIT_RECORDING"] === "0" ? undefined : new LimitRecorder(limitDirectory(effectivePort), baseLogger);
+  const quota = codexQuotaSnapshotPaths(homedir());
+  const recorder = process.env["SUBSWITCH_LIMIT_RECORDING"] === "0" ? undefined : new LimitRecorder(limitDirectory(effectivePort), baseLogger, { ...(quota ? { codexQuota: quota } : {}) });
+  if (recorder && !quota) baseLogger.log("warn", "codex_quota_home_unavailable");
   const depsResult = buildDeps(effectiveConfig, recorder ? withLimitRecorder(baseLogger, recorder) : baseLogger);
   if (!depsResult.ok) {
     fail(depsResult.error);
@@ -325,6 +343,10 @@ const serve = async (
     try { removeActionControl = await publishActionControl(effectiveConfig.port, deps.sharedRouting.actions.capability); }
     catch (error) { server.close(); throw error; }
   }
+  const poller = buildCodexUsagePoller({ enabled: effectiveConfig.providers.codex.usagePoll, recording: !!recorder,
+    writer: recorder?.codexQuota, authFile: effectiveConfig.providers.codex.authFile, baseUrl: effectiveConfig.providers.codex.baseUrl,
+    auth: deps.codexAuth, logger: deps.logger, fetchImpl: fetch, clock: systemClock, userAgent: effectiveConfig.providers.codex.userAgent });
+  poller?.start();
   deps.logger.log("info", "config_loaded", {
     path: configPath,
     eventType: fileFound ? "loaded" : "defaults",
@@ -353,7 +375,9 @@ const serve = async (
   errOut(`  run \`subswitch doctor\` to verify setup\n`);
 
   if (recorder) errOut("  limit observations: " + recorder.directory + " (view with subswitch limits --json)\n");
+  if (recorder?.codexQuota && quota) errOut("  Codex quota snapshot: " + quota.path);
   const shutdown = (): void => {
+    poller?.stop();
     deps.logger.log("info", "shutting_down");
     server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush()]).finally(() => process.exit(0)); });
     server.closeIdleConnections();

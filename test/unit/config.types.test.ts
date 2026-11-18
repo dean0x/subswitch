@@ -18,6 +18,7 @@ const codexSlice: CodexProviderConfig = {
   oauthTokenUrl: "https://auth.openai.com/oauth/token",
   authFile: "/home/user/.codex/auth.json",
   userAgent: "codex_cli_rs/0.144.6",
+  usagePoll: true,
   aliases: {},
   reasoningCache: { maxEntries: 4096, maxBytes: 64 * 1024 * 1024 },
   requestTimeoutMs: 600_000,

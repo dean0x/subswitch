@@ -44,6 +44,7 @@ export interface ServerDeps {
   readonly sharedRouting?: SharedRouting;
   readonly config: Config;
   readonly logger: Logger;
+  readonly codexAuth: ProviderAuth<"codex">;
   /** Privileged default leg — handles everything that is not POST /v1/messages*. */
   readonly forwardAnthropic: AnthropicForwarder;
   readonly forwardOpenai: CodexIngressEntry | undefined;
@@ -174,6 +175,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
   return ok({
     config,
     logger,
+    codexAuth,
     sharedRouting,
     forwardOpenai: config.codexIngress.enabled ? new CodexGateway({ config, logger, parentAuth: codexAuth, resolveClaude, sharedRouting,
       claudeAuth: new ClaudeAuthManager({ store: createClaudeCredentialStore(config.codexIngress.claude),

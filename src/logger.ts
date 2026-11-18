@@ -1,6 +1,7 @@
 import { createColors } from "picocolors";
 import { resolveColorEnabled } from "./tty.js";
 import type { LimitObservation } from "./limit-observation.js";
+import type { CodexQuotaSink } from "./codex-quota-snapshot.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -40,9 +41,19 @@ export interface LogFields {
 
 export interface Logger {
   log(level: LogLevel, event: string, fields?: LogFields): void;
-  /** Separate private diagnostic artifacts; accepts only the sanitized projection. */
+  /** events.jsonl is a private diagnostic; accepts only the sanitized projection. */
   recordLimit?(observation: LimitObservation): void;
   trackLimitTask?(task: Promise<void>): void;
+  /**
+   * Status lines use the version 1 snapshot at $HOME/.cache/subswitch/codex-quota.json.
+   * The current reader ignores the additive keys: source, plan_type, active_limit, limit_name, credits, additional_limits.
+   * INFERRED units, not verified live: header reset-at and snapshot resets_at use Unix epoch seconds; window-minutes and window_minutes use minutes.
+   * Usage limit_window_seconds uses seconds; reset_at uses Unix epoch seconds.
+   * Cache folder mode repair: chmod 700 "$HOME/.cache/subswitch".
+   * serve supplies the path; withLimitRecorder alone does not create a snapshot writer.
+   * SUBSWITCH_LIMIT_RECORDING=0 stops this writer and the optional providers.codex.usagePoll.
+   */
+  codexQuota?: CodexQuotaSink;
 }
 
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };

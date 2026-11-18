@@ -36,6 +36,7 @@
       "oauthTokenUrl": "https://auth.openai.com/oauth/token",
       "authFile": "~/.codex/auth.json",
       "userAgent": "codex_cli_rs/0.144.6",
+      "usagePoll": true,
       "aliases": {},
       "reasoningCache": {
         "maxEntries": 4096,

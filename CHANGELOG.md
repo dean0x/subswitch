@@ -26,6 +26,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Subswitch sends `codex_cli_rs/0.144.6` as its default user agent.
   Access to the new Codex models with this value is not verified.
   Set `providers.codex.userAgent` to change this value.
+- Status lines can use a Codex quota snapshot at `$HOME/.cache/subswitch/codex-quota.json` for the Codex CLI login account.
+  The snapshot format stays at version `1`.
+  It adds `source`, `plan_type`, `active_limit`, `limit_name`, `credits` and `additional_limits`. The current status-line reader ignores these six keys.
+  INFERRED units, not verified live: header `reset-at` values and snapshot `resets_at` use Unix epoch seconds.
+  Header `window-minutes` values and snapshot `window_minutes` use minutes.
+  The usage body uses seconds for `limit_window_seconds` and Unix epoch seconds for `reset_at`.
+  If the cache folder has a mode other than `700`, repair it with `chmod 700 "$HOME/.cache/subswitch"`.
+- Optional usage updates start by default with `serve`. Set `providers.codex.usagePoll` to `false` to stop these requests.
+  Quota updates from response headers stay on.
+- `SUBSWITCH_LIMIT_RECORDING=0` stops error records, quota snapshot updates and usage requests. It keeps the old snapshot file.
+
+Provider formats and usage endpoint behavior are not verified live.
 
 ### Changed
 
