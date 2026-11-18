@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { upstreamStatusToAnthropicError, toAnthropicErrorBody } from "./errors.js";
 import { respondJson, respondProxyError } from "./provider-transport.js";
-import type { CodexProviderConfig } from "./config.js";
+import type { CodexProviderConfig, Credential, CredentialKindTable } from "./config.js";
 import type { Logger } from "./logger.js";
 import { providerEvents } from "./provider-events.js";
 import type { ProviderId } from "./models.js";
@@ -17,6 +17,10 @@ import type { LimitContext } from "./limit-observation.js";
 import { runTranslatedLeg } from "./translated-leg.js";
 
 const CODEX_LIMIT_KEY: LimitContext = { provider: "codex", product: "chatgpt-codex", protocol: "responses" };
+
+const AUTH_HINT: CredentialKindTable<string> = {
+  "oauth-file": ({ loginCommand }) => ` — run \`${loginCommand}\``,
+};
 
 /**
  * `P` ties `providerId` to `auth`, and that is all it does.
@@ -58,16 +62,8 @@ export interface CodexHandlerDeps<P extends ProviderId> {
    * global settings that were never meant to be per-provider.
    */
   readonly provider: CodexProviderConfig;
-  /**
-   * Shell command the user must run to obtain or refresh this provider's credential.
-   * Read from `providerConfigFor(config, id).loginCommand` at the wiring site.
-   *
-   * Cannot be synthesised from `providerId`: a provider whose id is "kimi" may well
-   * log in with "kimi auth login", not "kimi login". The field must carry the
-   * hand-written value from the config accessor table (src/config.ts:PROVIDER_CONFIG_ACCESSORS).
-   * It is not user-settable — it is absent from the Zod schema.
-   */
-  readonly loginCommand: string;
+  /** Credential source metadata from the provider accessor, for the 401 hint. */
+  readonly credential: Credential;
   /** The one cross-cutting limit this handler reads; everything else comes from `provider`. */
   readonly pingIntervalMs: number;
   readonly logger: Logger;
@@ -155,7 +151,7 @@ export const codexTransportConstants = (userAgent: string): CodexTransportConsta
 });
 
 export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<P>): ProviderHandler => {
-  const { providerId, provider, logger, auth, cache, pingIntervalMs, loginCommand } = deps;
+  const { providerId, provider, logger, auth, cache, pingIntervalMs, credential: source } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const newSessionId = deps.newSessionId ?? randomUUID;
   // Event names resolved once here, not per request: the hot path does no string work,
@@ -223,7 +219,7 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
       limitKey: CODEX_LIMIT_KEY,
       renderUpstreamError: (status, detail, headers) => {
         const retryAfter = headers.get("retry-after");
-        const remediation = status === 401 ? ` — run \`${loginCommand}\`` : "";
+        const remediation = status === 401 ? AUTH_HINT[source.kind](source) : "";
         return {
           ...upstreamStatusToAnthropicError(status),
           message: `${providerId} upstream error (${status})${detail === "" ? "" : `: ${detail}`}${remediation}`,

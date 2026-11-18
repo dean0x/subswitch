@@ -478,49 +478,33 @@ export type Limits = Config["limits"];
 // Per-provider config accessor
 // ---------------------------------------------------------------------------
 
+/** Credential source and host policy. This data does not contain tokens. */
+export type Credential =
+  | {
+      readonly kind: "oauth-file";
+      /** Tilde-expanded credential file path. */
+      readonly authFile: string;
+      /** Shell command that obtains this provider's credential. */
+      readonly loginCommand: string;
+      readonly baseUrl: string;
+      readonly defaultHost: string;
+      readonly oauthTokenUrl: string;
+      readonly defaultOauthHost: string;
+      /** Opt-in to a non-default host on either credential-bearing URL. */
+      readonly allowInsecureBaseUrl: boolean;
+    };
+
+type CredentialKind = Credential["kind"];
+
+export type CredentialKindTable<R> = {
+  [K in CredentialKind]: (credential: Extract<Credential, { kind: K }>) => R;
+};
+
 /** The provider-neutral slice of config that doctor, health, and the CLI banner need. */
 export interface ProviderRuntimeConfig {
   /** Human-facing name for CLI and JSON output (e.g. "Codex"). */
   readonly displayName: string;
-  /** Tilde-expanded credential file path. */
-  readonly authFile: string;
-  /** Provider API base URL. */
-  readonly baseUrl: string;
-  /** Shell command that obtains this provider's credential, quoted in doctor remediation. */
-  readonly loginCommand: string;
-  /**
-   * Hostname this provider's API is expected to live on.
-   *
-   * A `baseUrl` pointing anywhere else sends a subscription credential to a
-   * third-party host, so buildDeps warns at startup when the two differ. Kept here
-   * rather than as a constant in server.ts so the check is per-provider by
-   * construction — one provider's default host can never be used to vet another's.
-   */
-  readonly defaultHost: string;
-  /**
-   * OAuth token endpoint for credential refresh, when applicable.
-   *
-   * Present only for providers that authenticate via OAuth (currently Codex). Absent
-   * for providers that use static API keys or other schemes. `buildDeps` vets this URL
-   * against `defaultOauthHost` and scheme with the same rules as `baseUrl`, because a
-   * compromised `oauthTokenUrl` leaks the long-lived refresh token — more damaging than
-   * leaking a short-lived access token via a misconfigured `baseUrl`.
-   */
-  readonly oauthTokenUrl?: string;
-  /**
-   * Hostname the OAuth token endpoint is expected to live on.
-   *
-   * Present when `oauthTokenUrl` is present. `buildDeps` warns at startup when the
-   * configured `oauthTokenUrl` points at a different host.
-   */
-  readonly defaultOauthHost?: string;
-  /**
-   * Opt-in to a non-default host on `baseUrl` or `oauthTokenUrl`.
-   *
-   * When false, `buildDeps` returns an error (fatal for `serve`) if either URL points at
-   * a host other than `defaultHost` / `defaultOauthHost`. Loopback hosts are always exempt.
-   */
-  readonly allowInsecureBaseUrl: boolean;
+  readonly credential: Credential;
 }
 
 /**
@@ -534,13 +518,16 @@ export interface ProviderRuntimeConfig {
 const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) => ProviderRuntimeConfig>> = {
   codex: (config) => ({
     displayName: "Codex",
-    authFile: config.providers.codex.authFile,
-    baseUrl: config.providers.codex.baseUrl,
-    loginCommand: "codex login",
-    defaultHost: "chatgpt.com",
-    oauthTokenUrl: config.providers.codex.oauthTokenUrl,
-    defaultOauthHost: "auth.openai.com",
-    allowInsecureBaseUrl: config.providers.codex.allowInsecureBaseUrl,
+    credential: {
+      kind: "oauth-file",
+      authFile: config.providers.codex.authFile,
+      baseUrl: config.providers.codex.baseUrl,
+      loginCommand: "codex login",
+      defaultHost: "chatgpt.com",
+      oauthTokenUrl: config.providers.codex.oauthTokenUrl,
+      defaultOauthHost: "auth.openai.com",
+      allowInsecureBaseUrl: config.providers.codex.allowInsecureBaseUrl,
+    },
   }),
 };
 
@@ -575,7 +562,7 @@ export const aliasesByProvider = (config: Config): AliasesByProvider => ({
  *
  * Discriminated by `routing`:
  *   - "passthrough" — requests are forwarded verbatim (Anthropic leg; no auth file).
- *   - "registry"    — routing is governed by MODEL_REGISTRY; has an auth file.
+ *   - "registry"    — MODEL_REGISTRY controls routing; has a credential source.
  */
 export type RoutingDestination =
   | {
@@ -587,8 +574,7 @@ export type RoutingDestination =
       readonly routing: "registry";
       readonly id: ProviderId;
       readonly displayName: string;
-      /** Tilde-expanded credential file path (from providerConfigFor). */
-      readonly authFile: string;
+      readonly credential: Credential;
     };
 
 /**
@@ -603,8 +589,11 @@ export type RoutingDestination =
 export const enumerateDestinations = (config: Config): readonly RoutingDestination[] => [
   { routing: "passthrough", id: "anthropic", displayName: "Anthropic" },
   ...PROVIDER_IDS.map((id): RoutingDestination => {
-    const { displayName, authFile } = providerConfigFor(config, id);
-    return { routing: "registry", id, displayName, authFile };
+    const { displayName, credential } = providerConfigFor(config, id);
+    const destinations: CredentialKindTable<Extract<RoutingDestination, { routing: "registry" }>> = {
+      "oauth-file": (source) => ({ routing: "registry", id, displayName, credential: source }),
+    };
+    return destinations[credential.kind](credential);
   }),
 ];
 

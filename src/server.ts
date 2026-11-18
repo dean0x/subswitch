@@ -7,7 +7,7 @@ import type { IncomingMessage, Server } from "node:http";
 import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
 import { applyInboundPolicy, hostGateVerdict, SERVER_TUNING } from "./inbound-policy.js";
 import { type Result, ok, err } from "./result.js";
-import { aliasesByProvider, enumerateDestinations, providerConfigFor, type Config } from "./config.js";
+import { aliasesByProvider, enumerateDestinations, providerConfigFor, type Config, type CredentialKindTable } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
 import { CLAUDE_EVENTS, OPENAI_EVENTS, ANTHROPIC_EVENTS, providerEvents } from "./provider-events.js";
 import { decideRoute } from "./router.js";
@@ -80,11 +80,22 @@ const createCodexProvider = (config: Config, logger: Logger, auth: ProviderAuth<
     providerId: "codex",
     provider,
     pingIntervalMs: config.limits.pingIntervalMs,
-    loginCommand: providerConfigFor(config, "codex").loginCommand,
+    credential: providerConfigFor(config, "codex").credential,
     logger,
     auth,
     cache: new ReasoningCache(provider.reasoningCache.maxEntries, provider.reasoningCache.maxBytes),
   });
+};
+
+type CredentialUrl = Pick<Parameters<typeof vetCredentialUrl>[0], "url" | "expectedHost" | "allowOverride" | "refreshToken"> & {
+  readonly key: string;
+};
+
+const CREDENTIAL_URLS: CredentialKindTable<readonly CredentialUrl[]> = {
+  "oauth-file": ({ baseUrl, defaultHost, oauthTokenUrl, defaultOauthHost, allowInsecureBaseUrl }) => [
+    { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: allowInsecureBaseUrl, refreshToken: false },
+    { url: oauthTokenUrl, expectedHost: defaultOauthHost, key: "oauthTokenUrl", allowOverride: allowInsecureBaseUrl, refreshToken: true },
+  ],
 };
 
 /**
@@ -122,15 +133,10 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
     if (!result.ok) return result;
   }
   for (const id of PROVIDER_IDS) {
-    const provider = providerConfigFor(config, id);
-    const urls = [
-      { url: provider.baseUrl, expectedHost: provider.defaultHost, key: "baseUrl", refreshToken: false },
-      ...(provider.oauthTokenUrl && provider.defaultOauthHost ? [{ url: provider.oauthTokenUrl,
-        expectedHost: provider.defaultOauthHost, key: "oauthTokenUrl", refreshToken: true }] : []),
-    ];
-    for (const url of urls) {
+    const { credential } = providerConfigFor(config, id);
+    for (const url of CREDENTIAL_URLS[credential.kind](credential)) {
       const result = vetCredentialUrl({ ...url, path: `providers.${id}.${url.key}`, optInKey: `providers.${id}.allowInsecureBaseUrl`,
-        allowOverride: provider.allowInsecureBaseUrl, logger, events: providerEvents(id) });
+        logger, events: providerEvents(id) });
       if (!result.ok) return result;
     }
   }
@@ -215,6 +221,11 @@ export const listenServer = (
     server.listen(port, host);
   });
 
+// A local file check is acceptable here. Health does not read its contents.
+const CREDENTIAL_CONFIGURED: CredentialKindTable<boolean> = {
+  "oauth-file": ({ authFile }) => existsSync(authFile),
+};
+
 /**
  * Build the health response body for a given config.
  * Dynamic: includes per-destination status (configured + model count).
@@ -233,10 +244,10 @@ const buildHealthBody = (config: Config): string =>
         // Anthropic is always reachable — no auth file, no model list. (applies ADR-002)
         return { id: d.id, configured: true, modelCount: 0 };
       }
-      // existsSync is sync and acceptable here (health endpoint, not hot path).
+      const { credential } = d;
       return {
         id: d.id,
-        configured: existsSync(d.authFile),
+        configured: CREDENTIAL_CONFIGURED[credential.kind](credential),
         modelCount: routableModelCount(MODEL_REGISTRY, d.id),
       };
     }),

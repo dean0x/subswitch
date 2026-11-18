@@ -3,7 +3,7 @@ import { CLIENT_IDS, parseClientSelection, selectedClients, type ClientId, type 
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
-import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
+import { type Config, type CredentialKindTable, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
@@ -271,6 +271,16 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
 // serve
 // ---------------------------------------------------------------------------
 
+const BANNER_HOST: CredentialKindTable<string> = {
+  "oauth-file": ({ baseUrl }) => {
+    try {
+      return new URL(baseUrl).hostname;
+    } catch {
+      return baseUrl;
+    }
+  },
+};
+
 const serve = async (
   result: LoadConfigResult,
   verbose: boolean,
@@ -336,13 +346,8 @@ const serve = async (
   errOut(`\nsubswitch ready — http://127.0.0.1:${effectiveConfig.port}`);
   for (const id of PROVIDER_IDS) {
     const modelCount = routableModelCount(MODEL_REGISTRY, id);
-    const { baseUrl } = providerConfigFor(effectiveConfig, id);
-    let host: string;
-    try {
-      host = new URL(baseUrl).hostname;
-    } catch {
-      host = baseUrl;
-    }
+    const { credential } = providerConfigFor(effectiveConfig, id);
+    const host = BANNER_HOST[credential.kind](credential);
     const hostSuffix = host !== "" ? `  → ${host}` : "";
     errOut(`  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${hostSuffix}`);
   }

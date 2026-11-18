@@ -984,16 +984,12 @@ describe("enumerateDestinations", () => {
     );
   });
 
-  it("registry destinations carry an authFile field", () => {
-    const destinations = enumerateDestinations(defaultConfig);
-    for (const d of destinations) {
-      if (d.routing === "registry") {
-        assert.ok(
-          typeof d.authFile === "string" && d.authFile.length > 0,
-          `registry destination '${d.id}' must have a non-empty authFile`,
-        );
-      }
-    }
+  it("the Codex destination carries the configured OAuth file path", () => {
+    const codex = enumerateDestinations(defaultConfig).find((d) => d.id === "codex");
+    assert.ok(codex?.routing === "registry");
+    assert.equal(codex.credential.kind, "oauth-file");
+    assert.equal(codex.credential.authFile, defaultConfig.providers.codex.authFile);
+    assert.ok(codex.credential.authFile.length > 0);
   });
 
   it("MUTATION CHECK: Anthropic must be first — omitting it would shrink destinations by 1", () => {

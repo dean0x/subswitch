@@ -11,7 +11,18 @@
  * but the annotation is removed. That two-sidedness is what makes these lines a test
  * rather than a comment.
  */
-import type { Config, ProviderConfigs, CodexProviderConfig } from "../../src/config.js";
+import type { Config, ProviderConfigs, CodexProviderConfig, CredentialKindTable, providerConfigFor } from "../../src/config.js";
+
+const credentialKindsRequireHandlers = (provider: ReturnType<typeof providerConfigFor>): string => {
+  // @ts-expect-error a credential kind with no handler must not compile.
+  const missingKind: CredentialKindTable<string> = {};
+  void missingKind;
+
+  const complete: CredentialKindTable<string> = { "oauth-file": (credential) => credential.authFile };
+  const { credential } = provider;
+  return complete[credential.kind](credential);
+};
+void credentialKindsRequireHandlers;
 
 const codexSlice: CodexProviderConfig = {
   baseUrl: "https://chatgpt.com/backend-api/codex",
