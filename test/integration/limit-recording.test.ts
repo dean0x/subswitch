@@ -302,6 +302,7 @@ describe("explicit route observations and inspection", () => {
           cwd: dir,
           env: {
             ...process.env,
+            HOME: dir,
             SUBSWITCH_CONFIG: join(dir, "subswitch.config.json"),
             SUBSWITCH_LIMIT_RECORDING: "1",
             SUBSWITCH_LIMIT_DIR: join(dir, "limits"),

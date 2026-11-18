@@ -18,6 +18,7 @@ import { aggregateFrames, createAnthropicSseTranslator, createSseParser } from "
 import { AnthropicRequestSchema } from "./anthropic-wire-types.js";
 import { recordLimitFailure } from "./limit-observation.js";
 import { observeReadableSse } from "./limit-http-observer.js";
+import { observeCodexQuota } from "./codex-quota-snapshot.js";
 
 const ERROR_BODY_PEEK_BYTES = 2048;
 
@@ -309,6 +310,7 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
         return;
       }
 
+      observeCodexQuota(logger, { provider: providerId, product: "chatgpt-codex", protocol: "responses" }, provider.authFile, upstream.headers);
       if (!upstream.ok) {
         const mapped = upstreamStatusToAnthropicError(upstream.status);
         const detail = await readBoundedText(upstream.body, ERROR_BODY_PEEK_BYTES);

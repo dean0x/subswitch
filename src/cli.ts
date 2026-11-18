@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { CLIENT_IDS, parseClientSelection, selectedClients, type ClientId, type ClientSelection as Client } from "./clients.js";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { codexQuotaSnapshotPaths } from "./codex-quota-snapshot.js";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
@@ -103,6 +105,9 @@ Environment:
   CI            Non-interactive detection — init refuses without --yes
   SUBSWITCH_LIMIT_RECORDING=0   Disable private limit observations (enabled by default)
   SUBSWITCH_LIMIT_DIR           Override private observation root directory
+  Codex quota snapshot: $HOME/.cache/subswitch/codex-quota.json (follows HOME)
+  SUBSWITCH_LIMIT_DIR does not move the snapshot.
+  SUBSWITCH_LIMIT_RECORDING=0 stops the snapshot and keeps the old file.
 `;
 
 // ---------------------------------------------------------------------------
@@ -314,7 +319,9 @@ const serve = async (
   const effectiveConfig = { ...config, logLevel, port: effectivePort };
 
   const baseLogger = createConsoleLogger(logLevel);
-  const recorder = process.env["SUBSWITCH_LIMIT_RECORDING"] === "0" ? undefined : new LimitRecorder(limitDirectory(effectivePort), baseLogger);
+  const quota = codexQuotaSnapshotPaths(homedir());
+  const recorder = process.env["SUBSWITCH_LIMIT_RECORDING"] === "0" ? undefined : new LimitRecorder(limitDirectory(effectivePort), baseLogger, { ...(quota ? { codexQuota: quota } : {}) });
+  if (recorder && !quota) baseLogger.log("warn", "codex_quota_home_unavailable");
   const depsResult = buildDeps(effectiveConfig, recorder ? withLimitRecorder(baseLogger, recorder) : baseLogger);
   if (!depsResult.ok) {
     fail(depsResult.error);
@@ -364,6 +371,7 @@ const serve = async (
   errOut(`  run \`subswitch doctor\` to verify setup\n`);
 
   if (recorder) errOut("  limit observations: " + recorder.directory + " (view with subswitch limits --json)\n");
+  if (recorder?.codexQuota && quota) errOut("  Codex quota snapshot: " + quota.path);
   const shutdown = (): void => {
     deps.logger.log("info", "shutting_down");
     server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush()]).finally(() => process.exit(0)); });
