@@ -16,6 +16,7 @@ import type { ProviderId } from "../../src/models.js";
 import { ReasoningCache } from "../../src/reasoning-cache.js";
 import { SharedRouting } from "../../src/routing/shared-routing.js";
 import { nativeCredential } from "../fixtures/native-profile.js";
+import { usageBody } from "../fixtures/codex-usage.js";
 
 const NOW = 1800000000123;
 const HEADERS = {
@@ -240,9 +241,9 @@ it("hooks dispatch only the responses URL and never a usage request", async () =
   await r.writer.flush();
 }));
 
-async function until(predicate: () => boolean): Promise<void> {
+async function until(predicate: () => boolean | Promise<boolean>): Promise<void> {
   for (let attempt = 0; attempt < 1000; attempt++) {
-    if (predicate()) return;
+    if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail("fixture child did not reach its deadline");
@@ -254,13 +255,14 @@ async function stop(child: ChildProcess, signal: NodeJS.Signals): Promise<number
   const [code] = await exited;
   return code as number | null;
 }
-async function serve(dir: string, recording: string, home = dir) {
+async function serve(dir: string, recording: string, home = dir, usagePoll = false) {
   const counts = { responses: 0, tokens: 0, usage: 0 };
   const now = Math.floor(Date.now() / 1000);
   const backend = http.createServer((req, res) => {
     if (req.url === "/backend-api/codex/responses") counts.responses++;
     else if (req.url === "/token") counts.tokens++;
     else counts.usage++;
+    if (req.url === "/backend-api/wham/usage") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(usageBody(now))); return; }
     res.writeHead(200, { ...HEADERS, "x-codex-primary-reset-at": String(now + 500000), "x-codex-secondary-reset-at": String(now + 10000) });
     res.end(SSE);
   });
@@ -273,7 +275,7 @@ async function serve(dir: string, recording: string, home = dir) {
   const path = join(dir, ".cache", "subswitch", "codex-quota.json");
   const configPath = join(dir, "config.json");
   await writeFile(configPath, JSON.stringify({ port, providers: { codex: {
-    baseUrl: base + "/backend-api/codex", oauthTokenUrl: base + "/token", allowInsecureBaseUrl: true, authFile,
+    baseUrl: base + "/backend-api/codex", oauthTokenUrl: base + "/token", allowInsecureBaseUrl: true, authFile, usagePoll,
   } } }));
   const child = spawn(process.execPath, ["--import", TSX, CLI, "serve"], { cwd: dir,
     env: { ...process.env, HOME: home, SUBSWITCH_CONFIG: configPath, SUBSWITCH_LIMIT_RECORDING: recording,
@@ -285,6 +287,19 @@ async function serve(dir: string, recording: string, home = dir) {
   catch (error) { await stop(child, "SIGKILL"); await close(backend); throw error; }
   return { child, path, port, counts, now, stderr: () => stderr, async cleanup() { await stop(child, "SIGKILL"); await close(backend); } };
 }
+it("TP-70 serve polls once after listen, writes under temporary HOME and stops within grace", async () => temporary(async (dir) => {
+  const fixture = await serve(dir, "1", dir, true);
+  try {
+    await until(async () => { try { return JSON.parse(await readFile(fixture.path, "utf8")).source === "usage-endpoint"; } catch { return false; } });
+    const started = Date.now();
+    assert.equal(await stop(fixture.child, "SIGTERM"), 0, "graceful exit");
+    assert.ok(Date.now() - started < 5000, "shutdown stays within grace");
+    const snapshot = JSON.parse(await readFile(fixture.path, "utf8"));
+    assert.equal(snapshot.source, "usage-endpoint", "start poll writes the snapshot");
+    assert.deepEqual(snapshot.windows, [{ window_minutes: 300, used_percent: 25, resets_at: fixture.now + 10000 }, { window_minutes: 10080, used_percent: 75.5, resets_at: fixture.now + 500000 }], "usage windows");
+    assert.deepEqual(fixture.counts, { responses: 0, tokens: 0, usage: 1 }, "only one usage call");
+  } finally { await fixture.cleanup(); }
+}));
 for (const [recording, oldFile] of [["1", false], ["0", false], ["0", true]] as const) {
   it(`serve HOME stays isolated with recording ${recording}, old file ${oldFile}, and the limit root does not move the snapshot`, async () => temporary(async (dir) => {
     const path = join(dir, ".cache", "subswitch", "codex-quota.json");

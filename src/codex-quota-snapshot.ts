@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { expandHome } from "./config.js";
 import type { Logger } from "./logger.js";
 import type { LimitContext } from "./limit-observation.js";
+import { object } from "./plain-object.js";
 
 export interface CodexQuotaWindow {
   readonly window_minutes: number;
@@ -41,6 +42,9 @@ export interface CodexQuotaSink {
   now(): number;
   record(parse: CodexQuotaParse): void;
   noteActivity(): void;
+}
+export interface CodexQuotaPollWriter extends CodexQuotaSink {
+  pollState(): { readonly observedAt: number | undefined; readonly resetsAt: readonly number[]; readonly activityAt: number | undefined };
 }
 export interface QuotaHeaders {
   get(name: string): string | null;
@@ -99,7 +103,9 @@ const emptyWindow = (): WindowText => ({ used: null, minutes: null, reset: null 
 
 /** INFERRED: reset-at epoch s, window-minutes minutes. No unit conversion. */
 function parseWindow(input: WindowText, nowSec: number): { window?: CodexQuotaWindow; resetRejected: boolean } {
-  const used = numberText(input.used), minutes = numberText(input.minutes), reset = numberText(input.reset);
+  return parseWindowValues(numberText(input.used), numberText(input.minutes), numberText(input.reset), nowSec);
+}
+function parseWindowValues(used: number | null, minutes: number | null, reset: number | null, nowSec: number): { window?: CodexQuotaWindow; resetRejected: boolean } {
   if (used === null || minutes === null || reset === null || !Number.isInteger(minutes) || minutes < 1 || minutes > 527040)
     return { resetRejected: false };
   if (!Number.isInteger(reset) || reset < nowSec - 300 || reset > nowSec + minutes * 60 + 300)
@@ -108,6 +114,9 @@ function parseWindow(input: WindowText, nowSec: number): { window?: CodexQuotaWi
 }
 function parseWindows(primary: WindowText, secondary: WindowText, nowSec: number): { windows: CodexQuotaWindow[]; resetRejected: boolean } {
   const p = parseWindow(primary, nowSec), s = parseWindow(secondary, nowSec);
+  return combineWindows(p, s);
+}
+function combineWindows(p: ReturnType<typeof parseWindowValues>, s: ReturnType<typeof parseWindowValues>): { windows: CodexQuotaWindow[]; resetRejected: boolean } {
   const windows = p.window ? [p.window] : [];
   if (s.window && s.window.window_minutes !== p.window?.window_minutes) windows.push(s.window);
   return { windows: windows.sort((a, b) => a.window_minutes - b.window_minutes), resetRejected: p.resetRejected || s.resetRejected };
@@ -159,6 +168,42 @@ export function parseCodexQuotaHeaders(headers: QuotaHeaders, nowSec: number): C
     }, additional_limits: additional,
   } };
 }
+const jsonNumber = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+const jsonText = (value: unknown, pattern: RegExp): string | null => safeText(typeof value === "string" ? value : null, pattern);
+function usageWindows(value: unknown, nowSec: number): ReturnType<typeof parseWindows> {
+  const rate = object(value);
+  const window = (value: unknown): ReturnType<typeof parseWindowValues> => {
+    const input = object(value), seconds = jsonNumber(input?.["limit_window_seconds"]);
+    return parseWindowValues(jsonNumber(input?.["used_percent"]), seconds !== null && Number.isInteger(seconds) && seconds % 60 === 0 ? seconds / 60 : null,
+      jsonNumber(input?.["reset_at"]), nowSec);
+  };
+  return combineWindows(window(rate?.["primary_window"]), window(rate?.["secondary_window"]));
+}
+/** INFERRED usage body: window seconds become minutes; reset_at is epoch seconds. */
+export function parseCodexUsageBody(json: string, nowSec: number): CodexQuotaParse {
+  let value: unknown;
+  try { value = JSON.parse(json); } catch { return { resetRejected: false }; }
+  const body = object(value), codex = usageWindows(body?.["rate_limit"], nowSec);
+  if (!codex.windows.length) return { resetRejected: codex.resetRejected };
+  const additional: CodexQuotaAdditionalLimit[] = [];
+  const families = body?.["additional_rate_limits"];
+  let resetRejected = codex.resetRejected;
+  if (Array.isArray(families)) {
+    for (const raw of families.slice(0, 8)) {
+      const family = object(raw), id = jsonText(family?.["limit_id"], FAMILY_ID);
+      if (!id || id === "codex" || id.length > 48 || additional.some((limit) => limit.limit_id === id)) continue;
+      const parsed = usageWindows(family?.["rate_limit"], nowSec);
+      resetRejected ||= parsed.resetRejected;
+      if (parsed.windows.length) additional.push({ limit_id: id, limit_name: jsonText(family?.["limit_name"], LIMIT_NAME), windows: parsed.windows });
+    }
+  }
+  const credits = object(body?.["credits"]);
+  return { resetRejected, snapshot: { version: 1, observed_at: nowSec, windows: codex.windows, source: "usage-endpoint",
+    rate_limit_reached_type: null, active_limit: null, limit_name: null, plan_type: jsonText(body?.["plan_type"], PLAN_TYPE),
+    credits: credits ? { has_credits: typeof credits["has_credits"] === "boolean" ? credits["has_credits"] : null,
+      unlimited: typeof credits["unlimited"] === "boolean" ? credits["unlimited"] : null, balance: jsonNumber(credits["balance"]) } : null,
+    additional_limits: additional } };
+}
 const projectWindows = (windows: readonly CodexQuotaWindow[]): CodexQuotaWindow[] => windows.map((w) => ({
   window_minutes: w.window_minutes, used_percent: w.used_percent, resets_at: w.resets_at,
 }));
@@ -187,12 +232,17 @@ export class CodexQuotaWriter implements CodexQuotaSink {
   private draining = false;
   private written: { observed: number; content: string; at: number } | undefined;
   private newestHeader: number | undefined;
+  private accepted: CodexQuotaSnapshot | undefined;
+  private activityAt: number | undefined;
   private readonly warned = new Set<CodexQuotaWarning>();
   constructor(private readonly options: WriterOptions) {
     this.credentialFile = options.credentialFile;
     this.now = options.now;
   }
-  noteActivity(): void {}
+  noteActivity(): void { this.activityAt = this.now(); }
+  pollState(): ReturnType<CodexQuotaPollWriter["pollState"]> {
+    return { observedAt: this.accepted?.observed_at, resetsAt: this.accepted?.windows.map((window) => window.resets_at) ?? [], activityAt: this.activityAt };
+  }
   record(parse: CodexQuotaParse): void {
     if (parse.resetRejected) this.warn("codex_quota_reset_out_of_range", "RESET_RANGE");
     const snapshot = parse.snapshot;
@@ -203,6 +253,8 @@ export class CodexQuotaWriter implements CodexQuotaSink {
     if (this.written && snapshot.observed_at < this.written.observed) return;
     if (snapshot.source === "usage-endpoint" && this.newestHeader !== undefined && snapshot.observed_at <= this.newestHeader) return;
     if (this.slot && snapshot.observed_at < this.slot.observed_at) return;
+    if (this.accepted && this.accepted.observed_at <= nowSec + 300 && snapshot.observed_at < this.accepted.observed_at) return;
+    this.accepted = snapshot;
     if (snapshot.source === "response-headers") this.newestHeader = Math.max(this.newestHeader ?? snapshot.observed_at, snapshot.observed_at);
     this.slot = snapshot;
     if (!this.draining) {

@@ -3,6 +3,8 @@ import { CLIENT_IDS, parseClientSelection, selectedClients, type ClientId, type 
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { codexQuotaSnapshotPaths } from "./codex-quota-snapshot.js";
+import { buildCodexUsagePoller } from "./codex-usage-poll.js";
+import { systemClock } from "./routing/clock.js";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
@@ -343,6 +345,10 @@ const serve = async (
     try { removeActionControl = await publishActionControl(effectiveConfig.port, deps.sharedRouting.actions.capability); }
     catch (error) { server.close(); throw error; }
   }
+  const poller = buildCodexUsagePoller({ enabled: effectiveConfig.providers.codex.usagePoll, recording: !!recorder,
+    writer: recorder?.codexQuota, authFile: effectiveConfig.providers.codex.authFile, baseUrl: effectiveConfig.providers.codex.baseUrl,
+    auth: deps.codexAuth, logger: deps.logger, fetchImpl: fetch, clock: systemClock, userAgent: effectiveConfig.providers.codex.userAgent });
+  poller?.start();
   deps.logger.log("info", "config_loaded", {
     path: configPath,
     eventType: fileFound ? "loaded" : "defaults",
@@ -373,6 +379,7 @@ const serve = async (
   if (recorder) errOut("  limit observations: " + recorder.directory + " (view with subswitch limits --json)\n");
   if (recorder?.codexQuota && quota) errOut("  Codex quota snapshot: " + quota.path);
   const shutdown = (): void => {
+    poller?.stop();
     deps.logger.log("info", "shutting_down");
     server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush()]).finally(() => process.exit(0)); });
     server.closeIdleConnections();
