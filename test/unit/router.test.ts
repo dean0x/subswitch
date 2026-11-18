@@ -48,9 +48,9 @@ describe("decideRoute — family alias (F2)", () => {
     assert.deepEqual(result, { kind: "provider", provider: "codex" as ProviderId, model: "gpt-6.2-sol", endpoint: "messages" });
   });
 
-  it("routes 'terra' (family alias → gpt-6.1-terra) to provider", () => {
+  it("routes 'terra' (family alias → gpt-5.6-terra) to provider", () => {
     const result = decideRoute("POST", "/v1/messages", resolve("terra"));
-    assert.deepEqual(result, { kind: "provider", provider: "codex" as ProviderId, model: "gpt-6.1-terra", endpoint: "messages" });
+    assert.deepEqual(result, { kind: "provider", provider: "codex" as ProviderId, model: "gpt-5.6-terra", endpoint: "messages" });
   });
 
   it("routes 'luna' (family alias → gpt-6-luna) to provider", () => {

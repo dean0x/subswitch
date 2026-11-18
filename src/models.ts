@@ -150,7 +150,7 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   // https://developers.openai.com/api/docs/models/gpt-6.2-sol
   // https://developers.openai.com/api/docs/models/gpt-6.2-astra
   // The API rejects effort `none`; the pages give no per-model effort list.
-  // Use the Codex levels from https://learn.chatgpt.com/docs/models, without client-only Ultra.
+  // Use the Codex effort set from https://learn.chatgpt.com/docs/models, without client-only Ultra.
   // `xhigh` and `max` are not confirmed per model for 6.2. This set is not live-verified.
   // The pages list Astra and Sol in ChatGPT Work and Codex on supported plans and clients.
   {
@@ -170,15 +170,17 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   // https://developers.openai.com/api/docs/models/gpt-6.1-terra lists none/low/medium/high/xhigh/max.
   // Omit `none`: the Codex catalog does not list it, and Claude Code subagent frontmatter cannot send it.
   // https://learn.chatgpt.com/docs/models requires Codex CLI 0.159.0 or later for Terra 6.1.
+  // This client floor exceeds the default user agent, codex_cli_rs/0.144.6. Access is not live-verified.
+  // Keep Terra 6.1 exact-ID-only as preview until access is verified with the default user agent.
   {
     id: "gpt-6.1-terra",
     provider: "codex",
     family: "terra",
     gen: [6, 1],
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    preview: true,
   },
-  // Released 2026-09-29. The [6, 1] generation advances `sol` automatically;
-  // older Sol ids remain routable for explicitly pinned agents.
+  // Released 2026-09-29. Older Sol IDs remain routable by exact ID.
   // https://developers.openai.com/api/docs/models/gpt-6.1-sol
   {
     id: "gpt-6.1-sol",

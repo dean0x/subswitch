@@ -66,19 +66,19 @@ const buildTable = (
 // ---------------------------------------------------------------------------
 
 describe("F2 — family alias resolution", () => {
-  for (const [family, id] of [
-    ["sol", "gpt-6.2-sol"],
-    ["astra", "gpt-6.2-astra"],
-    ["terra", "gpt-6.1-terra"],
+  for (const [family, id, defaultId] of [
+    ["sol", "gpt-6.2-sol", "gpt-6.2-sol"],
+    ["astra", "gpt-6.2-astra", "gpt-6.2-astra"],
+    ["terra", "gpt-6.1-terra", "gpt-5.6-terra"],
   ] as const) {
-    it(`resolves ${family} and its qualified family to ${id}`, () => {
+    it(`resolves ${family} and its qualified family to ${defaultId}`, () => {
       const { table } = buildRoutingTable(MODEL_REGISTRY, NO_ALIASES);
       assert.deepEqual(table.byFamily.get(family), {
-        kind: "unique", model: { id, provider: "codex", family },
+        kind: "unique", model: { id: defaultId, provider: "codex", family },
       });
       for (const name of [family, `codex:${family}`])
         assert.deepEqual(resolveModel(table, name), {
-          kind: "resolved", target: { id, provider: "codex", family },
+          kind: "resolved", target: { id: defaultId, provider: "codex", family },
         });
     });
 
@@ -124,10 +124,11 @@ describe("F2 — family alias resolution", () => {
     }
   });
 
-  it("F2: Terra family names advance while the older exact ID stays pinned", () => {
+  it("F2: Terra family names retain the existing default while exact IDs stay pinned", () => {
     const { table } = buildRoutingTable(MODEL_REGISTRY, NO_ALIASES);
     for (const [name, expected] of [
-      ["terra", "gpt-6.1-terra"], ["codex:terra", "gpt-6.1-terra"],
+      ["terra", "gpt-5.6-terra"], ["codex:terra", "gpt-5.6-terra"],
+      ["gpt-6.1-terra", "gpt-6.1-terra"], ["codex:gpt-6.1-terra", "gpt-6.1-terra"],
       ["gpt-5.6-terra", "gpt-5.6-terra"], ["codex:gpt-5.6-terra", "gpt-5.6-terra"],
     ] as const) {
       const resolution = resolveModel(table, name);

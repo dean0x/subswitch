@@ -506,7 +506,7 @@ describe("CLI models --json", () => {
     const parsed = JSON.parse(result.stdout) as {
       models: Array<{ id: string; gen?: number[]; aliases?: Array<{ name: string }>; reasoningEfforts?: string[] }>;
     };
-    for (const [id, family, gen] of [["gpt-6.2-sol", "sol", [6, 2]], ["gpt-6.2-astra", "astra", [6, 2]], ["gpt-6.1-terra", "terra", [6, 1]], ["gpt-6-luna", "luna", [6]]] as const) {
+    for (const [id, family, gen] of [["gpt-6.2-sol", "sol", [6, 2]], ["gpt-6.2-astra", "astra", [6, 2]], ["gpt-6-luna", "luna", [6]]] as const) {
       const model = parsed.models.find((m) => m.id === id);
       assert.ok(model !== undefined, `models must include ${id}`);
       assert.ok(model.aliases?.some((alias) => alias.name === family), `${id} must carry the derived '${family}' alias`);
@@ -518,6 +518,21 @@ describe("CLI models --json", () => {
       assert.ok(oldSol !== undefined, `models must still include ${id}`);
       assert.equal(oldSol.aliases?.some((alias) => alias.name === "sol"), false, "'sol' must have moved to gpt-6.2-sol");
     }
+  });
+
+  it("lists Terra 6.1 as preview without changing the terra family default", async () => {
+    const result = await runCli(["models", "--json"]);
+    const parsed = JSON.parse(result.stdout) as {
+      models: Array<{ id: string; gen: number[]; aliases: Array<{ name: string }>; reasoningEfforts?: string[]; preview: boolean; routable: boolean }>;
+    };
+    const preview = parsed.models.find((model) => model.id === "gpt-6.1-terra");
+    assert.ok(preview);
+    assert.equal(preview.preview, true);
+    assert.equal(preview.routable, true);
+    assert.deepEqual(preview.gen, [6, 1]);
+    assert.deepEqual(preview.reasoningEfforts, ["low", "medium", "high", "xhigh", "max"]);
+    assert.deepEqual(preview.aliases, []);
+    assert.ok(parsed.models.find((model) => model.id === "gpt-5.6-terra")?.aliases.some((alias) => alias.name === "terra"));
   });
 
   it("lists the retired gpt-5.5 as retired and not routable", async () => {

@@ -483,8 +483,8 @@ describe("canary — current generation resolution via routing table (update whe
     assert.equal(resolvedId("sol"), "gpt-6.2-sol");
   });
 
-  it("'terra' resolves to gpt-6.1-terra — current generation", () => {
-    assert.equal(resolvedId("terra"), "gpt-6.1-terra");
+  it("'terra' stays on gpt-5.6-terra while Terra 6.1 client access is unverified", () => {
+    assert.equal(resolvedId("terra"), "gpt-5.6-terra");
   });
 
   it("'luna' resolves to gpt-6-luna — GPT-6 generation", () => {
