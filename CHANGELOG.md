@@ -22,9 +22,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Access profiles and routes load only from your user config or from the file
   that `SUBSWITCH_CONFIG` names. A project config file that sets them fails at
   load.
-- Routes to a Kimi Code subscription. Use `subswitch kimi-login` to sign in, or
-  name an existing Kimi credential file in the config. Claude Code keeps control
-  of its tools and their results.
 - The `subswitch models --schema-version 3 --client <client> --json` command
   shows the routes that a client can use.
 - The `subswitch run-action` command runs one native client command as one
