@@ -4,10 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.7.0] - 2026-11-18
 
 ### Added
 
+- Shared routes with configuration version 2. You can set access profiles for
+  your Claude and Codex subscription sign ins. You can also set named routes
+  with an ordered list of fallback targets. When one subscription reaches its
+  limit, the route uses the next target. A Claude route continues a
+  conversation with signed history after the proxy restarts. On a route, a
+  native Claude Messages response that is not streamed keeps its signed
+  thinking blocks, in the correct order, with complete usage.
+- Configs without `configVersion: 2` keep the previous routing.
+- Access profiles accept only subscription sign ins. A profile or route that
+  names an API key account, an environment credential, API billing or
+  `sameModelApi` fails at load. The error names the setting.
+- Access profiles and routes load only from your user config or from the file
+  that `SUBSWITCH_CONFIG` names. A project config file that sets them fails at
+  load.
+- The `subswitch models --schema-version 3 --client <client> --json` command
+  shows the routes that a client can use.
+- The `subswitch run-action` command runs one native client command as one
+  routed action. Its tools and child agents use the same route.
+- Subswitch records upstream limit errors in a private local store by default.
+  The `subswitch limits --json` command shows them. Set
+  `SUBSWITCH_LIMIT_DIR` to change the store directory. Set
+  `SUBSWITCH_LIMIT_RECORDING=0` to turn the record off.
 - Register `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, and `claude-fable-5-2` in the built-in catalogs.
   Explicit `routes` targets accept these IDs with efforts `low`, `medium`, `high`, `xhigh`, and `max`.
   Model lists and doctor use these catalogs.
@@ -33,6 +55,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Older exact IDs remain routable.
 - **The `fable` alias on the Codex-client reverse leg now resolves to `claude-fable-5-2`.**
   Older Fable exact IDs remain routable.
+- The lock file uses newer versions of `zod`, `ws` and `@clack/prompts`.
 
 ## [0.6.1] - 2026-10-19
 
