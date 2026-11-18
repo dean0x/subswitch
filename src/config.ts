@@ -204,6 +204,7 @@ const CodexProviderSchema = z
     // machine-telemetry (OS/arch/terminal) intentionally omitted — set providers.codex.userAgent
     // to override (vendor-drift pressure valve).
     userAgent: z.string().min(1).default("codex_cli_rs/0.144.6"),
+    usagePoll: z.boolean().default(true),
     // codex.aliases maps user-defined alias names to canonical model ids.
     // Both sides are checked against isReservedAnthropicName (PF-007).
     aliases: AliasesSchema,
@@ -407,6 +408,7 @@ export interface CodexProviderConfig {
   /** Tilde-expanded at resolveConfig time. */
   readonly authFile: string;
   readonly userAgent: string;
+  readonly usagePoll: boolean;
   readonly aliases: Readonly<Record<string, string>>;
   readonly reasoningCache: {
     readonly maxEntries: number;
@@ -767,6 +769,7 @@ const PROVIDER_RESOLVERS: {
     oauthTokenUrl: file.oauthTokenUrl,
     authFile: expandHome(file.authFile),
     userAgent: file.userAgent,
+    usagePoll: file.usagePoll,
     aliases: file.aliases,
     reasoningCache: file.reasoningCache,
     requestTimeoutMs: file.requestTimeoutMs,

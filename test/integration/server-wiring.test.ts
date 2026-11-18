@@ -9,6 +9,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import net from "node:net";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -435,6 +436,15 @@ describe("buildDeps — SEC-04 host-rejection gate (anthropic.baseUrl)", () => {
 // ---------------------------------------------------------------------------
 
 describe("loadConfig — example config schema sync (PF-010)", () => {
+  it("usagePoll defaults true, accepts false and refuses unknown adjacent keys", () => {
+    for (const [raw, expected] of [[{}, true], [{ usagePoll: false }, false]] as const) {
+      const result = loadConfig({ env: {}, configPath: "/fixture/config.json", readFile: () => JSON.stringify({ providers: { codex: raw } }) });
+      assert.ok(result.ok, "valid poll config parses");
+      assert.equal(result.value.config.providers.codex.usagePoll, expected, "poll switch survives resolution");
+    }
+    const result = loadConfig({ env: {}, configPath: "/fixture/config.json", readFile: () => JSON.stringify({ providers: { codex: { usagePoll: true, usagePollTypo: true } } }) });
+    assert.equal(result.ok, false, "unknown adjacent key is refused");
+  });
   it("subswitch.config.example.json parses cleanly against the current schema", () => {
     const result = loadConfig({ configPath: join(process.cwd(), "subswitch.config.example.json") });
     assert.ok(result.ok, `example config must parse: ${!result.ok ? result.error.message : ""}`);
@@ -442,6 +452,9 @@ describe("loadConfig — example config schema sync (PF-010)", () => {
     // users don't accidentally opt in to credential forwarding.
     assert.strictEqual(result.value.config.anthropic.allowInsecureBaseUrl, false, "anthropic.allowInsecureBaseUrl must be false in example");
     assert.strictEqual(result.value.config.providers.codex.allowInsecureBaseUrl, false, "providers.codex.allowInsecureBaseUrl must be false in example");
+    assert.strictEqual(result.value.config.providers.codex.usagePoll, true, "example enables the usage poll");
+    const example: { providers: { codex: { usagePoll?: unknown } } } = JSON.parse(readFileSync(join(process.cwd(), "subswitch.config.example.json"), "utf8"));
+    assert.equal(example.providers.codex.usagePoll, true, "example declares the poll switch explicitly");
     // maxUpstreamSockets in example must match the real default — catches the drift
     // that made makeMinimalConfig() wrong (maxUpstreamSockets: 32 vs real default 256).
     assert.strictEqual(
