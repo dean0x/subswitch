@@ -44,7 +44,6 @@ const api: AccessProfile = {
   account: "two",
   credential: nativeCredential("codex", "synthetic-api"),
 };
-const kimiFailureProfile = { ...code, provider: "kimi" as const, product: "kimi-code" };
 const policy: RoutePolicy = {
   clients: ["codex", "claude-code"],
   primary: { profile: "code", model: "gpt-6-sol", effort: "high" },
@@ -59,16 +58,9 @@ const envelope = (text: string, complete = true) => ({
 });
 const quota = () =>
   classifyFailure(
-    kimiFailureProfile,
-    403,
-    envelope(
-      JSON.stringify({
-        error: {
-          message:
-            "You've reached your 5-hour usage limit. Synthetic gate only.",
-        },
-      }),
-    ),
+    code,
+    429,
+    envelope('{"error":{"code":"insufficient_quota"}}'),
     1000,
   );
 const response = (events: Item[]) =>
@@ -114,7 +106,7 @@ describe("Wave 1 configuration and failures (synthetic)", () => {
   it("rejects product mismatches, unsafe endpoints, extra regions and alias chains", () => {
     const invalid = [
       [{ ...code, product: "claude-code" }, /invalid_product/],
-      [{ ...code, region: "global" }, /region_product_mismatch/],
+      [{ ...code, region: "global" }, /Unrecognized key: "region"/],
       [
         {
           ...code, provider: "claude",
@@ -174,7 +166,7 @@ describe("Wave 1 configuration and failures (synthetic)", () => {
     assert.equal(quota().kind, "quota");
     assert.equal(
       classifyFailure(
-        kimiFailureProfile,
+        code,
         429,
         envelope('{"error":{"message":"quota"}}'),
         1000,
@@ -183,31 +175,27 @@ describe("Wave 1 configuration and failures (synthetic)", () => {
     );
     assert.equal(
       classifyFailure(
-        kimiFailureProfile,
-        403,
-        envelope('{"error":{"message":"quota"}}', false),
+        code,
+        429,
+        envelope('{"error":{"code":"insufficient_quota"}}', false),
         1000,
       ).kind,
       "unknown",
     );
     assert.equal(
       classifyFailure(
-        kimiFailureProfile,
+        code,
         403,
-        envelope(
-          '{"error":{"message":"You\'ve reached your concurrent request limit. Synthetic gate."}}',
-        ),
+        envelope('{"error":{"code":"insufficient_quota"}}'),
         1000,
       ).kind,
-      "concurrency",
+      "unknown",
     );
     assert.equal(
       classifyFailure(
-        kimiFailureProfile,
-        401,
-        envelope(
-          '{"error":{"message":"Your current subscription does not have access to k3. Synthetic gate."}}',
-        ),
+        code,
+        403,
+        envelope('{"error":{"code":"permission_error"}}'),
         1000,
       ).kind,
       "permission",
@@ -711,19 +699,19 @@ describe("metadata and action admission (synthetic)", () => {
           resolve = r;
         }),
     );
-    const pending = coordinator.refresh(allowanceScope(kimiFailureProfile));
+    const pending = coordinator.refresh(allowanceScope(code));
     now = 2000;
     quotaStore.fail(quota());
     now = 3000;
     resolve({
       windows: [
-        { id: "five-hour", exhausted: false, observedAt: now, source: "usage" },
+        { id: "quota", exhausted: false, observedAt: now, source: "usage" },
       ],
       complete: true,
       serviceableCredits: true,
     });
     assert.equal(await pending, false);
-    assert.equal(quotaStore.readiness(allowanceScope(kimiFailureProfile)), "exhausted");
+    assert.equal(quotaStore.readiness(allowanceScope(code)), "exhausted");
   });
   it("closes admission while existing requests settle and cancels only its own action", () => {
     const store = new ActionStore(),
@@ -886,14 +874,14 @@ describe("quota recovery and action affinity (synthetic)", () => {
     });
     store.fail(quota());
     now = 62000;
-    assert.equal(store.reserve(allowanceScope(kimiFailureProfile)), true);
-    store.recoveryFailure(allowanceScope(kimiFailureProfile));
-    assert.equal(store.readiness(allowanceScope(kimiFailureProfile)), "exhausted");
-    assert.equal(store.observations(allowanceScope(kimiFailureProfile))[0]?.exhausted, true);
+    assert.equal(store.reserve(allowanceScope(code)), true);
+    store.recoveryFailure(allowanceScope(code));
+    assert.equal(store.readiness(allowanceScope(code)), "exhausted");
+    assert.equal(store.observations(allowanceScope(code))[0]?.exhausted, true);
     now = 181000;
-    assert.equal(store.reserve(allowanceScope(kimiFailureProfile)), false);
+    assert.equal(store.reserve(allowanceScope(code)), false);
     now = 183000;
-    assert.equal(store.reserve(allowanceScope(kimiFailureProfile)), true);
+    assert.equal(store.reserve(allowanceScope(code)), true);
   });
   it("reserves one half-open probe and preserves independent blockers and stale observations", () => {
     let now = 1000;
@@ -922,7 +910,7 @@ describe("quota recovery and action affinity (synthetic)", () => {
     store.fail(failure);
     assert.equal(
       store.observe(
-        allowanceScope(kimiFailureProfile),
+        allowanceScope(code),
         [
           {
             id: "five-hour",
@@ -936,13 +924,13 @@ describe("quota recovery and action affinity (synthetic)", () => {
       false,
     );
     now = 62000;
-    assert.equal(store.reserve(allowanceScope(kimiFailureProfile)), true);
-    assert.equal(store.reserve(allowanceScope(kimiFailureProfile)), false);
-    store.success(allowanceScope(kimiFailureProfile));
-    assert.equal(store.readiness(allowanceScope(kimiFailureProfile)), "available");
+    assert.equal(store.reserve(allowanceScope(code)), true);
+    assert.equal(store.reserve(allowanceScope(code)), false);
+    store.success(allowanceScope(code));
+    assert.equal(store.readiness(allowanceScope(code)), "available");
     assert.equal(
       store
-        .observations(allowanceScope(kimiFailureProfile))
+        .observations(allowanceScope(code))
         .filter((w) => w.exhausted === true).length,
       2,
     );

@@ -30,13 +30,22 @@ for (const moment of ["forged", "auth", "dispatch", "commit"] as const)
       if (moment === "auth") release();
       return credential;
     });
+    if (moment === "dispatch") {
+      const validate = auth.validate.bind(auth);
+      let validations = 0;
+      t.mock.method(auth, "validate", (credential: Parameters<ProfileAuth["validate"]>[0]) => {
+        validate(credential);
+        // Release the receipt after the synchronous check, before fetch runs in a microtask.
+        if (++validations === 2) queueMicrotask(release);
+      });
+    }
     let sends = 0;
     const attempts = new RoutedAttempts(auth, noopLogger, async () => {
       sends++;
       return new Response(responsesSse([created(target.model), terminal(target.model, [])]), {
         headers: { "content-type": "text/event-stream" },
       });
-    }, systemClock, "subswitch", () => { if (moment === "dispatch") release(); }, undefined, actions);
+    }, systemClock, "subswitch", actions);
     const request: AttemptRequest = { profile, target, protocol: "responses", conversation: "owned-invocation",
       route: "work", body: { model: "work", input: "synthetic" }, action: context,
       admissionSignal: moment === "forged" ? new AbortController().signal : controller.signal,

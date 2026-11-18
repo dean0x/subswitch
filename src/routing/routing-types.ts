@@ -1,15 +1,11 @@
 /** Explicit-route contracts. Legacy provider identifiers retain their existing meaning. */
-export type DestinationProviderId = "codex" | "claude" | "kimi";
+export type DestinationProviderId = "codex" | "claude";
 export type OriginatingClient = "claude-code" | "codex";
 export type WireProtocol = "messages" | "responses";
-export type CredentialReference = { kind: "native-oauth"; authFile: string; source?: "kimi-code" | undefined };
+export type CredentialReference = { kind: "native-oauth"; authFile: string };
 export interface AccessProfile {
   provider: DestinationProviderId;
-  product:
-    | "chatgpt-codex"
-    | "claude-code"
-    | "kimi-code";
-  region?: "mainland-cn" | "global" | undefined;
+  product: "chatgpt-codex" | "claude-code";
   billing: "subscription";
   account: string;
   credential: CredentialReference;
@@ -31,7 +27,6 @@ export interface RoutePolicy {
 export interface AllowanceScope {
   provider: DestinationProviderId;
   product: string;
-  region?: string | undefined;
   account: string;
   allowanceGroup: string;
   modelScope?: string;
@@ -101,10 +96,9 @@ export class MidConversationSystemError extends RoutingError {
     super("unsupported_mid_conversation_system", 400);
   }
 }
-export const allowanceScope = (profile: Pick<AllowanceScope, "provider" | "product" | "region" | "account">): AllowanceScope => ({
+export const allowanceScope = (profile: Pick<AllowanceScope, "provider" | "product" | "account">): AllowanceScope => ({
   provider: profile.provider,
   product: profile.product,
   account: profile.account,
-  ...(profile.region ? { region: profile.region } : {}),
   allowanceGroup: profile.product,
 });

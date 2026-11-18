@@ -2,8 +2,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import http from "node:http";
-import { createHash } from "node:crypto";
-import { ClaudeCache } from "../../src/claude-cache.js";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -417,59 +415,5 @@ describe("native Claude full-history continuity (offline)", () => {
         await new Promise<void>(resolve => origin.close(() => resolve()));
       }
     });
-  }
-});
-
-it("keeps exact same-scope kimi continuation and rejects another scope before dispatch", async () => {
-  const root = mkdtempSync(join(tmpdir(), "subswitch-kimi-continuity-http-"));
-  const requests: Item[] = [], cache = new ClaudeCache();
-  const credential = nativeCredential("kimi", "fabricated-kimi-continuity");
-  const profile = { provider: "kimi" as const, product: "kimi-code" as const, billing: "subscription" as const,
-    region: "global" as const, account: "original", credential };
-  const target = { profile: "kimi", model: "kimi-for-coding", effort: "high" };
-  const base = config(root), configured = { ...base,
-    accessProfiles: { ...base.accessProfiles, kimi: profile, foreignKimi: { ...profile, account: "foreign" } },
-    routes: { ...base.routes,
-      kimi: { clients: ["claude-code" as const], primary: target, fallbacks: [], transientTriggers: [], affinity: "native-or-explicit" as const },
-      foreignKimi: { clients: ["claude-code" as const], primary: { ...target, profile: "foreignKimi" }, fallbacks: [], transientTriggers: [], affinity: "native-or-explicit" as const },
-    } };
-  const content = [thought, hiddenThought, { type: "text", text: "Fabricated Kimi answer" }];
-  const deps = buildDeps(configured, noopLogger, { fetchImpl: async (url, init) => {
-    assert.equal(String(url), "https://api.kimi.ai/coding/v1/messages?beta=true");
-    assert.equal(init?.redirect, "error");
-    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer fabricated-kimi-continuity");
-    requests.push(JSON.parse(String(init?.body)));
-    return new Response(messageFrames(nativeEvents(content)).join(""), { headers: { "content-type": "text/event-stream" } });
-  } });
-  assert.ok(deps.ok);
-  Object.defineProperty(deps.value.sharedRouting!.attempts, "replay", { value: cache });
-  const server = createProxyServer(deps.value);
-  try {
-    assert.ok((await listenServer(server, 0, "127.0.0.1")).ok);
-    const address = server.address(); assert.ok(address && typeof address !== "string");
-    const send = (model: string, messages: Item[]) => fetch(`http://127.0.0.1:${address.port}/v1/messages`, {
-      method: "POST", signal: AbortSignal.timeout(5000), headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model, max_tokens: 128, stream: false, messages }),
-    });
-    const initial = [{ role: "user", content: "Original Kimi scope" }];
-    const first = await send("kimi", initial); assert.equal(first.status, 200);
-    const reply = await first.json() as Item; assert.deepEqual(reply.content, content);
-    const messages = [...initial, { role: "assistant", content: reply.content }, { role: "user", content: "Continue" }];
-    const continued = await send("kimi", messages); assert.equal(continued.status, 200);
-    assert.deepEqual((await continued.json() as Item).content, content);
-    assert.deepEqual(requests[1]!.messages, messages);
-    for (const model of ["foreignKimi", "work"]) {
-      const rejected = await send(model, messages); assert.equal(rejected.status, 409);
-      assert.match(await rejected.text(), /foreign_opaque_state/);
-    }
-    assert.equal(requests.length, 2, "foreign replay must not reach either destination");
-    for (const signature of [thought.signature, hiddenThought.data]) {
-      const key = `thinking-origin:${createHash("sha256").update(signature).digest("hex")}`;
-      assert.deepEqual(cache.get("snapshot", key)?.request, {}, "Kimi cannot claim native signature ownership");
-    }
-  } finally {
-    deps.value.sharedRouting!.close(); server.closeAllConnections();
-    await new Promise<void>(resolve => server.close(() => resolve()));
-    rmSync(root, { recursive: true, force: true });
   }
 });

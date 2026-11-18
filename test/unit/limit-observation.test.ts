@@ -27,8 +27,8 @@ import {
 import { LimitWebSocketObserver } from "../../src/limit-websocket-observer.js";
 import type { Logger } from "../../src/logger.js";
 const context: LimitContext = {
-  provider: "kimi",
-  product: "kimi-code",
+  provider: "codex",
+  product: "chatgpt-codex",
   protocol: "messages",
   profile: "private-account",
   route: "work",
@@ -80,25 +80,6 @@ describe("private limit observations", () => {
     assert.equal(records[0]!.candidate, "limit");
     assert.deepEqual(records[0]!.headers, { "retry-after": "120" });
     assert.equal(records[0]!.committed, false);
-  });
-  it("keeps known Kimi limit prefixes without recording the vendor's free-form remainder", () => {
-    const { logger, records } = sink();
-    for (const message of [
-      "You've reached your 5-hour usage limit.",
-      "You've reached your weekly (7-day) usage limit.",
-      "You've reached your monthly usage limit for this billing cycle.",
-    ])
-      failure(
-        logger,
-        JSON.stringify({
-          error: { message: message + " private identity and prompt" },
-        }),
-      );
-    assert.equal(records.length, 3);
-    const encoded = JSON.stringify(records);
-    assert.match(encoded, /weekly/);
-    assert.match(encoded, /monthly/);
-    assert.ok(!encoded.includes("private identity"));
   });
   it("records unknown formats as observations without exposing unknown strings or turning them into quota", () => {
     const { logger, records } = sink();

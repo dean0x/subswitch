@@ -4,12 +4,11 @@ import type { Logger } from "./logger.js";
 export const LIMIT_CAPTURE_BYTES = 64 * 1024;
 const SANITIZED_OBSERVATION = Symbol("sanitized-limit-observation");
 export interface LimitContext {
-  provider: "codex" | "claude" | "kimi";
+  provider: "codex" | "claude";
   product:
     | "chatgpt-codex"
     | "openai-api"
     | "claude-code"
-    | "kimi-code"
     | "anthropic-unknown";
   protocol: "messages" | "responses";
   profile?: string;
@@ -17,7 +16,6 @@ export interface LimitContext {
   attempt?: number;
   scopeHash?: string;
   model?: string;
-  region?: "global" | "mainland-cn";
   ingress?: "messages" | "responses";
   configuredCredentialKind?: "native-oauth";
 }
@@ -120,12 +118,6 @@ const publicCodes = new Set([
   "invalid_request_error",
   "quota_exceeded",
 ]);
-const limitPrefixes = [
-  "You've reached your 5-hour usage limit.",
-  "You've reached your weekly (7-day) usage limit.",
-  "You've reached your monthly usage limit for this billing cycle.",
-  "You've reached your concurrent request limit.",
-];
 const headerNames = new Set([
   "retry-after",
   ...["requests", "tokens"].flatMap((unit) =>
@@ -187,10 +179,6 @@ function project(
       return value;
     if (["type", "code", "reason"].includes(field))
       return { kind: "unrecognized-string-code", fingerprint: digest(value) };
-    if (field === "message") {
-      const prefix = limitPrefixes.find((prefix) => value.startsWith(prefix));
-      if (prefix) return prefix + " <redacted>";
-    }
     if (
       numericFields.has(field) &&
       /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value)
@@ -270,7 +258,7 @@ export function recordLimitFailure(
       context: {
         ...publicContext,
         ...(model &&
-        /^(?:gpt-|claude-|kimi-|k[123](?:$|-))[a-z0-9._/-]*$/.test(model) &&
+        /^(?:gpt-|claude-)[a-z0-9._/-]*$/.test(model) &&
         model.length <= 128
           ? { model }
           : {}),

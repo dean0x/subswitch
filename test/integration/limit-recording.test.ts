@@ -418,7 +418,7 @@ describe("explicit route observations and inspection", () => {
       assert.equal(records[0]!.context.product, "chatgpt-codex");
       assert.equal(records[0]!.context.attempt, 0);
       assert.match(records[0]!.context.scopeHash!, /^[a-f0-9]{64}$/);
-      assert.equal(records[0]!.context.region, undefined);
+      assert.equal(Object.hasOwn(records[0]!.context, "region"), false);
       assert.equal(records[0]!.committed, false);
       assert.ok(!JSON.stringify(records).includes("private"));
     } finally {
