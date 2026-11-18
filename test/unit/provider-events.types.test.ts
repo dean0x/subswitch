@@ -18,7 +18,7 @@ import { providerEvents } from "../../src/provider-events.js";
 import type { ProviderId } from "../../src/models.js";
 
 const onlyProviderIdsCanBecomeEventNames = (): void => {
-  // The one legitimate call shape: a compile-time literal from the closed union.
+  // A literal from the closed ProviderId union retains its type in each event name.
   const events = providerEvents("codex");
   const name: "codex_upstream_error" = events.upstreamError;
   void name;

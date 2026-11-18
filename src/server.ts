@@ -597,7 +597,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         }
 
         case "ambiguous": {
-          // Fail open: forward to Anthropic and log a diagnostic warning.
+          // Pass ambiguous names to Anthropic and log a warning.
           //
           // Rationale: the same as `unknown_provider`.  A relay-invented 400 that names OUR
           // provider registry in the error message is an ADR-010 violation — it produces a

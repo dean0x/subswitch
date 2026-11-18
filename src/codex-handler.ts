@@ -29,7 +29,7 @@ const CODEX_LIMIT_KEY: LimitContext = { provider: "codex", product: "chatgpt-cod
  * `provider: CodexProviderConfig` is intentionally NOT parameterised by `P`.
  * Expressing it as `Config["providers"][P]` would compile today only because
  * `ProviderId` is a single-member union; it would break when a second provider lands,
- * because `Config["providers"]["kimi"]` is not `CodexProviderConfig`. The handler
+ * because another provider's config need not match `CodexProviderConfig`. The handler
  * works with the concrete Codex config slice — hardcoding the type is honest about
  * what the code does.
  *
