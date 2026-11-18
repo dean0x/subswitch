@@ -54,13 +54,117 @@ export interface TranslatedLegOptions<C> {
   readonly redirect?: "error";
 }
 
-export const runTranslatedLeg = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>): Promise<void> => {
-  const { auth, events, fetchImpl, logger, model, name, limitKey } = options;
-  const replyError = (error: ProxyError): void => {
-    respondProxyError(res, error, options.proxyErrorHeaders?.(error.kind));
-  };
+type ReplyError = (error: ProxyError) => void;
+type FramePipeline = readonly [Readable, Transform, Transform];
 
-  // Start the request lifetime before credential load so it can use the same signal.
+/** Return the upstream response, or end the request here if no response is available. */
+const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, signal: AbortSignal,
+  replyError: ReplyError): Promise<Response | undefined> => {
+  const { auth, events, fetchImpl, logger, model, name } = options;
+  const initial = await auth.getCredentials(signal);
+  if (!initial.ok) {
+    replyError(initial.error);
+    return;
+  }
+  let credential = initial.value;
+  const maxAttempts = auth.refreshable ? 2 : 1;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let response: Response;
+    try {
+      response = await fetchImpl(options.url, {
+        method: "POST",
+        headers: options.buildHeaders(credential),
+        body: JSON.stringify(options.body),
+        ...(options.redirect !== undefined ? { redirect: options.redirect } : {}),
+        signal,
+      });
+    } catch {
+      if (!res.writableEnded && !res.destroyed) {
+        replyError(signal.aborted
+          ? { kind: "timeout", message: `${name} request timed out` }
+          : { kind: "upstream", message: `${name} upstream unreachable` });
+      }
+      return;
+    }
+    if (response.status !== 401 || attempt + 1 === maxAttempts) return response;
+    logger.log("warn", events.upstream401Refreshing, { model });
+    await response.body?.cancel().catch(() => undefined);
+    const refreshed = await auth.forceRefresh();
+    if (!refreshed.ok) {
+      replyError(refreshed.error);
+      return;
+    }
+    credential = refreshed.value;
+  }
+  // The last attempt must return a response or report an error.
+  logger.log("error", events.retryBoundViolated, { model });
+  respondJson(res, 500, toAnthropicErrorBody("api_error", `${name} internal error`));
+};
+
+const relayUpstreamError = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, upstream: Response): Promise<void> => {
+  const { logger, limitKey, events, model } = options;
+  const detail = await readBoundedText(upstream.body, ERROR_BODY_PEEK_BYTES);
+  if (limitKey !== undefined) {
+    recordLimitFailure(logger, limitKey,
+      { transport: "http", status: upstream.status, committed: false, headers: upstream.headers,
+        text: detail, truncated: Buffer.byteLength(detail) >= ERROR_BODY_PEEK_BYTES });
+  }
+  logger.log("warn", events.upstreamError, { model, status: upstream.status });
+  const error = options.renderUpstreamError(upstream.status, detail, upstream.headers);
+  respondJson(res, error.status, toAnthropicErrorBody(error.type, error.message), error.headers);
+};
+
+const streamFrames = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, streams: FramePipeline,
+  signal: AbortSignal): Promise<void> => {
+  res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER });
+  res.socket?.setNoDelay(true);
+  // Keep the client response outside the pipeline so an upstream error can still send an SSE frame.
+  const writeFrame = createFrameWriter(res, signal);
+  try {
+    await pipeline(...streams, async (source) => {
+      for await (const chunk of source) await writeFrame(String(chunk));
+    });
+    res.end();
+  } catch {
+    options.logger.log("warn", options.events.streamInterrupted, { model: options.model });
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(toAnthropicErrorSse("api_error", `${options.name} stream interrupted`));
+      res.end();
+    }
+  }
+};
+
+const collectFrames = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, streams: FramePipeline,
+  replyError: ReplyError): Promise<void> => {
+  const frames: string[] = [];
+  let framesBytes = 0;
+  try {
+    await pipeline(...streams, async (source) => {
+      for await (const chunk of source) {
+        const frame = String(chunk);
+        framesBytes += frame.length;
+        // Reject the pipeline immediately at the bound. Do not aggregate partial frames.
+        if (framesBytes > options.maxAggregateBytes) throw new Error("sse_aggregate_too_large");
+        frames.push(frame);
+      }
+    });
+  } catch {
+    replyError({ kind: "upstream", message: `${options.name} stream interrupted` });
+    return;
+  }
+  const aggregated = options.aggregateFrames(frames);
+  if (!aggregated.ok) {
+    replyError(aggregated.error);
+  } else if (aggregated.value.kind === "error") {
+    respondJson(res, 502, toAnthropicErrorBody(aggregated.value.errorType, aggregated.value.message));
+  } else {
+    respondJson(res, 200, JSON.stringify(aggregated.value.message));
+  }
+};
+
+/** Share the request abort signal with the credential source, fetch, and client stream. */
+export const runTranslatedLeg = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>): Promise<void> => {
+  const replyError: ReplyError = (error) => respondProxyError(res, error, options.proxyErrorHeaders?.(error.kind));
   const controller = new AbortController();
   const onClientClose = (): void => {
     if (!res.writableFinished) controller.abort();
@@ -68,7 +172,6 @@ export const runTranslatedLeg = async <C>(res: ServerResponse, options: Translat
   res.on("close", onClientClose);
   const totalTimer = setTimeout(() => controller.abort(), options.requestTimeoutMs);
   totalTimer.unref();
-
   let idleTimer: NodeJS.Timeout | undefined;
   const resetIdle = (): void => {
     if (idleTimer !== undefined) clearTimeout(idleTimer);
@@ -77,123 +180,24 @@ export const runTranslatedLeg = async <C>(res: ServerResponse, options: Translat
   };
 
   try {
-    const credentialResult = await auth.getCredentials(controller.signal);
-    if (!credentialResult.ok) {
-      replyError(credentialResult.error);
-      return;
-    }
-    let credential = credentialResult.value;
-    let upstream: Response | undefined;
-    const maxAttempts = auth.refreshable ? 2 : 1;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      let response: Response;
-      try {
-        response = await fetchImpl(options.url, {
-          method: "POST",
-          headers: options.buildHeaders(credential),
-          body: JSON.stringify(options.body),
-          ...(options.redirect !== undefined ? { redirect: options.redirect } : {}),
-          signal: controller.signal,
-        });
-      } catch {
-        if (res.writableEnded || res.destroyed) return;
-        replyError(controller.signal.aborted
-          ? { kind: "timeout", message: `${name} request timed out` }
-          : { kind: "upstream", message: `${name} upstream unreachable` });
-        return;
-      }
-      // Only refresh if another attempt remains. Otherwise relay the upstream 401.
-      if (response.status === 401 && attempt + 1 < maxAttempts) {
-        logger.log("warn", events.upstream401Refreshing, { model });
-        await response.body?.cancel().catch(() => undefined);
-        const refreshed = await auth.forceRefresh();
-        if (!refreshed.ok) {
-          replyError(refreshed.error);
-          return;
-        }
-        credential = refreshed.value;
-        continue;
-      }
-      upstream = response;
-      break;
-    }
-    // The last attempt must either return or set upstream. Assert the retry bound.
-    if (upstream === undefined) {
-      logger.log("error", events.retryBoundViolated, { model });
-      respondJson(res, 500, toAnthropicErrorBody("api_error", `${name} internal error`));
-      return;
-    }
-
+    const upstream = await requestUpstream(res, options, controller.signal, replyError);
+    if (upstream === undefined) return;
     if (!upstream.ok) {
-      const detail = await readBoundedText(upstream.body, ERROR_BODY_PEEK_BYTES);
-      if (limitKey !== undefined) {
-        recordLimitFailure(logger, limitKey,
-          { transport: "http", status: upstream.status, committed: false, headers: upstream.headers,
-            text: detail, truncated: Buffer.byteLength(detail) >= ERROR_BODY_PEEK_BYTES });
-      }
-      logger.log("warn", events.upstreamError, { model, status: upstream.status });
-      const error = options.renderUpstreamError(upstream.status, detail, upstream.headers);
-      respondJson(res, error.status, toAnthropicErrorBody(error.type, error.message), error.headers);
+      await relayUpstreamError(res, options, upstream);
       return;
     }
-
     if (upstream.body === null) {
-      replyError({ kind: "upstream", message: `${name} upstream returned an empty body` });
+      replyError({ kind: "upstream", message: `${options.name} upstream returned an empty body` });
       return;
     }
-
     const { parser, translator } = options.createTranslator();
     const bodyStream = Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>);
-    if (limitKey !== undefined) observeReadableSse(logger, limitKey, bodyStream, upstream.headers);
+    if (options.limitKey !== undefined) observeReadableSse(options.logger, options.limitKey, bodyStream, upstream.headers);
     bodyStream.on("data", resetIdle);
     resetIdle();
-
-    if (options.wantStream) {
-      res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER });
-      res.socket?.setNoDelay(true);
-      // Keep the client response outside the pipeline so an upstream error can still send an SSE frame.
-      const writeFrame = createFrameWriter(res, controller.signal);
-      try {
-        await pipeline(bodyStream, parser, translator, async (source) => {
-          for await (const chunk of source) await writeFrame(String(chunk));
-        });
-        res.end();
-      } catch {
-        logger.log("warn", events.streamInterrupted, { model });
-        if (!res.writableEnded && !res.destroyed) {
-          res.write(toAnthropicErrorSse("api_error", `${name} stream interrupted`));
-          res.end();
-        }
-      }
-      return;
-    }
-
-    const frames: string[] = [];
-    let framesBytes = 0;
-    try {
-      await pipeline(bodyStream, parser, translator, async (source) => {
-        for await (const chunk of source) {
-          const frame = String(chunk);
-          framesBytes += frame.length;
-          // Reject the pipeline immediately at the bound. Do not aggregate partial frames.
-          if (framesBytes > options.maxAggregateBytes) throw new Error("sse_aggregate_too_large");
-          frames.push(frame);
-        }
-      });
-    } catch {
-      replyError({ kind: "upstream", message: `${name} stream interrupted` });
-      return;
-    }
-    const aggregated = options.aggregateFrames(frames);
-    if (!aggregated.ok) {
-      replyError(aggregated.error);
-      return;
-    }
-    if (aggregated.value.kind === "error") {
-      respondJson(res, 502, toAnthropicErrorBody(aggregated.value.errorType, aggregated.value.message));
-      return;
-    }
-    respondJson(res, 200, JSON.stringify(aggregated.value.message));
+    const streams = [bodyStream, parser, translator] as const;
+    if (options.wantStream) await streamFrames(res, options, streams, controller.signal);
+    else await collectFrames(res, options, streams, replyError);
   } finally {
     clearTimeout(totalTimer);
     if (idleTimer !== undefined) clearTimeout(idleTimer);

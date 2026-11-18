@@ -80,7 +80,7 @@ const createCodexProvider = (config: Config, logger: Logger, auth: ProviderAuth<
     providerId: "codex",
     provider,
     pingIntervalMs: config.limits.pingIntervalMs,
-    credential: providerConfigFor(config, "codex").credential,
+    loginCommand: providerConfigFor(config, "codex").loginCommand,
     logger,
     auth,
     cache: new ReasoningCache(provider.reasoningCache.maxEntries, provider.reasoningCache.maxBytes),
@@ -133,7 +133,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
     if (!result.ok) return result;
   }
   for (const id of PROVIDER_IDS) {
-    const { credential } = providerConfigFor(config, id);
+    const credential = providerConfigFor(config, id);
     for (const url of CREDENTIAL_URLS[credential.kind](credential)) {
       const result = vetCredentialUrl({ ...url, path: `providers.${id}.${url.key}`, optInKey: `providers.${id}.allowInsecureBaseUrl`,
         logger, events: providerEvents(id) });

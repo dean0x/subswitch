@@ -13,13 +13,12 @@
  */
 import type { Config, ProviderConfigs, CodexProviderConfig, CredentialKindTable, providerConfigFor } from "../../src/config.js";
 
-const credentialKindsRequireHandlers = (provider: ReturnType<typeof providerConfigFor>): string => {
+const credentialKindsRequireHandlers = (credential: ReturnType<typeof providerConfigFor>): string => {
   // @ts-expect-error a credential kind with no handler must not compile.
   const missingKind: CredentialKindTable<string> = {};
   void missingKind;
 
   const complete: CredentialKindTable<string> = { "oauth-file": (credential) => credential.authFile };
-  const { credential } = provider;
   return complete[credential.kind](credential);
 };
 void credentialKindsRequireHandlers;

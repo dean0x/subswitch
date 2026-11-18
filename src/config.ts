@@ -501,11 +501,23 @@ export type CredentialKindTable<R> = {
 };
 
 /** The provider-neutral slice of config that doctor, health, and the CLI banner need. */
-export interface ProviderRuntimeConfig {
+export type ProviderRuntimeConfig = Credential & {
   /** Human-facing name for CLI and JSON output (e.g. "Codex"). */
   readonly displayName: string;
-  readonly credential: Credential;
-}
+};
+
+export const codexCredentialFor = (
+  provider: CodexProviderConfig, loginCommand = "codex login",
+): Extract<Credential, { kind: "oauth-file" }> => ({
+  kind: "oauth-file",
+  authFile: provider.authFile,
+  baseUrl: provider.baseUrl,
+  loginCommand,
+  defaultHost: "chatgpt.com",
+  oauthTokenUrl: provider.oauthTokenUrl,
+  defaultOauthHost: "auth.openai.com",
+  allowInsecureBaseUrl: provider.allowInsecureBaseUrl,
+});
 
 /**
  * Total map from ProviderId to its config slice.
@@ -518,16 +530,7 @@ export interface ProviderRuntimeConfig {
 const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) => ProviderRuntimeConfig>> = {
   codex: (config) => ({
     displayName: "Codex",
-    credential: {
-      kind: "oauth-file",
-      authFile: config.providers.codex.authFile,
-      baseUrl: config.providers.codex.baseUrl,
-      loginCommand: "codex login",
-      defaultHost: "chatgpt.com",
-      oauthTokenUrl: config.providers.codex.oauthTokenUrl,
-      defaultOauthHost: "auth.openai.com",
-      allowInsecureBaseUrl: config.providers.codex.allowInsecureBaseUrl,
-    },
+    ...codexCredentialFor(config.providers.codex),
   }),
 };
 
@@ -589,7 +592,7 @@ export type RoutingDestination =
 export const enumerateDestinations = (config: Config): readonly RoutingDestination[] => [
   { routing: "passthrough", id: "anthropic", displayName: "Anthropic" },
   ...PROVIDER_IDS.map((id): RoutingDestination => {
-    const { displayName, credential } = providerConfigFor(config, id);
+    const { displayName, ...credential } = providerConfigFor(config, id);
     const destinations: CredentialKindTable<Extract<RoutingDestination, { routing: "registry" }>> = {
       "oauth-file": (source) => ({ routing: "registry", id, displayName, credential: source }),
     };

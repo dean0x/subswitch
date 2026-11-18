@@ -245,7 +245,7 @@ export const runDoctor = async (
   io.write(row("logLevel:", config.logLevel));
   io.write(row("anthropic.baseUrl:", config.anthropic.baseUrl));
   for (const id of PROVIDER_IDS) {
-    io.write(row(`${id}.baseUrl:`, providerConfigFor(config, id).credential.baseUrl));
+    io.write(row(`${id}.baseUrl:`, providerConfigFor(config, id).baseUrl));
   }
 
   // Build the routing table once for display and agent-scan. The displayed alias table
@@ -285,7 +285,7 @@ export const runDoctor = async (
   }
 
   const checkOneProvider = (id: ProviderId): Promise<ProviderCheck> => {
-    const { credential } = providerConfigFor(config, id);
+    const credential = providerConfigFor(config, id);
     const checks: CredentialKindTable<Promise<ProviderCheck>> = {
       "oauth-file": async ({ authFile, loginCommand }) => {
         const optedIn = configuredProviderIds.has(id);
@@ -335,7 +335,7 @@ export const runDoctor = async (
   // Resolve provider hosts up front so the probes can all be issued in parallel.
   // Only URL parsing is guarded here; a probe rejection must never be swallowed.
   const providerHosts = PROVIDER_IDS.map((id) => {
-    const { credential: { baseUrl } } = providerConfigFor(config, id);
+    const { baseUrl } = providerConfigFor(config, id);
     try {
       return { id, host: new URL(baseUrl).hostname };
     } catch {

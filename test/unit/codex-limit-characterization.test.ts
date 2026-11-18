@@ -22,7 +22,7 @@ async function deliver(upstream: Response) {
     providerId: "codex",
     provider: config.providers.codex,
     pingIntervalMs: config.limits.pingIntervalMs,
-    credential: providerConfigFor(config, "codex").credential,
+    loginCommand: providerConfigFor(config, "codex").loginCommand,
     logger: { log() {}, recordLimit: (record) => records.push(record) },
     auth: {
       refreshable: false,

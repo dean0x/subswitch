@@ -35,7 +35,7 @@ const codexDepsFrom = (config: Config) => ({
   providerId: "codex" as ProviderId,
   provider: config.providers.codex,
   pingIntervalMs: config.limits.pingIntervalMs,
-  credential: providerConfigFor(config, "codex").credential,
+  loginCommand: providerConfigFor(config, "codex").loginCommand,
 });
 
 /**
@@ -725,12 +725,11 @@ describe("upstream 401 names the provider loginCommand in the client-visible mes
     assert.ok(configResult.ok, "config load should succeed");
 
     const always401: typeof fetch = async () => new Response("unauthorized", { status: 401 });
-    const deps = codexDepsFrom(configResult.value.config);
 
     const handler = createCodexHandler({
-      ...deps,
+      ...codexDepsFrom(configResult.value.config),
       providerId: OTHER_PROVIDER,
-      credential: { ...deps.credential, loginCommand: "kimi auth login" },
+      loginCommand: "kimi auth login",
       logger: noopLogger,
       auth: makeStandardAuth(),
       cache: new ReasoningCache(4, 1024),

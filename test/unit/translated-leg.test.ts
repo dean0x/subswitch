@@ -145,13 +145,15 @@ it("rejects an over-limit aggregate instead of sending partial content", async (
   assert.equal(res.statusCode, 502);
 });
 
-it("sets a single attempt for static credentials and one refresh for renewable credentials", async () => {
+it("reports one upstream 401 and retries only with a renewable credential", async () => {
   for (const refreshable of [false, true]) {
     const attempts: RequestInit["headers"][] = [];
+    const logs: unknown[] = [];
     const res = response();
     const { auth } = options();
     await runTranslatedLeg(res, options({
       auth: { ...auth, refreshable, forceRefresh: async () => ok("renewed") },
+      logger: { log: (level, event, fields) => logs.push({ level, event, fields }) },
       fetchImpl: async (_url, init) => {
         assert.ok(init && !Object.hasOwn(init, "redirect"));
         attempts.push(init.headers);
@@ -160,6 +162,10 @@ it("sets a single attempt for static credentials and one refresh for renewable c
     }));
 
     assert.equal(res.statusCode, 401);
+    assert.deepEqual(logs, [
+      ...(refreshable ? [{ level: "warn", event: "fixture_upstream_401_refreshing", fields: { model: "fixture-model" } }] : []),
+      { level: "warn", event: "fixture_upstream_error", fields: { model: "fixture-model", status: 401 } },
+    ]);
     assert.deepEqual(attempts, refreshable
       ? [{ "x-fixture-auth": "initial" }, { "x-fixture-auth": "renewed" }]
       : [{ "x-fixture-auth": "initial" }]);

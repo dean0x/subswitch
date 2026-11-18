@@ -346,7 +346,7 @@ const serve = async (
   errOut(`\nsubswitch ready — http://127.0.0.1:${effectiveConfig.port}`);
   for (const id of PROVIDER_IDS) {
     const modelCount = routableModelCount(MODEL_REGISTRY, id);
-    const { credential } = providerConfigFor(effectiveConfig, id);
+    const credential = providerConfigFor(effectiveConfig, id);
     const host = BANNER_HOST[credential.kind](credential);
     const hostSuffix = host !== "" ? `  → ${host}` : "";
     errOut(`  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${hostSuffix}`);
