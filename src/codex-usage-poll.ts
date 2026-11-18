@@ -14,6 +14,7 @@ const DAY_MS = 86400000;
 const DAILY_STARTS = 48;
 
 export interface PollDecisionState {
+  /** Process intervals use monotonic milliseconds; snapshot and reset times use epoch seconds. */
   readonly startedAt: number;
   readonly startPending: boolean;
   readonly inFlight: boolean;
@@ -35,12 +36,14 @@ export function deriveUsageUrl(base: string): string | undefined {
     return url.href;
   } catch { return undefined; }
 }
-export function nextPollDecision(state: PollDecisionState, now: number): { kind: "wait" } | { kind: "poll"; dueResets: readonly number[] } {
-  if (state.inFlight || now < state.nextAllowedAt || (state.lastStart !== undefined && now - state.lastStart < FLOOR_MS) ||
-    state.starts.filter((start) => now - start < DAY_MS).length >= DAILY_STARTS) return { kind: "wait" };
+export function nextPollDecision(state: PollDecisionState, now: number, monotonic: number): { kind: "wait" } | { kind: "poll"; dueResets: readonly number[] } {
+  if (state.inFlight || monotonic < state.nextAllowedAt || (state.lastStart !== undefined && monotonic - state.lastStart < FLOOR_MS) ||
+    state.starts.filter((start) => monotonic - start < DAY_MS).length >= DAILY_STARTS) return { kind: "wait" };
   const dueResets = state.resetsAt.filter((reset) => now / 1000 >= reset + RESET_GRACE_SEC && !state.usedResets.includes(reset));
+  // Match the writer's future-time bound after a wall clock step.
+  const observedAt = state.observedAt !== undefined && state.observedAt <= Math.floor(now / 1000) + 300 ? state.observedAt : undefined;
   // Both activity and idle are stale triggers. Activity never suppresses an idle poll.
-  const stale = now - (state.observedAt === undefined ? state.startedAt : state.observedAt * 1000) >= STALE_MS;
+  const stale = observedAt === undefined ? monotonic - state.startedAt >= STALE_MS : now - observedAt * 1000 >= STALE_MS;
   return state.startPending || dueResets.length > 0 || stale ? { kind: "poll", dueResets } : { kind: "wait" };
 }
 interface PollOptions {
@@ -52,7 +55,7 @@ interface PollOptions {
   readonly clock: RoutingClock;
   readonly userAgent: string;
 }
-type FailureCode = "network" | "timeout" | "http_status" | "body_invalid";
+type FailureCode = "credential" | "network" | "timeout" | "http_status" | "body_invalid";
 export class CodexUsagePoller {
   private started = false;
   private stopped = false;
@@ -72,7 +75,7 @@ export class CodexUsagePoller {
   start(): void {
     if (this.started || this.stopped) return;
     this.started = true;
-    this.startedAt = this.options.clock.now();
+    this.startedAt = this.options.clock.monotonic();
     this.schedule();
     this.tick();
   }
@@ -86,20 +89,20 @@ export class CodexUsagePoller {
   tick(): void {
     if (!this.started || this.stopped) return;
     try {
-      const now = this.options.clock.now(), quota = this.options.writer.pollState();
-      this.starts = this.starts.filter((start) => now - start < DAY_MS);
+      const now = this.options.clock.now(), monotonic = this.options.clock.monotonic(), quota = this.options.writer.pollState();
+      this.starts = this.starts.filter((start) => monotonic - start < DAY_MS);
       // A new parsed reset cannot be older than 300 s. Keep current old values as well.
       this.usedResets = this.usedResets.filter((reset) => reset >= now / 1000 - 300 || quota.resetsAt.includes(reset));
       const decision = nextPollDecision({ ...quota, startedAt: this.startedAt, startPending: this.startPending, inFlight: this.inFlight,
-        lastStart: this.lastStart, nextAllowedAt: this.nextAllowedAt, starts: this.starts, usedResets: this.usedResets }, now);
+        lastStart: this.lastStart, nextAllowedAt: this.nextAllowedAt, starts: this.starts, usedResets: this.usedResets }, now, monotonic);
       if (decision.kind === "wait") return;
       this.startPending = false;
-      this.lastStart = now;
-      this.starts.push(now);
+      this.lastStart = monotonic;
+      this.starts.push(monotonic);
       this.usedResets = [...new Set([...this.usedResets, ...decision.dueResets])];
       this.inFlight = true;
-      // The terminal catch also contains a faulty writer or logger adapter.
-      void this.poll(now).catch(() => {}).finally(() => { this.inFlight = false; }).catch(() => {});
+      // Release the poll slot before the terminal catch contains setup failures.
+      void this.poll(now).finally(() => { this.inFlight = false; }).catch(() => {});
     } catch { this.warn("codex_usage_poll_failed", { errorCode: "body_invalid" }); }
   }
   stop(): void {
@@ -115,7 +118,7 @@ export class CodexUsagePoller {
   }
   private fail(code: string, fields: LogFields, retryAfter = 0): void {
     this.failures = Math.min(6, this.failures + 1);
-    this.nextAllowedAt = this.options.clock.now() + Math.max(Math.min(3600000, FLOOR_MS * 2 ** this.failures), retryAfter);
+    this.nextAllowedAt = this.options.clock.monotonic() + Math.max(Math.min(3600000, FLOOR_MS * 2 ** this.failures), retryAfter);
     this.warn(code, fields);
   }
   private ignoreResult(signal: AbortSignal): boolean {
@@ -129,12 +132,13 @@ export class CodexUsagePoller {
     this.controller = controller;
     let timedOut = false;
     this.cancelTimeout = scheduleRoutingTimer(this.options.clock, () => { timedOut = true; controller.abort(); }, TIMEOUT_MS);
-    let failureCode: FailureCode = "network";
+    let failureCode: FailureCode = "credential";
     try {
       // The shared credential store owns refresh; this poll owns only its wait.
       const credential = await abortable(this.options.auth.getCredentials(), controller.signal);
       if (this.ignoreResult(controller.signal)) return;
-      if (!credential.ok) { this.fail("codex_usage_poll_failed", { errorCode: "network" }); return; }
+      if (!credential.ok) { this.fail("codex_usage_poll_failed", { errorCode: "credential" }); return; }
+      failureCode = "network";
       const response = await this.options.fetchImpl(this.options.url, { method: "GET", redirect: "error", signal: controller.signal,
         headers: { ...credential.value.authHeaders, accept: "application/json", originator: "codex_cli_rs", "user-agent": this.options.userAgent } });
       if (this.ignoreResult(controller.signal)) { void response.body?.cancel().catch(() => {}); return; }

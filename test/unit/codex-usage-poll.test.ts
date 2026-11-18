@@ -21,9 +21,9 @@ const BASE = "http://127.0.0.1:1/backend-api/codex";
 const FILE = "/fixture/.codex/auth.json";
 const settle = async () => { for (let n = 0; n < 8; n++) await new Promise<void>((resolve) => setImmediate(resolve)); };
 function fixture(response: (init: RequestInit) => Promise<Response> = async () => Response.json(usageBody()), logger: Logger = noopLogger) {
-  let now = NOW, refreshes = 0, credentials = 0, authFailed = false;
+  let now = NOW, monotonic = 0, refreshes = 0, credentials = 0, authFailed = false;
   const timers: { callback: () => void; delay: number; cancelled: boolean }[] = [];
-  const clock: RoutingClock = { now: () => now, monotonic: () => now, random: () => 0,
+  const clock: RoutingClock = { now: () => now, monotonic: () => monotonic, random: () => 0,
     schedule(callback, delay) { const timer = { callback: () => { timer.cancelled = true; callback(); }, delay, cancelled: false }; timers.push(timer); return () => { timer.cancelled = true; }; } };
   const writes: string[] = [], calls: { url: string; init: RequestInit }[] = [];
   const writer = new CodexQuotaWriter({ credentialFile: FILE, now: () => now, logger,
@@ -40,7 +40,8 @@ function fixture(response: (init: RequestInit) => Promise<Response> = async () =
   const options = { fetchImpl, auth, url: URL, writer, logger, clock, userAgent: "fixture-agent" };
   const poller = new CodexUsagePoller(options);
   return { poller, options, writer, writes, calls, timers, auth, get refreshes() { return refreshes; }, get credentials() { return credentials; },
-    failAuth() { authFailed = true; }, setNow(value: number) { now = value; }, get now() { return now; }, async tick(at: number) { now = at; poller.tick(); await settle(); await writer.flush(); } };
+    failAuth() { authFailed = true; }, setNow(value: number) { now = value; monotonic = value - NOW; }, get now() { return now; },
+    async tick(at: number, elapsed = at - NOW) { now = at; monotonic = elapsed; poller.tick(); await settle(); await writer.flush(); } };
 }
 const state = (overrides: Partial<PollDecisionState> = {}): PollDecisionState => ({
   startedAt: NOW, startPending: false, inFlight: false, lastStart: undefined, nextAllowedAt: 0,
@@ -48,16 +49,16 @@ const state = (overrides: Partial<PollDecisionState> = {}): PollDecisionState =>
 });
 
 it("TP-54/57/73 pure decisions enforce floor, flight, wait and rolling bounds", () => {
-  assert.equal(nextPollDecision(state({ startPending: true }), NOW).kind, "poll", "start trigger");
+  assert.equal(nextPollDecision(state({ startPending: true }), NOW, NOW).kind, "poll", "start trigger");
   for (const gate of [{ inFlight: true }, { nextAllowedAt: NOW + 1 }, { lastStart: NOW - 59999 }, { starts: Array.from({ length: 48 }, () => NOW) }])
-    assert.equal(nextPollDecision(state({ startPending: true, ...gate }), NOW).kind, "wait", "each limit blocks a start");
-  assert.equal(nextPollDecision(state({ startPending: true, lastStart: NOW - 60000 }), NOW).kind, "poll", "floor boundary is inclusive");
-  assert.equal(nextPollDecision(state({ startPending: true, starts: Array.from({ length: 48 }, () => NOW - 86400000) }), NOW).kind, "poll", "rolling day expires at the exact boundary");
-  assert.equal(nextPollDecision(state({ observedAt: undefined }), NOW + 899999).kind, "wait", "no early stale trigger without any snapshot");
-  assert.equal(nextPollDecision(state({ observedAt: undefined }), NOW + 900000).kind, "poll", "idle stale boundary");
-  assert.equal(nextPollDecision(state({ resetsAt: [1800000060] }), 1800000119999).kind, "wait", "reset grace cannot start early");
-  assert.deepEqual(nextPollDecision(state({ resetsAt: [1800000060] }), 1800000120000), { kind: "poll", dueResets: [1800000060] }, "reset grace boundary");
-  assert.equal(nextPollDecision(state({ resetsAt: [1800000060], usedResets: [1800000060] }), 1800000120000).kind, "wait", "consumed reset cannot trigger twice");
+    assert.equal(nextPollDecision(state({ startPending: true, ...gate }), NOW, NOW).kind, "wait", "each limit blocks a start");
+  assert.equal(nextPollDecision(state({ startPending: true, lastStart: NOW - 60000 }), NOW, NOW).kind, "poll", "floor boundary is inclusive");
+  assert.equal(nextPollDecision(state({ startPending: true, starts: Array.from({ length: 48 }, () => NOW - 86400000) }), NOW, NOW).kind, "poll", "rolling day expires at the exact boundary");
+  assert.equal(nextPollDecision(state({ observedAt: undefined }), NOW + 899999, NOW + 899999).kind, "wait", "no early stale trigger without any snapshot");
+  assert.equal(nextPollDecision(state({ observedAt: undefined }), NOW + 900000, NOW + 900000).kind, "poll", "idle stale boundary");
+  assert.equal(nextPollDecision(state({ resetsAt: [1800000060] }), 1800000119999, 1800000119999).kind, "wait", "reset grace cannot start early");
+  assert.deepEqual(nextPollDecision(state({ resetsAt: [1800000060] }), 1800000120000, 1800000120000), { kind: "poll", dueResets: [1800000060] }, "reset grace boundary");
+  assert.equal(nextPollDecision(state({ resetsAt: [1800000060], usedResets: [1800000060] }), 1800000120000, 1800000120000).kind, "wait", "consumed reset cannot trigger twice");
 });
 it("TP-61 unsupported URL logs a fixed info code and valid builder uses supplied auth", async () => {
   const records: unknown[] = [];
@@ -155,6 +156,42 @@ it("TP-55 stale activity and idle processes both poll at 900 seconds", async () 
     f.poller.stop();
   }
 });
+it("elapsed floor, backoff and daily cap use monotonic time", () => {
+  for (const [gate, boundary] of [
+    [{ lastStart: 0 }, 60000],
+    [{ nextAllowedAt: 120000 }, 120000],
+    [{ starts: Array.from({ length: 48 }, () => 0) }, 86400000],
+  ] as const) {
+    const pending = state({ startedAt: 0, startPending: true, ...gate });
+    assert.equal(nextPollDecision(pending, NOW, boundary - 1).kind, "wait", "wall time cannot expire an elapsed bound");
+    assert.equal(nextPollDecision(pending, NOW - 600000, boundary).kind, "poll", "elapsed boundary permits a poll after a backward step");
+  }
+});
+it("stale decisions ignore snapshot times only beyond the 300 second future bound", () => {
+  const elapsed = state({ startedAt: 0, observedAt: Math.floor(NOW / 1000) + 300 });
+  assert.equal(nextPollDecision(elapsed, NOW, 900000).kind, "wait", "snapshot at the future bound remains present");
+  assert.equal(nextPollDecision({ ...elapsed, observedAt: Math.floor(NOW / 1000) + 301 }, NOW, 900000).kind, "poll", "snapshot beyond the future bound uses monotonic process age");
+});
+it("a backward wall step leaves stale polling eligible on the next tick", async () => {
+  const f = fixture(async () => Response.json(usageBody(Math.floor(f.now / 1000))));
+  try {
+    f.poller.start(); await settle(); await f.writer.flush();
+    assert.equal(f.calls.length, 1, "start accepts a snapshot before the wall step");
+    await f.tick(NOW - 600000, 899999);
+    assert.equal(f.calls.length, 1, "a future snapshot uses the process stale interval");
+    await f.tick(NOW - 600000, 900000);
+    assert.equal(f.calls.length, 2, "the next eligible tick polls despite the backward wall step");
+    assert.equal(f.writer.pollState().observedAt, Math.floor((NOW - 600000) / 1000), "snapshot timestamps remain wall time");
+  } finally { f.poller.stop(); }
+});
+it("a missing snapshot uses monotonic process age after a backward wall step", async () => {
+  const f = fixture(async () => new Response(null, { status: 500 }));
+  try {
+    f.poller.start(); await settle();
+    await f.tick(NOW - 600000, 900000);
+    assert.equal(f.calls.length, 2, "monotonic stale age and failure backoff permit the next attempt");
+  } finally { f.poller.stop(); }
+});
 it("TP-56 each due reset causes one attempt even if it fails", async () => {
   const f = fixture(async () => new Response(null, { status: 500 }));
   f.writer.record({ snapshot: { ...expectedUsage, source: "response-headers", windows: [{ window_minutes: 300, used_percent: 1, resets_at: 1800000060 }] }, resetRejected: false });
@@ -173,7 +210,7 @@ it("TP-57 floor and in-flight state block extra attempts", async () => {
   assert.equal(f.calls.length, 1, "one request in flight");
   finish!(Response.json(usageBody())); await settle();
   f.poller.stop();
-  assert.equal(nextPollDecision(state({ startPending: true, lastStart: NOW - 59999 }), NOW).kind, "wait", "60 second floor");
+  assert.equal(nextPollDecision(state({ startPending: true, lastStart: NOW - 59999 }), NOW, NOW).kind, "wait", "60 second floor");
 });
 it("TP-58 rate limit keeps header bytes and uses bounded Retry-After with backoff", async () => {
   for (const [retry, delay] of [["3600", 3600000], ["60", 120000], ["3601", 120000], ["1.5", 120000]] as const) {
@@ -302,6 +339,20 @@ it("TP-62 oversized length and streamed body cancel without write", async () => 
     assert.equal(cancelled, true, "oversized read is cancelled"); assert.equal(f.writes.length, 0, "oversized response never writes"); f.poller.stop();
   }
 });
+for (const mode of ["result", "reject"] as const) {
+  it(`TP-63 credential ${mode} failures use a fixed credential warning without private text`, async (t) => {
+    const records: unknown[] = [];
+    const f = fixture(undefined, { log: (level, event, fields) => records.push({ level, event, fields }) });
+    if (mode === "result") f.failAuth();
+    else t.mock.method(f.auth, "getCredentials", async () => { throw new Error("fixture-private"); });
+    try {
+      f.poller.start(); await settle();
+      await f.tick(NOW + 900000);
+      assert.equal(f.calls.length, 0, "credential failures send no request");
+      assert.deepEqual(records, [{ level: "warn", event: "codex_usage_poll_failed", fields: { errorCode: "credential" } }], "one fixed warning names the credential cause");
+    } finally { f.poller.stop(); }
+  });
+}
 it("TP-63 warning fields contain only fixed codes and numeric status once", async () => {
   const records: unknown[] = [];
   const logger: Logger = { log: (level, event, fields) => { records.push({ level, event, fields }); } };
@@ -331,7 +382,7 @@ it("TP-66 stop cancels timers, aborts fetch and discards late response", async (
   finish!(Response.json(usageBody())); await settle(); await f.tick(NOW + 900000);
   assert.equal(f.writes.length, 0, "late result is discarded"); assert.equal(f.calls.length, 1, "no request after stop");
 });
-it("TP-71 fetch, writer and logger exceptions give no unhandled rejection", async () => {
+it("TP-71 poll, tick and warn catches contain fetch, writer and state failures", async () => {
   const unhandled: unknown[] = [];
   const listener = (error: unknown) => { unhandled.push(error); };
   process.on("unhandledRejection", listener);
@@ -344,6 +395,27 @@ it("TP-71 fetch, writer and logger exceptions give no unhandled rejection", asyn
     }
     assert.deepEqual(unhandled, [], "poll exceptions stay contained");
   } finally { process.off("unhandledRejection", listener); }
+});
+it("TP-71 terminal catch contains a timeout scheduler failure and releases the poll slot", async () => {
+  const f = fixture(), unhandled: unknown[] = [];
+  const listener = (error: unknown) => { unhandled.push(error); };
+  const schedule = f.options.clock.schedule;
+  assert.ok(schedule, "fixture supplies a scheduler");
+  f.options.clock.schedule = (callback, delay) => {
+    if (delay === 10000) throw new Error("fixture timeout scheduler failure");
+    return schedule(callback, delay);
+  };
+  process.on("unhandledRejection", listener);
+  try {
+    assert.doesNotThrow(() => f.poller.start(), "timeout scheduler failure does not escape start");
+    await settle();
+    assert.deepEqual(unhandled, [], "terminal catch contains the rejected poll");
+    assert.equal(f.calls.length, 0, "timeout setup failure sends no request");
+    f.options.clock.schedule = schedule;
+    await f.tick(NOW + 900000);
+    assert.equal(f.calls.length, 1, "the next eligible tick uses the released poll slot");
+    assert.deepEqual(unhandled, [], "recovery has no unhandled rejection");
+  } finally { f.poller.stop(); process.off("unhandledRejection", listener); }
 });
 it("TP-73 rolling daily cap refuses 49th start and resumes at expiry", async () => {
   const f = fixture(async () => Response.json(usageBody(Math.floor(f.now / 1000))));
