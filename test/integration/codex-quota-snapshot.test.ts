@@ -351,7 +351,7 @@ for (const recording of ["1", "0"]) {
     } finally { await fixture.cleanup(); }
   }));
 }
-it("help states the HOME path, fixed root and recording switch", async () => temporary(async (dir) => {
+it("help states the snapshot contract and poll controls", async (t) => temporary(async (dir) => {
   const child = spawn(process.execPath, ["--import", TSX, CLI, "--help"], { cwd: dir, env: { ...process.env, HOME: dir }, stdio: ["ignore", "pipe", "pipe"] });
   let text = "";
   child.stdout!.on("data", (chunk: Buffer) => { text += chunk.toString(); });
@@ -361,4 +361,17 @@ it("help states the HOME path, fixed root and recording switch", async () => tem
   assert.equal(text.includes("$HOME/.cache/subswitch/codex-quota.json"), true, "help names the HOME snapshot path");
   assert.equal(text.includes("SUBSWITCH_LIMIT_DIR does not move the snapshot"), true, "help keeps the snapshot root fixed");
   assert.equal(text.includes("SUBSWITCH_LIMIT_RECORDING=0 stops the snapshot"), true, "help names the recording switch");
+  const claims = [
+    ["states all effects of the switch", "Disable limit observations, quota snapshot and usage poll"],
+    ["names the poll switch and default", "providers.codex.usagePoll defaults to true; set false to stop usage requests"],
+    ["separates headers from the poll switch", "Header snapshots stay on when usagePoll is false"],
+    ["states poll bounds", "At most one poll start each 60 s; at most 48 in 24 h per process; failures use backoff"],
+    ["states the version and first additive keys", "Snapshot version stays 1. Additive keys: source, plan_type, active_limit,"],
+    ["names the other additive keys", "limit_name, credits, additional_limits. The current reader ignores these keys"],
+    ["states header units", "INFERRED header units: reset-at epoch seconds; window-minutes minutes"],
+    ["states usage units", "INFERRED usage units: reset_at epoch seconds; limit_window_seconds seconds"],
+    ["gives the cache folder repair", 'chmod 700 "$HOME/.cache/subswitch"'],
+    ["states the evidence limit", "Header formats and usage endpoint behavior are not verified live"],
+  ] as const;
+  for (const [name, claim] of claims) await t.test(name, () => assert.ok(text.includes(claim), claim));
 }));

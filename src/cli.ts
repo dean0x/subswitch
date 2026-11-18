@@ -105,11 +105,20 @@ Environment:
   NO_COLOR      Disable color output (also respected as standard)
   FORCE_COLOR   Force color output even when not a TTY
   CI            Non-interactive detection — init refuses without --yes
-  SUBSWITCH_LIMIT_RECORDING=0   Disable private limit observations (enabled by default)
-  SUBSWITCH_LIMIT_DIR           Override private observation root directory
+  SUBSWITCH_LIMIT_RECORDING=0   Disable limit observations, quota snapshot and usage poll
+  SUBSWITCH_LIMIT_DIR           Override limit observation root only
   Codex quota snapshot: $HOME/.cache/subswitch/codex-quota.json (follows HOME)
   SUBSWITCH_LIMIT_DIR does not move the snapshot.
   SUBSWITCH_LIMIT_RECORDING=0 stops the snapshot and keeps the old file.
+  providers.codex.usagePoll defaults to true; set false to stop usage requests.
+  Header snapshots stay on when usagePoll is false.
+  At most one poll start each 60 s; at most 48 in 24 h per process; failures use backoff.
+  Snapshot version stays 1. Additive keys: source, plan_type, active_limit,
+  limit_name, credits, additional_limits. The current reader ignores these keys.
+  INFERRED header units: reset-at epoch seconds; window-minutes minutes.
+  INFERRED usage units: reset_at epoch seconds; limit_window_seconds seconds.
+  Cache folder repair: chmod 700 "$HOME/.cache/subswitch"
+  Header formats and usage endpoint behavior are not verified live.
 `;
 
 // ---------------------------------------------------------------------------

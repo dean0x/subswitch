@@ -62,7 +62,12 @@ export interface Logger {
   /** events.jsonl is a private diagnostic; accepts only the sanitized projection. */
   recordLimit?(observation: LimitObservation): void;
   trackLimitTask?(task: Promise<void>): void;
-  /** codex-quota.json is a public snapshot contract for status lines. */
+  /**
+   * Status lines use the version 1 snapshot at $HOME/.cache/subswitch/codex-quota.json.
+   * The six additive keys do not change the reader contract. See README for units and keys.
+   * serve supplies the path; withLimitRecorder alone does not create a snapshot writer.
+   * SUBSWITCH_LIMIT_RECORDING=0 stops this writer and the optional providers.codex.usagePoll.
+   */
   codexQuota?: CodexQuotaSink;
 }
 

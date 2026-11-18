@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Status lines can use a Codex quota snapshot at `$HOME/.cache/subswitch/codex-quota.json` for the Codex CLI login account.
+  The snapshot format stays at version `1`.
+- Optional usage updates start by default with `serve`. Set `providers.codex.usagePoll` to `false` to stop these requests.
+  Quota updates from response headers stay on.
+- `SUBSWITCH_LIMIT_RECORDING=0` stops error records, quota snapshot updates and usage requests. It keeps the old snapshot file.
+
+Provider formats and usage endpoint behavior are not verified live.
+
 ## [0.6.1] - 2026-10-19
 
 ### Fixed
