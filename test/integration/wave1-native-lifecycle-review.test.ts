@@ -84,6 +84,7 @@ async function fixture(
   const routedStreams: {
     id: string;
     controller: ReadableStreamDefaultController<Uint8Array>;
+    cancelled: boolean;
   }[] = [];
   const backend = http.createServer((req, res) => {
     httpCalls++;
@@ -160,15 +161,20 @@ async function fixture(
             routedCalls++;
             if (options.routedPaused) {
               const id = `synthetic_${routedCalls}`;
+              let entry: (typeof routedStreams)[number] | undefined;
               return new Response(
                 new ReadableStream<Uint8Array>({
                   start(controller) {
-                    routedStreams.push({ id, controller });
+                    entry = { id, controller, cancelled: false };
+                    routedStreams.push(entry);
                     controller.enqueue(
                       Buffer.from(
                         `data: ${JSON.stringify({ type: "response.created", response: { id, status: "in_progress", output: [] } })}\n\n`,
                       ),
                     );
+                  },
+                  cancel() {
+                    if (entry) entry.cancelled = true;
                   },
                 }),
                 { headers: { "content-type": "text/event-stream" } },
@@ -1049,7 +1055,12 @@ describe("Wave 1 native action lifecycle", () => {
       await until(() => events.filter(e => e["type"] === "response.created").length === 2);
       socket.send(JSON.stringify({ type: "response.cancel", stream_id: "one" }));
       assert.equal((await rig.control(`/${action.id}/complete`)).status, 200);
-      const closed = once(socket, "close"), second = rig.routedStreams[1]!;
+      // The two upstream fetches can arrive in either order, so find the
+      // sibling by its cancel state, never by its arrival index.
+      await until(() => rig.routedStreams.filter(s => s.cancelled).length === 1);
+      const live = rig.routedStreams.filter(s => !s.cancelled);
+      assert.equal(live.length, 1, "exactly one upstream stream stays open");
+      const closed = once(socket, "close"), second = live[0]!;
       second.controller.enqueue(Buffer.from(`data: ${JSON.stringify({ ...completed,
         response: { ...completed.response, id: second.id } })}\n\n`));
       second.controller.close();
