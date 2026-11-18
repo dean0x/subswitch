@@ -1,4 +1,5 @@
-import type { DestinationProviderId as ProviderId } from "./routing/routing-types.js";
+import type { ProviderId } from "./models.js";
+import type { DestinationProviderId } from "./routing/routing-types.js";
 import type { ProxyError } from "./errors.js";
 import type { Result } from "./result.js";
 
@@ -9,7 +10,7 @@ import type { Result } from "./result.js";
  * `provider` is the brand, and it is a real field rather than a `unique symbol`
  * phantom, so a credential is constructible without a cast. Because `P` also appears
  * in that field, `ProviderCredential<"codex">` is not assignable to
- * `ProviderCredential<"kimi">` even though both carry structurally identical headers:
+ * `ProviderCredential<"claude">` even though both carry structurally identical headers:
  * wiring one provider's subscription token into another provider's outbound request is
  * a COMPILE error rather than a runtime leak of that token to a third-party host.
  * (applies ADR-002)
@@ -45,7 +46,7 @@ import type { Result } from "./result.js";
  *   not vacuous. Row 5 does NOT cover this — it sends a `claude-*` model, so the
  *   Codex handler never runs in it.
  */
-export interface ProviderCredential<P extends ProviderId> {
+export interface ProviderCredential<P extends ProviderId | DestinationProviderId> {
   readonly provider: P;
   readonly authHeaders: Readonly<Record<string, string>>;
 }
@@ -55,14 +56,14 @@ export interface ProviderCredential<P extends ProviderId> {
  *
  * Members are declared as readonly properties of function type rather than with method
  * shorthand on purpose: method parameters are compared bivariantly even under
- * `strictFunctionTypes`, so the day one of these takes an argument, method syntax would
+ * `strictFunctionTypes`, so if one takes a provider-specific argument, method syntax could
  * quietly stop enforcing the brand across it. Property syntax keeps the check strict by
  * construction rather than by remembering to revisit it.
  *
  * A class may still `implement` this with ordinary methods — a method is assignable to a
  * property of function type — so `CodexAuthManager` needs no shape change to conform.
  */
-export interface ProviderAuth<P extends ProviderId> {
+export interface ProviderAuth<P extends ProviderId | DestinationProviderId> {
   /**
    * Whether this provider's credential can be renewed in-process.
    *
@@ -71,6 +72,6 @@ export interface ProviderAuth<P extends ProviderId> {
    * reaches the client instead of a synthesised refresh failure.
    */
   readonly refreshable: boolean;
-  readonly getCredentials: () => Promise<Result<ProviderCredential<P>, ProxyError>>;
+  readonly getCredentials: (signal?: AbortSignal) => Promise<Result<ProviderCredential<P>, ProxyError>>;
   readonly forceRefresh: () => Promise<Result<ProviderCredential<P>, ProxyError>>;
 }

@@ -11,9 +11,7 @@ import {
 } from "../claude-auth.js";
 import { expandHome } from "../config.js";
 import type { Logger } from "../logger.js";
-import type { ProviderCredential } from "../provider-auth.js";
-import type { Result } from "../result.js";
-import type { ProxyError } from "../errors.js";
+import type { ProviderAuth, ProviderCredential } from "../provider-auth.js";
 import { providerEvents } from "../provider-events.js";
 import { object, ownValue } from "../plain-object.js";
 import { abortable } from "../abortable.js";
@@ -32,14 +30,7 @@ export interface BoundCredential
   generation: string;
   binding: string;
 }
-type NativeAuth = {
-  getCredentials(): Promise<
-    Result<ProviderCredential<DestinationProviderId>, ProxyError>
-  >;
-  forceRefresh(): Promise<
-    Result<ProviderCredential<DestinationProviderId>, ProxyError>
-  >;
-};
+type NativeAuth = Pick<ProviderAuth<DestinationProviderId>, "getCredentials" | "forceRefresh">;
 const digest = (value: unknown) =>
   createHash("sha256")
     .update(JSON.stringify(value) ?? "null")

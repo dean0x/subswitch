@@ -231,7 +231,7 @@ export class CodexAuthManager implements ProviderAuth<"codex"> {
     this.now = options.now ?? Date.now;
   }
 
-  async getCredentials(): Promise<Result<ProviderCredential<"codex">, ProxyError>> {
+  async getCredentials(_signal?: AbortSignal): Promise<Result<ProviderCredential<"codex">, ProxyError>> {
     return toCredentialResult(await this.loadMaterial());
   }
 
