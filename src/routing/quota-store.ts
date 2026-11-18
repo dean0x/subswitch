@@ -31,7 +31,6 @@ export const scopeKey = (scope: AllowanceScope): string =>
       JSON.stringify([
         scope.provider,
         scope.product,
-        scope.region ?? "",
         scope.account,
         scope.allowanceGroup,
         scope.modelScope ?? "",

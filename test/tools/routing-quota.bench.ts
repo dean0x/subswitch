@@ -13,11 +13,10 @@ const sizes = [512, 1024, 2048, 4096];
 const results: { scopes: number; updateMs: number; bytes: number }[] = [];
 let now = 1000;
 const scope = (index: number): AllowanceScope => ({
-  provider: "kimi",
-  product: "kimi-code",
-  region: "global",
+  provider: "codex",
+  product: "chatgpt-codex",
   account: `synthetic-${index}`,
-  allowanceGroup: "kimi-code",
+  allowanceGroup: "chatgpt-codex",
 });
 const failure = (index: number): ClassifiedFailure => ({
   scope: scope(index),

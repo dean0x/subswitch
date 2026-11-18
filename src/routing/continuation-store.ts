@@ -13,7 +13,6 @@ export const ownerKey = (
   target: RouteTarget,
   protocol: WireProtocol,
   generation: string,
-  codec?: "kimi-ordered-messages-v1" | "kimi-ordered-messages-v2" | "kimi-ordered-messages-v3" | "kimi-ordered-messages-v4",
 ): string =>
   createHash("sha256")
     .update(
@@ -21,15 +20,12 @@ export const ownerKey = (
         target.profile,
         p.provider,
         p.product,
-        p.region,
         p.account,
         p.credential,
         p.baseUrl,
         target.model,
         protocol,
         generation,
-        // Preserve legacy keys exactly when no versioned codec is selected.
-        ...(codec ? [codec] : []),
       ]),
     )
     .digest("hex");
