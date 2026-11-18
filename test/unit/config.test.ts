@@ -463,6 +463,7 @@ describe("loadConfig", () => {
               oauthTokenUrl: "https://sentinel.example/oauth/token",
               authFile: "~/sentinel/auth.json",
               userAgent: "sentinel-ua/9.9",
+              usagePoll: false,
               aliases: { sentinel: "gpt-5.6-sol" },
               reasoningCache: { maxEntries: 7, maxBytes: 8 },
               requestTimeoutMs: 111,
@@ -480,6 +481,7 @@ describe("loadConfig", () => {
       // The one transformed field: expandHome runs in the resolver, not the schema.
       authFile: join(homedir(), "sentinel/auth.json"),
       userAgent: "sentinel-ua/9.9",
+      usagePoll: false,
       aliases: { sentinel: "gpt-5.6-sol" },
       reasoningCache: { maxEntries: 7, maxBytes: 8 },
       requestTimeoutMs: 111,
