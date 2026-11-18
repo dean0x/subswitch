@@ -67,8 +67,8 @@ Only `Agent` and `Read` are enabled. Hooks, inherited settings, slash commands, 
 MCP configuration are excluded; managed policies still apply. Credentials are not
 written into project files or shared stores, and no new login is performed.
 
-`--openai` instead assigns the native Claude child to `sol` (currently `gpt-6.1-sol`), exercising the
-existing Claude Code → OpenAI translator. It reads the existing Codex access token
+`--openai` assigns the native Claude child to `sol` (currently `gpt-6.2-sol`).
+This tests the existing Claude Code → OpenAI translator. It reads the existing Codex access token
 into a restricted temporary auth file outside the working directory, omits the
 real refresh token, and disables refresh against a local endpoint. Shared Codex
 credentials cannot be rotated by this test. Both providers use explicitly selected

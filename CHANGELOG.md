@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Register `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, and `claude-fable-5-2` in the built-in catalogs.
+  Explicit `routes` targets accept these IDs with efforts `low`, `medium`, `high`, `xhigh`, and `max`.
+- Advance the `sol`, `astra`, `terra`, and `fable` family defaults to these models.
+  Older exact IDs remain routable. Model lists, doctor, and native discovery use the same catalogs.
+- Apply the Fable 5.2 limits locally: reject disabled thinking and forced tool choice; cap output at 128,000 tokens.
+
+Sol 6.2 and Astra 6.2 use the Codex effort set; their model pages do not confirm `xhigh` or `max` per model.
+These sets are not live-verified. Terra 6.1 requires Codex CLI 0.159.0 or later, per the Codex catalog.
+
 ## [0.6.1] - 2026-10-19
 
 ### Fixed
