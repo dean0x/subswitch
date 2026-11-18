@@ -2,7 +2,8 @@
  * Usage (one approved live check only):
  * node --import tsx e2e/gates/kimi-live-check.ts --kimi-auth-file <abs> --region global --evidence-dir <abs new> --confirm-live
  * A second run needs a new founder go. Do not reuse an evidence directory.
- * Use only a Subswitch-managed store from subswitch kimi-login. Do not use a native Kimi CLI store.
+ * Use only the Kimi CLI sign-in (native store, source kimi-code): <kimi home>/credentials/<global slot>.
+ * Stop every Kimi CLI process before the run. The one refresh rotates the shared sign-in.
  * The 429 and 401 are fabricated. This check does not prove real quota exhaustion.
  * It does not test refresh before expiry, prove agent identity, or measure Kimi identity acceptance.
  */
@@ -16,6 +17,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { loadConfig } from "../../src/config.js";
 import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
 import { KIMI_OAUTH_ORIGINS } from "../../src/kimi-auth.js";
+import { validateKimiNativePath } from "../../src/kimi-native-auth.js";
 import { defaultBase } from "../../src/routing/destination-catalog.js";
 import { LimitRecorder, readLimitObservations, withLimitRecorder } from "../../src/limit-recorder.js";
 import { recordLimitFailure } from "../../src/limit-observation.js";
@@ -46,6 +48,12 @@ function safePath(path: string): boolean {
     !path.split("/").some(part => [".claude", ".codex", ".kimi", ".kimi-code", "kimi-code.json"].includes(part) ||
       /^kimi-code-env-[a-f0-9]+\.json$/.test(part));
 }
+/** Syntax only: the official global Kimi CLI slot, outside other clients' folders. */
+function nativeStorePath(path: string): boolean {
+  if (!isAbsolute(path) || normalize(path) !== path || /[\x00-\x1f\x7f]/.test(path) ||
+    path.split("/").some(part => [".claude", ".codex"].includes(part))) return false;
+  try { validateKimiNativePath(path, "global"); return true; } catch { return false; }
+}
 /** Parse all arguments before any filesystem or credential operation. */
 export function parseArguments(args: readonly string[]): LiveArguments | undefined {
   if (args.length !== 7) return undefined;
@@ -61,7 +69,7 @@ export function parseArguments(args: readonly string[]): LiveArguments | undefin
   }
   const kimiAuthFile = values.get("--kimi-auth-file"), evidenceDir = values.get("--evidence-dir");
   if (!confirmed || values.get("--region") !== "global" || !kimiAuthFile || !evidenceDir ||
-    !safePath(kimiAuthFile) || !safePath(evidenceDir) || kimiAuthFile === evidenceDir) return undefined;
+    !nativeStorePath(kimiAuthFile) || !safePath(evidenceDir) || kimiAuthFile === evidenceDir) return undefined;
   return { kimiAuthFile, region: "global", evidenceDir };
 }
 export interface Counts { calls: number; kimi: number; kimiTokens: number; claude: number; refresh: number; loopback: number }
@@ -92,7 +100,7 @@ export function reserveDispatch(counts: Readonly<Counts>, rawUrl: string, method
   return { counts: next, provider };
 }
 
-/** Stat only. The managed store performs the credential read at runtime. */
+/** Stat only. The native store performs the credential read at runtime. */
 async function validatePaths(args: LiveArguments): Promise<boolean> {
   try {
     if (await realpath(args.kimiAuthFile) !== args.kimiAuthFile ||
@@ -275,7 +283,7 @@ async function runLive(args: LiveArguments): Promise<boolean> {
         "claude-primary": { provider: "claude", product: "claude-code", billing: "subscription", account: "live-check",
           credential: { kind: "native-oauth", authFile } },
         "kimi-fallback": { provider: "kimi", product: "kimi-code", billing: "subscription", region: args.region, account: "live-check",
-          credential: { kind: "native-oauth", authFile: args.kimiAuthFile } },
+          credential: { kind: "native-oauth", authFile: args.kimiAuthFile, source: "kimi-code" } },
       }, routes: {
         "claude-control": { clients: ["claude-code"], primary: { profile: "claude-primary", model: PARENT_MODEL, effort: "low" } },
         "kimi-check": { clients: ["claude-code"], primary: { profile: "claude-primary", model: CHILD_MODEL, effort: "low" },

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { emptyCounts, parseArguments, reserveDispatch } from "../../e2e/gates/kimi-live-check.js";
 import { KIMI_OAUTH_ORIGINS } from "../../src/kimi-auth.js";
+import { kimiNativeTokenFilename } from "../../src/kimi-native-auth.js";
 
-const args = ["--kimi-auth-file", "/private/check/auth.json", "--region", "global",
+const store = `/private/kimi-home/credentials/${kimiNativeTokenFilename("global")}`;
+const args = ["--kimi-auth-file", store, "--region", "global",
   "--evidence-dir", "/private/check/evidence", "--confirm-live"];
 const local = "http://127.0.0.1:12345";
 const kimi = "https://api.kimi.ai/coding/v1/messages?beta=true";
@@ -11,16 +13,18 @@ const claude = "https://api.anthropic.com/v1/messages";
 const oauth = KIMI_OAUTH_ORIGINS.global + "/api/oauth/token";
 
 test("accepts only the complete explicit live arguments", () => {
-  assert.deepEqual(parseArguments(args), { kimiAuthFile: "/private/check/auth.json", region: "global",
+  assert.deepEqual(parseArguments(args), { kimiAuthFile: store, region: "global",
     evidenceDir: "/private/check/evidence" });
 });
+const withStore = (path: string) => args.map(s => s === store ? path : s);
 for (const invalid of [args.slice(0, -1), [...args, "--extra"], [...args, "--confirm-live"],
-  args.map(s => s === "global" ? "mainland-cn" : s), args.map(s => s === "/private/check/auth.json" ? "auth.json" : s),
+  args.map(s => s === "global" ? "mainland-cn" : s), withStore(kimiNativeTokenFilename("global")),
   args.map(s => s === "/private/check/evidence" ? "/private/check/../evidence" : s),
-  args.map(s => s === "/private/check/auth.json" ? "/Users/test/.kimi-code/credentials/token.json" : s),
-  args.map(s => s === "/private/check/auth.json" ? "/Users/test/.claude/token.json" : s),
-  args.map(s => s === "/private/check/auth.json" ? "/private/kimi-home/credentials/kimi-code-env-0e4f99c69cc27850.json" : s)]) {
-  test("refuses incomplete, duplicate, foreign, or native-store arguments", () => {
+  withStore("/private/check/auth.json"), withStore("/private/kimi-home/credentials/kimi-code.json"),
+  withStore("/private/kimi-home/other/" + kimiNativeTokenFilename("global")),
+  withStore(`/Users/test/.claude/credentials/${kimiNativeTokenFilename("global")}`),
+  args.map(s => s === "/private/check/evidence" ? store : s)]) {
+  test("refuses incomplete, duplicate, foreign, or non-native-store arguments", () => {
     assert.equal(parseArguments(invalid), undefined);
   });
 }
