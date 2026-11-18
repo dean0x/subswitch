@@ -103,8 +103,9 @@ describe("explicit future Codex model overrides", () => {
     const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: {
       worker: "sol", literal: "codex:gpt-6.1-sol", next: future, literalAlias: "codex:next",
     } });
-    for (const name of ["sol", "codex:sol", "codex:gpt-6.1-sol"])
-      assert.equal((resolveModel(table, name) as { target: { id: string } }).target.id, "gpt-6.1-sol");
+    for (const name of ["sol", "codex:sol"])
+      assert.equal((resolveModel(table, name) as { target: { id: string } }).target.id, "gpt-6.2-sol");
+    assert.equal((resolveModel(table, "codex:gpt-6.1-sol") as { target: { id: string } }).target.id, "gpt-6.1-sol");
     assert.equal((resolveModel(table, "worker") as { target: { id: string } }).target.id, "sol");
     assert.equal((resolveModel(table, "literal") as { target: { id: string } }).target.id, "codex:gpt-6.1-sol");
     assert.equal((resolveModel(table, "codex:next") as { target: { id: string } }).target.id, future);

@@ -33,9 +33,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The `subswitch limits --json` command shows them. Set
   `SUBSWITCH_LIMIT_DIR` to change the store directory. Set
   `SUBSWITCH_LIMIT_RECORDING=0` to turn the record off.
+- Register `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, and `claude-fable-5-2` in the built-in catalogs.
+  Explicit `routes` targets accept these IDs with efforts `low`, `medium`, `high`, `xhigh`, and `max`.
+  Model lists and doctor use these catalogs.
+  Native Codex discovery preserves OpenAI's own rows and adds Claude rows from `CLAUDE_MODELS`.
+- Keep Terra 6.1 available by exact ID only through a preview entry.
+  The `terra` default stays on `gpt-5.6-terra`.
+  The Codex catalog requires Codex CLI 0.159.0 or later for Terra 6.1.
+- Apply Fable 5.2 limits on each translated path:
+  - The Codex-client reverse leg rejects disabled thinking and forced tool choice with 400.
+    It caps output at 128,000 tokens.
+  - Claude Code explicit routes reject disabled thinking, forced tool choice, and `max_tokens` above 128,000 with 422 `target_capability_unavailable`.
+  - The default Anthropic passthrough applies no local limit.
+- Use the Codex effort set for Sol 6.2 and Astra 6.2.
+  Their model pages do not confirm `xhigh` or `max` per model.
+  These sets are not live-verified.
+- Subswitch sends `codex_cli_rs/0.144.6` as its default user agent.
+  Access to the new Codex models with this value is not verified.
+  Set `providers.codex.userAgent` to change this value.
 
 ### Changed
 
+- **The `sol` and `astra` family aliases now resolve to `gpt-6.2-sol` and `gpt-6.2-astra`.**
+  Older exact IDs remain routable.
+- **The `fable` alias on the Codex-client reverse leg now resolves to `claude-fable-5-2`.**
+  Older Fable exact IDs remain routable.
 - The lock file uses newer versions of `zod`, `ws` and `@clack/prompts`.
 
 ## [0.6.1] - 2026-10-19
