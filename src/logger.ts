@@ -64,7 +64,10 @@ export interface Logger {
   trackLimitTask?(task: Promise<void>): void;
   /**
    * Status lines use the version 1 snapshot at $HOME/.cache/subswitch/codex-quota.json.
-   * The six additive keys do not change the reader contract. See README for units and keys.
+   * The current reader ignores the additive keys: source, plan_type, active_limit, limit_name, credits, additional_limits.
+   * INFERRED units, not verified live: header reset-at and snapshot resets_at use Unix epoch seconds; window-minutes and window_minutes use minutes.
+   * Usage limit_window_seconds uses seconds; reset_at uses Unix epoch seconds.
+   * Cache folder mode repair: chmod 700 "$HOME/.cache/subswitch".
    * serve supplies the path; withLimitRecorder alone does not create a snapshot writer.
    * SUBSWITCH_LIMIT_RECORDING=0 stops this writer and the optional providers.codex.usagePoll.
    */
