@@ -212,5 +212,8 @@ it("rejects malformed Codex terminal arguments without a Messages stop", async t
 
   await assert.rejects(recordTypes(routedEvents(router, "claude-code", messagesRequest), seen),
     { code: "invalid_provider_tool", status: 502 });
-  assert.deepEqual(seen, ["message_start"]);
+  // Chunk timing decides whether message_start reaches the client before the refusal.
+  // No other event, and never message_stop, may reach it.
+  assert.ok(seen.length <= 1, `unexpected events: ${JSON.stringify(seen)}`);
+  assert.ok(seen.every(type => type === "message_start"), `unexpected events: ${JSON.stringify(seen)}`);
 });
