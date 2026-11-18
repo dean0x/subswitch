@@ -107,8 +107,6 @@ Commands:
   limits    Show recorded upstream limit/error formats (--json, --port <n>)
   run-action --client <client> [--conversation <id>] -- <native command>
             Scope one native invocation, including its tools and children
-  kimi-login --auth-file <absolute new path> --region <global|mainland-cn>
-            Explicit device login into a separate private Subswitch store
 
 Flags (global):
   -h, --help       Show this help message
@@ -344,7 +342,6 @@ SubSwitch records signature ownership only for first-party destinations that val
 Other destinations get no ownership claim, so replay from another scope fails with 409.
 Claude subscription routes with custom endpoints retain exact same-scope continuation after a successful response.
 Cross-scope replay returns 409 without an upstream request.
-Kimi routes need the subscription sign-in, which this version does not provide.
 This does not restore translated continuation handles or import signed history into
 fallback routes. Later system-role messages remain a separate unsupported case on
 explicit Messages routes.
@@ -888,9 +885,7 @@ local development.
 
 Version 2 access profiles, action-scoped failover, recovery behavior, configuration examples
 and current evidence gates are described in [the Wave 1 notes](e2e/gates/wave1.md).
-Explicit routes use only `claude-code`, `chatgpt-codex` and `kimi-code` subscription sign-ins.
+Explicit routes use Claude and Codex subscription sign-ins only.
 Each profile uses `native-oauth` and `billing: "subscription"`. Provider keys and paid fallback are not supported.
 Fallback between subscription profiles remains available.
-Kimi Code has an explicit [subscription OAuth path](e2e/gates/kimi-managed-oauth.md).
-Offline tests cover this path. General live acceptance remains unmeasured.
-See [Kimi route status](e2e/gates/kimi-readiness.md) and [retained evidence](e2e/gates/wave1-evidence.json).
+See the [evidence manifest](e2e/gates/wave1-evidence.json) for past runs.
