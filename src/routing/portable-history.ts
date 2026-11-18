@@ -187,38 +187,3 @@ export function decodePortableHistory(
 function fail(): never {
   throw new RoutingError("unsupported_routed_content");
 }
-
-/** Native agent identities become ordered, addressed text on non-native Responses destinations. */
-export function renderResponsesHistory(transcript: PortableTranscript): Item {
-  if (transcript.protocol !== "responses") return transcript.source;
-  return {
-    ...transcript.source,
-    tools: transcript.tools,
-    input: transcript.entries
-      .filter((e) => e["type"] !== "additional_tools")
-      .map((e) => {
-        if (e["type"] !== "agent_message") return e;
-        if (
-          typeof e["author"] !== "string" ||
-          typeof e["recipient"] !== "string"
-        )
-          fail();
-        const content =
-          typeof e["content"] === "string"
-            ? [{ type: "input_text", text: e["content"] }]
-            : e["content"];
-        if (!Array.isArray(content)) fail();
-        return {
-          type: "message",
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: `Agent message from ${e["author"]} to ${e["recipient"]}:`,
-            },
-            ...content,
-          ],
-        };
-      }),
-  };
-}

@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import http from "node:http";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ClaudeCache } from "../../src/claude-cache.js";
 import { loadConfig } from "../../src/config.js";
 import { noopLogger } from "../../src/logger.js";
 import { SharedRouting } from "../../src/routing/shared-routing.js";
-import type { Item } from "../../src/routing/routing-types.js";
+import type { AccessProfile, Item, RoutePolicy } from "../../src/routing/routing-types.js";
 import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
 import { messageFrames, nativeEvents } from "../fixtures/native-messages.js";
 import { nativeCredential } from "../fixtures/native-profile.js";
@@ -415,5 +417,72 @@ describe("native Claude full-history continuity (offline)", () => {
         await new Promise<void>(resolve => origin.close(() => resolve()));
       }
     });
+  }
+});
+
+it("keeps custom Claude HTTP replay in its original scope without claiming ownership", async t => {
+  const root = mkdtempSync(join(tmpdir(), "subswitch-custom-continuity-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const base = config(root);
+  const custom: AccessProfile = {
+    provider: "claude", product: "claude-code", billing: "subscription", account: "custom",
+    baseUrl: "https://claude.example.test/gateway", credential: nativeCredential("claude", "fabricated-custom"),
+  };
+  const route: RoutePolicy = {
+    clients: ["claude-code"], primary: { profile: "custom", model: "claude-sonnet-5", effort: "high" },
+    fallbacks: [], transientTriggers: [], affinity: "native-or-explicit",
+  };
+  const configured = { ...base,
+    accessProfiles: { ...base.accessProfiles, custom, foreign: { ...custom, account: "foreign",
+      credential: nativeCredential("claude", "fabricated-foreign") } },
+    routes: { ...base.routes, custom: route, foreign: { ...route, primary: { ...route.primary, profile: "foreign" } } },
+  };
+  const requests: Item[] = [];
+  const cache = new ClaudeCache();
+  const content = [thought, hiddenThought, { type: "text", text: "Fabricated custom answer" }];
+  const deps = buildDeps(configured, noopLogger, { fetchImpl: async (url, init) => {
+    requests.push(JSON.parse(String(init?.body)));
+    assert.equal(String(url), "https://claude.example.test/gateway/v1/messages");
+    assert.equal(init?.redirect, "error");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer fabricated-custom");
+    return new Response(messageFrames(nativeEvents(content)).join(""), { headers: { "content-type": "text/event-stream" } });
+  } });
+  assert.ok(deps.ok);
+  const routing = deps.value.sharedRouting;
+  assert.ok(routing);
+  Object.defineProperty(routing.attempts, "replay", { value: cache });
+  const server = createProxyServer(deps.value);
+  try {
+    assert.ok((await listenServer(server, 0, "127.0.0.1")).ok);
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const send = (model: string, messages: Item[]) => fetch(`http://127.0.0.1:${address.port}/v1/messages`, {
+      method: "POST", signal: AbortSignal.timeout(5000), headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, max_tokens: 128, stream: false, messages }),
+    });
+    const initial = [{ role: "user", content: "Original custom scope" }];
+    const first = await send("custom", initial);
+    assert.equal(first.status, 200);
+    const emitted = (await first.json() as Item).content;
+    assert.deepEqual(emitted, content);
+    const messages = [...initial, { role: "assistant", content: emitted }, { role: "user", content: "Continue" }];
+    const continued = await send("custom", messages);
+    assert.equal(continued.status, 200);
+    assert.deepEqual((await continued.json() as Item).content, content);
+    assert.deepEqual(requests[1]?.messages, messages);
+    for (const signature of [thought.signature, hiddenThought.data]) {
+      const key = `thinking-origin:${createHash("sha256").update(signature).digest("hex")}`;
+      assert.deepEqual(cache.get("snapshot", key)?.request, {}, "a custom endpoint cannot claim native ownership");
+    }
+    for (const model of ["foreign", "work"]) {
+      const rejected = await send(model, messages);
+      assert.equal(rejected.status, 409);
+      assert.match(await rejected.text(), /foreign_opaque_state/);
+    }
+    assert.equal(requests.length, 2, "foreign replay must not dispatch");
+  } finally {
+    routing.close();
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });

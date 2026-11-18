@@ -280,7 +280,7 @@ describe("routing reliability and isolation", () => {
     const adapt = (source: typeof body) =>
       adaptRequest({
         profile,
-        target: { profile: "synthetic", model: "k3", effort: "high" },
+        target: { profile: "synthetic", model: "synthetic-model", effort: "high" },
         body: source,
         ingress: "messages",
         protocol: "messages",
