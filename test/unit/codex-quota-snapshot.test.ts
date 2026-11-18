@@ -378,9 +378,10 @@ it("TP-45 TP-47 reads named families in one pass and never builds a header name 
   const names: string[] = []; let passes = 0;
   const base = raw(Object.entries({ ...values(), ...family("extra-fast"),
     "x-codex-extra-fast-secondary-used-percent": "40", "x-codex-extra-fast-secondary-window-minutes": "1",
-    "x-codex-extra-fast-secondary-reset-at": "1800000030", "x-codex-active-limit": "unseen" }), (name) => names.push(name));
+    "x-codex-extra-fast-secondary-reset-at": "1800000030", "x-codex-active-limit": "extra-fast" }), (name) => names.push(name));
   const p = parseCodexQuotaHeaders({ get: base.get, entries() { passes++; return base.entries(); } }, SEC);
   assert.deepEqual(names, fixedNames); assert.equal(passes, 1);
+  assert.equal(p.snapshot?.active_limit, "extra-fast");
   assert.deepEqual(p.snapshot?.additional_limits, [{ limit_id: "extra-fast", limit_name: "Extra limit", windows: [
     { window_minutes: 1, used_percent: 40, resets_at: 1800000030 }, { window_minutes: 300, used_percent: 75, resets_at: 1800000300 }] }]);
   assert.deepEqual(p.snapshot?.windows, [{ window_minutes: 300, used_percent: 25, resets_at: 1800000600 }, { window_minutes: 10080, used_percent: 50, resets_at: 1800001200 }]);
