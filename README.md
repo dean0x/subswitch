@@ -214,6 +214,8 @@ If you prefer to configure manually instead of using `init`:
 Optionally create `subswitch.config.json` in your project root for custom port or
 model selection (all fields optional — see
 [`subswitch.config.example.json`](subswitch.config.example.json)).
+A project file can not set sign-in addresses or `allowInsecureBaseUrl` opt-ins.
+Set these keys in the user config (see [Configuration](#configuration)).
 
 ### Run from source
 
@@ -246,10 +248,12 @@ Codex setup changes only the user-level `openai_base_url` value, preserving othe
 TOML settings and comments. It writes SubSwitch's user config to
 `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`).
 Permitted project settings merge over this fallback; explicit `SUBSWITCH_CONFIG`
-remains authoritative. Profiles and routes require the user file or an explicit file.
+remains authoritative. Profiles, routes, sign-in addresses and `allowInsecureBaseUrl`
+opt-ins require the user file or an explicit file.
 Start the proxy before launching Codex. Existing custom
 providers are not replaced. A custom upstream is preserved only when it is loopback or
-you have explicitly set `codexIngress.allowInsecureBaseUrl: true` in the SubSwitch config.
+you have explicitly set `codexIngress.allowInsecureBaseUrl: true` in the SubSwitch user
+config or the `SUBSWITCH_CONFIG` file.
 Setup names an unapproved host and stops before writing files.
 
 Set the model in a native Codex role file, for example `~/.codex/claude-worker.toml`:
@@ -391,6 +395,16 @@ A project file that declares either key fails with an error, even for an empty v
 Move those keys to the user file, or select the file with `SUBSWITCH_CONFIG`.
 Use `configVersion: 2` for explicit profiles and routes.
 The [Wave 1 example](subswitch.wave1.example.json) shows their format.
+
+Sign-in addresses and their `allowInsecureBaseUrl` opt-ins also load only from the user
+configuration or an explicit file. These keys are `anthropic.baseUrl`,
+`providers.codex.baseUrl`, `providers.codex.oauthTokenUrl`,
+`codexIngress.subscriptionBaseUrl`, `codexIngress.apiBaseUrl`,
+`codexIngress.claude.baseUrl`, `codexIngress.claude.oauthTokenUrl`, and
+`allowInsecureBaseUrl` in `anthropic`, `providers.codex`, `codexIngress` and
+`codexIngress.claude`. A project file that sets one of these keys fails with an error
+that names the key. Set the key in the user file, or select the file with `SUBSWITCH_CONFIG`.
+The example file lists these keys, so do not copy all of it into a project file.
 
 Other project settings retain their merge behavior, except the `run-action` port.
 `run-action` uses the user or explicit file's port, then the built-in default.
