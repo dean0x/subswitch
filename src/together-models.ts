@@ -17,6 +17,7 @@ export const TOGETHER_MODELS: readonly TogetherModel[] = [];
 export const TOGETHER_DEFAULT_CAPABILITIES: TogetherCapabilities = {
   contextWindow: undefined,
   maxOutputTokens: undefined,
+  // An unlisted model gets inline images. The upstream decides whether it supports them.
   images: true,
   reasoningReplay: true,
 };

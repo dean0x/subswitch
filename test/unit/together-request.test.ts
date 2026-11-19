@@ -31,8 +31,9 @@ it("uses the default or configured cap when the client gives no limit", () => {
   const defaults = translate();
   assert.equal(defaults.body.max_tokens, 16_384);
   assert.equal(defaults.clamp, undefined);
-  assert.equal(defaults.body.stream, false);
-  assert.equal(Object.hasOwn(defaults.body, "stream_options"), false);
+  assert.equal(defaults.body.stream, true);
+  assert.deepEqual(defaults.body.stream_options, { include_usage: true });
+  assert.equal(translate({ stream: false }).body.stream, true);
   assert.equal(translate({}, { outputCap: 32_768 }).body.max_tokens, 32_768);
 });
 
@@ -138,6 +139,23 @@ it("rejects incomplete tool calls, unlinked tool results, and unknown roles", ()
   }
 });
 
+it("refuses tool input that cannot form a JSON object", () => {
+  const cyclic: Record<string, unknown> = {};
+  cyclic["child"] = cyclic;
+  for (const input of [null, [], "text", cyclic]) {
+    const content = [{ type: "tool_use", id: "call_1", name: "Read", input }];
+    assert.deepEqual(translateTogetherRequest({ ...request, messages: [{ role: "assistant", content }] }, { model }), {
+      ok: false, error: { kind: "translate", message: "Together tool input must be a JSON object" },
+    });
+  }
+});
+
+it("omits an unknown tool choice with a warning", () => {
+  const { body, warnings } = translate({ tool_choice: { type: "unconfirmed" } });
+  assert.equal(Object.hasOwn(body, "tool_choice"), false);
+  assert.deepEqual(warnings, ["unknown_tool_choice"]);
+});
+
 it("maps each tool choice without a parallel tool flag", () => {
   for (const [type, expected] of [
     ["auto", "auto"], ["any", "required"], ["none", "none"],
@@ -158,7 +176,8 @@ it("drops history thinking and signatures and warns about the top-level thinking
       { type: "text", text: "Answer", signature: "not-sent" },
     ] }],
   });
-  assert.deepEqual(body, { model, messages: [{ role: "assistant", content: "Answer" }], max_tokens: 16_384, stream: false });
+  assert.deepEqual(body, { model, messages: [{ role: "assistant", content: "Answer" }], max_tokens: 16_384,
+    stream: true, stream_options: { include_usage: true } });
   assert.deepEqual(warnings, ["thinking_dropped"]);
 });
 

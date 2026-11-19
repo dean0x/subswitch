@@ -85,6 +85,7 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
   let terminal = false;
   let hasText = false;
   let finishReason: string | undefined;
+  let firstToolId: string | undefined;
   let usage: z.infer<typeof ChatChunk>["usage"];
 
   const emit = (type: string, data: Record<string, unknown> = {}): void => {
@@ -158,26 +159,22 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
     }
   };
 
-  // Tool frames wait for a name and complete arguments. A truncated metadata-only call
-  // has no content to close. An argument delta that does not form an object must fail.
+  // A call needs argument data. An explicit length stop can leave JSON incomplete.
+  // Stream its partial arguments with max_tokens. The shared fold rejects them for a JSON reply.
   const readyTools = (): ReadyTool[] | undefined => {
     const ready: ReadyTool[] = [];
     for (const [index, call] of [...tools].sort(([a], [b]) => a - b)) {
       const args = call.arguments.join("");
-      const empty = args.trim() === "";
-      if (finishReason === undefined && empty) continue;
-      if (call.name === undefined || (!empty && !isPlainObject(parseJson(args)))) return undefined;
+      if (args.trim() === "") continue;
+      const input = parseJson(args);
+      const partial = finishReason === "length" && input === undefined;
+      if (call.name === undefined || (!partial && !isPlainObject(input))) return undefined;
       ready.push({ id: `toolu_${options.seed}_${index}`, name: call.name, arguments: args });
     }
     return ready;
   };
 
-  const seal = (): void => {
-    if (terminal) return;
-    if (unparsableChunks > 0) {
-      fail("Together stream contained unparsable chunks");
-      return;
-    }
+  const closeBlocks = (): void => {
     const ready = readyTools();
     if (ready === undefined) {
       fail("Together stream contained invalid tool arguments");
@@ -187,22 +184,35 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
       fail("Together stream ended without a finish reason or recoverable content");
       return;
     }
-    terminal = true;
+    if (ready.length === 0 && (finishReason === "tool_calls" || finishReason === "function_call" || (!hasText && tools.size > 0))) {
+      fail("Together stream contained no complete tool call");
+      return;
+    }
     start();
     if (hasText) emit("content_block_stop", { index: 0 });
     for (const [offset, call] of ready.entries()) {
       const index = Number(hasText) + offset;
       emit("content_block_start", { index, content_block: { type: "tool_use", id: call.id, name: call.name, input: {} } });
-      if (call.arguments !== "") {
-        emit("content_block_delta", { index, delta: { type: "input_json_delta", partial_json: call.arguments } });
-      }
+      emit("content_block_delta", { index, delta: { type: "input_json_delta", partial_json: call.arguments } });
       emit("content_block_stop", { index });
     }
-    const first = ready[0];
-    if (first !== undefined && conversationKey !== undefined && reasoning.length > 0) {
-      putReasoning?.(reasoningKey(conversationKey, first.id), reasoning.join(""));
+    firstToolId = ready[0]?.id;
+  };
+
+  const seal = (): void => {
+    if (terminal) return;
+    if (unparsableChunks > 0) {
+      fail("Together stream contained unparsable chunks");
+      return;
     }
-    const stop = stopReason(finishReason, ready.length > 0);
+    // At EOF without a finish reason, recover any blocks that still have content.
+    if (finishReason === undefined) closeBlocks();
+    if (terminal) return;
+    terminal = true;
+    if (firstToolId !== undefined && conversationKey !== undefined && reasoning.length > 0) {
+      putReasoning?.(reasoningKey(conversationKey, firstToolId), reasoning.join(""));
+    }
+    const stop = stopReason(finishReason, firstToolId !== undefined);
     if (stop === undefined) warnings.push("unknown_finish_reason");
     if (usage == null) warnings.push("usage_missing");
     emit("message_delta", {
@@ -236,6 +246,7 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
     const thought = delta?.reasoning_content ?? delta?.reasoning;
     if (!terminal && thought) appendReasoning(thought);
     finishReason = choice.finish_reason ?? undefined;
+    if (!terminal && finishReason !== undefined) closeBlocks();
   };
 
   const translator = new Transform({

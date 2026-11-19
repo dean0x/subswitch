@@ -47,8 +47,8 @@ export interface TogetherRequestOutcome {
     readonly model: string;
     readonly messages: readonly TogetherMessage[];
     readonly max_tokens: number;
-    readonly stream: boolean;
-    readonly stream_options?: { readonly include_usage: true };
+    readonly stream: true;
+    readonly stream_options: { readonly include_usage: true };
     readonly tools?: readonly Tool[];
     readonly tool_choice?: ToolChoice;
     readonly temperature?: number;
@@ -134,6 +134,17 @@ const mapUserTurn = (
   return ok(undefined);
 };
 
+const toolArguments = (input: unknown): Result<string, ProxyError> => {
+  const invalid = { kind: "translate", message: "Together tool input must be a JSON object" } as const;
+  if (input === undefined) return ok("{}");
+  if (!isBlock(input)) return err(invalid);
+  try {
+    return ok(JSON.stringify(input));
+  } catch {
+    return err(invalid);
+  }
+};
+
 const mapAssistantTurn = (
   content: AnthropicMessage["content"],
   getTurnReasoning: (toolId: string) => string | undefined,
@@ -152,7 +163,9 @@ const mapAssistantTurn = (
       if (!isString(id) || id === "" || !isString(name) || name === "") {
         return err({ kind: "translate", message: "Together tool call needs an ID and a name" });
       }
-      calls.push({ id, type: "function", function: { name, arguments: JSON.stringify(input ?? {}) } });
+      const args = toolArguments(input);
+      if (!args.ok) return args;
+      calls.push({ id, type: "function", function: { name, arguments: args.value } });
     } else if (block["type"] === "text" && isString(block["text"])) {
       texts.push(block["text"]);
     } else if (block["type"] !== "thinking" && block["type"] !== "redacted_thinking") {
@@ -246,14 +259,13 @@ export const translateTogetherRequest = (
 
   const requested = request.max_tokens ?? outputCap;
   const applied = Math.min(requested, outputCap, capabilities.maxOutputTokens ?? outputCap);
-  const stream = request.stream === true;
   const temperature = finiteNumber(request["temperature"]);
   const topP = finiteNumber(request["top_p"]);
   const stop = request["stop_sequences"];
   return ok({
     body: {
-      model, messages: messages.value, max_tokens: applied, stream,
-      ...(stream ? { stream_options: { include_usage: true } } : {}),
+      // Both client modes use the same upstream stream. The runner folds it for a JSON reply.
+      model, messages: messages.value, max_tokens: applied, stream: true, stream_options: { include_usage: true },
       ...(tools.length > 0 ? { tools } : {}),
       ...(toolChoice !== undefined ? { tool_choice: toolChoice } : {}),
       ...(temperature !== undefined ? { temperature } : {}),

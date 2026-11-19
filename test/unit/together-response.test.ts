@@ -111,6 +111,42 @@ it("fails a truncated tool call without exposing incomplete tool arguments", asy
   assert.doesNotMatch(frames.join(""), /tool_use|input_json_delta/);
 });
 
+it("closes a text block at the finish reason before DONE or EOF", (t) => {
+  const { translator } = createTogetherSseTranslator({ model: "org/model", seed: "turn", maxEventBytes: 1024 });
+  t.after(() => { translator.destroy(); });
+  const events: string[] = [];
+  translator.on("data", (frame: string) => { events.push(frame.split("\n", 1)[0]!); });
+  translator.write({ data: JSON.stringify(chatChunk({ content: "done" }, "stop")) });
+  assert.deepEqual(events, ["event: message_start", "event: content_block_start", "event: content_block_delta", "event: content_block_stop"]);
+  translator.write({ data: JSON.stringify(chatChunk({ content: "too late" })) });
+  translator.write({ data: "[DONE]" });
+  assert.deepEqual(events.slice(4), ["event: message_delta", "event: message_stop"]);
+});
+
+it("reports max_tokens for a length-limited tool stream but rejects an incomplete aggregate", async () => {
+  const { frames } = await translate(chatSse([chatChunk({ tool_calls: [toolDelta(0, "tool", '{"a":')] }, "length"), "[DONE]"]));
+  assert.match(frames.at(-4) ?? "", /input_json_delta/);
+  assert.match(frames.at(-3) ?? "", /^event: content_block_stop\n/);
+  assert.match(frames.at(-2) ?? "", /"stop_reason":"max_tokens"/);
+  assert.match(frames.at(-1) ?? "", /^event: message_stop\n/);
+  const aggregate = aggregateFrames(frames, "codex");
+  assert.equal(aggregate.ok, false);
+  if (!aggregate.ok) assert.match(aggregate.error.message, /unparseable tool_use arguments/);
+});
+
+it("does not invent empty input or return a tool stop without a tool", async () => {
+  for (const tool_calls of [[], [toolDelta(0, "tool")]]) {
+    const { frames } = await translate(chatSse([chatChunk({ tool_calls }, "tool_calls")]));
+    assertError(frames, "Together stream contained no complete tool call");
+    assert.doesNotMatch(frames.join(""), /content_block_start/);
+  }
+});
+
+it("rejects a call whose arguments never received a tool name", async () => {
+  const { frames } = await translate(chatSse([chatChunk({ tool_calls: [toolDelta(0, null, "{}")] }, "stop")]));
+  assertError(frames, "Together stream contained invalid tool arguments");
+});
+
 it("preserves a legitimately empty finished turn", async () => {
   const { frames } = await translate(chatSse([chatChunk({ content: "" }, "stop"), "[DONE]"]));
   assert.deepEqual(message(frames)["content"], []);
@@ -120,6 +156,12 @@ it("preserves a legitimately empty finished turn", async () => {
 it("rejects a tool-call count above the shared block cap when text occupies a block", async () => {
   const calls = Array.from({ length: MAX_CONTENT_BLOCKS }, (_, index) => toolDelta(index, "tool", "{}"));
   const { frames } = await translate(chatSse([chatChunk({ content: "hello", tool_calls: calls }), chatChunk({}, "stop"), "[DONE]"]));
+  assertError(frames, "Together stream exceeded the content block limit");
+});
+
+it("limits a text block that arrives after all tool slots are full", async () => {
+  const calls = Array.from({ length: MAX_CONTENT_BLOCKS }, (_, index) => toolDelta(index, "tool", "{}"));
+  const { frames } = await translate(chatSse([chatChunk({ tool_calls: calls }), chatChunk({ content: "excess" }, "stop")]));
   assertError(frames, "Together stream exceeded the content block limit");
 });
 
