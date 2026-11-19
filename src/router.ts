@@ -4,6 +4,7 @@ export type Route =
   | { readonly kind: "provider"; readonly provider: ProviderId; readonly model: string; readonly endpoint: "messages" | "count_tokens" }
   | { readonly kind: "anthropic" }
   | { readonly kind: "ambiguous"; readonly name: string; readonly providers: readonly ProviderId[] }
+  | { readonly kind: "invalid_qualified" }
   /** Colon-separated name whose prefix is not a known provider (e.g. "kimee:k2"). */
   | { readonly kind: "unknown_provider"; readonly qualifier: string };
 
@@ -38,6 +39,9 @@ export const decideRoute = (
       // Router doesn't arbitrate between same-named providers; fails open to Anthropic
       // with route "anthropic:ambiguous", and doctor reports the conflict as a config defect.
       return { kind: "ambiguous", name: resolution.name, providers: resolution.providers };
+
+    case "invalid_qualified":
+      return resolution;
 
     case "unknown_qualifier":
       // "kimee:k2" — provider prefix not in PROVIDER_IDS. Distinguishable from unresolved

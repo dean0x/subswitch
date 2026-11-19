@@ -219,6 +219,42 @@ describe("F4 — exact id always wins over alias (rule 1 precedence)", () => {
 // F5 — qualified lookup and unknown-provider disambiguation
 // ---------------------------------------------------------------------------
 
+describe("Together qualified resolution", () => {
+  const vetted = { id: "fixture/vetted", provider: "together", family: "fixture-family", gen: [1] } satisfies ModelEntry;
+  const { table } = buildRoutingTable(
+    [vetted, entry("together:fixture/exact"), entry("fixture/codex")],
+    { codex: { "together:fixture/alias": "fixture/codex", [vetted.id]: "fixture/codex" },
+      together: { "fixture-pin": vetted.id, "unlisted-pin": "fixture/unlisted" } },
+  );
+
+  it("resolves a vetted id, family, and alias before pass-through", () => {
+    for (const name of [vetted.id, vetted.family, "fixture-pin", `together:${vetted.id}`, `together:${vetted.family}`, "together:fixture-pin"]) {
+      assert.deepEqual(resolveModel(table, name), {
+        kind: "resolved", target: { id: vetted.id, provider: "together", family: vetted.family },
+      }, name);
+    }
+  });
+
+  it("keeps exact ids and aliases ahead of qualified parsing", () => {
+    assert.deepEqual(resolveModel(table, "together:fixture/exact"), {
+      kind: "resolved", target: { id: "together:fixture/exact", provider: "codex" },
+    });
+    assert.deepEqual(resolveModel(table, "together:fixture/alias"), {
+      kind: "resolved", target: { id: "fixture/codex", provider: "codex" },
+    });
+  });
+
+  it("accepts an unlisted id only with the explicit qualifier", () => {
+    assert.deepEqual(resolveModel(table, "together:fixture/unlisted:tag"), {
+      kind: "resolved", target: { id: "fixture/unlisted:tag", provider: "together" },
+    });
+    for (const name of ["fixture/unlisted", "unlisted-pin", "codex:fixture/unlisted"]) {
+      assert.deepEqual(resolveModel(table, name), { kind: "unresolved" }, name);
+    }
+    assert.deepEqual(resolveModel(table, "together:"), { kind: "invalid_qualified" });
+  });
+});
+
 describe("F5 — qualified resolution and unknown_qualifier discrimination", () => {
   it("F5: 'codex:sol' resolves via byQualified (family qualified)", () => {
     const reg = [entry("gpt-5.6-sol", { family: "sol", gen: [5, 6] })];

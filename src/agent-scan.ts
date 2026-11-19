@@ -166,7 +166,7 @@ export const parseFrontmatterModel = (text: string): string | undefined => {
  * @param registry           Model registry — injectable for testing retired/preview kinds.
  *
  * Finding kinds (in resolution order):
- * - unresolvable  (fail): resolveModel returns "unresolved".
+ * - unresolvable  (fail): resolveModel returns "unresolved" or "invalid_qualified".
  * - ambiguous     (fail): resolveModel returns "ambiguous".
  * - unknown_provider (info): resolveModel returns "unknown_qualifier". Informational because
  *   subswitch forwards the request to Anthropic unchanged — the qualifier does not block
@@ -194,6 +194,7 @@ export const checkAgentModels = (
     const resolution = resolveModel(table, model);
 
     switch (resolution.kind) {
+      case "invalid_qualified":
       case "unresolved":
         findings.push({ file: path, model, kind: "unresolvable", severity: "fail" });
         break;

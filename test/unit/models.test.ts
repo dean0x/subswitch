@@ -15,6 +15,32 @@ import {
   type ModelResolution,
 } from "../../src/models.js";
 
+describe("Together registry guards", () => {
+  const vetted = { id: "fixture/vetted", provider: "together", family: "fixture-family", gen: [1] } satisfies ModelEntry;
+
+  it("requires the catalog families to have one provider and no reserved names", () => {
+    const build = buildRoutingTable([...MODEL_REGISTRY, vetted], { codex: {}, together: {} });
+    assert.deepEqual(build.ambiguousFamilies, []);
+    assert.deepEqual(build.reservedNameEntries, []);
+    assert.deepEqual(build.table.byFamily.get(vetted.family), {
+      kind: "unique", model: { id: vetted.id, provider: "together", family: vetted.family },
+    });
+  });
+
+  it("reports contested and reserved families and rejects reserved Together aliases", () => {
+    const reserved = { ...vetted, id: "fixture/reserved", family: "sonnet" };
+    const build = buildRoutingTable([
+      vetted, reserved, { ...vetted, id: "fixture/codex", provider: "codex" },
+    ], { codex: {}, together: { opus: vetted.id, "fixture-pin": "claude-test" } });
+    assert.deepEqual(build.ambiguousFamilies, [{ family: vetted.family, providers: ["together", "codex"] }]);
+    assert.deepEqual(build.reservedNameEntries, [reserved.id]);
+    assert.deepEqual(build.rejectedAliases, [
+      { alias: "opus", target: vetted.id }, { alias: "fixture-pin", target: "claude-test" },
+    ]);
+    assert.deepEqual(resolveModel(build.table, "opus"), { kind: "unresolved" });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // routableModelCount — CPLX-02 / ARCH-10 / PERF-08
 // ---------------------------------------------------------------------------

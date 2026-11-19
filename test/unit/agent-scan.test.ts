@@ -145,6 +145,16 @@ describe("checkAgentModels", () => {
     assert.equal(findings[0]!.file, "/agent.md");
   });
 
+  it("accepts a valid Together pin and fails a malformed Together pin", () => {
+    const files = [
+      { path: "/valid.md", text: "---\nmodel: together:fixture/unlisted\n---\n" },
+      { path: "/bad.md", text: "---\nmodel: together:#bad\n---\n" },
+    ];
+    assert.deepEqual(checkAgentModels(files, table, new Set(["together"])), [
+      { file: "/bad.md", model: "together:#bad", kind: "unresolvable", severity: "fail" },
+    ]);
+  });
+
   it("returns 'ambiguous' finding when a family name is claimed by multiple providers", () => {
     // Construct a minimal RoutingTable manually to simulate an ambiguous family.
     const ambiguousTable: RoutingTable = {

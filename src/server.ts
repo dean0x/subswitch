@@ -647,6 +647,15 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           return;
         }
 
+        case "invalid_qualified": {
+          route = "invalid_qualified";
+          model = undefined;
+          res.writeHead(400, synthesizedHeaders());
+          res.end(toAnthropicErrorBody("invalid_request_error", "Invalid model id after the together: qualifier."));
+          if (ingest.value.kind === "over_window") drainRejectedUpload(req);
+          return;
+        }
+
         case "ambiguous": {
           // Pass ambiguous names to Anthropic and log a warning.
           //

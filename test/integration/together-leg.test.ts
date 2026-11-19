@@ -11,7 +11,8 @@ import { rawHttpRequest, sseHandler, startFakeUpstream, startSubswitch, type Ups
 const MODEL = "fixture/explicit-route";
 const KEY = "FAKE-TOGETHER-KEY-relay";
 const BAD_KEY = "FAKE-TOGETHER-KEY-invalid value";
-const REQUEST = { model: MODEL, messages: [{ role: "user", content: "Use a tool." }], max_tokens: 100 };
+const REQUEST = { model: `together:${MODEL}`, messages: [{ role: "user", content: "Use a tool." }], max_tokens: 100 };
+const INVALID_MODEL_IDS = ["", "has space", "has\ncontrol", "trailing\n", "x".repeat(201), "#bad"];
 const HEADERS = { authorization: "Bearer fabricated-client-auth", "x-api-key": "fabricated-client-key",
   "anthropic-beta": "fabricated-client-beta", "user-agent": "fabricated-client-agent", session_id: "fabricated-client-session" };
 
@@ -23,17 +24,16 @@ const Message = z.object({
 const readMessage = async (response: Response) => Message.parse(await response.json());
 
 const fixture = async (t: TestContext, handler: UpstreamHandler, key: string | null = KEY,
-  options: { readonly requestTimeoutMs?: number; readonly streamIdleTimeoutMs?: number; readonly reasoningCache?: { readonly maxBytes: number } } = {}) => {
+  options: { readonly requestTimeoutMs?: number; readonly streamIdleTimeoutMs?: number; readonly reasoningCache?: { readonly maxBytes: number } } = {},
+  overrides: Record<string, unknown> = {}) => {
   const together = await startFakeUpstream(handler);
   t.after(together.close);
   const fallback = await startFakeUpstream((_req, res) => { res.writeHead(418); res.end(); });
   t.after(fallback.close);
   const logs: unknown[] = [];
   const exec = t.mock.fn(async () => ({ stdout: "" }));
-  const proxy = await startSubswitch({ providers: { together: { baseUrl: `${together.url}/v1`, ...options } },
+  const proxy = await startSubswitch({ ...overrides, providers: { together: { baseUrl: `${together.url}/v1`, ...options } },
     anthropic: { baseUrl: fallback.url } }, {
-    // A test-only canonical match exercises wiring while the production catalog is empty.
-    resolve: (name) => name === MODEL ? { kind: "resolved", target: { id: MODEL, provider: "together" } } : { kind: "unresolved" },
     togetherKeyReader: { env: key === null ? {} : { [TOGETHER_API_KEY_ENV]: key }, platform: "linux", exec, setTimer: () => () => {} },
     logger: { log: (_level, event, fields) => logs.push({ event, fields }) },
   });
@@ -57,6 +57,45 @@ for (const [key, reason] of [[null, "missing"], [BAD_KEY, "malformed"]] as const
   });
 }
 
+it("returns a marked local 400 for malformed Together names without an upstream call", async (t) => {
+  const { post, together, fallback } = await fixture(t, sseHandler(lateToolNames));
+  for (const id of INVALID_MODEL_IDS) {
+    const response = await post({ ...REQUEST, model: `together:${id}` });
+    const text = await response.text();
+    assert.equal(response.status, 400, JSON.stringify(id));
+    assert.equal(response.headers.get("x-subswitch-synthesized"), "1");
+    assert.equal(JSON.parse(text).error.type, "invalid_request_error");
+  }
+  assert.equal(together.requests.length, 0);
+  assert.equal(fallback.requests.length, 0);
+});
+
+it("rejects a long Together name from the routing window without an upstream call", async (t) => {
+  const { post, together, fallback } = await fixture(t, sseHandler(lateToolNames), KEY, {}, {
+    limits: { maxBufferedBodyBytes: 512 },
+  });
+  const response = await post({ ...REQUEST, model: `together:${"x".repeat(201)}`, padding: "x".repeat(1024) });
+  await response.text();
+  assert.equal(response.status, 400);
+  assert.equal(response.headers.get("x-subswitch-synthesized"), "1");
+  assert.equal(together.requests.length + fallback.requests.length, 0);
+});
+
+it("keeps the qualified model id in the Together request body only", async (t) => {
+  const { post, together, fallback } = await fixture(t, sseHandler(lateToolNames));
+  const id = `fixture/${"x".repeat(188)}:tag`;
+  assert.equal(id.length, 200);
+  const response = await post({ ...REQUEST, model: `together:${id}` });
+  await response.text();
+  assert.equal(response.status, 200);
+  assert.equal(fallback.requests.length, 0);
+  const [call] = together.requests;
+  assert.ok(call);
+  assert.equal(call.url, "/v1/chat/completions");
+  assert.ok(!JSON.stringify(call.headers).includes(id));
+  assert.equal(JSON.parse(call.body.toString()).model, id);
+});
+
 it("sends only the Together credential and fixed transport headers", async (t) => {
   const { post, together, fallback, logs } = await fixture(t, sseHandler(lateToolNames));
   const response = await post({ ...REQUEST, max_tokens: 100_000, n: 50, metadata: { tag: "local" } });
@@ -77,7 +116,7 @@ it("sends only the Together credential and fixed transport headers", async (t) =
   assert.equal(wire.n, undefined);
   assert.equal(wire.metadata, undefined);
   assert.deepEqual(logs.filter((log) => JSON.stringify(log).includes("output_cap_clamped")), [
-    { event: "output_cap_clamped", fields: { model: MODEL, requestedTokens: 100_000, appliedTokens: 16_384 } },
+    { event: "output_cap_clamped", fields: { model: REQUEST.model, requestedTokens: 100_000, appliedTokens: 16_384 } },
   ]);
 });
 
