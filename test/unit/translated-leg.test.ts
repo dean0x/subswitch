@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
-import { PassThrough } from "node:stream";
+import { PassThrough, Transform } from "node:stream";
 import { it } from "node:test";
 import type { LimitObservation } from "../../src/limit-observation.js";
 import { err, ok } from "../../src/result.js";
@@ -143,6 +143,71 @@ it("aborts a stalled body at the idle bound", { timeout: 1000 }, async (t) => {
 
   assert.equal(res.statusCode, 502);
   assert.equal(res.listenerCount("close"), 0);
+});
+
+it("ends a failed stream with an SSE error event", async (t) => {
+  const res = response();
+  const write = t.mock.method(res, "write");
+  await runTranslatedLeg(res, options({
+    wantStream: true,
+    createTranslator: () => ({
+      parser: new PassThrough(),
+      translator: new Transform({ transform: (_chunk, _encoding, done) => done(new Error("fixture stream failure")) }),
+    }),
+  }));
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.writableEnded, true);
+  assert.deepEqual(write.mock.calls.map(({ arguments: [frame] }) => frame), [
+    'event: error\ndata: {"type":"error","error":{"type":"api_error","message":"fixture stream interrupted"}}\n\n',
+  ]);
+});
+
+it("returns a 502 with the error from a completed aggregate", async (t) => {
+  const res = response();
+  const end = t.mock.method(res, "end");
+  await runTranslatedLeg(res, options({
+    aggregateFrames: () => ok({ kind: "error", errorType: "api_error", message: "fixture aggregate error" }),
+  }));
+
+  assert.equal(res.statusCode, 502);
+  assert.equal(end.mock.calls[0]?.arguments[0],
+    '{"type":"error","error":{"type":"api_error","message":"fixture aggregate error"}}');
+});
+
+it("returns an upstream unreachable 502 when fetch rejects without an abort", async (t) => {
+  const res = response();
+  const end = t.mock.method(res, "end");
+  await runTranslatedLeg(res, options({ fetchImpl: async () => { throw new Error("fixture network error"); } }));
+
+  assert.equal(res.statusCode, 502);
+  assert.equal(end.mock.calls[0]?.arguments[0],
+    '{"type":"error","error":{"type":"api_error","message":"fixture upstream unreachable"}}');
+});
+
+it("sends the refresh error after an upstream 401 and makes no second request", async (t) => {
+  const res = response();
+  const end = t.mock.method(res, "end");
+  const fetchImpl = t.mock.fn(async () => new Response("denied", { status: 401 }));
+  await runTranslatedLeg(res, options({
+    auth: { ...options().auth, refreshable: true, forceRefresh: async () => err({ kind: "auth", message: "fixture refresh failed" }) },
+    fetchImpl,
+  }));
+
+  assert.equal(res.statusCode, 401);
+  assert.equal(end.mock.calls[0]?.arguments[0],
+    '{"type":"error","error":{"type":"authentication_error","message":"fixture refresh failed"}}');
+  assert.equal(fetchImpl.mock.callCount(), 1);
+});
+
+it("returns a 502 when the upstream sends a 200 with no body", async (t) => {
+  const res = response();
+  const end = t.mock.method(res, "end");
+  await runTranslatedLeg(res, options({ fetchImpl: async () => new Response(null, { status: 200 }) }));
+
+  assert.equal(res.statusCode, 502);
+  assert.equal(end.mock.calls[0]?.arguments[0],
+    '{"type":"error","error":{"type":"api_error","message":"fixture upstream returned an empty body"}}');
 });
 
 it("rejects an over-limit aggregate instead of sending partial content", async () => {

@@ -19,7 +19,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { globSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 
@@ -51,5 +51,27 @@ describe("source-text guards", () => {
       !serverTs.includes(forbidden),
       `src/server.ts contains "${forbidden}" — the declaring provider must always be in hand (see KNOWLEDGE.md anti-patterns); PROVIDER_IDS[0] is valid only by coincidence while PROVIDER_IDS.length === 1`,
     );
+  });
+
+  it("keeps direct Together key env access in the key reader, including for health", () => {
+    const forbidden = /\bTOGETHER_API_KEY\b|\[\s*TOGETHER_API_KEY_ENV\s*\]/;
+    const keyReader = "together-auth.ts";
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
+    assert.ok(files.includes(keyReader), "The source list must include the Together key reader");
+    for (const file of files) {
+      if (file === keyReader) continue;
+      assert.ok(!forbidden.test(readSrc(file)), `Use the Together key reader for env access in src/${file}`);
+    }
+  });
+
+  it("requires the fake marker on every Together key fixture", () => {
+    const path = join(SRC_DIR, "../test/fixtures/together/keys.json");
+    const fixtures: unknown = JSON.parse(readFileSync(path, "utf8"));
+    assert.ok(typeof fixtures === "object" && fixtures !== null && !Array.isArray(fixtures));
+    const values: unknown[] = Object.values(fixtures);
+    assert.ok(values.length > 0);
+    for (const value of values) {
+      assert.ok(typeof value === "string" && value.startsWith("FAKE-TOGETHER-KEY-"), "Use marked Together key fixtures");
+    }
   });
 });
