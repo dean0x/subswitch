@@ -9,7 +9,7 @@
  */
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -87,7 +87,8 @@ export const planRun = (env: Readonly<Record<string, string | undefined>>,
   return ok({ paidRequests: PAID_REQUESTS, ceilingUsd, worstCaseUsd: worst });
 };
 
-export type RelayRefusal = "route" | "no_part" | "request_cap" | "body_bound" | "max_tokens" | "model" | "choices" | "content";
+export type RelayRefusal = "route" | "no_part" | "request_cap" | "body_bound" | "max_tokens" | "model" | "choices" | "content"
+  | "tool_result_bound" | "tool_result_marker";
 export interface RelayRecord {
   /** 0 is the free model list before Part 1. */
   readonly phase: 0 | Part;
@@ -164,6 +165,37 @@ const nonTextParts = (body: Record<string, unknown> | undefined): number => {
   return count;
 };
 
+/**
+ * Part 1 sends only the fixture to Together. Its Read output is about 60 bytes, plus any
+ * reminder text that Claude Code adds. Thus 4 KiB holds it, but stops a large user file.
+ */
+const PART1_TOOL_RESULT_BYTES = 4 * KIB;
+/** The fixture marker that the Part 1 script writes. No other file holds it. */
+const FIXTURE_MARKER = /together-read-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
+
+/**
+ * The content of each `role: "tool"` message, as text. Part 1 refuses every other tool
+ * result part already, because it allows no part that is not text.
+ */
+const toolResultTexts = (body: Record<string, unknown> | undefined): string[] => {
+  const texts: string[] = [];
+  const messages = body?.["messages"];
+  for (const value of Array.isArray(messages) ? messages : []) {
+    const message = object(value);
+    if (message?.["role"] !== "tool") continue;
+    const content = message["content"];
+    texts.push(typeof content === "string" ? content : JSON.stringify(content) ?? "");
+  }
+  return texts;
+};
+
+/** Part 1 forwards a tool result only when it is small and holds the fixture marker. */
+const part1ToolResultRefusal = (body: Record<string, unknown> | undefined): RelayRefusal | undefined => {
+  const texts = toolResultTexts(body);
+  if (texts.some((text) => Buffer.byteLength(text, "utf8") > PART1_TOOL_RESULT_BYTES)) return "tool_result_bound";
+  return texts.every((text) => FIXTURE_MARKER.test(text)) ? undefined : "tool_result_marker";
+};
+
 const requestFacts = (body: Record<string, unknown> | undefined) => {
   const fields = new Set<string>();
   let toolResults = 0;
@@ -213,7 +245,7 @@ const routeOf = (req: http.IncomingMessage): "models" | "chat" | undefined => {
  * Loopback relay in front of Together. It forwards one free model list before Part 1, then
  * at most the planned paid requests of each part, each under its body and max_tokens bound,
  * for a catalog row, with one choice and with no more non-text parts than the part allows.
- * A refusal is a local 400 (Claude Code does not retry it). It never retries.
+ * In Part 1, each tool result must be at most 4 KiB and hold the fixture marker. A refusal is a local 400 (Claude Code does not retry it). It never retries.
  */
 export const createCountingRelay = async (options: { readonly upstream: string; readonly timeoutMs?: number }):
   Promise<Result<CountingRelay, "relay_listen_failed">> => {
@@ -241,7 +273,9 @@ export const createCountingRelay = async (options: { readonly upstream: string; 
     const model = body?.["model"];
     if (typeof model !== "string" || !CATALOG_IDS.has(model)) return "model";
     if (body !== undefined && Object.hasOwn(body, "n") && body["n"] !== 1) return "choices";
-    return nonTextParts(body) > bound.nonTextParts ? "content" : undefined;
+    if (nonTextParts(body) > bound.nonTextParts) return "content";
+    // The Read rule of Claude Code may not hold in a sub-agent, so the relay limits what a Part 1 Read can send.
+    return current === 1 ? part1ToolResultRefusal(body) : undefined;
   };
 
   const forward = async (req: http.IncomingMessage, res: http.ServerResponse, current: 0 | Part, raw: Buffer,
@@ -450,13 +484,16 @@ const runPart1 = async (proxyUrl: string, temp: string) => {
   await mkdir(work, { mode: 0o700 });
   await mkdir(configDir, { mode: 0o700 });
   const fixture = `together-read-${randomUUID()}`;
-  await writeFile(join(work, "check.txt"), fixture, { mode: 0o600 });
+  const fixturePath = join(await realpath(work), "check.txt");
+  await writeFile(fixturePath, fixture, { mode: 0o600 });
+  // The leading double slash marks an absolute path, so the Read rule does not depend on cwd.
+  const readRule = `Read(/${fixturePath})`;
   // The child gets no form of the paid key name: Windows matches env names in any letter case.
   const env = childEnvWithoutTogetherKey(isolatedNativeEnv({ CLAUDE_CONFIG_DIR: configDir,
     CLAUDE_CODE_OAUTH_TOKEN: (claude["authorization"] ?? "").slice("Bearer ".length), ANTHROPIC_BASE_URL: proxyUrl }));
   const result = await nativeProcess("claude", [
     "--print", "--setting-sources", "", "--settings", '{"disableAllHooks":true}', "--disable-slash-commands",
-    "--strict-mcp-config", "--no-session-persistence", "--tools", "Agent,Read", "--allowedTools", "Agent,Read",
+    "--strict-mcp-config", "--no-session-persistence", "--tools", "Agent,Read", "--allowedTools", `Agent,${readRule}`,
     "--permission-mode", "dontAsk", "--model", "sonnet", "--effort", "low", "--output-format", "json",
     "--agents", JSON.stringify({ [PART1_AGENT]: { description: "Read the probe fixture.", model: `together:${KIMI}`, tools: ["Read"],
       prompt: "Read check.txt with the Read tool and report its exact content. Do not use other tools." } }),

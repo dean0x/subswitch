@@ -241,7 +241,16 @@ redirect. It refuses each of these with a local 400, which Claude Code does not 
 - an `n` value other than 1;
 - an image or other content part that is not text, in Part 1 or Part 2, and more than
   one in a Part 3 request;
+- in Part 1, a tool result above 4 KiB (`tool_result_bound`), or a tool result that does
+  not hold the `together-read-<uuid>` fixture marker (`tool_result_marker`);
 - any other route, and a second model list.
+
+The report shows the code of each refusal in the `refused` field of its relay record. In
+Part 1, `--allowedTools` allows Read only for the absolute fixture path:
+`Read(//<temp folder>/work/check.txt)`.
+
+Not established: whether Claude Code applies the path-scoped Read rule to a sub-agent.
+The relay bound on Part 1 tool results is the control that holds in any case.
 
 | Part | Requests | Body bound | max_tokens | Checks |
 |---|---|---|---|---|

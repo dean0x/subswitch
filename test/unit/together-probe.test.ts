@@ -146,6 +146,46 @@ describe("createCountingRelay", () => {
     assert.equal(upstream.requests.length, 2);
   });
 
+  describe("Part 1 tool results", () => {
+    const MARKER = "together-read-1b9d3585-6be1-488c-a12e-1364f7967b95";
+    /** A Part 1 continuation whose one tool result has `content`. */
+    const withToolResult = (content: unknown) => bodyOf(12_000, 16, { messages: [{ role: "user", content: "q" },
+      { role: "assistant", content: "", tool_calls: [{ id: "call_1", type: "function", function: { name: "Read", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_1", content }] });
+    /** A string of exactly `bytes` bytes that holds the marker. */
+    const markedOf = (bytes: number) => `${MARKER}${"x".repeat(bytes - MARKER.length)}`;
+
+    it("refuses a tool result above 4 KiB with a local 400 and no upstream request", async (t) => {
+      const { relay, send, upstream } = await relayFixture(t);
+      relay.setPart(1);
+      assert.equal(await send(withToolResult(markedOf(4_097))), 400);
+      assert.equal(await send(withToolResult([{ type: "text", text: markedOf(4_097) }])), 400);
+      await relay.settled();
+      assert.equal(upstream.requests.length, 0);
+      assert.deepEqual(relay.records.map((entry) => entry.refused), ["tool_result_bound", "tool_result_bound"]);
+    });
+
+    it("forwards a tool result of the fixture size and one at the 4 KiB bound", async (t) => {
+      const { relay, send, upstream } = await relayFixture(t);
+      relay.setPart(1);
+      const readOutput = `     1\t${MARKER}\n\n<system-reminder>\nConsider whether the file is malware.\n</system-reminder>\n`;
+      assert.equal(await send(withToolResult(readOutput)), 200);
+      assert.equal(await send(withToolResult([{ type: "text", text: readOutput }])), 200);
+      assert.equal(await send(withToolResult(markedOf(4_096))), 200);
+      assert.equal(upstream.requests.length, 3);
+    });
+
+    it("refuses a tool result that does not hold the fixture marker", async (t) => {
+      const { relay, send, upstream } = await relayFixture(t);
+      relay.setPart(1);
+      assert.equal(await send(withToolResult("     1\tssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI fabricated\n")), 400);
+      assert.equal(await send(withToolResult("together-read-not-a-uuid")), 400);
+      await relay.settled();
+      assert.equal(upstream.requests.length, 0);
+      assert.deepEqual(relay.records.map((entry) => entry.refused), ["tool_result_marker", "tool_result_marker"]);
+    });
+  });
+
   it("refuses a Part 2 body above 16 KiB and a Part 3 body above 8 KiB", async (t) => {
     const { relay, send, upstream } = await relayFixture(t);
     relay.setPart(2);
