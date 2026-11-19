@@ -5,6 +5,7 @@ import { once } from "node:events";
 import { describe, it } from "node:test";
 import { loadConfig } from "../../src/config.js";
 import { runAction } from "../../src/run-action.js";
+import { TOGETHER_API_KEY_ENV } from "../../src/together-auth.js";
 import { ActionIngress } from "../../src/routing/action-ingress.js";
 import { ActionStore } from "../../src/routing/action-store.js";
 import type { RoutingClock } from "../../src/routing/clock.js";
@@ -90,6 +91,21 @@ async function fixture(store = new ActionStore()) {
 const readyProgram = 'fetch(process.env.ANTHROPIC_BASE_URL + "/ready").then(() => new Promise(resolve => setTimeout(resolve, 1000)));';
 
 describe("native action child boundary", () => {
+  it("omits the Together key from the child environment", async (t) => {
+    const rig = await fixture();
+    t.after(rig.close);
+    const parentEnv = process.env;
+    t.after(() => { process.env = parentEnv; });
+    process.env = { [TOGETHER_API_KEY_ENV]: "FAKE-TOGETHER-KEY-action-owner" };
+    const check = 'process.exitCode = Object.hasOwn(process.env, process.argv[1]) ? 73 : 0;';
+    const status = await runAction(
+      rig.config, "claude-code", [process.execPath, "-e", check, TOGETHER_API_KEY_ENV], "synthetic",
+      { readControl: rig.readControl },
+    );
+    assert.equal(status, 0, "the child must not inherit the key");
+    assert.equal(process.env[TOGETHER_API_KEY_ENV], "FAKE-TOGETHER-KEY-action-owner");
+  });
+
   it("records the wrapper process as the action owner", async () => {
     const time = clockFixture(), observed: number[] = [];
     const store = new ActionStore(time.clock, (pid) => {

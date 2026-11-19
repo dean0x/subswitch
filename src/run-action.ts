@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
 import type { Config } from "./config.js";
+import { TOGETHER_API_KEY_ENV } from "./together-auth.js";
 import { readActionControl } from "./routing/action-control.js";
 import {
   RoutingError,
@@ -107,6 +108,7 @@ export async function runAction(
     }
     const base = `http://127.0.0.1:${port}${action.ingressPrefix}`;
     const env = { ...process.env };
+    Reflect.deleteProperty(env, TOGETHER_API_KEY_ENV);
     const args = native.slice(1);
     if (client === "claude-code") env["ANTHROPIC_BASE_URL"] = base;
     else {
