@@ -210,7 +210,7 @@ export const createSseParser = (maxEventBytes: number, includeComments = false):
  * 1024 is generous for any realistic response (typical: single digits) but bounded against
  * an upstream-controlled loop.
  */
-const MAX_CONTENT_BLOCKS = 1024;
+export const MAX_CONTENT_BLOCKS = 1024;
 
 const frame = (event: string, data: unknown): string => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 

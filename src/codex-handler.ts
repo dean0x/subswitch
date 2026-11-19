@@ -1,11 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { ReadableStream as WebReadableStream } from "node:stream/web";
-import { upstreamStatusToAnthropicError, toAnthropicErrorBody, toAnthropicErrorSse, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
-import { respondJson, respondProxyError, readBoundedText, createFrameWriter } from "./provider-transport.js";
-import type { CodexProviderConfig } from "./config.js";
+import { upstreamStatusToAnthropicError, toAnthropicErrorBody } from "./errors.js";
+import { respondJson, respondProxyError } from "./provider-transport.js";
+import { codexCredentialFor, type CodexProviderConfig, type CredentialKindTable } from "./config.js";
 import type { Logger } from "./logger.js";
 import { providerEvents } from "./provider-events.js";
 import type { ProviderId } from "./models.js";
@@ -16,10 +13,14 @@ import { estimateTokens, translateRequest } from "./codex-request.js";
 import { deriveConversationKey } from "./conversation-key.js";
 import { aggregateFrames, createAnthropicSseTranslator, createSseParser } from "./codex-response.js";
 import { AnthropicRequestSchema } from "./anthropic-wire-types.js";
-import { recordLimitFailure } from "./limit-observation.js";
-import { observeReadableSse } from "./limit-http-observer.js";
+import type { LimitContext } from "./limit-observation.js";
+import { runTranslatedLeg } from "./translated-leg.js";
 
-const ERROR_BODY_PEEK_BYTES = 2048;
+const CODEX_LIMIT_KEY: LimitContext = { provider: "codex", product: "chatgpt-codex", protocol: "responses" };
+
+const AUTH_HINT: CredentialKindTable<string> = {
+  "oauth-file": ({ loginCommand }) => ` — run \`${loginCommand}\``,
+};
 
 /**
  * `P` ties `providerId` to `auth`, and that is all it does.
@@ -32,7 +33,7 @@ const ERROR_BODY_PEEK_BYTES = 2048;
  * `provider: CodexProviderConfig` is intentionally NOT parameterised by `P`.
  * Expressing it as `Config["providers"][P]` would compile today only because
  * `ProviderId` is a single-member union; it would break when a second provider lands,
- * because `Config["providers"]["kimi"]` is not `CodexProviderConfig`. The handler
+ * because another provider's config need not match `CodexProviderConfig`. The handler
  * works with the concrete Codex config slice — hardcoding the type is honest about
  * what the code does.
  *
@@ -61,15 +62,7 @@ export interface CodexHandlerDeps<P extends ProviderId> {
    * global settings that were never meant to be per-provider.
    */
   readonly provider: CodexProviderConfig;
-  /**
-   * Shell command the user must run to obtain or refresh this provider's credential.
-   * Read from `providerConfigFor(config, id).loginCommand` at the wiring site.
-   *
-   * Cannot be synthesised from `providerId`: a provider whose id is "kimi" may well
-   * log in with "kimi auth login", not "kimi login". The field must carry the
-   * hand-written value from the config accessor table (src/config.ts:PROVIDER_CONFIG_ACCESSORS).
-   * It is not user-settable — it is absent from the Zod schema.
-   */
+  /** Login command from the provider accessor, for the 401 hint. */
   readonly loginCommand: string;
   /** The one cross-cutting limit this handler reads; everything else comes from `provider`. */
   readonly pingIntervalMs: number;
@@ -158,7 +151,9 @@ export const codexTransportConstants = (userAgent: string): CodexTransportConsta
 });
 
 export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<P>): ProviderHandler => {
-  const { providerId, provider, logger, auth, cache, pingIntervalMs, loginCommand } = deps;
+  const { providerId, provider, logger, auth, cache, pingIntervalMs } = deps;
+  const source = codexCredentialFor(provider, deps.loginCommand);
+  const authHint = AUTH_HINT[source.kind](source);
   const fetchImpl = deps.fetchImpl ?? fetch;
   const newSessionId = deps.newSessionId ?? randomUUID;
   // Event names resolved once here, not per request: the hot path does no string work,
@@ -209,214 +204,45 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
       logger.log("info", events.effortApplied, { model, effort: translated.value.effort });
     }
 
-    // RELI-04: construct the controller, total-timer, and close-listener BEFORE calling
-    // auth.getCredentials() so credential loading shares the request's lifetime. Without
-    // this, a hung getCredentials() (e.g., from a single-flight refresh on a slow OAuth
-    // endpoint) runs outside every bound the handler establishes: the client-close signal
-    // is not wired up yet, the total timer has not started, and cleanup never runs if
-    // getCredentials() returns an error.  With the controller set up here, getCredentials()
-    // is covered by both the close listener and the requestTimeoutMs total timer, and the
-    // finally{} block's cleanup() runs on every exit path including credential failure.
-    //
-    // Note: sessionId is still derived ABOVE this block (before the retry loop), so the
-    // ADR-003 invariant is preserved — both the initial attempt and the 401-refresh retry
-    // reuse the same sessionId value.
-    const controller = new AbortController();
-    const onClientClose = (): void => {
-      if (!res.writableFinished) controller.abort();
-    };
-    res.on("close", onClientClose);
-    const totalTimer = setTimeout(() => controller.abort(), provider.requestTimeoutMs);
-    totalTimer.unref();
-
-    let idleTimer: NodeJS.Timeout | undefined;
-    const resetIdle = (): void => {
-      if (idleTimer !== undefined) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => controller.abort(), provider.streamIdleTimeoutMs);
-      idleTimer.unref();
-    };
-    const cleanup = (): void => {
-      clearTimeout(totalTimer);
-      if (idleTimer !== undefined) clearTimeout(idleTimer);
-      res.off("close", onClientClose);
-    };
-
-    try {
-      const credentialResult = await auth.getCredentials();
-      if (!credentialResult.ok) {
-        respondProxyError(res, credentialResult.error);
-        return;
-      }
-      let credential = credentialResult.value;
-      let upstream: Response | undefined;
-      // Bounded retry: the initial attempt, plus one more only if the credential can
-      // actually be refreshed. A provider whose credential is static gets a single
-      // attempt so its truthful 401 reaches the client instead of a refresh error.
-      const maxAttempts = auth.refreshable ? 2 : 1;
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        let response: Response;
-        try {
-          response = await fetchImpl(responsesUrl, {
-            method: "POST",
-            headers: buildHeaders(credential, sessionId, transportConstants),
-            body: JSON.stringify(translated.value.body),
-            signal: controller.signal,
-          });
-        } catch {
-          if (res.writableEnded || res.destroyed) return;
-          respondProxyError(
-            res,
-            controller.signal.aborted
-              ? { kind: "timeout", message: `${providerId} request timed out` }
-              : { kind: "upstream", message: `${providerId} upstream unreachable` },
-          );
-          return;
-        }
-        // Refresh only while the budget still has an attempt left to spend it on.
-        // Refreshing on the last permitted attempt would renew a static provider's
-        // credential behind its back and replace the upstream's truthful 401 with a
-        // synthesised refresh failure.
-        if (response.status === 401 && attempt + 1 < maxAttempts) {
-          logger.log("warn", events.upstream401Refreshing, { model });
-          await response.body?.cancel().catch(() => undefined);
-          const refreshed = await auth.forceRefresh();
-          if (!refreshed.ok) {
-            respondProxyError(res, refreshed.error);
-            return;
-          }
-          credential = refreshed.value;
-          continue;
-        }
-        upstream = response;
-        break;
-      }
-      // INVARIANT, not an error path. Every attempt either returns from this function or
-      // assigns `upstream`, except the one that refreshes — and that one is gated on
-      // `attempt + 1 < maxAttempts`, so it cannot fire on the last permitted attempt.
-      // With `refreshable: boolean`, `maxAttempts` is 1 or 2 and the loop therefore always
-      // leaves through `upstream = response`. Reaching here means the bound and the guard
-      // have drifted apart in a later edit: a programming error, not an upstream or
-      // credential condition, and it must not be dressed up as one.
-      //
-      // Kept as an assertion rather than deleted because `tsc` cannot prove `maxAttempts
-      // >= 1`; deleting the check needs `upstream!`, which converts that same drift into
-      // an opaque TypeError on `.ok`. Reported through the normal response path rather
-      // than thrown — business logic returns, it does not throw — and logged under its own
-      // derived event name so it is greppable and can never be read as a 401.
-      if (upstream === undefined) {
-        logger.log("error", events.retryBoundViolated, { model });
-        respondJson(res, 500, toAnthropicErrorBody("api_error", `${providerId} internal error`));
-        return;
-      }
-
-      if (!upstream.ok) {
-        const mapped = upstreamStatusToAnthropicError(upstream.status);
-        const detail = await readBoundedText(upstream.body, ERROR_BODY_PEEK_BYTES);
-        recordLimitFailure(logger, { provider: "codex", product: "chatgpt-codex", protocol: "responses" },
-          { transport: "http", status: upstream.status, committed: false, headers: upstream.headers,
-            text: detail, truncated: Buffer.byteLength(detail) >= ERROR_BODY_PEEK_BYTES });
-        logger.log("warn", events.upstreamError, { model, status: upstream.status });
-        const retryAfter = upstream.headers.get("retry-after");
-        // Only 401s get a remediation hint — no other status code changes behaviour.
-        // The error-type prefix ("${providerId} upstream error") is preserved so the
-        // pattern /codex upstream error/ continues to match. The full string is not a
-        // strict prefix because redactCredentials may rewrite the interior. (applies ADR-008)
-        const remediation = upstream.status === 401 ? ` — run \`${loginCommand}\`` : "";
-        respondJson(
-          res,
-          mapped.status,
-          toAnthropicErrorBody(mapped.type, `${providerId} upstream error (${upstream.status})${detail === "" ? "" : `: ${detail}`}${remediation}`),
-          retryAfter !== null ? { "retry-after": retryAfter } : {},
-        );
-        return;
-      }
-
-      if (upstream.body === null) {
-        respondProxyError(res, { kind: "upstream", message: `${providerId} upstream returned an empty body` });
-        return;
-      }
-
-      const wantStream = translated.value.stream;
-      const parser = createSseParser(provider.maxSseEventBytes);
-      const translator = createAnthropicSseTranslator({
-        // Use the canonical model as the fallback for message_start (options.model)
-        // so clients see the canonical id even when the upstream omits model in response.created.
-        model: request.model,
-        logger,
-        providerId,
-        onReasoningItems: (callId, items) => cache.put(callId, items),
-        ...(conversationKey !== undefined ? { conversationKey } : {}),
-        ...(wantStream ? { pingIntervalMs } : {}),
-      });
-      const bodyStream = Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>);
-      observeReadableSse(logger, { provider: "codex", product: "chatgpt-codex", protocol: "responses" }, bodyStream, upstream.headers);
-      bodyStream.on("data", resetIdle);
-      resetIdle();
-
-      if (wantStream) {
-        res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", [SYNTHESIZED_HEADER]: SYNTHESIZED_MARKER });
-        res.socket?.setNoDelay(true);
-        // res is written manually rather than placed inside pipeline(): on an
-        // upstream error, pipeline destroys every stream it owns, which would
-        // kill the client connection before the error SSE event can be sent.
-        //
-        // writeFrame races the drain wait against controller.signal so a client
-        // that stops reading without closing cannot hold the connection open past
-        // requestTimeoutMs. Project rule: every resource must have an explicit bound.
-        const writeFrame = createFrameWriter(res, controller.signal);
-        try {
-          await pipeline(bodyStream, parser, translator, async (source) => {
-            for await (const chunk of source) await writeFrame(String(chunk));
-          });
-          res.end();
-        } catch {
-          // Mid-stream failure after message_start: emit an error event, never retry.
-          logger.log("warn", events.streamInterrupted, { model });
-          if (!res.writableEnded && !res.destroyed) {
-            res.write(toAnthropicErrorSse("api_error", `${providerId} stream interrupted`));
-            res.end();
-          }
-        }
-        return;
-      }
-
-      const frames: string[] = [];
-      let framesBytes = 0;
-      try {
-        await pipeline(bodyStream, parser, translator, async (source) => {
-          for await (const chunk of source) {
-            const frame = String(chunk);
-            framesBytes += frame.length;
-            // RELI-06: bound the accumulation buffer before aggregateFrames materialises
-            // the turn. Every other buffer on this path is bounded (maxEventBytes,
-            // maxBufferedBodyBytes, MAX_CONTENT_BLOCKS); this is the one that was not.
-            // Exceeding the cap is reported as a pipeline failure — the same 502
-            // "stream interrupted" shape as any other midstream abort. We must never
-            // pass a truncated frames array to aggregateFrames, which would produce a
-            // silent 200 with empty content (avoids PF-008).
-            if (framesBytes > provider.maxAggregateBytes) {
-              throw new Error("sse_aggregate_too_large");
-            }
-            frames.push(frame);
-          }
-        });
-      } catch {
-        respondProxyError(res, { kind: "upstream", message: `${providerId} stream interrupted` });
-        return;
-      }
-      const aggregated = aggregateFrames(frames, providerId);
-      if (!aggregated.ok) {
-        respondProxyError(res, aggregated.error);
-        return;
-      }
-      if (aggregated.value.kind === "error") {
-        respondJson(res, 502, toAnthropicErrorBody(aggregated.value.errorType, aggregated.value.message));
-        return;
-      }
-      respondJson(res, 200, JSON.stringify(aggregated.value.message));
-    } finally {
-      cleanup();
-    }
+    await runTranslatedLeg(res, {
+      url: responsesUrl,
+      name: providerId,
+      model,
+      body: translated.value.body,
+      wantStream: translated.value.stream,
+      requestTimeoutMs: provider.requestTimeoutMs,
+      streamIdleTimeoutMs: provider.streamIdleTimeoutMs,
+      maxAggregateBytes: provider.maxAggregateBytes,
+      logger,
+      events,
+      auth,
+      fetchImpl,
+      redirect: "follow",
+      buildHeaders: (credential) => buildHeaders(credential, sessionId, transportConstants),
+      limitKey: CODEX_LIMIT_KEY,
+      renderUpstreamError: (status, detail, headers) => {
+        const retryAfter = headers.get("retry-after");
+        const remediation = status === 401 ? authHint : "";
+        return {
+          ...upstreamStatusToAnthropicError(status),
+          message: `${providerId} upstream error (${status})${detail === "" ? "" : `: ${detail}`}${remediation}`,
+          ...(retryAfter !== null ? { headers: { "retry-after": retryAfter } } : {}),
+        };
+      },
+      createTranslator: () => ({
+        parser: createSseParser(provider.maxSseEventBytes),
+        translator: createAnthropicSseTranslator({
+          // Use the canonical model when the upstream response omits it.
+          model: request.model,
+          logger,
+          providerId,
+          onReasoningItems: (callId, items) => cache.put(callId, items),
+          ...(conversationKey !== undefined ? { conversationKey } : {}),
+          ...(translated.value.stream ? { pingIntervalMs } : {}),
+        }),
+      }),
+      aggregateFrames: (frames) => aggregateFrames(frames, providerId),
+    });
   };
 
   const handleCountTokens = (_req: IncomingMessage, res: ServerResponse, rawBody: Buffer): void => {

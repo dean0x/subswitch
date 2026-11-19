@@ -35,7 +35,7 @@ const readSrc = (name: string): string =>
 // ---------------------------------------------------------------------------
 
 describe("source-text guards", () => {
-  it("G1: PROVIDER_IDS[0] must not appear in src/models.ts or src/server.ts", () => {
+  it("G1: models and server must not assume the first entry in PROVIDER_IDS is the intended provider", () => {
     const modelsTs = readSrc("models.ts");
     const serverTs = readSrc("server.ts");
 

@@ -291,7 +291,7 @@ describe("createAnthropicSseTranslator", () => {
    *
    * Mutation that MUST turn this red: apply the redaction in the handler instead of
    * in errors.ts (i.e. remove the redactCredentials call from toAnthropicErrorBody
-   * and add it only to the upstream-body-relay in codex-handler.ts). This mutation
+   * and add it only to the upstream-body-relay in translated-leg.ts). This mutation
    * exists specifically to prove the chokepoint choice was correct: the response.failed
    * path flows through toAnthropicErrorSse → toAnthropicErrorBody, NOT through the
    * handler's upstream-body relay, so handler-side redaction does not cover it.

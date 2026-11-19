@@ -30,9 +30,13 @@ export const respondJson = (
 /**
  * Map a ProxyError to an Anthropic-shaped HTTP response.
  */
-export const respondProxyError = (res: ServerResponse, error: ProxyError): void => {
+export const respondProxyError = (
+  res: ServerResponse,
+  error: ProxyError,
+  extraHeaders?: Record<string, string>,
+): void => {
   const mapped = proxyErrorToAnthropic(error);
-  respondJson(res, mapped.status, toAnthropicErrorBody(mapped.type, error.message));
+  respondJson(res, mapped.status, toAnthropicErrorBody(mapped.type, error.message), extraHeaders);
 };
 
 /**

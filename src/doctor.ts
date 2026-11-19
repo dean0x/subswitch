@@ -3,7 +3,7 @@ import { readdir, readFile as fsReadFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
-import { aliasesByProvider, providerConfigFor, type Config } from "./config.js";
+import { aliasesByProvider, providerConfigFor, type Config, type CredentialKindTable } from "./config.js";
 import { inspectAuthFile } from "./codex-auth.js";
 import { isPlainObject } from "./plain-object.js";
 import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
@@ -284,45 +284,47 @@ export const runDoctor = async (
     readonly credentialUsable: boolean;
   }
 
-  const checkOneProvider = async (id: ProviderId): Promise<ProviderCheck> => {
-    const { authFile, loginCommand } = providerConfigFor(config, id);
-    const optedIn = configuredProviderIds.has(id);
-    const lines: string[] = [row(`${id}.authFile:`, authFile)];
+  const checkOneProvider = (id: ProviderId): Promise<ProviderCheck> => {
+    const credential = providerConfigFor(config, id);
+    const checks: CredentialKindTable<Promise<ProviderCheck>> = {
+      "oauth-file": async ({ authFile, loginCommand }) => {
+        const optedIn = configuredProviderIds.has(id);
+        const lines: string[] = [row(`${id}.authFile:`, authFile)];
 
-    try {
-      const raw = await io.readAuthFile(authFile);
-      const inspection = PROVIDER_AUTH_INSPECTORS[id](raw);
-      if (!inspection.ok) {
-        // A credential file that exists but does not parse is broken regardless of
-        // whether the provider block is in the config — the user clearly has one.
-        lines.push(row(`${id} auth:`, failStr(`INVALID (${inspection.error.message})`)));
-        return { lines, failed: true, credentialUsable: false };
-      }
-      const info = inspection.value;
-      lines.push(row(`${id} auth mode:`, passStr(info.authMode)));
-      lines.push(row(`${id} account:`, info.accountIdSuffix));
-      lines.push(row("token expires:", info.accessTokenExpiresAt ?? "(no exp claim)"));
-      lines.push(row("last refresh:", info.lastRefresh ?? "(unknown)"));
-      return { lines, failed: false, credentialUsable: true };
-    } catch (e) {
-      const isEnoent =
-        (e instanceof Error && (e as NodeJS.ErrnoException).code === "ENOENT") ||
-        (e instanceof Error && e.message.includes("ENOENT"));
+        try {
+          const raw = await io.readAuthFile(authFile);
+          const inspection = PROVIDER_AUTH_INSPECTORS[id](raw);
+          if (!inspection.ok) {
+            // A malformed credential file causes a failure even without a provider block.
+            lines.push(row(`${id} auth:`, failStr(`INVALID (${inspection.error.message})`)));
+            return { lines, failed: true, credentialUsable: false };
+          }
+          const info = inspection.value;
+          lines.push(row(`${id} auth mode:`, passStr(info.authMode)));
+          lines.push(row(`${id} account:`, info.accountIdSuffix));
+          lines.push(row("token expires:", info.accessTokenExpiresAt ?? "(no exp claim)"));
+          lines.push(row("last refresh:", info.lastRefresh ?? "(unknown)"));
+          return { lines, failed: false, credentialUsable: true };
+        } catch (e) {
+          const isEnoent =
+            (e instanceof Error && (e as NodeJS.ErrnoException).code === "ENOENT") ||
+            (e instanceof Error && e.message.includes("ENOENT"));
 
-      if (!optedIn) {
-        // Not configured by the user — informational whatever the error. (avoids PF-006)
-        lines.push(
-          row(`${id} auth:`, pc.dim("unconfigured") + ` (run \`${loginCommand}\` to enable ${id} routing)`),
-        );
-        return { lines, failed: false, credentialUsable: false };
-      }
+          if (!optedIn) {
+            lines.push(
+              row(`${id} auth:`, pc.dim("unconfigured") + ` (run \`${loginCommand}\` to enable ${id} routing)`),
+            );
+            return { lines, failed: false, credentialUsable: false };
+          }
 
-      // Explicitly configured but the credential is unusable — a real failure.
-      const detail = isEnoent ? "no auth file" : "cannot read auth file";
-      lines.push(row(`${id} auth:`, failStr("UNAVAILABLE") + ` (${detail} — run \`${loginCommand}\`)`));
-      lines.push(`  note: the Anthropic leg works without ${id} auth; only ${id} models are affected`);
-      return { lines, failed: true, credentialUsable: false };
-    }
+          const detail = isEnoent ? "no auth file" : "cannot read auth file";
+          lines.push(row(`${id} auth:`, failStr("UNAVAILABLE") + ` (${detail} — run \`${loginCommand}\`)`));
+          lines.push(`  note: the Anthropic leg works without ${id} auth; only ${id} models are affected`);
+          return { lines, failed: true, credentialUsable: false };
+        }
+      },
+    };
+    return checks[credential.kind](credential);
   };
 
   // Run subswitch probe, anthropic TLS, per-provider TLS, and per-provider auth

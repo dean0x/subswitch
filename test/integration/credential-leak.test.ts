@@ -17,7 +17,7 @@ import type { Logger, LogFields, LogLevel } from "../../src/logger.js";
  * Row 6 (Codex credential never reaches the client or the log) is added below and is the
  * only row that exercises the Codex leg's own credential surface — Row 5 deliberately
  * sends a `claude-*` model, so the Codex handler never runs in it.
- * The full 6-row matrix requires a second provider and is completed in Phase F.
+ * These rows cover credential flow between the client, proxy, and current upstreams.
  */
 
 const FAR_FUTURE_MS = Date.now() + 24 * 3600 * 1000;

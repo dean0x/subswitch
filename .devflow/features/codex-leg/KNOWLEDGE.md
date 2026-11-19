@@ -14,7 +14,7 @@ updated: 2026-09-14
 
 subswitch translates Anthropic Messages API requests into OpenAI Responses API calls against `https://chatgpt.com/backend-api/codex/responses`. Routing is decided by `resolveModel` (in `src/models.ts`) and `decideRoute` (in `src/router.ts`), with `MODEL_REGISTRY` as the sole source of routable models (applies ADR-006). Everything else passes through to the Anthropic leg unchanged.
 
-The pipeline has three distinct stages: **resolve** (alias/family → canonical model in `server.ts`), **route** (dispatch decision in `router.ts`), and **send** (translation + fetch in `codex-handler.ts`). Keeping these stages separate is the load-bearing invariant of ADR-005 — the router accepts a typed `ModelResolution`, never a raw string, so name matching cannot creep back in.
+The pipeline has three stages: **resolve** in `server.ts`, **route** in `router.ts`, and **send**. `codex-handler.ts` translates the request. `translated-leg.ts` sends it and manages the response. The router accepts a typed `ModelResolution`, not a raw string.
 
 **Governing principle (ADR-010):** a relay fronting an origin API must be indistinguishable from the origin. A bound that reclaims a provably dead connection is legitimate; a bound that can terminate a request the origin was about to answer, or emit a status the origin never sends, is a defect. This principle drove the removal of the byte-budget slot system and the **removal** (not deprecation) of the Anthropic-leg stream timeout.
 
@@ -157,9 +157,9 @@ Where:
 
 ### session_id stability across the 401-refresh retry (src/codex-handler.ts)
 
-`sessionId` is computed ONCE before the retry loop. Both the initial attempt and the 401-refresh retry use the same value. The retry is bounded: `maxAttempts = auth.refreshable ? 2 : 1` — a static credential gets exactly one attempt so its truthful 401 reaches the client.
+The handler computes `sessionId` once before it calls the runner. Both the initial attempt and the 401-refresh retry use that value.
 
-**`AbortController` is constructed ABOVE `auth.getCredentials()`** (RELI-04). Without this, a hung `getCredentials()` (e.g., a single-flight refresh on a slow OAuth endpoint) runs outside every bound the handler establishes: the client-close signal is not wired up, the total timer has not started, and cleanup never runs if `getCredentials()` returns an error.
+The runner in `src/translated-leg.ts` permits two attempts for a renewable credential and one for a static credential. It starts the total timer and attaches the close listener before it calls `auth.getCredentials(signal)`. The runner clears the timers and removes the listener on exit.
 
 ### Terminal block reconciliation — every provider owes a synthesized close (src/codex-response.ts)
 
@@ -209,10 +209,11 @@ IncomingMessage (Anthropic wire)
       → AnthropicRequestSchema.safeParse(parsedBody)
       → canonical substitution (model field → canonical in `request`)
       → deriveConversationKey (hashes canonical model + system + first user msg)
-      → AbortController constructed (BEFORE auth.getCredentials — RELI-04)
-      → auth.getCredentials() → ProviderCredential<"codex">
       → translateRequest (codex-request.ts; ReasoningCache for reasoning re-injection;
         translateEffort validates against reasoningEffortsForModel(MODEL_REGISTRY, canonical))
+      → runTranslatedLeg (translated-leg.ts)
+      → AbortController, total timer, and close listener
+      → auth.getCredentials(signal) → ProviderCredential<"codex">
       → buildHeaders(credential, sessionId, transportConstants)
           ← transportConstants built once per handler instance; pure module-level fn
           ← credential.authHeaders seed; put() guard lowercased; transport constants appended
@@ -351,8 +352,9 @@ IncomingMessage (Anthropic wire)
 - `src/models.ts` — Pure registry module (no repo imports); `MODEL_REGISTRY` (`gpt-6-astra` is the first entry with per-model `reasoningEfforts`), `PROVIDER_IDS`, `AliasesByProvider`, `DEFAULT_REASONING_EFFORTS`, `reasoningEffortsForModel`, `buildRoutingTable` (`unknownReasoningEfforts` diagnostic), `resolveModel`, `isReservedAnthropicName`, `routableModelCount`, `formatModelsReport`, `buildModelRows` (`ModelRow.reasoningEfforts`), `buildAliasRows`
 - `src/claude-models.ts` — Reverse-leg (Claude ingress) model registry; `buildOpenaiModelNamePredicate(registry)` derives `isOpenaiModelName` from `MODEL_REGISTRY` (mirror of PF-007 on the reverse leg — `astra` is now automatically reserved); `validClaudeAlias` (the only gate on `codexIngress.claude.aliases`); `claudeResolver`, `claudeModelRows`, `augmentCodexModels` (advertises each model's own `defaultEffort` as `default_reasoning_level`, levels low..max); `CLAUDE_MODELS` entries carry REQUIRED capability fields (`maxOutputTokens`, `thinkingAlwaysOn`, `forcedToolChoice`, `defaultEffort`); `claudeModel(id)` lookup; `isClaudeModelName` (the `claude-`/`claude:` namespace, case-insensitive) and `displayModelName` (bounded, charset-neutralized echo of a client-supplied name)
 - `src/router.ts` — Pure routing decision; accepts `ModelResolution` (not raw string); zero name matching; exhaustive switch; classification only — policy lives in server.ts
-- `src/codex-handler.ts` — `createCodexHandler<P>(deps): ProviderHandler` entry point; `CodexHandlerDeps<P>`, `CodexTransportConstants` interface; `buildHeaders` (exported pure module-level fn); canonical substitution; sessionId before loop; bounded retry; `AbortController` above `auth.getCredentials()`; `handleCountTokens` (estimate, not forwarded)
-- `src/provider-transport.ts` — `createFrameWriter` (abort-safe, backpressure-aware); `respondJson`, `respondProxyError`, `readBoundedText`
+- `src/codex-handler.ts` — `createCodexHandler`, `buildHeaders`, canonical model substitution, stable session ID, and `handleCountTokens`.
+- `src/translated-leg.ts` — `runTranslatedLeg` manages aborts, timers, the retry limit, both limit observers, and response delivery.
+- `src/provider-transport.ts` — `createFrameWriter`, `readBoundedText`, `respondJson`, and `respondProxyError` with optional extra headers.
 - `src/provider-handler.ts` — `ProviderHandler` interface; P4 contract documented
 - `src/codex-request.ts` — All request translation logic; `translateRequest`, `translateEffort` (validates via `reasoningEffortsForModel(MODEL_REGISTRY, model)`), `estimateTokens` (chars/4 heuristic)
 - `src/anthropic-parse.ts` — `buildInstructions` (moved from `codex-request.ts`); `textOfBlocks`

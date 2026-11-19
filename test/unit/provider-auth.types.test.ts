@@ -28,19 +28,13 @@
  * `wiringAnotherProvidersCredentialIsACompileError`, case 2 by
  * `credentialsAreNotInterchangeable`.
  *
- * WHY THE MISMATCH IS EXPRESSED WITH TWO TYPE PARAMETERS rather than two concrete ids.
- * `PROVIDER_IDS` has one member, so `ProviderId` and `"codex"` are the *same* type today
- * and `ProviderAuth<ProviderId>` is assignable to `ProviderAuth<"codex">` in both
- * directions. A `@ts-expect-error` on that pair would be an unused directive, i.e. a
- * failing typecheck that says nothing about the brand. Two unrelated parameters
- * `P`/`Q extends ProviderId` are not collapsed by the compiler, so they express "two
- * different providers" with no cast and no fictional id — the same technique
- * `provider-events.types.test.ts` uses, and the exact situation a second real provider
- * creates. (mirrors test/unit/provider-events.types.test.ts)
+ * The handler uses two type parameters because its model catalog has one provider.
+ * The credential seam also accepts native destination ids, so its test can use two real ids.
  */
 import { createCodexHandler } from "../../src/codex-handler.js";
 import type { ProviderAuth, ProviderCredential } from "../../src/provider-auth.js";
 import type { ProviderId } from "../../src/models.js";
+import type { DestinationProviderId } from "../../src/routing/routing-types.js";
 import type { CodexProviderConfig } from "../../src/config.js";
 import type { Logger } from "../../src/logger.js";
 import type { ReasoningCache } from "../../src/reasoning-cache.js";
@@ -88,34 +82,29 @@ void wiringOwnCredentialCompiles;
  * as a real field. They cover every place a credential travels by value rather than
  * through `CodexHandlerDeps<P>`'s shared type parameter.
  */
-const credentialsAreNotInterchangeable = <P extends ProviderId, Q extends ProviderId>(): void => {
-  // @ts-expect-error the seam itself, independent of the handler: one provider's auth is
-  // not another's, even though `refreshable` and `authHeaders` are structurally identical.
-  const swappedAuth: ProviderAuth<P> = anyValue<ProviderAuth<Q>>();
+const credentialsAreNotInterchangeable = (): void => {
+  // @ts-expect-error Claude auth cannot supply Codex credentials.
+  const swappedAuth: ProviderAuth<"codex"> = anyValue<ProviderAuth<"claude">>();
   void swappedAuth;
 
-  // @ts-expect-error and neither is a single credential, which is what actually reaches
-  // the outbound request headers.
-  const swappedCredential: ProviderCredential<P> = anyValue<ProviderCredential<Q>>();
+  // @ts-expect-error A Codex credential cannot supply Claude auth headers.
+  const swappedCredential: ProviderCredential<"claude"> = anyValue<ProviderCredential<"codex">>();
   void swappedCredential;
 };
 void credentialsAreNotInterchangeable;
 
-/**
- * Widening MUST stay legal: a dispatch table typed `Record<ProviderId, ProviderAuth<ProviderId>>`
- * has to accept each provider's own auth. A brand that blocked this would be unusable.
- */
-const wideningToTheUnionIsAllowed = <P extends ProviderId>(ownAuth: ProviderAuth<P>): void => {
-  const anyProvidersAuth: ProviderAuth<ProviderId> = ownAuth;
+/** A shared auth seam must accept credentials from either provider set. */
+const wideningToTheUnionIsAllowed = <P extends ProviderId | DestinationProviderId>(ownAuth: ProviderAuth<P>): void => {
+  const anyProvidersAuth: ProviderAuth<ProviderId | DestinationProviderId> = ownAuth;
   void anyProvidersAuth;
 };
 void wideningToTheUnionIsAllowed;
 
-// TODO(second-provider): when PROVIDER_IDS grows past one member, add the concrete pair —
-// `const narrowed: ProviderAuth<"codex"> = anyAuth` with anyAuth: ProviderAuth<ProviderId> —
-// which only becomes a real narrowing once the union has something to narrow from. Do NOT
-// cast a fabricated "kimi" through `string` into ProviderId to fake it here: that would
-// pin the cast, not the brand.
+const credentialLoadAcceptsAnOptionalSignal = (auth: ProviderAuth<ProviderId>, signal: AbortSignal): void => {
+  void auth.getCredentials();
+  void auth.getCredentials(signal);
+};
+void credentialLoadAcceptsAnOptionalSignal;
 
 /** Stand-in for a value of an arbitrary type, so the cases above need no fixtures. */
 declare function anyValue<T>(): T;

@@ -983,7 +983,7 @@ describe("codex leg", () => {
     const response = await postMessages(rig.subswitch, loadRequest("simple-text.json"));
     assert.equal(response.status, 200);
     // Without fix: null (SSE writeHead had no marker).
-    // With fix: "1" (added to the SSE writeHead in codex-handler.ts).
+    // With fix: "1" (added to the SSE writeHead in translated-leg.ts).
     assert.equal(
       response.headers.get("x-subswitch-synthesized"),
       "1",
