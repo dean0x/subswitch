@@ -15,8 +15,31 @@ import {
   type ModelResolution,
 } from "../../src/models.js";
 
+// The Together catalog as [id, family], spelled here so the tests do not read the catalog under test.
+const TOGETHER_CATALOG = [
+  ["Qwen/Qwen3.8-Flash", "qwen3.8-flash"],
+  ["deepseek-ai/DeepSeek-V4-Pro-0813", "deepseek-v4-pro"],
+  ["deepseek-ai/DeepSeek-V4.1-Flash-1017", "deepseek-v4.1-flash"],
+  ["zai-org/GLM-5.3", "glm-5.3"],
+  ["zai-org/GLM-5.3-Flash", "glm-5.3-flash"],
+  ["moonshotai/Kimi-K3.1-Pro", "kimi-k3.1-pro"],
+] as const;
+const TOGETHER_IDS: ReadonlySet<string> = new Set(TOGETHER_CATALOG.map(([id]) => id));
+const expectedProvider = (id: string): string => (TOGETHER_IDS.has(id) ? "together" : "codex");
+
 describe("Together registry guards", () => {
   const vetted = { id: "fixture/vetted", provider: "together", family: "fixture-family", gen: [1] } satisfies ModelEntry;
+
+  it("routes each Together catalog row by its exact id, its family and the together: prefix", () => {
+    const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: {}, together: {} });
+    for (const [id, family] of TOGETHER_CATALOG) {
+      for (const name of [id, family, `together:${id}`, `together:${family}`]) {
+        assert.deepEqual(resolveModel(table, name), {
+          kind: "resolved", target: { id, provider: "together", family },
+        }, name);
+      }
+    }
+  });
 
   it("requires the catalog families to have one provider and no reserved names", () => {
     const build = buildRoutingTable([...MODEL_REGISTRY, vetted], { codex: {}, together: {} });
@@ -166,10 +189,13 @@ describe("formatModelsReport", () => {
 
   it("includes a provider column in every row", () => {
     const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { together: {}, codex: {} } });
-    // Every row should contain "codex" since all registry entries are codex-provider.
-    for (const line of result) {
-      assert.ok(line.includes("codex"), `row must include provider column: ${line}`);
-    }
+    const providers = result.map((line) => {
+      const columns = /→\s+(\S+)\s+(\S+)\s+gen:/.exec(line);
+      assert.ok(columns !== null, `row must have canonical and provider columns: ${line}`);
+      assert.equal(columns[2], expectedProvider(columns[1]!), `row must name the provider of its model: ${line}`);
+      return columns[2];
+    });
+    assert.equal(providers.filter((provider) => provider === "together").length, TOGETHER_CATALOG.length);
   });
 
   it("labels derived registry aliases as '(derived)'", () => {
@@ -375,9 +401,10 @@ describe("buildAliasRows and buildModelRows — parity", () => {
   it("buildModelRows includes provider field for all entries", () => {
     const rows = buildModelRows(MODEL_REGISTRY, { together: {}, codex: {} });
     for (const row of rows) {
-      assert.equal(row.provider, "codex");
+      assert.equal(row.provider, expectedProvider(row.id), row.id);
       assert.equal(row.source, "registry");
     }
+    assert.equal(rows.filter((row) => row.provider === "together").length, TOGETHER_CATALOG.length);
   });
 });
 

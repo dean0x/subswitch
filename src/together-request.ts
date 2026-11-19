@@ -2,9 +2,7 @@ import { buildInstructions } from "./anthropic-parse.js";
 import type { AnthropicMessage, AnthropicRequest } from "./anthropic-wire-types.js";
 import type { ProxyError } from "./errors.js";
 import { err, ok, type Result } from "./result.js";
-import { TOGETHER_DEFAULT_CAPABILITIES, type TogetherCapabilities } from "./together-models.js";
-
-export const TOGETHER_DEFAULT_OUTPUT_CAP = 16_384;
+import { TOGETHER_DEFAULT_CAPABILITIES, TOGETHER_DEFAULT_OUTPUT_CAP, type TogetherCapabilities } from "./together-models.js";
 
 export type TogetherRequestWarning =
   | "image_dropped"

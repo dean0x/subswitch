@@ -22,7 +22,8 @@ export function routingDiscovery(
       compatibility: "existing-translators",
     })),
     models: {
-      codex: MODEL_REGISTRY.map((m) => m.id),
+      // The registry also holds Together rows. They are not Codex models.
+      codex: MODEL_REGISTRY.filter((m) => m.provider === "codex").map((m) => m.id),
       claude: CLAUDE_MODELS.map((m) => m.id),
     },
     profiles: Object.entries(config.accessProfiles ?? {}).map(([id, p]) => ({

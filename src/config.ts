@@ -11,7 +11,7 @@ import { AccessProfilesSchema, RoutesSchema, validateExplicitConfig } from "./ro
 import type { AccessProfile, RoutePolicy } from "./routing/routing-types.js";
 import { ownValue } from "./plain-object.js";
 import { TOGETHER_API_KEY_ENV, TOGETHER_KEYCHAIN_SERVICE } from "./together-auth.js";
-import { TOGETHER_DEFAULT_OUTPUT_CAP } from "./together-request.js";
+import { TOGETHER_DEFAULT_OUTPUT_CAP } from "./together-models.js";
 
 export const DEFAULT_PORT = 4141 as const;
 
