@@ -12,6 +12,7 @@ const ToolDelta = z.object({
   index: z.int(),
   function: z.object({ name: z.string().max(64).nullish(), arguments: z.string().nullish() }).nullish(),
 });
+const Usage = z.object({ prompt_tokens: z.int().nonnegative(), completion_tokens: z.int().nonnegative() });
 const ChatChunk = z.object({
   choices: z.array(z.object({
     index: z.literal(0).optional(),
@@ -23,8 +24,9 @@ const ChatChunk = z.object({
       tool_calls: z.array(ToolDelta).max(MAX_CONTENT_BLOCKS).nullish(),
     }).nullish(),
   })).max(1),
-  usage: z.object({ prompt_tokens: z.int().nonnegative(), completion_tokens: z.int().nonnegative() }).nullish(),
+  usage: Usage.nullish(),
 });
+const FinishedChatChunk = ChatChunk.or(z.object({ choices: z.undefined().optional(), usage: Usage }));
 const ErrorEnvelope = z.object({ error: z.object({ code: z.unknown().optional() }) });
 const ErrorCode = /^[a-z0-9_]{1,64}$/;
 
@@ -86,7 +88,7 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
   let hasText = false;
   let finishReason: string | undefined;
   let firstToolId: string | undefined;
-  let usage: z.infer<typeof ChatChunk>["usage"];
+  let usage: z.infer<typeof Usage> | undefined;
 
   const emit = (type: string, data: Record<string, unknown> = {}): void => {
     translator.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
@@ -201,10 +203,6 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
 
   const seal = (): void => {
     if (terminal) return;
-    if (unparsableChunks > 0) {
-      fail("Together stream contained unparsable chunks");
-      return;
-    }
     // At EOF without a finish reason, recover any blocks that still have content.
     if (finishReason === undefined) closeBlocks();
     if (terminal) return;
@@ -233,12 +231,16 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
     const json = parseJson(record.data);
     const error = mapTogetherErrorJson(json);
     if (error !== undefined) { fail(error); return; }
-    const parsed = ChatChunk.safeParse(json);
-    if (!parsed.success) { unparsableChunks++; return; }
+    const parsed = (finishReason === undefined ? ChatChunk : FinishedChatChunk).safeParse(json);
+    if (!parsed.success) {
+      unparsableChunks++;
+      if (finishReason === undefined) fail("Together stream contained unparsable chunks");
+      return;
+    }
     // A post-finish chunk may carry usage but cannot add content.
     usage = parsed.data.usage ?? usage;
-    if (unparsableChunks > 0 || finishReason !== undefined) return;
-    const choice = parsed.data.choices[0];
+    if (finishReason !== undefined) return;
+    const choice = parsed.data.choices?.[0];
     if (choice === undefined) return;
     const delta = choice.delta;
     if (delta?.content) appendText(delta.content);

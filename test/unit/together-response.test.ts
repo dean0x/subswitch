@@ -50,6 +50,29 @@ it("joins late tool names and argument fragments by index before DONE", async ()
   assert.equal(frames.at(-1), 'event: message_stop\ndata: {"type":"message_stop"}\n\n');
 });
 
+for (const reason of ["tool_calls", "stop"]) {
+  it(`closes text at index 0 before a tool call at index 1 on ${reason}`, async () => {
+    const text = "I will read the file";
+    const { frames } = await translate(chatSse([
+      chatChunk({ content: text }),
+      chatChunk({ tool_calls: [toolDelta(0, "Read", '{"path":"a"}')] }),
+      chatChunk({}, reason), "[DONE]",
+    ]));
+    const tool = { type: "tool_use", id: "toolu_response-a_0", name: "Read" };
+    const blockFrames = frames.filter((frame) => /^event: content_block_(start|stop)\n/.test(frame))
+      .map((frame): unknown => JSON.parse(frame.split("\ndata: ")[1] ?? ""));
+    assert.deepEqual(blockFrames, [
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { ...tool, input: {} } },
+      { type: "content_block_stop", index: 1 },
+    ]);
+    const response = message(frames);
+    assert.deepEqual(response["content"], [{ type: "text", text }, { ...tool, input: { path: "a" } }]);
+    assert.equal(response["stop_reason"], "tool_use");
+  });
+}
+
 it("keeps IDs stable for one seed and independent of all upstream IDs", async () => {
   const first = await translate(repeatedToolIds);
   assert.deepEqual((await translate(repeatedToolIds)).frames, first.frames);
@@ -181,13 +204,50 @@ it("bounds total held argument bytes across distinct calls and chunks", async ()
   assertError(frames, "Together stream exceeded the tool argument byte limit");
 });
 
-it("counts unparsable records and fails a turn that could have lost text", async () => {
+for (const [name, data] of [
+  ["counts unparsable records and fails a turn that could have lost text", "{not json"],
+  ["rejects a usage record without choices before the finish reason", '{"usage":{"prompt_tokens":37,"completion_tokens":11}}'],
+]) {
+  it(name, (t) => {
+    const { translator, diagnostics } = createTogetherSseTranslator({ model: "org/model", seed: "turn", maxEventBytes: 1024 });
+    t.after(() => { translator.destroy(); });
+    const frames: string[] = [];
+    translator.on("data", (frame: string) => { frames.push(frame); });
+    translator.write({ data: JSON.stringify(chatChunk({ content: "hello" })) });
+    translator.write({ data });
+
+    assert.equal(diagnostics().unparsableChunks, 1);
+    assert.equal(frames.filter((frame) => frame.startsWith("event: error\n")).length, 1);
+    assertError(frames, "Together stream contained unparsable chunks");
+
+    const frameCount = frames.length;
+    translator.write({ data: JSON.stringify(chatChunk({ content: "too late" }, "stop")) });
+    translator.write({ data: "[DONE]" });
+    assert.equal(frames.length, frameCount);
+  });
+}
+
+it("keeps text and usage after an unparsable record follows the finish reason", async () => {
   const { frames, unparsableChunks } = await translate(
-    chatSse([chatChunk({ content: "hello" })]) + 'data: {"choices":[{"delta":{"content":"missing\n\ndata: {"choices":null}\n\n'
-      + chatSse([chatChunk({}, "stop"), "[DONE]"]),
+    chatSse([chatChunk({ content: "hello" }), chatChunk({}, "stop")]) + "data: {not json\n\n"
+      + chatSse([{ choices: [], usage: { prompt_tokens: 37, completion_tokens: 11 } }, "[DONE]"]),
   );
-  assert.equal(unparsableChunks, 2);
-  assertError(frames, "Together stream contained unparsable chunks");
+  const response = message(frames);
+  assert.deepEqual(response["content"], [{ type: "text", text: "hello" }]);
+  assert.equal(response["stop_reason"], "end_turn");
+  assert.deepEqual(response["usage"], { input_tokens: 37, output_tokens: 11 });
+  assert.equal(unparsableChunks, 1);
+  assert.match(frames.at(-1) ?? "", /^event: message_stop\n/);
+  assert.ok(!frames.some((frame) => frame.startsWith("event: error\n")));
+});
+
+it("reads usage without choices after the finish reason", async () => {
+  const { frames, unparsableChunks } = await translate(chatSse([
+    chatChunk({ content: "hello" }), chatChunk({}, "stop"),
+    { usage: { prompt_tokens: 9, completion_tokens: 2 } }, "[DONE]",
+  ]));
+  assert.deepEqual(message(frames)["usage"], { input_tokens: 9, output_tokens: 2 });
+  assert.equal(unparsableChunks, 0);
 });
 
 it("stores exact reasoning once under the first emitted tool ID", async () => {
