@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - A project `subswitch.config.json` can no longer set a sign-in address, a credential file or its `allowInsecureBaseUrl` opt-in. Set these keys in the user config.
 
+### Fixed
+
+- A relative or empty `XDG_CONFIG_HOME` is now ignored, as the XDG Base Directory spec requires. SubSwitch then uses `~/.config/subswitch/config.json`.
+
 ## [0.7.0] - 2026-11-18
 
 ### Added

@@ -359,7 +359,8 @@ writes through `codex-init.ts` Result-returning helpers; custom upstream trust i
 for `claude-code`; version 2 has `client: codex|all` and separately documented shapes.
 
 Configuration precedence is explicit `SUBSWITCH_CONFIG` (no merge), otherwise permitted project
-settings over `$XDG_CONFIG_HOME/subswitch/config.json` over defaults.
+settings over `$XDG_CONFIG_HOME/subswitch/config.json` over defaults. `userConfigPath` uses
+`XDG_CONFIG_HOME` only when it is absolute; a relative or empty value falls back to `~/.config`.
 `accessProfiles` and `routes`, including profile endpoint opt-ins, require a user or explicit file.
 So do every sign-in address, every credential file or folder key (`providers.<id>.authFile`,
 `codexIngress.claude.authFile`, `codexIngress.claude.configDir`) and every `allowInsecureBaseUrl`

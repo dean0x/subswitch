@@ -387,7 +387,8 @@ The config file is located by the following precedence (highest wins):
 
 1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
 2. Permitted settings from `subswitch.config.json` in the current directory, merged over the user fallback
-3. `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`), then built-in defaults
+3. `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`), then built-in defaults.
+   SubSwitch uses `XDG_CONFIG_HOME` only when it is an absolute path. A relative or empty value is ignored.
 
 An explicit `SUBSWITCH_CONFIG` file is authoritative and is not merged with the user fallback.
 Explicit config paths passed by callers of `loadConfig` also bypass the merge.
