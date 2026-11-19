@@ -38,6 +38,8 @@ export interface ProviderEvents<P extends ProviderId | "claude" | "openai" | "an
   readonly upstreamError: `${P}_upstream_error`;
   /** The response stream failed after the first frame reached the client. */
   readonly streamInterrupted: `${P}_stream_interrupted`;
+  /** The credential source threw before the first request; the client gets a 500. */
+  readonly credentialLoadFailed: `${P}_credential_load_failed`;
   /** An SSE event whose `data:` payload is not JSON. */
   readonly sseUnparseableData: `${P}_sse_unparseable_data`;
   /** An SSE event of a type this translator does not handle. */
@@ -127,6 +129,7 @@ const scopedEvents = <P extends ProviderId | "claude" | "openai" | "anthropic">(
   retryBoundViolated: `${providerId}_retry_bound_violated`,
   upstreamError: `${providerId}_upstream_error`,
   streamInterrupted: `${providerId}_stream_interrupted`,
+  credentialLoadFailed: `${providerId}_credential_load_failed`,
   sseUnparseableData: `${providerId}_sse_unparseable_data`,
   sseEventIgnored: `${providerId}_sse_event_ignored`,
   cacheTokens: `${providerId}_cache_tokens`,

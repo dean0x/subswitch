@@ -32,6 +32,7 @@ const options = (overrides: Partial<TranslatedLegOptions<string>> = {}): Transla
     retryBoundViolated: "fixture_retry_bound_violated",
     upstreamError: "fixture_upstream_error",
     streamInterrupted: "fixture_stream_interrupted",
+    credentialLoadFailed: "fixture_credential_load_failed",
   },
   auth: {
     refreshable: false,
@@ -82,8 +83,10 @@ it("ends a pending credential wait on client close without a fetch", async (t) =
   const res = response();
   const { auth } = options();
   const fetchImpl = t.mock.fn(async () => new Response("frame"));
+  const logs: unknown[] = [];
   const run = runTranslatedLeg(res, options({
     auth: { ...auth, getCredentials: () => new Promise(() => {}) },
+    logger: { log: (level, event, fields) => logs.push({ level, event, fields }) },
     fetchImpl,
   }));
   res.destroy();
@@ -93,6 +96,27 @@ it("ends a pending credential wait on client close without a fetch", async (t) =
   assert.equal(settled, true, "the runner must settle after close");
   assert.equal(fetchImpl.mock.callCount(), 0);
   assert.equal(res.listenerCount("close"), 0);
+  assert.deepEqual(logs, [], "a cancelled credential wait is not a fault");
+});
+
+it("logs the cause name and returns a 500 without a fetch when the credential source throws", async (t) => {
+  const res = response();
+  const end = t.mock.method(res, "end");
+  const fetchImpl = t.mock.fn(async () => new Response("frame"));
+  const logs: unknown[] = [];
+  await runTranslatedLeg(res, options({
+    auth: { ...options().auth, getCredentials: async () => { throw new Error("fixture credential source detail"); } },
+    logger: { log: (level, event, fields) => logs.push({ level, event, fields }) },
+    fetchImpl,
+  }));
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(end.mock.calls[0]?.arguments[0],
+    '{"type":"error","error":{"type":"api_error","message":"fixture credential load failed"}}');
+  assert.equal(fetchImpl.mock.callCount(), 0);
+  assert.deepEqual(logs, [
+    { level: "error", event: "fixture_credential_load_failed", fields: { model: "fixture-model", errorCode: "Error" } },
+  ]);
 });
 
 it("sets redirect on the injected POST without replacing its headers or signal", async () => {

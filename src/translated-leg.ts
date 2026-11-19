@@ -39,6 +39,7 @@ export interface TranslatedLegOptions<C> {
     readonly retryBoundViolated: string;
     readonly upstreamError: string;
     readonly streamInterrupted: string;
+    readonly credentialLoadFailed: string;
   };
   readonly auth: {
     readonly refreshable: boolean;
@@ -65,8 +66,11 @@ const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOpt
   replyError: ReplyError): Promise<Response | undefined> => {
   const { auth, events, fetchImpl, logger, model, name } = options;
   // Bound the wait even when a credential source does not observe cancellation.
-  const initial = await abortable(auth.getCredentials(signal), signal).catch((): Result<C, ProxyError> =>
-    ({ ok: false, error: { kind: "upstream", status: 500, message: `${name} credential load failed` } }));
+  const initial = await abortable(auth.getCredentials(signal), signal).catch((cause: unknown): Result<C, ProxyError> => {
+    // A cancelled wait gets the timeout reply below. Log only the cause name: the message can hold a credential.
+    if (!signal.aborted) logger.log("error", events.credentialLoadFailed, { model, errorCode: cause instanceof Error ? cause.name : "unknown" });
+    return { ok: false, error: { kind: "upstream", status: 500, message: `${name} credential load failed` } };
+  });
   if (res.destroyed || res.writableEnded) return;
   if (signal.aborted) {
     replyError({ kind: "timeout", message: `${name} request timed out` });
