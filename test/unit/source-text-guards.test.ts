@@ -35,8 +35,8 @@ const KEY_READER = "together-auth.ts";
  * trimmed line in one file each. Any other use could compute the key name and read it.
  */
 const KEY_NAME_CONSTANT_USES: ReadonlyArray<{ readonly file: string; readonly line: string }> = [
-  // run-action deletes the key from its copy of the parent env before the spawn.
-  { file: "run-action.ts", line: "Reflect.deleteProperty(env, TOGETHER_API_KEY_ENV);" },
+  // run-action drops every letter case of the key name from its copy of the parent env.
+  { file: "run-action.ts", line: "if (name.toUpperCase() === TOGETHER_API_KEY_ENV)" },
   // The provider accessor carries the name as data for the credential kind table.
   { file: "config.ts", line: "readonly envName: typeof TOGETHER_API_KEY_ENV;" },
   { file: "config.ts", line: "envName: TOGETHER_API_KEY_ENV," },
@@ -113,7 +113,7 @@ describe("source-text guards", () => {
       ["a name in a template", "const raw = env[`TOGETHER_${part}`];"],
       ["the constant as a computed key", "const raw = deps.env[TOGETHER_API_KEY_ENV];"],
       ["the constant through Reflect", "const raw = Reflect.get(process.env, TOGETHER_API_KEY_ENV);"],
-      ["the run-action deletion in another file", "Reflect.deleteProperty(env, TOGETHER_API_KEY_ENV);"],
+      ["the run-action key name check in another file", "if (name.toUpperCase() === TOGETHER_API_KEY_ENV)"],
       ["an env object alias", "const vars = process.env;\nconst raw = vars[name];"],
       ["a typed env object alias", "const vars: NodeJS.ProcessEnv = deps.env;\nconst raw = vars[name];"],
       ["a spread copy of the env object", "const vars = { ...process.env };\nconst raw = vars[name];"],
@@ -127,9 +127,13 @@ describe("source-text guards", () => {
     }
     const runAction = [
       'import { TOGETHER_API_KEY_ENV } from "./together-auth.js";',
-      "    const env = { ...process.env };",
+      "  const env = { ...parent };",
+      "  for (const name of Object.keys(env)) {",
+      "    if (name.toUpperCase() === TOGETHER_API_KEY_ENV)",
+      "      Reflect.deleteProperty(env, name);",
+      "  }",
+      "    const env = childEnvWithoutTogetherKey(process.env);",
       '    const home = process.env["HOME"] ?? process.env.HOME;',
-      "    Reflect.deleteProperty(env, TOGETHER_API_KEY_ENV);",
       '    env["ANTHROPIC_BASE_URL"] = base;',
     ].join("\n");
     assert.deepEqual(keyAccessViolations("run-action.ts", runAction), []);
