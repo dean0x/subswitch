@@ -361,8 +361,9 @@ for `claude-code`; version 2 has `client: codex|all` and separately documented s
 Configuration precedence is explicit `SUBSWITCH_CONFIG` (no merge), otherwise permitted project
 settings over `$XDG_CONFIG_HOME/subswitch/config.json` over defaults.
 `accessProfiles` and `routes`, including profile endpoint opt-ins, require a user or explicit file.
-So do every sign-in address and every `allowInsecureBaseUrl` opt-in (`PROJECT_REFUSED_KEYS` in
-`src/config.ts`, matched with `hasOwnPath`). Project declarations fail the load, even for empty
+So do every sign-in address, every credential file or folder key (`providers.<id>.authFile`,
+`codexIngress.claude.authFile`, `codexIngress.claude.configDir`) and every `allowInsecureBaseUrl`
+opt-in (`PROJECT_REFUSED_KEYS` in `src/config.ts`, matched with `hasOwnPath`). Project declarations fail the load, even for empty
 values, and the error names each refused dotted key.
 Explicit profiles use only Claude or Codex subscription sign-ins with `native-oauth`.
 Unknown fields and unsupported product or credential values fail the load; the error names the value.

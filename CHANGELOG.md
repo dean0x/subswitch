@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- A project `subswitch.config.json` can no longer set a sign-in address or its `allowInsecureBaseUrl` opt-in. Set these keys in the user config.
+- A project `subswitch.config.json` can no longer set a sign-in address, a credential file or its `allowInsecureBaseUrl` opt-in. Set these keys in the user config.
 
 ## [0.7.0] - 2026-11-18
 

@@ -85,8 +85,10 @@ endpoint, so shared Codex login state cannot be rotated. The temporary file is m
 to false. Host/Origin checks also cover upgrades. Foreign upstreams require an
 explicit opt-in, and remote destinations require TLS.
 
-Sign-in addresses and their `allowInsecureBaseUrl` opt-ins load only from the user
-configuration or a file selected with `SUBSWITCH_CONFIG`. A project
+Sign-in addresses, credential file and folder keys (`providers.codex.authFile`,
+`codexIngress.claude.authFile` and `codexIngress.claude.configDir`), and the
+`allowInsecureBaseUrl` opt-ins load only from the user configuration or a file
+selected with `SUBSWITCH_CONFIG`. A project
 `subswitch.config.json` that sets one of these keys fails to load, and the error
 names the key.
 
