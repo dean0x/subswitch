@@ -54,9 +54,12 @@ describe("source-text guards", () => {
   });
 
   it("keeps direct Together key env access in the key reader, including for health", () => {
-    const forbidden = /\bTOGETHER_API_KEY\b|\bprocess\s*\.\s*env\s*\[\s*TOGETHER_API_KEY_ENV\s*\]/;
-    for (const file of globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR })) {
-      if (file === "together-auth.ts") continue;
+    const forbidden = /\bTOGETHER_API_KEY\b|\[\s*TOGETHER_API_KEY_ENV\s*\]/;
+    const keyReader = "together-auth.ts";
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
+    assert.ok(files.includes(keyReader), "The source list must include the Together key reader");
+    for (const file of files) {
+      if (file === keyReader) continue;
       assert.ok(!forbidden.test(readSrc(file)), `Use the Together key reader for env access in src/${file}`);
     }
   });
