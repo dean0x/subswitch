@@ -1,11 +1,29 @@
-import { describe, it, after } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { startSubswitch, startFakeUpstream } from "./fake-upstreams.js";
 
 const cleanups: (() => Promise<void>)[] = [];
+let authDir: string;
+
+before(async () => {
+  authDir = await mkdtemp(join(tmpdir(), "subswitch-health-"));
+  cleanups.push(() => rm(authDir, { recursive: true, force: true }));
+  await writeFile(join(authDir, "auth.json"), "{}");
+});
+
 after(async () => {
   for (const cleanup of cleanups.reverse()) await cleanup();
 });
+
+// Use fixture paths so the health checks do not depend on local Codex state.
+const startHealthProxy = (baseUrl: string, authFileName = "missing.json") =>
+  startSubswitch({
+    anthropic: { baseUrl },
+    providers: { codex: { authFile: join(authDir, authFileName) } },
+  });
 
 describe("__subswitch health namespace", () => {
   it("GET /__subswitch/health returns 200 with name+version and does NOT forward to Anthropic", async () => {
@@ -13,7 +31,7 @@ describe("__subswitch health namespace", () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end("{}");
     });
-    const subswitch = await startSubswitch({ anthropic: { baseUrl: anthropic.url } });
+    const subswitch = await startHealthProxy(anthropic.url);
     cleanups.push(subswitch.close, anthropic.close);
 
     const response = await fetch(`${subswitch.url}/__subswitch/health`);
@@ -40,7 +58,7 @@ describe("__subswitch health namespace", () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end("{}");
     });
-    const subswitch = await startSubswitch({ anthropic: { baseUrl: anthropic.url } });
+    const subswitch = await startHealthProxy(anthropic.url);
     cleanups.push(subswitch.close, anthropic.close);
 
     const response = await fetch(`${subswitch.url}/__subswitch/unknown-path`);
@@ -53,7 +71,7 @@ describe("__subswitch health namespace", () => {
       res.writeHead(200);
       res.end("{}");
     });
-    const subswitch = await startSubswitch({ anthropic: { baseUrl: anthropic.url } });
+    const subswitch = await startHealthProxy(anthropic.url);
     cleanups.push(subswitch.close, anthropic.close);
 
     const response = await fetch(`${subswitch.url}/__subswitch/health`, {
@@ -66,46 +84,46 @@ describe("__subswitch health namespace", () => {
     assert.equal(anthropic.requests.length, 0);
   });
 
-  // P1-8: Health providers[] shape test
-  it("GET /__subswitch/health body has providers array with required per-provider fields", async () => {
-    const anthropic = await startFakeUpstream((_req, res) => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end("{}");
+  // P1-8: Health providers[] shape and Codex status tests.
+  for (const { authFileName, configured } of [
+    { authFileName: "missing.json", configured: false },
+    { authFileName: "auth.json", configured: true },
+  ]) {
+    it(`GET /__subswitch/health has the provider fields and reports Codex configured=${configured}`, async () => {
+      const anthropic = await startFakeUpstream((_req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
+      });
+      cleanups.push(anthropic.close);
+      const subswitch = await startHealthProxy(anthropic.url, authFileName);
+      cleanups.push(subswitch.close);
+
+      const response = await fetch(`${subswitch.url}/__subswitch/health`);
+      assert.equal(response.status, 200);
+
+      const body = (await response.json()) as {
+        providers: Array<{ id: string; configured: boolean; modelCount: number }>;
+      };
+
+      // providers must be an array
+      assert.ok(Array.isArray(body.providers), "providers must be an array");
+      assert.ok(body.providers.length > 0, "providers must be non-empty");
+
+      // Each entry must have the documented shape
+      for (const provider of body.providers) {
+        assert.ok(typeof provider.id === "string" && provider.id.length > 0, "provider.id must be a non-empty string");
+        assert.ok(typeof provider.configured === "boolean", "provider.configured must be a boolean");
+        assert.ok(typeof provider.modelCount === "number" && provider.modelCount >= 0, "provider.modelCount must be a non-negative number");
+      }
+
+      const codexEntry = body.providers.find((p) => p.id === "codex");
+      assert.ok(codexEntry !== undefined, "providers must include 'codex'");
+      assert.equal(codexEntry.configured, configured);
+
+      // modelCount for codex must reflect the real registry (non-zero, non-retired models)
+      assert.ok(codexEntry.modelCount > 0, "codex must have at least one non-retired model in registry");
     });
-    const subswitch = await startSubswitch({ anthropic: { baseUrl: anthropic.url } });
-    cleanups.push(subswitch.close, anthropic.close);
-
-    const response = await fetch(`${subswitch.url}/__subswitch/health`);
-    assert.equal(response.status, 200);
-
-    const body = (await response.json()) as {
-      name: string;
-      version: string;
-      providers: Array<{ id: string; configured: boolean; modelCount: number }>;
-    };
-
-    // providers must be an array
-    assert.ok(Array.isArray(body.providers), "providers must be an array");
-    assert.ok(body.providers.length > 0, "providers must be non-empty");
-
-    // Each entry must have the documented shape
-    for (const provider of body.providers) {
-      assert.ok(typeof provider.id === "string" && provider.id.length > 0, "provider.id must be a non-empty string");
-      assert.ok(typeof provider.configured === "boolean", "provider.configured must be a boolean");
-      assert.ok(typeof provider.modelCount === "number" && provider.modelCount >= 0, "provider.modelCount must be a non-negative number");
-    }
-
-    // "codex" must appear in providers (it is the only registered provider)
-    const codexEntry = body.providers.find((p) => p.id === "codex");
-    assert.ok(codexEntry !== undefined, "providers must include 'codex'");
-
-    // modelCount for codex must reflect the real registry (non-zero, non-retired models)
-    assert.ok(codexEntry.modelCount > 0, "codex must have at least one non-retired model in registry");
-
-    // configured reflects whether the auth file exists on disk — we don't assert
-    // a specific value here because the test machine's state varies (auth file may or may not exist).
-    // The shape assertion above is sufficient: configured must be a boolean.
-  });
+  }
 
   // ARCH-04: Anthropic passthrough must appear in health providers[]
   it("GET /__subswitch/health providers[] includes Anthropic with configured=true and modelCount=0", async () => {
@@ -113,7 +131,7 @@ describe("__subswitch health namespace", () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end("{}");
     });
-    const subswitch = await startSubswitch({ anthropic: { baseUrl: anthropic.url } });
+    const subswitch = await startHealthProxy(anthropic.url);
     cleanups.push(subswitch.close, anthropic.close);
 
     const response = await fetch(`${subswitch.url}/__subswitch/health`);
@@ -146,7 +164,7 @@ describe("__subswitch health namespace", () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end("{}");
     });
-    const subswitch = await startSubswitch({ anthropic: { baseUrl: anthropic.url } });
+    const subswitch = await startHealthProxy(anthropic.url);
     cleanups.push(subswitch.close, anthropic.close);
 
     const response = await fetch(`${subswitch.url}/__subswitch/health`);
