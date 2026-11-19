@@ -4,11 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.8.0] - 2026-11-19
 
 ### Changed
 
-- A project `subswitch.config.json` can no longer set a sign-in address, a credential file or its `allowInsecureBaseUrl` opt-in. Set these keys in the user config.
+- **BREAKING:** A project `subswitch.config.json` can no longer set a sign-in address, a credential file or its `allowInsecureBaseUrl` opt-in. A project config that sets one of these keys now fails at load, and the error names the key. Set these keys in the user config.
 
 ### Fixed
 
