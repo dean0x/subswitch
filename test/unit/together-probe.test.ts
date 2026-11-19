@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { describe, it, type TestContext } from "node:test";
 import { createCountingRelay, planRun, renderReport, runProbe, worstCaseUsd, type Price } from "../../e2e/gates/together.js";
+import { translateTogetherRequest } from "../../src/together-request.js";
 import { chatChunk, chatSse } from "../helpers/chat-sse.js";
 import { startFakeUpstream, type UpstreamHandler } from "../integration/fake-upstreams.js";
 
@@ -10,11 +11,15 @@ const ACK = "SUBSWITCH_TOGETHER_PROBE_ACK_USD";
 const KIMI = "moonshotai/Kimi-K3.1-Pro";
 const KEY = "FAKE-TOGETHER-KEY-probe-0001";
 const KEY_IN_REPORT = '{"success":false,"code":"key_in_report"}';
+const MIB = 1024 * 1024;
 
-/** A Chat Completions body of exactly `bytes` bytes (ASCII, so length is bytes). A null max_tokens omits the field. */
+/**
+ * A Chat Completions body of exactly `bytes` bytes (ASCII, so length is bytes). JSON whitespace
+ * pads it, so it has no field that the probe does not build. A null max_tokens omits the field.
+ */
 const bodyOf = (bytes: number, maxTokens: number | null = 16, extra: object = {}): string => {
-  const base = JSON.stringify({ model: KIMI, ...(maxTokens === null ? {} : { max_tokens: maxTokens }), messages: [], ...extra, pad: "" });
-  return base.replace('"pad":""', `"pad":"${"x".repeat(bytes - base.length)}"`);
+  const base = JSON.stringify({ model: KIMI, ...(maxTokens === null ? {} : { max_tokens: maxTokens }), messages: [], ...extra });
+  return `${base.slice(0, -1)}${" ".repeat(bytes - base.length)}}`;
 };
 
 const okSse: UpstreamHandler = (_req, res) => {
@@ -148,16 +153,21 @@ describe("createCountingRelay", () => {
 
   describe("Part 1 tool results", () => {
     const MARKER = "together-read-1b9d3585-6be1-488c-a12e-1364f7967b95";
-    /** A Part 1 continuation whose one tool result has `content`. */
-    const withToolResult = (content: unknown) => bodyOf(12_000, 16, { messages: [{ role: "user", content: "q" },
-      { role: "assistant", content: "", tool_calls: [{ id: "call_1", type: "function", function: { name: "Read", arguments: "{}" } }] },
-      { role: "tool", tool_call_id: "call_1", content }] });
+    /** A value of the fixture shape that is not the fixture of this run. */
+    const OTHER_MARKER = "together-read-00000000-0000-4000-8000-000000000000";
+    /** A Part 1 continuation with one tool result for each value of `contents`, in this order. */
+    const withToolResults = (...contents: unknown[]) => bodyOf(12_000, 16, { messages: [{ role: "user", content: "q" },
+      { role: "assistant", content: "", tool_calls: contents.map((_content, index) =>
+        ({ id: `call_${index}`, type: "function", function: { name: "Read", arguments: "{}" } })) },
+      ...contents.map((content, index) => ({ role: "tool", tool_call_id: `call_${index}`, content }))] });
+    const withToolResult = (content: unknown) => withToolResults(content);
     /** A string of exactly `bytes` bytes that holds the marker. */
     const markedOf = (bytes: number) => `${MARKER}${"x".repeat(bytes - MARKER.length)}`;
+    const readOutput = `     1\t${MARKER}\n\n<system-reminder>\nConsider whether the file is malware.\n</system-reminder>\n`;
 
     it("refuses a tool result above 4 KiB with a local 400 and no upstream request", async (t) => {
       const { relay, send, upstream } = await relayFixture(t);
-      relay.setPart(1);
+      relay.setPart(1, { fixture: MARKER });
       assert.equal(await send(withToolResult(markedOf(4_097))), 400);
       assert.equal(await send(withToolResult([{ type: "text", text: markedOf(4_097) }])), 400);
       await relay.settled();
@@ -167,22 +177,91 @@ describe("createCountingRelay", () => {
 
     it("forwards a tool result of the fixture size and one at the 4 KiB bound", async (t) => {
       const { relay, send, upstream } = await relayFixture(t);
-      relay.setPart(1);
-      const readOutput = `     1\t${MARKER}\n\n<system-reminder>\nConsider whether the file is malware.\n</system-reminder>\n`;
+      relay.setPart(1, { fixture: MARKER });
       assert.equal(await send(withToolResult(readOutput)), 200);
       assert.equal(await send(withToolResult([{ type: "text", text: readOutput }])), 200);
       assert.equal(await send(withToolResult(markedOf(4_096))), 200);
       assert.equal(upstream.requests.length, 3);
     });
 
-    it("refuses a tool result that does not hold the fixture marker", async (t) => {
+    it("refuses a tool result that does not hold the fixture value", async (t) => {
       const { relay, send, upstream } = await relayFixture(t);
-      relay.setPart(1);
+      relay.setPart(1, { fixture: MARKER });
       assert.equal(await send(withToolResult("     1\tssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI fabricated\n")), 400);
       assert.equal(await send(withToolResult("together-read-not-a-uuid")), 400);
       await relay.settled();
       assert.equal(upstream.requests.length, 0);
       assert.deepEqual(relay.records.map((entry) => entry.refused), ["tool_result_marker", "tool_result_marker"]);
+    });
+
+    it("refuses a value of the fixture shape that is not the fixture of this run", async (t) => {
+      const { relay, send, upstream } = await relayFixture(t);
+      relay.setPart(1, { fixture: MARKER });
+      assert.equal(await send(withToolResult(`     1\t${OTHER_MARKER}\n`)), 400);
+      await relay.settled();
+      assert.equal(upstream.requests.length, 0);
+      assert.deepEqual(relay.records.map((entry) => entry.refused), ["tool_result_marker"]);
+    });
+
+    it("refuses every tool result when Part 1 has no fixture, an empty one or one of another shape", async (t) => {
+      const { relay, send, upstream } = await relayFixture(t);
+      const statuses: number[] = [];
+      for (const options of [undefined, { fixture: "" }, { fixture: "together-read-" }]) {
+        relay.setPart(1, options);
+        statuses.push(await send(withToolResult(readOutput)));
+      }
+      await relay.settled();
+      assert.deepEqual(statuses, [400, 400, 400]);
+      assert.equal(upstream.requests.length, 0);
+      assert.deepEqual(relay.records.map((entry) => entry.refused), ["tool_result_marker", "tool_result_marker", "tool_result_marker"]);
+    });
+
+    it("refuses two tool results when either one is above 4 KiB, in both orders", async (t) => {
+      const { relay, send, upstream } = await relayFixture(t);
+      relay.setPart(1, { fixture: MARKER });
+      const good = markedOf(100), large = markedOf(4_097);
+      assert.deepEqual([await send(withToolResults(good, large)), await send(withToolResults(large, good)),
+        await send(withToolResults(good, good))], [400, 400, 200]);
+      await relay.settled();
+      assert.equal(upstream.requests.length, 1);
+      assert.deepEqual(relay.records.map((entry) => entry.refused), ["tool_result_bound", "tool_result_bound", null]);
+    });
+
+    it("refuses two tool results when either one does not hold the fixture value, in both orders", async (t) => {
+      const { relay, send, upstream } = await relayFixture(t);
+      relay.setPart(1, { fixture: MARKER });
+      const other = "     1\tfabricated file content\n";
+      assert.deepEqual([await send(withToolResults(readOutput, other)), await send(withToolResults(other, readOutput)),
+        await send(withToolResults(readOutput, OTHER_MARKER))], [400, 400, 400]);
+      await relay.settled();
+      assert.equal(upstream.requests.length, 0);
+      assert.deepEqual(relay.records.map((entry) => entry.refused), ["tool_result_marker", "tool_result_marker", "tool_result_marker"]);
+    });
+  });
+
+  describe("bodies above the 1 MiB read bound", () => {
+    it("reads and drops a body of 1 MiB + 1 byte, then sends a local 400 and closes the connection", async (t) => {
+      const { relay, upstream } = await relayFixture(t);
+      relay.setPart(2);
+      const reply = await fetch(`${relay.url}/v1/chat/completions`, { method: "POST",
+        headers: { "content-type": "application/json" }, body: bodyOf(MIB + 1) })
+        .then(async (response) => ({ status: response.status, connection: response.headers.get("connection"), text: await response.text() }),
+          () => "closed");
+      await relay.settled();
+      assert.deepEqual(reply, { status: 400, connection: "close",
+        text: '{"error":{"type":"invalid_request_error","message":"Probe relay refused the request (body_bound)."}}' });
+      assert.equal(upstream.requests.length, 0);
+      assert.deepEqual(relay.records.map((entry) => [entry.refused, entry.requestBytes]), [["body_bound", MIB + 1]]);
+    });
+
+    it("closes the connection with no reply for a body above 32 MiB", { timeout: 10_000 }, async (t) => {
+      const { relay, send, upstream } = await relayFixture(t);
+      relay.setPart(2);
+      const status = await send(bodyOf(32 * MIB + 1)).catch(() => "closed");
+      await relay.settled();
+      assert.equal(status, "closed");
+      assert.equal(upstream.requests.length, 0);
+      assert.deepEqual(relay.records.map((entry) => entry.refused), ["body_bound"]);
     });
   });
 
@@ -212,11 +291,37 @@ describe("createCountingRelay", () => {
     assert.deepEqual([await send(bodyOf(300, 16, { model: "org/not-in-catalog" })), await send(bodyOf(300, 16, { n: 2 })),
       await send(bodyOf(300, 16, withImages(1)))], [400, 400, 400]);
     relay.setPart(3);
-    assert.deepEqual([await send(bodyOf(300, 16, withImages(2))), await send(bodyOf(300, 16, withImages(1))),
-      await send(bodyOf(300, 16, { n: 1 }))], [400, 200, 200]);
+    assert.deepEqual([await send(bodyOf(300, 16, withImages(2))), await send(bodyOf(300, 16, withImages(1)))], [400, 200]);
     await relay.settled();
+    assert.equal(upstream.requests.length, 1);
+    assert.deepEqual(relay.records.map((entry) => entry.refused), ["model", "choices", "content", "content", null]);
+  });
+
+  it("refuses a top-level body field that the probe does not build, n: 1 included", async (t) => {
+    const { relay, send, upstream } = await relayFixture(t);
+    relay.setPart(2);
+    assert.deepEqual([await send(bodyOf(300, 16, { logprobs: true })), await send(bodyOf(300, 16, { n: 1 })),
+      await send(bodyOf(300, 16, { response_format: { type: "json_object" } }))], [400, 400, 400]);
+    await relay.settled();
+    assert.equal(upstream.requests.length, 0);
+    assert.deepEqual(relay.records.map((entry) => entry.refused), ["body_field", "body_field", "body_field"]);
+  });
+
+  it("forwards the proxy translator body with every optional field, and the direct Part 3 body", async (t) => {
+    const { relay, send, upstream } = await relayFixture(t);
+    const translated = translateTogetherRequest({ model: "together:kimi", max_tokens: 16, messages: [{ role: "user", content: "q" }],
+      tools: [{ name: "current_time", description: "Return the time.", input_schema: { type: "object", properties: {} } }],
+      tool_choice: { type: "auto" }, temperature: 0, top_p: 0.5, stop_sequences: ["done"] }, { model: KIMI });
+    assert.ok(translated.ok);
+    // Independent list: the translator must build each field, so the relay sees every allowed field.
+    assert.deepEqual(Object.keys(translated.value.body).sort(), ["max_tokens", "messages", "model", "stop", "stream",
+      "stream_options", "temperature", "tool_choice", "tools", "top_p"]);
+    relay.setPart(2);
+    assert.equal(await send(JSON.stringify(translated.value.body)), 200);
+    relay.setPart(3);
+    assert.equal(await send(JSON.stringify({ model: KIMI, max_tokens: 16, messages: [{ role: "user", content: [
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }, { type: "text", text: "q" }] }] })), 200);
     assert.equal(upstream.requests.length, 2);
-    assert.deepEqual(relay.records.map((entry) => entry.refused), ["model", "choices", "content", "content", null, null]);
   });
 
   it("does not follow an upstream redirect, so the key does not go to another host", async (t) => {
@@ -306,10 +411,15 @@ describe("renderReport", () => {
 });
 
 describe("runProbe control order", () => {
-  /** A free model list that prices the Kimi row at `input` USD per 1M input tokens. */
-  const modelList = (input: number): UpstreamHandler => (_req, res) => {
+  /** A free model list that prices the Kimi row at `input` USD per 1M input tokens, as an array or as `{ data: [...] }`. */
+  const modelList = (input: number, shape: "array" | "data" = "array"): UpstreamHandler => (_req, res) => {
+    const rows = [{ id: KIMI, pricing: { input, output: 10 } }];
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify([{ id: KIMI, pricing: { input, output: 10 } }]));
+    res.end(JSON.stringify(shape === "array" ? rows : { data: rows }));
+  };
+  const reply = (status: number, text: string): UpstreamHandler => (_req, res) => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(text);
   };
   const probe = async (t: TestContext, env: Record<string, string>, options: { readonly upstream?: UpstreamHandler;
     readonly keychain?: () => Promise<{ stdout: string }>; readonly report?: { readonly success: boolean; readonly [field: string]: unknown } } = {}) => {
@@ -356,6 +466,28 @@ describe("runProbe control order", () => {
     assert.equal(run.upstream.requests[0]?.headers["authorization"], `Bearer ${KEY}`);
     assert.ok(run.lines.every((line) => !line.includes(KEY)));
     assert.deepEqual([run.code, run.keyReads, run.liveRuns], [2, 1, 0]);
+  });
+
+  it("stops with model_list_unavailable before any paid request when the model list is not usable", async (t) => {
+    for (const upstream of [reply(503, "[]"), reply(200, '{"data":"none"}')]) {
+      const run = await probe(t, { [ACK]: "2.50" }, { upstream, keychain: keychainKey });
+      assert.equal(run.lines.at(-1), '{"success":false,"code":"model_list_unavailable"}');
+      assert.deepEqual(run.upstream.requests.map((request) => `${request.method} ${request.url}`), ["GET /v1/models"]);
+      assert.deepEqual([run.code, run.liveRuns], [2, 0]);
+    }
+  });
+
+  it("reads the live prices from a model list in the { data: [...] } shape", async (t) => {
+    const run = await probe(t, { [ACK]: "2.50" }, { upstream: modelList(3, "data"), keychain: keychainKey });
+    assert.equal(run.lines.at(-1), '{"success":false,"code":"above_ceiling","worstCaseUsd":3.302336}');
+    assert.deepEqual([run.code, run.liveRuns], [2, 0]);
+  });
+
+  it("exits 1 and prints the report when the live report does not pass", async (t) => {
+    const run = await probe(t, { [ACK]: "2.50" }, { upstream: modelList(2), keychain: keychainKey,
+      report: { success: false, refusals: 1 } });
+    assert.equal(run.lines.at(-1), '{"success":false,"refusals":1}');
+    assert.deepEqual([run.code, run.liveRuns], [1, 1]);
   });
 
   it("runs the live parts once when both checks pass and prints their report", async (t) => {

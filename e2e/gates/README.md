@@ -235,14 +235,19 @@ A loopback counting relay on 127.0.0.1 is the only path to Together. It forwards
 redirect. It refuses each of these with a local 400, which Claude Code does not retry:
 
 - a paid request above the cap of its part (request 19 of 18 gets a refusal);
-- a body above the bound of its part;
+- a body above the bound of its part. The relay reads and drops a body above 1 MiB up to
+  32 MiB, then sends the 400 and closes the connection. Above 32 MiB, it closes the
+  connection with no reply;
 - a `max_tokens` value above the bound of its part, or no `max_tokens`;
 - a model that is not one of the six catalog rows;
-- an `n` value other than 1;
+- an `n` value other than 1 (`choices`);
+- a top-level body field that the proxy translator and the Part 3 direct body do not
+  build (`body_field`). An `n` field of 1 is one of these;
 - an image or other content part that is not text, in Part 1 or Part 2, and more than
   one in a Part 3 request;
 - in Part 1, a tool result above 4 KiB (`tool_result_bound`), or a tool result that does
-  not hold the `together-read-<uuid>` fixture marker (`tool_result_marker`);
+  not hold the exact fixture value of this run (`tool_result_marker`). The value is
+  `together-read-<uuid>`, with a new UUID for each run;
 - any other route, and a second model list.
 
 The report shows the code of each refusal in the `refused` field of its relay record. In
@@ -250,7 +255,9 @@ Part 1, `--allowedTools` allows Read only for the absolute fixture path:
 `Read(//<temp folder>/work/check.txt)`.
 
 Not established: whether Claude Code applies the path-scoped Read rule to a sub-agent.
-The relay bound on Part 1 tool results is the control that holds in any case.
+The relay check on Part 1 tool results holds in any case: each tool result must be at most
+4 KiB and hold the exact fixture value of this run. No file holds that value before the
+run, because the probe makes a new UUID for each run.
 
 | Part | Requests | Body bound | max_tokens | Checks |
 |---|---|---|---|---|

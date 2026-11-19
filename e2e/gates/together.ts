@@ -87,8 +87,8 @@ export const planRun = (env: Readonly<Record<string, string | undefined>>,
   return ok({ paidRequests: PAID_REQUESTS, ceilingUsd, worstCaseUsd: worst });
 };
 
-export type RelayRefusal = "route" | "no_part" | "request_cap" | "body_bound" | "max_tokens" | "model" | "choices" | "content"
-  | "tool_result_bound" | "tool_result_marker";
+export type RelayRefusal = "route" | "no_part" | "request_cap" | "body_bound" | "max_tokens" | "model" | "choices"
+  | "body_field" | "content" | "tool_result_bound" | "tool_result_marker";
 export interface RelayRecord {
   /** 0 is the free model list before Part 1. */
   readonly phase: 0 | Part;
@@ -113,7 +113,11 @@ export interface RelayRecord {
 export interface CountingRelay {
   readonly url: string;
   readonly records: readonly RelayRecord[];
-  setPart(part: Part): void;
+  /**
+   * In Part 1, a tool result must hold `fixture`, the exact fixture value of this run. With no
+   * fixture, or one that does not have the fixture shape, Part 1 forwards no tool result.
+   */
+  setPart(part: Part, options?: { readonly fixture?: string }): void;
   /** Wait, at most 5 s, until no request is in flight. */
   settled(): Promise<void>;
   close(): Promise<void>;
@@ -121,6 +125,8 @@ export interface CountingRelay {
 
 const FORWARDED_HEADERS = ["authorization", "content-type", "accept", "user-agent"] as const;
 const MAX_BODY_READ = 1024 * KIB;
+/** The relay reads and drops a body above MAX_BODY_READ up to this cap, so its client gets the local 400. */
+const MAX_BODY_DRAIN = 32 * 1024 * KIB;
 const MAX_RESPONSE_BYTES = 8 * 1024 * KIB;
 const MAX_RECORDS = 256;
 const MAX_TOOL_ARGUMENTS = 64;
@@ -131,18 +137,23 @@ const closeServer = (server: http.Server): Promise<void> => new Promise((done) =
   server.close(() => done());
 });
 
-const readBody = async (req: http.IncomingMessage): Promise<Buffer | undefined> => {
+/** `over_bound`: the body was read in full and dropped. `over_drain`: the request was closed at the drain cap. */
+type BodyRead = { readonly kind: "body"; readonly raw: Buffer }
+  | { readonly kind: "over_bound" | "over_drain"; readonly bytes: number };
+
+const readBody = async (req: http.IncomingMessage): Promise<BodyRead> => {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req as AsyncIterable<Buffer>) {
     size += chunk.length;
-    if (size > MAX_BODY_READ) {
+    if (size > MAX_BODY_DRAIN) {
       req.destroy();
-      return undefined;
+      return { kind: "over_drain", bytes: size };
     }
-    chunks.push(chunk);
+    // Above the read bound, read on but keep no more bytes: a closed request gets no 400.
+    if (size <= MAX_BODY_READ) chunks.push(chunk);
   }
-  return Buffer.concat(chunks);
+  return size > MAX_BODY_READ ? { kind: "over_bound", bytes: size } : { kind: "body", raw: Buffer.concat(chunks) };
 };
 
 const jsonParse = (text: string): unknown => {
@@ -170,8 +181,12 @@ const nonTextParts = (body: Record<string, unknown> | undefined): number => {
  * reminder text that Claude Code adds. Thus 4 KiB holds it, but stops a large user file.
  */
 const PART1_TOOL_RESULT_BYTES = 4 * KIB;
-/** The fixture marker that the Part 1 script writes. No other file holds it. */
-const FIXTURE_MARKER = /together-read-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
+/**
+ * The shape of the Part 1 fixture value. Each run makes a new UUID, so no file holds the value
+ * before the run. The relay takes no fixture of another shape: an empty value would match every text.
+ */
+const FIXTURE_SHAPE = /^together-read-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const newFixture = (): string => `together-read-${randomUUID()}`;
 
 /**
  * The content of each `role: "tool"` message, as text. Part 1 refuses every other tool
@@ -189,12 +204,19 @@ const toolResultTexts = (body: Record<string, unknown> | undefined): string[] =>
   return texts;
 };
 
-/** Part 1 forwards a tool result only when it is small and holds the fixture marker. */
-const part1ToolResultRefusal = (body: Record<string, unknown> | undefined): RelayRefusal | undefined => {
+/**
+ * Part 1 forwards a tool result only when it is small and holds the exact fixture value of this
+ * run. With no fixture, it forwards no tool result.
+ */
+const part1ToolResultRefusal = (body: Record<string, unknown> | undefined, fixture: string | undefined): RelayRefusal | undefined => {
   const texts = toolResultTexts(body);
   if (texts.some((text) => Buffer.byteLength(text, "utf8") > PART1_TOOL_RESULT_BYTES)) return "tool_result_bound";
-  return texts.every((text) => FIXTURE_MARKER.test(text)) ? undefined : "tool_result_marker";
+  return texts.every((text) => fixture !== undefined && text.includes(fixture)) ? undefined : "tool_result_marker";
 };
+
+/** The top-level fields that the proxy translator and the direct Part 3 body build. */
+const BODY_FIELDS: ReadonlySet<string> = new Set(["model", "messages", "max_tokens", "stream", "stream_options", "tools",
+  "tool_choice", "temperature", "top_p", "stop"]);
 
 const requestFacts = (body: Record<string, unknown> | undefined) => {
   const fields = new Set<string>();
@@ -244,19 +266,23 @@ const routeOf = (req: http.IncomingMessage): "models" | "chat" | undefined => {
 /**
  * Loopback relay in front of Together. It forwards one free model list before Part 1, then
  * at most the planned paid requests of each part, each under its body and max_tokens bound,
- * for a catalog row, with one choice and with no more non-text parts than the part allows.
- * In Part 1, each tool result must be at most 4 KiB and hold the fixture marker. A refusal is a local 400 (Claude Code does not retry it). It never retries.
+ * for a catalog row, with one choice, with only the top-level fields that the probe builds and
+ * with no more non-text parts than the part allows. In Part 1, each tool result must be at most
+ * 4 KiB and hold the exact fixture value of this run. A refusal is a local 400, which Claude Code
+ * does not retry. The relay reads and drops a body above 1 MiB up to 32 MiB, so that body gets
+ * its 400 too, with `connection: close`. Above 32 MiB, it closes the connection with no reply.
+ * It never retries.
  */
 export const createCountingRelay = async (options: { readonly upstream: string; readonly timeoutMs?: number }):
   Promise<Result<CountingRelay, "relay_listen_failed">> => {
   const records: RelayRecord[] = [];
   const counts: Record<Part, number> = { 1: 0, 2: 0, 3: 0 };
-  let phase: 0 | Part = 0, firstPart1Bytes: number | undefined, modelListServed = false, inflight = 0;
+  let phase: 0 | Part = 0, fixture: string | undefined, firstPart1Bytes: number | undefined, modelListServed = false, inflight = 0;
   const record = (entry: RelayRecord): void => {
     if (records.length < MAX_RECORDS) records.push(entry);
   };
 
-  const refusalFor = (route: "models" | "chat" | undefined, current: 0 | Part, bytes: number,
+  const refusalFor = (route: "models" | "chat" | undefined, current: 0 | Part, expected: string | undefined, bytes: number,
     body: Record<string, unknown> | undefined): RelayRefusal | undefined => {
     if (route === "models") return current === 0 && !modelListServed && bytes === 0 ? undefined : "route";
     if (route !== "chat") return "route";
@@ -273,9 +299,11 @@ export const createCountingRelay = async (options: { readonly upstream: string; 
     const model = body?.["model"];
     if (typeof model !== "string" || !CATALOG_IDS.has(model)) return "model";
     if (body !== undefined && Object.hasOwn(body, "n") && body["n"] !== 1) return "choices";
+    // A field that the probe does not build can change the cost or the reply, so the relay refuses it.
+    if (Object.keys(body ?? {}).some((field) => !BODY_FIELDS.has(field))) return "body_field";
     if (nonTextParts(body) > bound.nonTextParts) return "content";
     // The Read rule of Claude Code may not hold in a sub-agent, so the relay limits what a Part 1 Read can send.
-    return current === 1 ? part1ToolResultRefusal(body) : undefined;
+    return current === 1 ? part1ToolResultRefusal(body, expected) : undefined;
   };
 
   const forward = async (req: http.IncomingMessage, res: http.ServerResponse, current: 0 | Part, raw: Buffer,
@@ -318,24 +346,30 @@ export const createCountingRelay = async (options: { readonly upstream: string; 
       ...summarizeChat(Buffer.concat(tap).toString("utf8")) });
   };
 
+  /** `close` sends the 400 and then closes the connection. `drop` closes it with no reply. */
   const refuse = (res: http.ServerResponse, current: 0 | Part, refused: RelayRefusal, requestBytes: number,
-    facts: ReturnType<typeof requestFacts>): void => {
+    facts: ReturnType<typeof requestFacts>, end: "keep" | "close" | "drop" = "keep"): void => {
     record({ phase: current, refused, status: null, requestBytes, ...facts, closedEarly: false, ...summarizeChat("") });
+    if (end === "drop") {
+      res.destroy();
+      return;
+    }
     if (res.destroyed) return;
-    res.writeHead(400, { "content-type": "application/json" });
+    res.writeHead(400, { "content-type": "application/json", ...(end === "close" ? { connection: "close" } : {}) });
     res.end(JSON.stringify({ error: { type: "invalid_request_error", message: `Probe relay refused the request (${refused}).` } }));
   };
 
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
-    const route = routeOf(req), current = phase;
-    const raw = await readBody(req);
-    if (raw === undefined) {
-      refuse(res, current, "body_bound", MAX_BODY_READ, requestFacts(undefined));
+    const route = routeOf(req), current = phase, expected = fixture;
+    const read = await readBody(req);
+    if (read.kind !== "body") {
+      refuse(res, current, "body_bound", read.bytes, requestFacts(undefined), read.kind === "over_bound" ? "close" : "drop");
       return;
     }
+    const raw = read.raw;
     const body = route === "chat" ? jsonObject(raw.toString("utf8")) : undefined;
     const facts = requestFacts(body);
-    const refused = refusalFor(route, current, raw.length, body);
+    const refused = refusalFor(route, current, expected, raw.length, body);
     if (refused !== undefined) {
       refuse(res, current, refused, raw.length, facts);
       return;
@@ -366,7 +400,10 @@ export const createCountingRelay = async (options: { readonly upstream: string; 
   return ok({
     url: `http://127.0.0.1:${address.port}`,
     records,
-    setPart: (part) => { phase = part; },
+    setPart: (part, setting = {}) => {
+      phase = part;
+      fixture = part === 1 && setting.fixture !== undefined && FIXTURE_SHAPE.test(setting.fixture) ? setting.fixture : undefined;
+    },
     settled: async () => {
       for (let i = 0; i < 200 && inflight > 0; i++) await delay(25);
     },
@@ -478,12 +515,11 @@ const PART1_AGENT = "together_probe";
 const PART1_TIMEOUT_MS = 300_000;
 
 /** Part 1: a Claude Code parent on the subscription delegates one Read to a Together sub-agent. */
-const runPart1 = async (proxyUrl: string, temp: string) => {
+const runPart1 = async (proxyUrl: string, temp: string, fixture: string) => {
   const claude = await probeHeaders({ provider: "claude", auth: "subscription" });
   const work = join(temp, "work"), configDir = join(temp, "claude");
   await mkdir(work, { mode: 0o700 });
   await mkdir(configDir, { mode: 0o700 });
-  const fixture = `together-read-${randomUUID()}`;
   const fixturePath = join(await realpath(work), "check.txt");
   await writeFile(fixturePath, fixture, { mode: 0o600 });
   // The leading double slash marks an absolute path, so the Read rule does not depend on cwd.
@@ -598,8 +634,10 @@ const runLiveParts = async (relay: CountingRelay, key: string, live: ReadonlyMap
     proxies.push(proxy);
     const fabricated = await startProxy(configPath, `fabricated-${randomUUID()}`, events);
     proxies.push(fabricated);
-    relay.setPart(1);
-    const part1 = await runPart1(proxy.url, temp);
+    // The relay forwards only a Part 1 tool result that holds this exact value.
+    const fixture = newFixture();
+    relay.setPart(1, { fixture });
+    const part1 = await runPart1(proxy.url, temp, fixture);
     await relay.settled();
     const part1Relay = relay.records.filter((entry) => entry.phase === 1);
     relay.setPart(2);
