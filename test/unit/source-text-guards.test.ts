@@ -28,6 +28,36 @@ const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../src");
 const readSrc = (name: string): string =>
   readFileSync(join(SRC_DIR, name), "utf8");
 
+const KEY_READER = "together-auth.ts";
+
+/**
+ * The named uses of the exported key-name constant outside the key reader: one exact
+ * trimmed line in one file each. Any other use could compute the key name and read it.
+ */
+const KEY_NAME_CONSTANT_USES: ReadonlyArray<{ readonly file: string; readonly line: string }> = [
+  // run-action deletes the key from its copy of the parent env before the spawn.
+  { file: "run-action.ts", line: "Reflect.deleteProperty(env, TOGETHER_API_KEY_ENV);" },
+  // The provider accessor carries the name as data for the credential kind table.
+  { file: "config.ts", line: "readonly envName: typeof TOGETHER_API_KEY_ENV;" },
+  { file: "config.ts", line: "envName: TOGETHER_API_KEY_ENV," },
+];
+const IMPORT_FROM_KEY_READER = /^import\s*\{[^}]*\}\s*from\s*["'](?:\.\.?\/)+together-auth\.js["'];$/;
+
+/** Return each way a source file could read the Together key outside the key reader. */
+const keyAccessViolations = (file: string, source: string): string[] => {
+  const violations: string[] = [];
+  if (/\bTOGETHER_API_KEY\b/.test(source)) violations.push("names the key env var");
+  // An env index must be a quoted name, so a computed name cannot select the key.
+  if (/\benv\s*(?:\?\.\s*)?\[\s*(?!["'][\w-]+["']\s*\])/.test(source)) violations.push("indexes an env object with a computed name");
+  for (const line of source.split("\n").map((text) => text.trim())) {
+    if (!line.includes("TOGETHER_API_KEY_ENV") || IMPORT_FROM_KEY_READER.test(line)) continue;
+    if (!KEY_NAME_CONSTANT_USES.some((use) => use.file === file && use.line === line)) {
+      violations.push(`uses the key name constant: ${line}`);
+    }
+  }
+  return violations;
+};
+
 // ---------------------------------------------------------------------------
 // G1 — PROVIDER_IDS[0] must not appear in models.ts or server.ts
 //
@@ -54,14 +84,32 @@ describe("source-text guards", () => {
   });
 
   it("keeps direct Together key env access in the key reader, including for health", () => {
-    const forbidden = /\bTOGETHER_API_KEY\b|\[\s*TOGETHER_API_KEY_ENV\s*\]/;
-    const keyReader = "together-auth.ts";
     const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
-    assert.ok(files.includes(keyReader), "The source list must include the Together key reader");
+    assert.ok(files.includes(KEY_READER), "The source list must include the Together key reader");
     for (const file of files) {
-      if (file === keyReader) continue;
-      assert.ok(!forbidden.test(readSrc(file)), `Use the Together key reader for env access in src/${file}`);
+      if (file === KEY_READER) continue;
+      assert.deepEqual(keyAccessViolations(file, readSrc(file)), [], `Use the Together key reader for env access in src/${file}`);
     }
+  });
+
+  it("catches a computed Together key name and allows only the named uses of the name constant", () => {
+    const computed = [
+      ["a name held in a variable", "const name = TOGETHER_API_KEY_ENV;\nconst raw = process.env[name];"],
+      ["a name built from parts", 'const name = ["TOGETHER", "API", "KEY"].join("_");\nconst raw = process.env[name];'],
+      ["a name in a template", "const raw = env[`TOGETHER_${part}`];"],
+      ["the constant as a computed key", "const raw = deps.env[TOGETHER_API_KEY_ENV];"],
+      ["the constant through Reflect", "const raw = Reflect.get(process.env, TOGETHER_API_KEY_ENV);"],
+      ["the run-action deletion in another file", "Reflect.deleteProperty(env, TOGETHER_API_KEY_ENV);"],
+    ] as const;
+    for (const [label, source] of computed) {
+      assert.notDeepEqual(keyAccessViolations("server.ts", source), [], `The guard must catch ${label}`);
+    }
+    const runAction = [
+      'import { TOGETHER_API_KEY_ENV } from "./together-auth.js";',
+      "    Reflect.deleteProperty(env, TOGETHER_API_KEY_ENV);",
+      '    env["ANTHROPIC_BASE_URL"] = base;',
+    ].join("\n");
+    assert.deepEqual(keyAccessViolations("run-action.ts", runAction), []);
   });
 
   it("requires the fake marker on every Together key fixture", () => {

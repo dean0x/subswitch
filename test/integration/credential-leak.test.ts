@@ -1,11 +1,17 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startSubswitch, startFakeUpstream, sseHandler, makeAccessToken, makeAuthFileContent } from "./fake-upstreams.js";
+import { fileURLToPath } from "node:url";
+import { startSubswitch, startFakeUpstream, sseHandler, makeAccessToken, makeAuthFileContent, type RecordedRequest } from "./fake-upstreams.js";
 import type { Logger, LogFields, LogLevel } from "../../src/logger.js";
+import {
+  TOGETHER_API_KEY_ENV, createTogetherAuth, createTogetherKeyReader, type TogetherKeyReaderDeps,
+} from "../../src/together-auth.js";
+import { lateToolNames } from "../fixtures/together/streams.js";
 
 /**
  * Credential-leak matrix — the three rows gradable today.
@@ -194,6 +200,144 @@ describe("credential leak matrix", () => {
       assert.equal(surface.includes("refresh-SECRET-FIXTURE"), false, `the refresh token must not appear in the ${label}`);
       assert.equal(surface.includes(accountId), false, `the chatgpt account id must not appear in the ${label}`);
       assert.equal(surface.includes("Bearer "), false, `no bearer credential may appear in the ${label}`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Together rows: the paid key goes to Together as Bearer and nowhere else.
+// ---------------------------------------------------------------------------
+
+const TOGETHER_KEY = "FAKE-TOGETHER-KEY-leak-matrix";
+const KEY_MARKER = "FAKE-TOGETHER-KEY-";
+const CLIENT_HEADERS = { authorization: "Bearer fabricated-client-auth", "x-api-key": "fabricated-client-key" };
+const MALFORMED_KEYS = [
+  `${KEY_MARKER}has space`, `${KEY_MARKER}tab\there`, `${KEY_MARKER}bell\u0007`, `${KEY_MARKER}non-ascii-é`,
+  `${KEY_MARKER}two-newlines\n\n`, `${KEY_MARKER}${"x".repeat(512)}`,
+];
+
+const requestText = (request: RecordedRequest): string => JSON.stringify(request.headers) + request.body.toString();
+const keyReader = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform = "linux", stdout = ""): TogetherKeyReaderDeps => ({
+  env, platform, exec: async () => ({ stdout }), setTimer: () => () => {},
+});
+
+const startLeakMatrix = async (togetherKeyReader: TogetherKeyReaderDeps) => {
+  const together = await startFakeUpstream((req, res, body, index) => {
+    if (JSON.parse(body.toString()).model !== "fixture/server-error") return sseHandler(lateToolNames)(req, res, body, index);
+    res.writeHead(500, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { code: "server_error", message: "fixture failure" } }));
+  });
+  const anthropic = await startFakeUpstream((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  const codex = await startFakeUpstream(sseHandler(readFileSync(new URL("../fixtures/response/text-only.sse", import.meta.url), "utf8")));
+  const dir = await mkdtemp(join(tmpdir(), "cred-leak-together-"));
+  const authFile = join(dir, "auth.json");
+  await writeFile(authFile, makeAuthFileContent(makeAccessToken(FAR_FUTURE_MS)));
+  const records: string[] = [];
+  const subswitch = await startSubswitch({
+    anthropic: { baseUrl: anthropic.url },
+    providers: { codex: { baseUrl: codex.url, authFile }, together: { baseUrl: `${together.url}/v1` } },
+  }, {
+    logger: { log: (level, event, fields) => records.push(`${level} ${event} ${JSON.stringify(fields ?? {})}`) },
+    togetherKeyReader,
+  });
+  cleanups.push(subswitch.close, together.close, anthropic.close, codex.close, () => rm(dir, { recursive: true, force: true }));
+  const post = async (model: string) => {
+    const response = await fetch(`${subswitch.url}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", ...CLIENT_HEADERS },
+      body: JSON.stringify({ model, max_tokens: 16, stream: false, messages: [{ role: "user", content: "hi" }] }),
+    });
+    return { status: response.status, text: JSON.stringify([...response.headers.entries()]) + await response.text() };
+  };
+  return { together, anthropic, codex, records, post, url: subswitch.url };
+};
+
+describe("Together credential leak matrix", () => {
+  const rows = [
+    { model: "together:fixture/ok", upstream: "together" },
+    { model: "together:fixture/server-error", upstream: "together" },
+    { model: "together:has space", upstream: "none" },
+    { model: "fixture-unknown-model", upstream: "anthropic" },
+    { model: "claude-sonnet-4-6", upstream: "anthropic" },
+    { model: "gpt-5.5", upstream: "codex" },
+  ] as const;
+
+  for (const key of [TOGETHER_KEY, undefined]) {
+    const label = key === undefined ? "sends no Together request with a missing key" : "sends the key to Together as Bearer only";
+    it(`${label} on every route`, async () => {
+      const m = await startLeakMatrix(keyReader(key === undefined ? {} : { [TOGETHER_API_KEY_ENV]: key }));
+      const clientSurfaces: string[] = [];
+      for (const { model, upstream } of rows) {
+        const fakes = [m.together, m.anthropic, m.codex];
+        const before = fakes.map((fake) => fake.requests.length);
+        const { status, text } = await m.post(model);
+        clientSurfaces.push(text);
+        const expected = key === undefined && upstream === "together" ? "none" : upstream;
+        assert.deepEqual(fakes.map((fake, i) => fake.requests.length - before[i]!),
+          ["together", "anthropic", "codex"].map((name) => (name === expected ? 1 : 0)), `upstream requests for ${model}`);
+        if (key === undefined && upstream === "together") assert.equal(status, 401, model);
+      }
+
+      assert.equal(m.together.requests.length, key === undefined ? 0 : 2);
+      for (const request of m.together.requests) {
+        assert.equal(request.headers.authorization, `Bearer ${TOGETHER_KEY}`);
+        const outside = JSON.stringify({ ...request.headers, authorization: undefined }) + request.body.toString();
+        assert.equal(outside.includes(KEY_MARKER), false, "the key must travel in the authorization header only");
+        assert.equal(outside.includes("fabricated-client"), false, "client credentials must never reach Together");
+      }
+      for (const request of [...m.anthropic.requests, ...m.codex.requests]) {
+        assert.equal(requestText(request).includes(KEY_MARKER), false, `the key must not reach ${request.url}`);
+      }
+      const health = await (await fetch(`${m.url}/__subswitch/health`)).text();
+      for (const [surface, text] of [["client responses", clientSurfaces.join("\n")], ["log records", m.records.join("\n")],
+        ["health body", health]] as const) {
+        assert.equal(text.includes(KEY_MARKER), false, `the key must not appear in the ${surface}`);
+      }
+    });
+  }
+
+  for (const source of ["env", "keychain"] as const) {
+    it(`never echoes a rejected ${source} key in the 401, the logs or the error text`, async () => {
+      for (const value of MALFORMED_KEYS) {
+        const deps = source === "env" ? keyReader({ [TOGETHER_API_KEY_ENV]: value }) : keyReader({}, "darwin", value);
+        const credentials = await createTogetherAuth(createTogetherKeyReader(deps)).getCredentials();
+        assert.ok(!credentials.ok);
+        assert.match(credentials.error.message, /^Together key is malformed\./, JSON.stringify(value));
+        const m = await startLeakMatrix(deps);
+        const { status, text } = await m.post("together:fixture/ok");
+        assert.equal(status, 401);
+        for (const surface of [credentials.error.message, text, m.records.join("\n")]) {
+          assert.equal(surface.includes(KEY_MARKER), false, `a rejected key must not be echoed: ${JSON.stringify(value)}`);
+        }
+        assert.equal(m.together.requests.length + m.anthropic.requests.length + m.codex.requests.length, 0);
+      }
+    });
+  }
+
+  it("keeps models and models --json away from the key reader and the key", { timeout: 30_000 }, async () => {
+    const home = await mkdtemp(join(tmpdir(), "cred-leak-models-"));
+    cleanups.push(() => rm(home, { recursive: true, force: true }));
+    const cli = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
+    const preload = new URL("../helpers/deny-exec-file.ts", import.meta.url).href;
+    const runs = [[["models", "--json"], TOGETHER_KEY], [["models", "--json"], undefined], [["models"], undefined]] as const;
+    for (const [index, [args, key]] of runs.entries()) {
+      const log = join(home, `exec-${index}.log`);
+      const env = {
+        PATH: process.env["PATH"], TMPDIR: process.env["TMPDIR"], HOME: home, XDG_CONFIG_HOME: join(home, "config"),
+        NO_COLOR: "1", SUBSWITCH_TEST_EXEC_LOG: log, ...(key === undefined ? {} : { [TOGETHER_API_KEY_ENV]: key }),
+      };
+      const result = await new Promise<{ code: number | string | null; output: string }>((resolve) => {
+        execFile(process.execPath, ["--import", import.meta.resolve("tsx"), "--import", preload, cli, ...args],
+          { cwd: home, env, timeout: 10_000, maxBuffer: 1024 * 1024 },
+          (error, stdout, stderr) => resolve({ code: error === null ? 0 : error.code ?? null, output: stdout + stderr }));
+      });
+      const command = args.join(" ");
+      assert.equal(result.code, 0, result.output);
+      assert.equal(result.output.includes(KEY_MARKER), false, `${command} must not print the key`);
+      assert.equal(await readFile(log, "utf8"), "preload\n", `${command} must not start a child process`);
     }
   });
 });
