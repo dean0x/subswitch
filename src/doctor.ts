@@ -3,10 +3,11 @@ import { readdir, readFile as fsReadFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
-import { aliasesByProvider, providerConfigFor, type Config, type CredentialKindTable } from "./config.js";
+import { aliasesByProvider, providerConfigFor, withCredential, type Config, type CredentialKindTable } from "./config.js";
 import { inspectAuthFile } from "./codex-auth.js";
 import { isPlainObject } from "./plain-object.js";
 import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
+import { createTogetherKeyReader, togetherKeyHintFor, type TogetherKeyReaderDeps } from "./together-auth.js";
 import { checkAgentModels } from "./agent-scan.js";
 
 // ---------------------------------------------------------------------------
@@ -19,11 +20,14 @@ import { checkAgentModels } from "./agent-scan.js";
 // provider.
 // ---------------------------------------------------------------------------
 
-type AuthInspector = typeof inspectAuthFile;
-
-export const PROVIDER_AUTH_INSPECTORS: Readonly<Record<ProviderId, AuthInspector>> = {
+export const PROVIDER_AUTH_INSPECTORS = {
   codex: inspectAuthFile,
-} as const;
+  together: async (deps: TogetherKeyReaderDeps | undefined) => {
+    if (deps === undefined) return { kind: "missing" } as const;
+    const result = await createTogetherKeyReader(deps).readKey(new AbortController().signal);
+    return result.ok ? { kind: "present", source: result.value.source } as const : { kind: result.error };
+  },
+} satisfies Record<ProviderId, unknown>;
 
 // ---------------------------------------------------------------------------
 // Discriminated-union result types
@@ -201,6 +205,7 @@ export const makeLiveReadTextFile = (): DoctorIO["readTextFile"] => async (path)
 export interface DoctorIO {
   readonly write: (line: string) => void;
   readonly readAuthFile: (path: string) => Promise<string>;
+  readonly togetherKeyReader?: TogetherKeyReaderDeps;
   readonly httpGet: (url: string) => Promise<HttpGetResult>;
   readonly tlsConnect: (host: string, port: number) => Promise<TlsStatus>;
   readonly color: boolean;
@@ -293,7 +298,7 @@ export const runDoctor = async (
 
         try {
           const raw = await io.readAuthFile(authFile);
-          const inspection = PROVIDER_AUTH_INSPECTORS[id](raw);
+          const inspection = PROVIDER_AUTH_INSPECTORS.codex(raw);
           if (!inspection.ok) {
             // A malformed credential file causes a failure even without a provider block.
             lines.push(row(`${id} auth:`, failStr(`INVALID (${inspection.error.message})`)));
@@ -323,8 +328,20 @@ export const runDoctor = async (
           return { lines, failed: true, credentialUsable: false };
         }
       },
+      "api-key": async () => {
+        const inspection = await PROVIDER_AUTH_INSPECTORS.together(io.togetherKeyReader);
+        // Name the key source only, never the value.
+        if (inspection.kind === "present") {
+          return { lines: [row(`${id} auth:`, passStr(`OK (${inspection.source})`))], failed: false, credentialUsable: true };
+        }
+        const failed = configuredProviderIds.has(id);
+        const status = failed ? failStr("UNAVAILABLE") : pc.dim("unconfigured");
+        const reason = inspection.kind === "malformed" ? " (key is malformed)" : "";
+        const hint = togetherKeyHintFor(io.togetherKeyReader?.platform ?? process.platform);
+        return { lines: [row(`${id} auth:`, `${status}${reason} (${hint})`)], failed, credentialUsable: false };
+      },
     };
-    return checks[credential.kind](credential);
+    return withCredential(credential, checks);
   };
 
   // Run subswitch probe, anthropic TLS, per-provider TLS, and per-provider auth
@@ -425,7 +442,11 @@ export const runDoctor = async (
     }),
   );
 
-  const agentFindings = checkAgentModels(fileTexts, table, providersWithCredentials);
+  // A pin to a provider whose key the user supplies is an explicit opt-in. Without
+  // the key, every request of that agent gets a local 401, so the finding fails.
+  const pinNeedsKey: CredentialKindTable<boolean> = { "oauth-file": () => false, "api-key": () => true };
+  const keyRequiredProviders = new Set(PROVIDER_IDS.filter((id) => withCredential(providerConfigFor(config, id), pinNeedsKey)));
+  const agentFindings = checkAgentModels(fileTexts, table, providersWithCredentials, MODEL_REGISTRY, keyRequiredProviders);
 
   // Label the first finding row; blank-label subsequent rows to avoid N identical "agent model:"
   // labels in the columnar output when multiple agents are misconfigured.

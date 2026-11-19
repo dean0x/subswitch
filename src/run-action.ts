@@ -3,11 +3,29 @@ import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { buildDeps, createProxyServer, listenServer } from "./server.js";
 import type { Config } from "./config.js";
+import { TOGETHER_API_KEY_ENV } from "./together-auth.js";
 import { readActionControl } from "./routing/action-control.js";
 import {
   RoutingError,
   type OriginatingClient,
 } from "./routing/routing-types.js";
+
+/**
+ * Copy the parent env for the native child without the Together key. Windows
+ * matches env names in any letter case, so drop every case form of the name.
+ *
+ * @internal Exported for unit testing only.
+ */
+export function childEnvWithoutTogetherKey(
+  parent: Readonly<NodeJS.ProcessEnv>,
+): NodeJS.ProcessEnv {
+  const env = { ...parent };
+  for (const name of Object.keys(env)) {
+    if (name.toUpperCase() === TOGETHER_API_KEY_ENV)
+      Reflect.deleteProperty(env, name);
+  }
+  return env;
+}
 
 /** One process group is one explicit action; interactive prompts share that action. */
 export async function runAction(
@@ -106,7 +124,7 @@ export async function runAction(
       return 130;
     }
     const base = `http://127.0.0.1:${port}${action.ingressPrefix}`;
-    const env = { ...process.env };
+    const env = childEnvWithoutTogetherKey(process.env);
     const args = native.slice(1);
     if (client === "claude-code") env["ANTHROPIC_BASE_URL"] = base;
     else {

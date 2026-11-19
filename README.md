@@ -15,6 +15,10 @@ permissions, and execution loop.
 
 - **Claude Code → Codex:** registered OpenAI models and aliases are translated to
   Responses. Other traffic continues to Anthropic as a raw relay.
+- **Claude Code → Together AI (paid, opt-in per model):** `together:<model-id>` names
+  are translated to Together Chat Completions and billed to your own Together API key.
+  Claude Code is the only supported client for this route; the Codex client integration
+  does not route to Together. See [Together AI (paid API key)](#together-ai-paid-api-key).
 - **Codex → Claude:** registered Claude models and aliases are translated to
   Messages. OpenAI models continue to OpenAI. Reverse-enabled sessions adapt the
   collaboration namespace so cross-provider task messages are readable.
@@ -38,6 +42,7 @@ Codex ───────► SubSwitch ──► Anthropic for selected Claude
 - Node 22.15 or newer within Node 22, or Node 24+ (native zstd support); Node 23 is unsupported
 - A claude.ai subscription login in Claude Code (no `ANTHROPIC_API_KEY` set)
 - Codex CLI logged in (`codex login` → `~/.codex/auth.json`)
+- Optional, for the paid Together AI route only: your own Together API key
 
 ## Quick start
 
@@ -228,6 +233,154 @@ npm run serve      # same as `subswitch serve`
 npm run doctor     # same as `subswitch doctor`
 ```
 
+## Together AI (paid API key)
+
+> **This route costs money.** Together AI bills each request per token to your own
+> Together API key. It is the only paid destination in SubSwitch. SubSwitch uses it only
+> when a request names a `together:` model; all other traffic stays on your subscriptions.
+
+Claude Code is the only supported client for this route. The Codex client integration
+does not route to Together. This section describes the configured behavior; a live
+check against the Together API is not done yet.
+
+Set the model of a Claude Code subagent to `together:<model-id>`:
+
+```yaml
+---
+name: together-worker
+model: together:<model-id>   # replace with a Together model ID available to your account
+---
+```
+
+- Only `together:<model-id>` names route to Together in this version. SubSwitch registers
+  no Together model IDs, so a bare Together ID does not route to Together.
+  `subswitch models` shows the `together:<model-id>` pass-through line with the output cap.
+- The ID must start with a letter or digit, use only letters, digits and `. _ / : -`, and
+  have at most 200 characters. Any other name after `together:` gets a local 400
+  (`Invalid model id after the together: qualifier.`). Nothing goes upstream.
+- SubSwitch translates the request to Together Chat Completions
+  (`<baseUrl>/chat/completions`) and translates the reply back to Anthropic Messages.
+  It makes one attempt per request and does not retry. `count_tokens` gets a local
+  estimate and makes no upstream call.
+
+### Together key
+
+SubSwitch reads the key from one of two sources:
+
+1. `TOGETHER_API_KEY` in the environment of `subswitch serve`.
+2. On macOS only, when `TOGETHER_API_KEY` is not set: the Keychain item with service
+   `Subswitch Together API key` and account `subswitch`.
+
+Add the Keychain item with this command. Keep `-w` last with no value: `security` then
+prompts for the key, so the key stays out of your shell history and the process list.
+Never type the key on the command line.
+
+```sh
+security add-generic-password -s "Subswitch Together API key" -a subswitch -w
+```
+
+- Set `TOGETHER_API_KEY` only in the environment that starts `subswitch serve`. Do not
+  put it in Claude Code settings or in a shell profile that Claude Code and its tools
+  also load. `subswitch run-action` removes `TOGETHER_API_KEY` from the environment of
+  the native client that it starts.
+- When `TOGETHER_API_KEY` is set, SubSwitch uses it and does not read the Keychain, even
+  when the value is malformed.
+- SubSwitch reads the key once, on the first Together request, and keeps it in process
+  memory until `subswitch serve` stops. Restart the proxy after you change the key.
+  The Keychain read has a 10 s limit. A failed read is not kept: the next Together
+  request tries again, so macOS can ask again.
+- The key goes only to the Together host, as `authorization: Bearer <key>`. Client
+  credentials and client headers never go to Together. The key is not in logs, error
+  bodies, `doctor` output, `models --json` or `/__subswitch/health`.
+- A missing or malformed key gives a local 401 (`Together key is missing.` or
+  `Together key is malformed.`, then the env var and Keychain item names). SubSwitch
+  sends no upstream request and does not fall back to Anthropic. A key is malformed
+  when it has fewer than 16 or more than 512 characters, or any whitespace, control or
+  non-ASCII character. One trailing newline is removed.
+- `subswitch doctor` reads the key and shows only its source: `OK (env)` or
+  `OK (keychain)`. It fails when a `providers.together` block or a Together agent pin
+  exists and no usable key is found. `subswitch models` and the health endpoint never
+  read the Keychain.
+
+### Together spend
+
+Together has no budgets and no per-key spend caps, and SubSwitch has no spend counter.
+
+- Use a small prepaid balance and turn auto-recharge off. A prepaid account stops at a
+  zero balance, but Together meters usage with a delay, so spend can overshoot the
+  balance.
+- `providers.together.outputCap` (default `16384` tokens) bounds output only. SubSwitch
+  sends the smaller of the request `max_tokens` and the cap (the cap when the request has
+  none), and logs `output_cap_clamped` when it lowers the value. Nothing in SubSwitch
+  bounds input tokens; only the model's context window does.
+- Worst case, with per-token prices from Together's pricing page for the model:
+
+  ```
+  worst-case cost = requests × (input tokens × input price + outputCap × output price)
+  ```
+
+  Count every request. A Claude Code agent sends one request per model turn, and each
+  tool call adds a turn. Use the largest input that you expect, up to the model's
+  context window.
+- When the balance is too low, Together returns 402. SubSwitch then returns a 402 with
+  `Together account balance is insufficient. Add funds before you retry.` and
+  `x-should-retry: false`, so the client does not retry. After a top-up, Together can
+  continue to return 402 for up to 5 minutes.
+- An upstream 504 or 524, and the SubSwitch timeout 504, also send `x-should-retry: false`.
+
+### Together data
+
+Each Together request sends the conversation to Together: the system prompt, the
+messages, the tool definitions, the tool results (which can hold the contents of files
+that tools read) and images. Together's terms and data policies apply to this data.
+Together thinking is not shown to the client. SubSwitch keeps the reasoning of a turn in
+process memory and sends it back to Together on the next request of the same
+conversation. Reasoning above the per-turn bound (`reasoningCache.maxTurnBytes`, 1 MiB by
+default), or in a request that SubSwitch cannot link to a conversation, is not kept and
+is not sent back.
+
+### Together local access
+
+SubSwitch listens on `127.0.0.1` and has no local token. **Any local process on this
+machine can send a `together:` request to the proxy, and SubSwitch sends that request to
+Together with your key.** The [`Host`/`Origin` gate](#loopback-hostorigin-gate) stops web
+pages, not local processes. Keep the Together balance small, and stop `subswitch serve`
+when you do not use Together.
+
+### Together configuration
+
+The whole `providers.together` block loads only from the user configuration
+(`$XDG_CONFIG_HOME/subswitch/config.json`, default `~/.config/subswitch/config.json`) or
+from the file that `SUBSWITCH_CONFIG` names. A project `subswitch.config.json` that sets
+`providers.together`, even to `{}` or `null`, fails at load. Do not copy the
+`providers.together` block of the example config into a project file. The block is
+optional; without it the defaults apply.
+
+```json
+{
+  "providers": {
+    "together": {
+      "outputCap": 8192
+    }
+  }
+}
+```
+
+`providers.together.baseUrl` defaults to `https://api.together.ai/v1`. With
+`providers.together.allowInsecureBaseUrl: true`, SubSwitch also accepts
+`api-inference.together.ai` and `us-api.together.ai` on the default HTTPS port, and no
+other host. Together charges more for the US-only host `us-api.together.ai`.
+`api.together.xyz` and every other host stop `subswitch serve` at startup. Loopback URLs
+are always accepted, for tests. A URL with userinfo, a query or a fragment fails at load.
+The [config reference](#config-reference) lists every `providers.together` key.
+
+A workspace file can name a `together:` model, for example in a project
+`.claude/agents/*.md` file or a project Claude Code settings file. When a key is
+available, those requests spend your Together balance and send the conversation to
+Together. Before you use Claude Code in a cloned repository, check its agent files and
+settings for `together:` models. `subswitch doctor` lists a Together agent pin only when
+no usable key is found.
+
 ## Codex → Claude
 
 Sign in normally with both clients, then enable the reverse path:
@@ -394,9 +547,10 @@ An explicit `SUBSWITCH_CONFIG` file is authoritative and is not merged with the 
 Explicit config paths passed by callers of `loadConfig` also bypass the merge.
 `doctor` displays every loaded source, and errors identify source paths.
 
-`accessProfiles` and `routes` load only from the user configuration or an explicit file.
+`accessProfiles`, `routes` and the whole `providers.together` block load only from the
+user configuration or an explicit file.
 This rule includes each profile's `allowInsecureBaseUrl` value.
-A project file that declares either key fails with an error, even for an empty value.
+A project file that declares any of these keys fails with an error, even for an empty value.
 Move those keys to the user file, or select the file with `SUBSWITCH_CONFIG`.
 Use `configVersion: 2` for explicit profiles and routes.
 The [Wave 1 example](subswitch.wave1.example.json) shows their format.
@@ -426,8 +580,8 @@ offending key and exits 1 rather than starting:
    rejected with a message naming exactly where each key moved.
 2. **Unknown provider ids.** A `providers.<id>` block whose id this build does not ship —
    a typo like `providers.codexx`, or a provider from a future release — is rejected, and
-   the message lists the ids that *are* known. Today that is `codex`, so `providers.codex`
-   is the only valid block.
+   the message lists the ids that *are* known. Today those are `codex` and `together`, so
+   `providers.codex` and `providers.together` are the only valid blocks.
 
 This is deliberate, and the reason is the same in both cases: the config schema **strips**
 keys it does not recognise instead of reporting them, so the only alternative to failing
@@ -543,7 +697,18 @@ All keys and their defaults:
 | `providers.codex.maxSseEventBytes` | `4194304` (4 MiB) | Maximum bytes per individual SSE event from the Codex upstream |
 | `providers.codex.maxAggregateBytes` | `67108864` (64 MiB) | Maximum total accumulated frame bytes for non-streaming response aggregation; exceeding this returns 502 |
 | `providers.codex.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` points at a host other than `chatgpt.com` or `auth.openai.com`. This prevents credential forwarding to an untrusted host. Set to `true` only when routing through a trusted proxy. Loopback addresses are always exempt. |
-| `limits.maxBufferedBodyBytes` | `33554432` (32 MiB) | Maximum request body bytes the relay buffers. A larger body is streamed to Anthropic unmodified; on a translated (Codex) route it is answered `413 request_too_large`. |
+| `providers.together.baseUrl` | `"https://api.together.ai/v1"` | Together AI base URL; requests go to `<baseUrl>/chat/completions`. **User config or `SUBSWITCH_CONFIG` only** — a project file that sets any `providers.together` key fails at load. HTTPS only (HTTP on loopback); no userinfo, query or fragment. |
+| `providers.together.allowInsecureBaseUrl` | `false` | **Security opt-in** — when `true`, `subswitch serve` also accepts `api-inference.together.ai` and `us-api.together.ai` on the default HTTPS port. Every other host, `api.together.xyz` included, stops the startup. Loopback addresses are always exempt. |
+| `providers.together.aliases` | `{}` | Alias targets must be registered Together model ids. This version registers none, so an alias is rejected with an `alias_rejected` warning; use `together:<model-id>`. |
+| `providers.together.outputCap` | `16384` | Maximum `max_tokens` sent to Together per request. Bounds output tokens only, not input tokens or spend. |
+| `providers.together.reasoningCache.maxEntries` | `1024` | Maximum LRU entries in the Together reasoning cache |
+| `providers.together.reasoningCache.maxBytes` | `16777216` (16 MiB) | Maximum total byte footprint of the Together reasoning cache |
+| `providers.together.reasoningCache.maxTurnBytes` | `1048576` (1 MiB) | Maximum reasoning bytes kept for one turn (at most 1 MiB); larger reasoning is not kept |
+| `providers.together.requestTimeoutMs` | `600000` (10 min) | Wall-clock time limit per Together request |
+| `providers.together.streamIdleTimeoutMs` | `300000` (5 min) | Together stream idle timeout — resets on each SSE chunk |
+| `providers.together.maxSseEventBytes` | `4194304` (4 MiB) | Maximum bytes per individual SSE event from Together |
+| `providers.together.maxAggregateBytes` | `67108864` (64 MiB) | Maximum total accumulated frame bytes for non-streaming response aggregation; exceeding this returns 502 |
+| `limits.maxBufferedBodyBytes` | `33554432` (32 MiB) | Maximum request body bytes the relay buffers. A larger body is streamed to Anthropic unmodified; on a translated (Codex or Together) route it is answered `413 request_too_large`. |
 | `limits.pingIntervalMs` | `15000` (15 s) | Interval between SSE ping frames sent to clients during long Codex streams |
 | `codexIngress.enabled` | `false` | Enable the reserved native Codex ingress endpoints. |
 | `codexIngress.subscriptionBaseUrl` | `"https://chatgpt.com/backend-api/codex"` | Native Codex subscription upstream. |
@@ -595,7 +760,7 @@ All keys and their defaults:
 > relay-side timer on the response phase. If an upstream accepts the TCP connection and
 > request body but then goes silent, the client will receive no response until its own
 > timeout fires (measured: `STATUS=000 TOTAL=20s curl_rc=28` with a 20 s curl timeout).
-> This is deliberate per ADR-010: a relay that invents a 504 for a wedged origin produces a
+> This is deliberate: a relay that invents a 504 for a wedged origin produces a
 > status the origin never emitted. A direct connection to api.anthropic.com would hang
 > the same way. `server.requestTimeout` (600 s, above) bounds only request _receipt_,
 > not the response, so nothing relay-side fires in this case.
@@ -608,12 +773,12 @@ subswitch configures its inbound `http.Server` with the following fixed values:
 |----------|-------|-----------|
 | `requestTimeout` | `600 000` ms (10 min) | Bounds **receipt of the request only** — it stops once the request body has arrived, so it can never cut short a slow completion or a long stream. On expiry subswitch returns an Anthropic-shaped `408`. |
 | `headersTimeout` | `120 000` ms (2 min) | Bounds receipt of the **request headers** only. Same `408` on expiry. |
-| `keepAliveTimeout` | `300 000` ms (5 min) | **Deliberately long.** Claude Code's connection pool keeps sockets open for reuse. At Node's default 5 s, an idle socket gets a FIN/RST from subswitch; if that close races an outgoing POST, undici will **not** retry the resulting ECONNRESET for a non-idempotent request (PF-018). 300 s means sockets outlive any realistic inter-request gap. |
+| `keepAliveTimeout` | `300 000` ms (5 min) | **Deliberately long.** Claude Code's connection pool keeps sockets open for reuse. At Node's default 5 s, an idle socket gets a FIN/RST from subswitch; if that close races an outgoing POST, undici will **not** retry the resulting ECONNRESET for a non-idempotent request. 300 s means sockets outlive any realistic inter-request gap. |
 | `maxRequestsPerSocket` | `0` (unlimited) | Prevents connection cycling on long-lived agents |
 | `maxHeaderSize` | `65 536` bytes (64 KiB) | Anthropic's own limit; subswitch returns a `431 Request Header Fields Too Large` (Anthropic-shaped) when exceeded |
 
 When a client sends a body larger than `limits.maxBufferedBodyBytes` to a translated
-(Codex) route, subswitch returns 413 and then **drains the remaining upload bytes** before
+(Codex or Together) route, subswitch returns 413 and then **drains the remaining upload bytes** before
 closing the connection. This lets the client read the 413 response; without the drain, the
 TCP write-buffer fills and the client's `recv()` never sees the 413 body. For
 Anthropic-bound bodies above the window, subswitch streams the body verbatim and Anthropic
@@ -652,7 +817,8 @@ subswitch models --json | jq .models[].id
   "configFileFound": false,
   "providers": [
     { "id": "anthropic", "displayName": "Anthropic", "routing": "passthrough" },
-    { "id": "codex", "displayName": "Codex", "routing": "registry" }
+    { "id": "codex", "displayName": "Codex", "routing": "registry" },
+    { "id": "together", "displayName": "Together", "routing": "registry" }
   ],
   "models": [
     {
@@ -789,6 +955,8 @@ how the request was dispatched. Valid values:
 | `anthropic:ambiguous` | Fail-open forward: two providers claim the same family name; relay forwards to Anthropic and emits `ambiguous_model_name` warn |
 | `anthropic:fallback` | Fail-open forward: colon-qualified name whose prefix is not a registered provider; relay forwards to Anthropic and emits `unknown_provider_qualifier` warn |
 | `codex:{endpoint}:{model}` | Request routed to the Codex provider leg (e.g. `codex:messages:gpt-5.6-sol`, `codex:count_tokens:gpt-5.6-sol`) |
+| `together:{endpoint}:{model}` | Request routed to the paid Together AI leg; `{model}` is the id after the `together:` prefix |
+| `invalid_qualified` | Malformed model id after the `together:` prefix; relay returned a synthesized 400 and sent nothing upstream |
 | `host_rejected` | Request refused by the loopback `Host`/`Origin` gate before routing; relay returned a synthesized 403 |
 | `codex_ingress:subscription:passthrough` | Subscription-mode Codex ingress; the gateway may translate a resolved Claude request. |
 | `codex_ingress:api:passthrough` | API-mode Codex ingress; the gateway may translate a resolved Claude request. |
@@ -829,6 +997,8 @@ This header is present on:
   by the relay (it translates OpenAI Responses format → Anthropic Messages
   format), so the header is present on both streaming and non-streaming codex
   responses, and on all codex-leg error responses.
+- **Together-leg responses**: the same rule applies to the Together leg, which
+  translates Together Chat Completions → Anthropic Messages.
 - **Relay management endpoints**: `/__subswitch/health` (200 OK), and any
   unrecognized `/__subswitch/*` path (404 — fixed body, path not reflected).
 
@@ -863,6 +1033,10 @@ End-to-end verification against the real CLI and real upstreams:
   `image_dropped`).
 - One subswitch instance holds the reasoning cache in memory; restarting it
   mid-conversation degrades the next Codex turn to a cache miss.
+- The Together AI route is not live-verified. Some Together wire details, such as
+  stream usage and `tool_choice` values, are not confirmed. The Together key stays in
+  process memory until `subswitch serve` stops, and the output cap does not bound input
+  tokens.
 - The wire recorder is HTTP-only. It inspects explicit SSE responses and successful
   streamed `POST .../responses` requests whose upstream omits `Content-Type`; other
   missing-header responses remain transparent pass-through.
@@ -875,9 +1049,11 @@ commit conventions. By participating you agree to the
 
 ## Security
 
-subswitch is a loopback-only proxy that handles subscription credentials. Report
-vulnerabilities privately — see [SECURITY.md](SECURITY.md). Do not open a public
-issue for security reports.
+subswitch is a loopback-only proxy that handles subscription credentials and, for the
+Together AI route, a paid API key. It has no local token, so any local process can send
+requests that spend the Together key; keep the Together balance small (see
+[Together local access](#together-local-access)). Report vulnerabilities privately —
+see [SECURITY.md](SECURITY.md). Do not open a public issue for security reports.
 
 ### Loopback `Host`/`Origin` gate
 
@@ -896,7 +1072,8 @@ upstream, and never reaches provider credentials — `/__subswitch/*` included.
 Clients that talk to the proxy directly (Claude Code, `curl`) send a loopback
 `Host` and no `Origin` at all, so they are unaffected, and a page served from
 another loopback port keeps working — the gate stops the cross-site case, not
-local development.
+local development. For the same reason, the gate does not stop a local process: any
+process on the machine can send a `together:` request that spends your Together key.
 
 ## License
 

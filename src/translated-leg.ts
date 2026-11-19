@@ -2,6 +2,7 @@ import type { ServerResponse } from "node:http";
 import { Readable, type Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { abortable } from "./abortable.js";
 import {
   SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, toAnthropicErrorBody, toAnthropicErrorSse,
   type AnthropicError, type AnthropicErrorType, type ProxyError,
@@ -9,7 +10,7 @@ import {
 import { observeReadableSse } from "./limit-http-observer.js";
 import { recordLimitFailure, type LimitContext } from "./limit-observation.js";
 import type { Logger } from "./logger.js";
-import { createFrameWriter, readBoundedText, respondJson, respondProxyError } from "./provider-transport.js";
+import { createFrameWriter, readBoundedBody, readBoundedText, respondJson, respondProxyError } from "./provider-transport.js";
 import type { Result } from "./result.js";
 
 const ERROR_BODY_PEEK_BYTES = 2048;
@@ -38,6 +39,7 @@ export interface TranslatedLegOptions<C> {
     readonly retryBoundViolated: string;
     readonly upstreamError: string;
     readonly streamInterrupted: string;
+    readonly credentialLoadFailed: string;
   };
   readonly auth: {
     readonly refreshable: boolean;
@@ -52,6 +54,8 @@ export interface TranslatedLegOptions<C> {
   readonly limitKey?: LimitContext;
   readonly proxyErrorHeaders?: (kind: ProxyError["kind"]) => Record<string, string> | undefined;
   readonly redirect: "follow" | "error";
+  readonly abortOnResponseTimeout?: true;
+  readonly renderJsonResponse?: (detail: string) => UpstreamError;
 }
 
 type ReplyError = (error: ProxyError) => void;
@@ -61,7 +65,17 @@ type FramePipeline = readonly [Readable, Transform, Transform];
 const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, signal: AbortSignal,
   replyError: ReplyError): Promise<Response | undefined> => {
   const { auth, events, fetchImpl, logger, model, name } = options;
-  const initial = await auth.getCredentials(signal);
+  // Bound the wait even when a credential source does not observe cancellation.
+  const initial = await abortable(auth.getCredentials(signal), signal).catch((cause: unknown): Result<C, ProxyError> => {
+    // A cancelled wait gets the timeout reply below. Log only the cause name: the message can hold a credential.
+    if (!signal.aborted) logger.log("error", events.credentialLoadFailed, { model, errorCode: cause instanceof Error ? cause.name : "unknown" });
+    return { ok: false, error: { kind: "upstream", status: 500, message: `${name} credential load failed` } };
+  });
+  if (res.destroyed || res.writableEnded) return;
+  if (signal.aborted) {
+    replyError({ kind: "timeout", message: `${name} request timed out` });
+    return;
+  }
   if (!initial.ok) {
     replyError(initial.error);
     return;
@@ -102,9 +116,20 @@ const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOpt
   respondJson(res, 500, toAnthropicErrorBody("api_error", `${name} internal error`));
 };
 
-const relayUpstreamError = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, upstream: Response): Promise<void> => {
+const peekErrorBody = async (response: Response, signal: AbortSignal): Promise<string> =>
+  (await readBoundedBody(response.body, ERROR_BODY_PEEK_BYTES, signal).catch(() => undefined))?.text ?? "";
+
+const timeoutError = (name: string): ProxyError => ({ kind: "timeout", message: `${name} request timed out` });
+
+const relayUpstreamError = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, upstream: Response,
+  signal: AbortSignal, replyError: ReplyError): Promise<void> => {
   const { logger, limitKey, events, model } = options;
-  const detail = await readBoundedText(upstream.body, ERROR_BODY_PEEK_BYTES);
+  const detail = options.abortOnResponseTimeout ? await peekErrorBody(upstream, signal)
+    : await readBoundedText(upstream.body, ERROR_BODY_PEEK_BYTES);
+  if (options.abortOnResponseTimeout && signal.aborted) {
+    replyError(timeoutError(options.name));
+    return;
+  }
   if (limitKey !== undefined) {
     recordLimitFailure(logger, limitKey,
       { transport: "http", status: upstream.status, committed: false, headers: upstream.headers,
@@ -136,7 +161,7 @@ const streamFrames = async <C>(res: ServerResponse, options: TranslatedLegOption
 };
 
 const collectFrames = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, streams: FramePipeline,
-  replyError: ReplyError): Promise<void> => {
+  signal: AbortSignal, replyError: ReplyError): Promise<void> => {
   const frames: string[] = [];
   let framesBytes = 0;
   try {
@@ -150,7 +175,9 @@ const collectFrames = async <C>(res: ServerResponse, options: TranslatedLegOptio
       }
     });
   } catch {
-    replyError({ kind: "upstream", message: `${options.name} stream interrupted` });
+    replyError(signal.aborted && options.abortOnResponseTimeout
+      ? timeoutError(options.name)
+      : { kind: "upstream", message: `${options.name} stream interrupted` });
     return;
   }
   const aggregated = options.aggregateFrames(frames);
@@ -184,21 +211,32 @@ export const runTranslatedLeg = async <C>(res: ServerResponse, options: Translat
     const upstream = await requestUpstream(res, options, controller.signal, replyError);
     if (upstream === undefined) return;
     if (!upstream.ok) {
-      await relayUpstreamError(res, options, upstream);
+      await relayUpstreamError(res, options, upstream, controller.signal, replyError);
       return;
     }
     if (upstream.body === null) {
       replyError({ kind: "upstream", message: `${options.name} upstream returned an empty body` });
       return;
     }
+    if (options.renderJsonResponse && upstream.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() === "application/json") {
+      const detail = await peekErrorBody(upstream, controller.signal);
+      if (controller.signal.aborted) {
+        replyError(timeoutError(options.name));
+        return;
+      }
+      const error = options.renderJsonResponse(detail);
+      respondJson(res, error.status, toAnthropicErrorBody(error.type, error.message), error.headers);
+      return;
+    }
     const { parser, translator } = options.createTranslator();
-    const bodyStream = Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>);
+    const bodyStream = Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>,
+      options.abortOnResponseTimeout ? { signal: controller.signal } : undefined);
     if (options.limitKey !== undefined) observeReadableSse(options.logger, options.limitKey, bodyStream, upstream.headers);
     bodyStream.on("data", resetIdle);
     resetIdle();
     const streams = [bodyStream, parser, translator] as const;
     if (options.wantStream) await streamFrames(res, options, streams, controller.signal);
-    else await collectFrames(res, options, streams, replyError);
+    else await collectFrames(res, options, streams, controller.signal, replyError);
   } finally {
     clearTimeout(totalTimer);
     if (idleTimer !== undefined) clearTimeout(idleTimer);

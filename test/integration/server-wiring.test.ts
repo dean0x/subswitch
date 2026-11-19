@@ -84,6 +84,7 @@ const makeMinimalConfig = (overrides: {
       allowInsecureBaseUrl: anthropicAllowInsecureBaseUrl,
     },
     providers: {
+      ...base.providers,
       codex: {
         ...base.providers.codex,
         baseUrl: codexBaseUrl,
@@ -1138,4 +1139,23 @@ describe("inbound policy — Anthropic-shaped 408 on a REUSED keep-alive connect
       await fixture.close();
     }
   });
+});
+
+it("checks Together URLs at startup before it constructs a handler", () => {
+  const config = defaultConfig();
+  const withUrl = (baseUrl: string, allowInsecureBaseUrl: boolean) => buildDeps({
+    ...config, providers: { ...config.providers, together: { ...config.providers.together, baseUrl, allowInsecureBaseUrl } },
+  }, { log() {} });
+  for (const baseUrl of ["https://api.together.xyz/v1", "https://other.invalid/v1", "https://api.together.ai:8443/v1",
+    "https://user@api.together.ai/v1", "https://api.together.ai/v1?", "https://api.together.ai/v1#", "not a URL"]) {
+    const result = withUrl(baseUrl, true);
+    assert.ok(!result.ok, baseUrl);
+    assert.match(result.error, /providers\.together\.baseUrl.*user configuration or SUBSWITCH_CONFIG/);
+  }
+  for (const baseUrl of ["https://api-inference.together.ai/v1", "https://us-api.together.ai/v1"]) {
+    assert.equal(withUrl(baseUrl, false).ok, false);
+    assert.equal(withUrl(baseUrl, true).ok, true);
+  }
+  assert.equal(withUrl("https://api.together.ai/v1", false).ok, true);
+  assert.equal(withUrl("http://127.0.0.1:4142/v1", false).ok, true);
 });

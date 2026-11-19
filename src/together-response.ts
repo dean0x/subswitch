@@ -49,6 +49,7 @@ export interface TogetherTranslatorOptions {
   /** Use a fresh UUID per response. Tests can supply a fixed seed. */
   readonly seed: string;
   readonly maxEventBytes: number;
+  readonly maxTurnBytes?: number;
   readonly conversationKey?: string;
   readonly putReasoning?: (key: string, text: string) => void;
 }
@@ -79,7 +80,7 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
   const tools = new Map<number, ToolCall>();
   const warnings: TogetherStreamWarning[] = [];
   const reasoning: string[] = [];
-  const { conversationKey, putReasoning } = options;
+  const { conversationKey, putReasoning, maxTurnBytes = MAX_REASONING_BYTES } = options;
   let reasoningBytes = 0;
   let argumentsBytes = 0;
   let unparsableChunks = 0;
@@ -151,9 +152,9 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
   };
 
   const appendReasoning = (text: string): void => {
-    if (reasoningBytes > MAX_REASONING_BYTES) return;
+    if (reasoningBytes > maxTurnBytes) return;
     reasoningBytes += Buffer.byteLength(text);
-    if (reasoningBytes > MAX_REASONING_BYTES) {
+    if (reasoningBytes > maxTurnBytes) {
       reasoning.length = 0;
       warnings.push("reasoning_too_large");
     } else if (conversationKey !== undefined && putReasoning !== undefined) {

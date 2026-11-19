@@ -39,6 +39,8 @@ export type AnthropicRequest = z.infer<typeof AnthropicRequestSchema>;
 export type AnthropicMessage = z.infer<typeof AnthropicMessageSchema>;
 export type AnthropicTool = z.infer<typeof AnthropicToolSchema>;
 
-// Length-bound prevents a crafted `model` value from forging a log line via newline injection.
-// 200 chars is generous for any real model id but rejects pathological payloads.
-export const ModelPeekSchema = z.object({ model: z.string().max(200) });
+// Pass Together-qualified names to the resolver, even if the id exceeds its limit.
+// The resolver must distinguish a malformed Together name from a missing model.
+export const ModelPeekSchema = z.object({
+  model: z.string().max(200).or(z.string().startsWith("together:")),
+});

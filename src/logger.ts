@@ -20,6 +20,8 @@ export interface LogFields {
   /** Number of cached input tokens from the Codex backend response.completed usage.
    *  Proves prompt_cache_key is effective. Non-reversible (a count, not content). */
   readonly cachedTokens?: number;
+  readonly requestedTokens?: number;
+  readonly appliedTokens?: number;
   /** First 8 hex chars of the derived conversation key (the session_id prefix).
    *  Verifies key stability across turns without revealing the full key.
    *  Truncated: non-reversible. */
@@ -57,6 +59,8 @@ export const FIELD_KEYS = [
   "errorCode",
   "effort",
   "cachedTokens",
+  "requestedTokens",
+  "appliedTokens",
   "sessionKey",
   "bodyMode",
   "attemptOrder", "targetProfile", "product", "commitState", "quotaWindow", "observationAgeMs", "retryEligible", "evidence",

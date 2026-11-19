@@ -13,7 +13,7 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: {} });
+const { table } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: {} });
 
 const resolve = (name: string): ModelResolution => resolveModel(table, name);
 

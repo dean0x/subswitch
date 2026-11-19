@@ -439,6 +439,18 @@ describe("runInitNonInteractive", () => {
     assert.equal(errLines.length, 0);
   });
 
+  it("never prints or writes a Together key from the environment", async () => {
+    const key = "FAKE-TOGETHER-KEY-init";
+    const deps = makeFakeDeps();
+    const lines: string[] = [];
+    const exitCode = await runInitNonInteractive({}, "/project", deps, (l) => lines.push(l), (l) => lines.push(l),
+      { TOGETHER_API_KEY: key });
+    assert.equal(exitCode, 0);
+    assert.doesNotMatch(lines.join("\n"), /FAKE-TOGETHER-KEY-|TOGETHER_API_KEY/);
+    assert.equal(Object.keys(deps.written).length, 2);
+    for (const file of Object.values(deps.written)) assert.doesNotMatch(file, /FAKE-TOGETHER-KEY-|TOGETHER_API_KEY|together/i);
+  });
+
   it("sets exit code 1 and writes to stderr on invalid --port", async () => {
     const deps = makeFakeDeps();
     const errLines: string[] = [];

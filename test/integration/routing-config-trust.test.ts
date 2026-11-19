@@ -5,6 +5,8 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rawHttpRequest, sseHandler, startFakeUpstream, startSubswitch } from "./fake-upstreams.js";
+import { lateToolNames } from "../fixtures/together/streams.js";
 
 const cli = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
 const tsx = fileURLToPath(new URL("../../node_modules/.bin/tsx", import.meta.url));
@@ -68,5 +70,54 @@ describe("CLI routing configuration sources", () => {
       assert.match(result.stderr, /routes.*not allowed in project configuration/);
       assert.equal(result.stdout, "");
     } finally { await rm(f.root, { recursive: true, force: true }); }
+  });
+});
+
+describe("Together configuration and host trust", () => {
+  const togetherProfile = {
+    configVersion: 2,
+    accessProfiles: { together: { provider: "together", product: "chatgpt-codex", billing: "subscription", account: "test",
+      credential: { kind: "native-oauth", authFile: "/no-auth.json" } } },
+    routes: { test: { clients: ["claude-code"], primary: { profile: "together", model: "fixture", effort: "low" } } },
+  };
+  for (const [label, file, config, error] of [
+    ["a user profile and route that name together", "user", togetherProfile, /unsupported provider: together/],
+    ["a project providers.together block", "project", { providers: { together: {} } }, /providers\.together not allowed in project configuration/],
+  ] as const) {
+    it(`refuses ${label} before it starts a native command`, { timeout: 15_000 }, async () => {
+      const f = await fixture();
+      try {
+        await writeFile(file === "user" ? f.userPath : join(f.root, "subswitch.config.json"), JSON.stringify(config));
+        const result = await run(f.root, f.env, native);
+        assert.equal(result.code, 1);
+        assert.match(result.stderr, error);
+        assert.equal(result.stdout, "");
+      } finally { await rm(f.root, { recursive: true, force: true }); }
+    });
+  }
+
+  it("refuses a foreign Host or Origin for a Together model before the key load", async (t) => {
+    const together = await startFakeUpstream(sseHandler(lateToolNames));
+    t.after(together.close);
+    const anthropic = await startFakeUpstream((_req, res) => { res.writeHead(418); res.end(); });
+    t.after(anthropic.close);
+    const exec = t.mock.fn(async (): Promise<{ stdout: string }> => { throw new Error("item not found"); });
+    const proxy = await startSubswitch({ anthropic: { baseUrl: anthropic.url }, providers: { together: { baseUrl: `${together.url}/v1` } } },
+      { togetherKeyReader: { env: {}, platform: "darwin", exec, setTimer: () => () => {} } });
+    t.after(proxy.close);
+    const body = Buffer.from(JSON.stringify({ model: "together:fixture/model", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }));
+    const send = (headers: string[]) => rawHttpRequest(`${proxy.url}/v1/messages`, {
+      method: "POST", rawHeaders: [...headers, "Content-Type", "application/json"], body,
+    });
+
+    for (const headers of [["Host", "foreign.invalid"], ["Host", new URL(proxy.url).host, "Origin", "https://foreign.invalid"]]) {
+      assert.equal((await send(headers)).status, 403, headers.join(" "));
+    }
+    assert.equal(exec.mock.callCount() + together.requests.length + anthropic.requests.length, 0);
+
+    // Control: the same request from a loopback client reaches the key load.
+    assert.equal((await send([])).status, 401);
+    assert.equal(exec.mock.callCount(), 1);
+    assert.equal(together.requests.length + anthropic.requests.length, 0);
   });
 });

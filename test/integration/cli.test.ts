@@ -12,7 +12,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, readdir, writeFile, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -332,6 +332,22 @@ describe("CLI init --dry-run", () => {
 // ---------------------------------------------------------------------------
 
 describe("CLI models", () => {
+  it("ends the list with the Together pass-through line and the configured output cap", async () => {
+    const home = await mkdtemp(join(tmpdir(), "subswitch-models-together-"));
+    try {
+      const configDir = join(home, "config", "subswitch");
+      await mkdir(configDir, { recursive: true });
+      await writeFile(join(configDir, "config.json"), JSON.stringify({ providers: { together: { outputCap: 1024 } } }), "utf8");
+      const result = await runCli(["models"], {
+        cwd: home, env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, "config"), SUBSWITCH_CONFIG: undefined },
+      });
+      assert.equal(result.exitCode, 0, result.stderr);
+      assert.match(result.stdout, /\n  together:<model-id>  →  any Together AI model \(pass-through; output cap 1024 tokens\)\n$/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("exits 0 and prints both the alias (sol) and its canonical (gpt-5.6-sol)", async () => {
     const result = await runCli(["models"]);
     assert.equal(result.exitCode, 0);

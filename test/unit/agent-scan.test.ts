@@ -117,7 +117,7 @@ describe("parseFrontmatterModel", () => {
 
 describe("checkAgentModels", () => {
   // Build a routing table from the real registry with no overrides.
-  const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: {} });
+  const { table } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: {} });
   // All providers configured by default.
   const configuredProviders = new Set<string>(["codex"]);
   const noConfiguredProviders = new Set<string>();
@@ -143,6 +143,28 @@ describe("checkAgentModels", () => {
     assert.equal(findings[0]!.severity, "fail", "unresolvable finding must have severity 'fail' (drives doctor exit 1)");
     assert.equal(findings[0]!.model, "my-unknown-model");
     assert.equal(findings[0]!.file, "/agent.md");
+  });
+
+  it("accepts a valid Together pin and fails a malformed Together pin", () => {
+    const files = [
+      { path: "/valid.md", text: "---\nmodel: together:fixture/unlisted\n---\n" },
+      { path: "/bad.md", text: "---\nmodel: together:#bad\n---\n" },
+    ];
+    assert.deepEqual(checkAgentModels(files, table, new Set(["together"])), [
+      { file: "/bad.md", model: "together:#bad", kind: "unresolvable", severity: "fail" },
+    ]);
+  });
+
+  it("fails a pin to a key provider with no key and keeps other unconfigured pins informational", () => {
+    const files = [
+      { path: "/paid.md", text: "---\nmodel: together:fixture/unlisted\n---\n" },
+      { path: "/codex.md", text: "---\nmodel: gpt-5.6-sol\n---\n" },
+    ];
+    const findings = checkAgentModels(files, table, noConfiguredProviders, MODEL_REGISTRY, new Set(["together"]));
+    assert.deepEqual(findings.map(({ file, kind, severity }) => ({ file, kind, severity })), [
+      { file: "/paid.md", kind: "provider_unconfigured", severity: "fail" },
+      { file: "/codex.md", kind: "provider_unconfigured", severity: "info" },
+    ]);
   });
 
   it("returns 'ambiguous' finding when a family name is claimed by multiple providers", () => {
@@ -187,7 +209,7 @@ describe("checkAgentModels", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-retired", provider: "codex", gen: [5, 0], retired: true },
     ];
-    const { table: regTable } = buildRoutingTable(reg, { codex: {} });
+    const { table: regTable } = buildRoutingTable(reg, { together: {}, codex: {} });
     const files = [{ path: "/agent.md", text: "---\nmodel: gpt-retired\n---\n" }];
     const findings = checkAgentModels(files, regTable, configuredProviders, reg);
     assert.equal(findings.length, 1);
@@ -208,7 +230,7 @@ describe("checkAgentModels", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-preview", provider: "codex", gen: [5, 7], preview: true },
     ];
-    const { table: regTable } = buildRoutingTable(reg, { codex: {} });
+    const { table: regTable } = buildRoutingTable(reg, { together: {}, codex: {} });
     const files = [{ path: "/agent.md", text: "---\nmodel: gpt-preview\n---\n" }];
     const findings = checkAgentModels(files, regTable, configuredProviders, reg);
     assert.equal(findings.length, 1);
@@ -349,7 +371,7 @@ describe("checkAgentModels", () => {
       label: "retired",
       findings: checkAgentModels(
         [{ path: "/agent.md", text: "---\nmodel: gpt-retired\n---\n" }],
-        buildRoutingTable(retiredReg, { codex: {} }).table,
+        buildRoutingTable(retiredReg, { together: {}, codex: {} }).table,
         configuredProviders,
         retiredReg,
       ),
@@ -364,7 +386,7 @@ describe("checkAgentModels", () => {
       label: "preview_only",
       findings: checkAgentModels(
         [{ path: "/agent.md", text: "---\nmodel: gpt-preview\n---\n" }],
-        buildRoutingTable(previewReg, { codex: {} }).table,
+        buildRoutingTable(previewReg, { together: {}, codex: {} }).table,
         configuredProviders,
         previewReg,
       ),

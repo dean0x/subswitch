@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Together AI route for Claude Code (paid, opt-in per model).** A Claude Code
+  request for `together:<model-id>` goes to Together Chat Completions with your own
+  Together API key. Together bills each request per token. Only `together:<model-id>`
+  names route to Together in this version; no Together model IDs are registered.
+  Claude Code is the only supported client for this route. The Codex client
+  integration does not route to Together. Live behavior against the Together API is
+  not verified yet.
+- Subswitch reads the Together key from `TOGETHER_API_KEY`. On macOS, when that
+  variable is not set, it reads the Keychain item `Subswitch Together API key`
+  (account `subswitch`). It reads the key once and keeps it in memory only. Set the
+  key only in the environment of `subswitch serve`. `subswitch run-action` removes
+  `TOGETHER_API_KEY` from the environment of the native client.
+- A missing or malformed Together key gives a local 401. A malformed `together:`
+  model name gives a local 400. In both cases Subswitch sends no upstream request and
+  does not fall back to Anthropic.
+- Each Together request has an output cap, `providers.together.outputCap`, with a
+  default of 16384 tokens. The cap does not bound input tokens. Together has no
+  budgets or per-key spend caps. Use a small prepaid balance with auto-recharge off.
+  The README gives the worst-case cost formula:
+  `requests × (input tokens × input price + outputCap × output price)`.
+- A Together 402 (balance too low) returns a 402 with
+  `Together account balance is insufficient. Add funds before you retry.` and
+  `x-should-retry: false`.
+- The `providers.together` block loads only from your user config or from the file
+  that `SUBSWITCH_CONFIG` names. A project config file that sets it fails at load,
+  even for an empty or null value. The default base URL is
+  `https://api.together.ai/v1`. With `providers.together.allowInsecureBaseUrl: true`,
+  Subswitch also accepts `api-inference.together.ai` and `us-api.together.ai`, and
+  no other host.
+- `doctor` shows the Together key source (`env` or `keychain`), never the value.
+  `subswitch models` shows the `together:<model-id>` pass-through line with the
+  output cap.
+- Together requests send the conversation to Together, with tool results, file
+  contents that tools read, and images.
+- Subswitch listens on loopback and has no local token. Any local process can send
+  requests that spend the Together key. Keep the Together balance small.
+
 ## [0.8.0] - 2026-11-19
 
 ### Changed

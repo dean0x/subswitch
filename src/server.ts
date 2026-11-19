@@ -1,13 +1,17 @@
 import { vetCredentialUrl } from "./upstream-policy.js";
 import { ClaudeAuthManager, createClaudeCredentialStore } from "./claude-auth.js";
-import { openaiErrorBody } from "./errors.js";
+import { openaiErrorBody, registerExactCredential } from "./errors.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { createTogetherAuth, createTogetherKeyReader, envKeyPresent, type TogetherKeyReaderDeps } from "./together-auth.js";
+import { createTogetherHandler } from "./together-handler.js";
 import http from "node:http";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, Server } from "node:http";
 import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
 import { applyInboundPolicy, hostGateVerdict, SERVER_TUNING } from "./inbound-policy.js";
 import { type Result, ok, err } from "./result.js";
-import { aliasesByProvider, enumerateDestinations, providerConfigFor, type Config, type CredentialKindTable } from "./config.js";
+import { aliasesByProvider, enumerateDestinations, providerConfigFor, withCredential, codexCredentialFor, type Config, type CredentialKindTable } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
 import { CLAUDE_EVENTS, OPENAI_EVENTS, ANTHROPIC_EVENTS, providerEvents } from "./provider-events.js";
 import { decideRoute } from "./router.js";
@@ -44,6 +48,7 @@ export interface ServerDeps {
   readonly sharedRouting?: SharedRouting;
   readonly config: Config;
   readonly logger: Logger;
+  readonly togetherEnv?: Readonly<NodeJS.ProcessEnv>;
   /** Privileged default leg — handles everything that is not POST /v1/messages*. */
   readonly forwardAnthropic: AnthropicForwarder;
   readonly forwardOpenai: CodexIngressEntry | undefined;
@@ -80,14 +85,40 @@ const createCodexProvider = (config: Config, logger: Logger, auth: ProviderAuth<
     providerId: "codex",
     provider,
     pingIntervalMs: config.limits.pingIntervalMs,
-    loginCommand: providerConfigFor(config, "codex").loginCommand,
+    loginCommand: codexCredentialFor(provider).loginCommand,
     logger,
     auth,
     cache: new ReasoningCache(provider.reasoningCache.maxEntries, provider.reasoningCache.maxBytes),
   });
 };
 
-type CredentialUrl = Pick<Parameters<typeof vetCredentialUrl>[0], "url" | "expectedHost" | "allowOverride" | "refreshToken"> & {
+export const liveTogetherKeyReaderDeps = (): TogetherKeyReaderDeps => ({
+  env: process.env,
+  platform: process.platform,
+  exec: promisify(execFile),
+  setTimer: (expire, delay) => {
+    const timer = setTimeout(expire, delay);
+    return () => clearTimeout(timer);
+  },
+});
+
+const createTogetherProvider = (config: Config, logger: Logger, keyReaderDeps: TogetherKeyReaderDeps,
+  fetchImpl: typeof fetch = fetch): ProviderHandler => {
+  const provider = config.providers.together;
+  const { maxEntries, maxBytes } = provider.reasoningCache;
+  const cache = new ReasoningCache(maxEntries, maxBytes, true);
+  const reader = createTogetherKeyReader({ ...keyReaderDeps, onKeyLoaded: registerExactCredential });
+  return createTogetherHandler({
+    provider, logger, fetchImpl, auth: createTogetherAuth(reader),
+    putReasoning: (key, text) => cache.put(key, [text]),
+    getReasoning: (key) => {
+      const text = cache.get(key)?.[0];
+      return typeof text === "string" ? text : undefined;
+    },
+  });
+};
+
+type CredentialUrl = Pick<Parameters<typeof vetCredentialUrl>[0], "url" | "expectedHost" | "allowOverride" | "refreshToken" | "together"> & {
   readonly key: string;
 };
 
@@ -95,6 +126,9 @@ const CREDENTIAL_URLS: CredentialKindTable<readonly CredentialUrl[]> = {
   "oauth-file": ({ baseUrl, defaultHost, oauthTokenUrl, defaultOauthHost, allowInsecureBaseUrl }) => [
     { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: allowInsecureBaseUrl, refreshToken: false },
     { url: oauthTokenUrl, expectedHost: defaultOauthHost, key: "oauthTokenUrl", allowOverride: allowInsecureBaseUrl, refreshToken: true },
+  ],
+  "api-key": ({ baseUrl, defaultHost, allowInsecureBaseUrl }) => [
+    { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: allowInsecureBaseUrl, together: true },
   ],
 };
 
@@ -114,7 +148,7 @@ const CREDENTIAL_URLS: CredentialKindTable<readonly CredentialUrl[]> = {
  * do not call `buildDeps` and are unaffected.
  */
 export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel),
-  routingOptions: { fetchImpl?: typeof fetch } = {}): Result<ServerDeps, string> => {
+  routingOptions: { fetchImpl?: typeof fetch; togetherKeyReader?: TogetherKeyReaderDeps } = {}): Result<ServerDeps, string> => {
 
   if (config.codexIngress.enabled && config.codexIngress.claude.enabled && !hasNativeDecoders())
     return err("Codex → Claude routing requires native zstd support. Use Node 22.15 or newer; forward routing remains available.");
@@ -134,7 +168,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
   }
   for (const id of PROVIDER_IDS) {
     const credential = providerConfigFor(config, id);
-    for (const url of CREDENTIAL_URLS[credential.kind](credential)) {
+    for (const url of withCredential(credential, CREDENTIAL_URLS)) {
       const result = vetCredentialUrl({ ...url, path: `providers.${id}.${url.key}`, optInKey: `providers.${id}.allowInsecureBaseUrl`,
         logger, events: providerEvents(id) });
       if (!result.ok) return result;
@@ -174,6 +208,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
 
   const resolveClaude = claudeResolver(config.codexIngress.claude.aliases);
   if (resolveClaude.rejectedAliases.length) return err(`Invalid Claude aliases: ${resolveClaude.rejectedAliases.join(", ")}`);
+  const keyReaderDeps = routingOptions.togetherKeyReader ?? liveTogetherKeyReaderDeps();
   const codexAuth = createCodexAuth(config, logger);
   const sharedRouting = new SharedRouting(config, logger, undefined, routingOptions.fetchImpl);
 
@@ -193,7 +228,9 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
     }),
     providers: {
       codex: createCodexProvider(config, logger, codexAuth),
+      together: createTogetherProvider(config, logger, keyReaderDeps, routingOptions.fetchImpl),
     },
+    togetherEnv: keyReaderDeps.env,
     resolve: (name) => resolveModelFromTable(table, name),
   });
 };
@@ -222,9 +259,6 @@ export const listenServer = (
   });
 
 // A local file check is acceptable here. Health does not read its contents.
-const CREDENTIAL_CONFIGURED: CredentialKindTable<boolean> = {
-  "oauth-file": ({ authFile }) => existsSync(authFile),
-};
 
 /**
  * Build the health response body for a given config.
@@ -234,7 +268,7 @@ const CREDENTIAL_CONFIGURED: CredentialKindTable<boolean> = {
  * Uses enumerateDestinations so the topology (Anthropic passthrough + registry
  * providers) is the single source of truth shared with models --json.  (ARCH-04)
  */
-const buildHealthBody = (config: Config): string =>
+const buildHealthBody = (config: Config, env: Readonly<NodeJS.ProcessEnv>): string =>
   JSON.stringify({
     name: SUBSWITCH_NAME,
     version: SUBSWITCH_VERSION,
@@ -247,7 +281,13 @@ const buildHealthBody = (config: Config): string =>
       const { credential } = d;
       return {
         id: d.id,
-        configured: CREDENTIAL_CONFIGURED[credential.kind](credential),
+        ...withCredential<{ configured: boolean; keySource?: "env" | null }>(credential, {
+          "oauth-file": ({ authFile }) => ({ configured: existsSync(authFile) }),
+          "api-key": () => {
+            const configured = envKeyPresent(env);
+            return { configured, keySource: configured ? "env" : null };
+          },
+        }),
         modelCount: routableModelCount(MODEL_REGISTRY, d.id),
       };
     }),
@@ -480,7 +520,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       if (pathname.startsWith("/__subswitch/")) {
         if (req.method === "GET" && pathname === "/__subswitch/health") {
           res.writeHead(200, synthesizedHeaders());
-          res.end(buildHealthBody(config));
+          res.end(buildHealthBody(config, deps.togetherEnv ?? {}));
           return;
         }
         res.writeHead(404, synthesizedHeaders());
@@ -607,6 +647,15 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           return;
         }
 
+        case "invalid_qualified": {
+          route = "invalid_qualified";
+          model = undefined;
+          res.writeHead(400, synthesizedHeaders());
+          res.end(toAnthropicErrorBody("invalid_request_error", "Invalid model id after the together: qualifier."));
+          if (ingest.value.kind === "over_window") drainRejectedUpload(req);
+          return;
+        }
+
         case "ambiguous": {
           // Pass ambiguous names to Anthropic and log a warning.
           //
@@ -616,9 +665,9 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           // unambiguously; at minimum, forwarding lets it answer with its own error, which is
           // always preferable to the relay inventing one.
           //
-          // PROVIDER_IDS only has "codex" today, so this branch is currently unreachable in
-          // practice.  It becomes live the moment a second provider ships — the forward-safe
-          // policy ensures correctness by default.
+          // No family has two providers in the registry today, so this branch is currently
+          // unreachable in practice.  It becomes live when two providers claim one family —
+          // the forward-safe policy ensures correctness by default.
           //
           // The warn log preserves diagnostic value: `model` carries the ambiguous name
           // annotated with the provider list ("name (p1, p2)") so operators can identify and

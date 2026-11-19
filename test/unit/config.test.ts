@@ -22,6 +22,65 @@ const missingFile = (): never => {
   throw error;
 };
 
+describe("Together config sources", () => {
+  for (const [label, together] of [
+    ["TP-5 loopback host", { baseUrl: "http://127.0.0.1:4142/v1" }],
+    ["TP-6 host opt-in", { allowInsecureBaseUrl: true }],
+    ["TP-7 empty block", {}],
+    ["TP-7 null block", null],
+  ] as const) {
+    it(`rejects ${label} in project config`, () => {
+      const result = loadConfig({ cwd: "/project", globalConfigPath: "/user/config.json", env: {},
+        readFile: () => JSON.stringify({ providers: { together } }) });
+      assert.ok(!result.ok);
+      assert.match(result.error.message, /providers\.together not allowed in project configuration/);
+      assert.match(result.error.message, /user configuration at \/user\/config\.json.*SUBSWITCH_CONFIG/);
+    });
+  }
+
+  it("refuses Together userinfo, query and fragment before startup", () => {
+    for (const baseUrl of ["https://user:password@api.together.ai/v1", "https://api.together.ai/v1?", "https://api.together.ai/v1#"]) {
+      const result = loadConfig({ configPath: "fixture", env: {},
+        readFile: () => JSON.stringify({ providers: { together: { baseUrl } } }) });
+      assert.ok(!result.ok);
+      assert.match(result.error.message, /user configuration or SUBSWITCH_CONFIG/);
+    }
+  });
+
+  it("does not accept Together as an access-profile provider", () => {
+    const result = loadConfig({ configPath: "fixture", env: {}, readFile: () => JSON.stringify({
+      configVersion: 2,
+      accessProfiles: { together: { provider: "together", product: "chatgpt-codex", billing: "subscription", account: "test",
+        credential: { kind: "native-oauth", authFile: "/no-auth.json" } } },
+      routes: { test: { clients: ["claude-code"], primary: { profile: "together", model: "fixture", effort: "low" } } },
+    }) });
+    assert.ok(!result.ok);
+    assert.match(result.error.message, /unsupported provider: together/);
+  });
+
+  it("loads the Together block from the user config or from a separate SUBSWITCH_CONFIG file", () => {
+    const files = new Map([
+      ["/user/config.json", { baseUrl: "http://127.0.0.1:4142/v1", outputCap: 1024 }],
+      ["/explicit/config.json", { baseUrl: "http://127.0.0.1:4143/v1", outputCap: 2048 }],
+    ]);
+    const readFile = (path: string) => {
+      const together = files.get(path);
+      return together === undefined ? missingFile() : JSON.stringify({ providers: { together } });
+    };
+    // The explicit file is not the user config, so only the explicit-file exemption lets the project gate pass it.
+    for (const [env, outputCap, baseUrl] of [
+      [{}, 1024, "http://127.0.0.1:4142/v1"],
+      [{ SUBSWITCH_CONFIG: "/explicit/config.json" }, 2048, "http://127.0.0.1:4143/v1"],
+    ] as const) {
+      const result = loadConfig({ cwd: "/project", globalConfigPath: "/user/config.json", env, readFile });
+      assert.ok(result.ok, !result.ok ? result.error.message : undefined);
+      assert.equal(result.value.config.providers.together.outputCap, outputCap);
+      assert.equal(result.value.config.providers.together.baseUrl, baseUrl);
+      assert.ok(result.value.configuredProviders.has("together"));
+    }
+  });
+});
+
 describe("loadConfig", () => {
   it("returns full defaults when the implicit cwd config file is missing", () => {
     // No configPath, no SUBSWITCH_CONFIG env var — implicit cwd path → silently use defaults.
@@ -1223,6 +1282,26 @@ describe("a project config can not change sign-in addresses or credential files"
     const result = loadFiles({ [projectPath]: fileWith(everyEntry, "relay.example") });
     assert.ok(!result.ok);
     for (const [path] of everyEntry) assert.ok(result.error.message.includes(path), `message must name ${path}`);
+  });
+
+  for (const together of [{ baseUrl: "https://relay.example/v1", allowInsecureBaseUrl: true }, { outputCap: 1 }, {}, null]) {
+    it(`refuses the whole providers.together block ${JSON.stringify(together)} and names only that key`, () => {
+      const result = loadFiles({ [projectPath]: { port: 4567, providers: { together } } });
+      assert.ok(!result.ok, "a project providers.together block must fail the load");
+      assert.match(result.error.message, /^providers\.together not allowed in project configuration/);
+      assert.ok(!result.error.message.includes("providers.together."), `sub-keys must not repeat: ${result.error.message}`);
+      assert.ok(result.error.message.includes(userPath), "message must name the user config file");
+    });
+  }
+
+  it("accepts providers.together from the user config while project settings still merge", () => {
+    const together = { baseUrl: "https://us-api.together.ai/v1", allowInsecureBaseUrl: true, outputCap: 1024 };
+    const result = loadFiles({ [userPath]: { providers: { together } }, [projectPath]: { port: 4567 } });
+    assert.ok(result.ok, result.ok ? "" : result.error.message);
+    assert.equal(result.value.config.providers.together.baseUrl, together.baseUrl);
+    assert.equal(result.value.config.providers.together.allowInsecureBaseUrl, true);
+    assert.equal(result.value.config.providers.together.outputCap, 1024);
+    assert.equal(result.value.config.port, 4567);
   });
 
   it("accepts every refused key from the user config while project settings still merge", () => {

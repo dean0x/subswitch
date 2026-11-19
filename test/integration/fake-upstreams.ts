@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { loadConfig } from "../../src/config.js";
 import { buildDeps, createProxyServer } from "../../src/server.js";
 import type { Logger } from "../../src/logger.js";
+import type { TogetherKeyReaderDeps } from "../../src/together-auth.js";
 import type { ModelResolution } from "../../src/models.js";
 
 export interface RecordedRequest {
@@ -90,7 +91,7 @@ export interface SubswitchInstance {
  */
 export const startSubswitch = async (
   overrides: Record<string, unknown>,
-  options: { logger?: Logger; resolve?: (name: string) => ModelResolution } = {},
+  options: { logger?: Logger; resolve?: (name: string) => ModelResolution; togetherKeyReader?: TogetherKeyReaderDeps } = {},
 ): Promise<SubswitchInstance> => {
   const configResult = loadConfig({
     configPath: "inline-test-config.json",
@@ -101,7 +102,12 @@ export const startSubswitch = async (
   // constructed inside buildDeps and close over whichever logger it was given, so spreading
   // one onto the result afterwards would replace the request loop's logger only and leave
   // every handler record uncaptured.
-  const depsResult = buildDeps(configResult.value.config, options.logger);
+  const depsResult = buildDeps(configResult.value.config, options.logger, {
+    togetherKeyReader: options.togetherKeyReader ?? {
+      env: {}, platform: "linux", exec: async () => { throw new Error("Unexpected Keychain call"); },
+      setTimer: () => () => {},
+    },
+  });
   if (!depsResult.ok) throw new Error(`buildDeps rejected config: ${depsResult.error}`);
   const deps = depsResult.value;
   const finalDeps = {

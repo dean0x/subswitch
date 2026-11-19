@@ -1,20 +1,33 @@
 ---
 feature: codex-leg
-name: Codex translation leg (gpt-* → /responses)
-description: "Use when modifying Codex request translation, model alias resolution, session/cache key derivation, protocol headers, reasoning round-trips, count_tokens estimation, ambiguous-model routing policy, timeout asymmetry, or the codex-recorder dev tool. Keywords: codex, gpt, responses, conversation key, session_id, prompt_cache_key, reasoning, effort, translation, routing table, alias, family, canonical, buildRoutingTable, resolveModel, ModelResolution, buildHeaders, CodexTransportConstants, maxAggregateBytes, forceRefresh, count_tokens, estimateTokens, ambiguous_model_name, IngestError, readBodyForRouting, sniffLeadingModel, maxBufferedBodyBytes, bodyMode, anthropic:streamed, ADR-010, streamIdleTimeoutMs, astra, reasoningEfforts, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, unknownReasoningEfforts, buildOpenaiModelNamePredicate, createCodexRecorderServer, MAX_SSE_BUFFER_CHARS, allowInsecureUpstream."
+name: Translated provider legs (Codex and Together) and the shared request runner
+description: "Use when changing the Codex or Together leg, the shared runner, model resolution, conversation keys, provider log events or the Together key and child env. Keywords: codex, together, runTranslatedLeg, resolveModel."
 category: domain-knowledge
 directories: [src]
 created: 2026-07-22
-updated: 2026-09-14
+updated: 2026-11-19
 ---
 
 # Codex Translation Leg (gpt-* → /responses)
+
+## Rules
+- **KB-AP-1** Do not log the message of a rejected credential load: the message can hold the key. Log only `errorCode` (the cause name, or `"unknown"`).
+- **KB-INV-1** When `getCredentials` rejects and the signal is not aborted, `runTranslatedLeg` logs one `credentialLoadFailed` error line and replies 500 `"<name> credential load failed"`.
+- **KB-INV-2** When `getCredentials` rejects after an abort, the runner logs nothing and sends the timeout reply.
+- **KB-INV-3** A new runner event goes into both the `providerEvents` table and `TranslatedLegOptions.events`; the type `ProviderEvents<P>` pins the table.
+- **KB-AP-2** Do not remove only the exact `TOGETHER_API_KEY` name from the native child env: Windows env names ignore letter case, so a different case form leaks the key.
+- **KB-INV-4** `childEnvWithoutTogetherKey` drops every env name whose upper-case form equals `TOGETHER_API_KEY_ENV`; `KEY_NAME_CONSTANT_USES` in `test/unit/source-text-guards.test.ts` pins that line.
+- **KB-AP-3** Do not run a "no Keychain read" check on linux: the reader returns before exec there, so a zero-exec check cannot fail. Use platform `"darwin"`, env `{}` and a positive control.
+- **KB-INV-5** A workspace file can name a `together:` model and so spend the user's Together balance; `subswitch doctor` lists such a pin only when no usable key is found.
+- The Rules list starts with this refresh. Older rules stay in `## Anti-Patterns` and `## Gotchas` below.
 
 ## Overview
 
 subswitch translates Anthropic Messages API requests into OpenAI Responses API calls against `https://chatgpt.com/backend-api/codex/responses`. Routing is decided by `resolveModel` (in `src/models.ts`) and `decideRoute` (in `src/router.ts`), with `MODEL_REGISTRY` as the sole source of routable models (applies ADR-006). Everything else passes through to the Anthropic leg unchanged.
 
 The pipeline has three stages: **resolve** in `server.ts`, **route** in `router.ts`, and **send**. `codex-handler.ts` translates the request. `translated-leg.ts` sends it and manages the response. The router accepts a typed `ModelResolution`, not a raw string.
+
+**Together leg.** `together-handler.ts` uses the same runner to send Chat Completions requests to `<baseUrl>/chat/completions`. Each provider accessor carries a credential kind: `oauth-file` (Codex) or `api-key` (Together). A static key gets one attempt, no limit key and `redirect: "error"`. The request signal bounds the credential wait, so a client close ends a pending key read and no upstream request goes out. If the credential load rejects for a different cause, the runner logs the cause name only and replies 500 (see KB-INV-1).
 
 **Governing principle (ADR-010):** a relay fronting an origin API must be indistinguishable from the origin. A bound that reclaims a provably dead connection is legitimate; a bound that can terminate a request the origin was about to answer, or emit a status the origin never sends, is a defect. This principle drove the removal of the byte-budget slot system and the **removal** (not deprecation) of the Anthropic-leg stream timeout.
 
@@ -58,9 +71,11 @@ Credential state is deliberately **not** an input to `buildRoutingTable`: gating
 
 1. **Exact id** in `byId` → `{ kind: "resolved" }`. Canonical ids ALWAYS win — no alias can hijack a real model id. Retired and preview models are routable here.
 2. **Alias** in `byAlias` → `{ kind: "resolved" }`. One hop only; Map built with `Object.hasOwn` at table-build time — prototype-pollution safe at request time.
-3. **Qualified** `"provider:id"` or `"provider:family"` in `byQualified` → `{ kind: "resolved" }` when the prefix is in `PROVIDER_IDS`. An unknown prefix returns `{ kind: "unknown_qualifier" }` so callers can distinguish "bad provider" from "bad model". A known prefix with an unknown id/family returns `{ kind: "unresolved" }`.
+3. **Qualified** `"provider:id"` or `"provider:family"` in `byQualified` → `{ kind: "resolved" }` when the prefix is in `PROVIDER_IDS`. An unknown prefix returns `{ kind: "unknown_qualifier" }` so callers can distinguish "bad provider" from "bad model". A known prefix with an unknown id/family returns `{ kind: "unresolved" }`. **Exception, the `together:` pass-through:** an unlisted id that passes the id grammar resolves to Together, and an id that fails it returns `{ kind: "invalid_qualified" }`. `server.ts` answers that with a marked local 400 (`x-subswitch-synthesized: 1`, "Invalid model id after the together: qualifier."), and no upstream gets the request. This is the only rule that accepts an arbitrary id. The id goes into the JSON body only, never into a URL or a header.
 4. **Family** in `byFamily` → unique claimant: `{ kind: "resolved" }`; contested: `{ kind: "ambiguous", name, providers }`.
 5. **Otherwise** → `{ kind: "unresolved" }`. Caller routes to Anthropic.
+
+**`TOGETHER_MODELS` (`src/together-models.ts`) is empty** until the model-id data commit. `MODEL_REGISTRY` appends its entries as provider `together`. Until that commit, only the `together:` pass-through routes to Together.
 
 **Retired models are in `byId` but not in `byFamily`.** An exact-id pin on a retired model keeps routing and receives a truthful upstream error; a bare family name never floats onto a retired model.
 
@@ -257,6 +272,7 @@ IncomingMessage (Anthropic wire)
 | Tool-use arguments non-empty but unparseable | `aggregateFrames` returns `err()` → 502. The client must not act on an invented `input: {}`. An empty argument string still yields `input: {}` — correct for a zero-argument call. |
 | Codex-leg timeout | 504 with `api_error` — **kept deliberately** (ADR-010: 504 is a status the origin genuinely produces for a timed-out upstream; the relay must not invent an alternative). |
 | Unrepresentable upstream status | 502 with `api_error` — **kept deliberately** (ADR-010: same rationale; the upstream produced a status, and 502 is the truthful relay response). |
+| Credential load rejects (`auth.getCredentials` throws) | Signal not aborted: one `error` line with the event `credentialLoadFailed` (`<provider>_credential_load_failed`) and the fields `model` and `errorCode` only. `errorCode` is the cause's `name`, or `"unknown"` for a non-`Error` value. The client gets 500 `"<name> credential load failed"`. Signal aborted: no log line, and the client gets the timeout reply. |
 | Abort (client close or timeout) | `AbortController` shared between `res.on("close")` and total/idle timers. Idle timer resets on each data chunk. |
 | `reasoning_cache_miss` | Degraded, not broken. Warning logged as `errorCode`. |
 | Over-window body (Codex-bound) | 413 with `request_too_large`. `drainRejectedUpload()` lets remaining upload drain via FIN rather than RST. The relay is the origin on the Codex leg and cannot translate a body it cannot hold — 413 is authoritative here (ADR-010). `IngestError` has no `body_too_large` variant; the 413 is emitted in the dispatch switch. |
@@ -304,7 +320,21 @@ IncomingMessage (Anthropic wire)
 
 **Synthesizing a 400/429/503 for an ambiguous model name.** The policy is fail open (ADR-010). A relay-invented 400 naming our registry is a status the origin never emits. `Route.ambiguous` stays in the router for classification; the server decides the policy.
 
+**KB-AP-1 — Logging the message of a rejected credential load.** A key loader error can carry the key or a part of it in its message text. The runner in `src/translated-leg.ts` logs only the cause name as `errorCode`. The closed `LogFields` set in `src/logger.ts` is the log redaction control, but `errorCode` is a free string. The error render site redacts credentials only in error bodies, not in log fields. Thus a log call that puts `cause.message` in `errorCode` writes the credential to the log.
+
+**KB-AP-2 — Removing only the exact key name from the child env.** On Windows, env names ignore letter case, so `together_api_key` and `TOGETHER_API_KEY` are the same variable for the child. A `delete env.TOGETHER_API_KEY` keeps the other case forms, and the native client gets the metered key. Use `childEnvWithoutTogetherKey` in `src/run-action.ts`, and test it in `test/unit/run-action-env.test.ts`.
+
+**KB-AP-3 — A Keychain check that cannot fail.** On linux the Together key reader returns before it calls exec. Thus an "exec count is zero" check passes on linux for every code path. Run the check with platform `"darwin"` and env `{}`, so that each key read must go through the Keychain seam. Keep a positive control that proves the seam counts a read (see the `keychainOnly` fixture in `test/integration/together-leg.test.ts`).
+
 ## Gotchas
+
+**KB-INV-1 / KB-INV-2 — Two replies for a rejected credential wait.** The runner wraps `auth.getCredentials(signal)` in `abortable`, so a credential source that ignores the signal cannot hold the request open. The `.catch` checks `signal.aborted` first. An aborted wait does not log, and the later abort check sends `"<name> request timed out"`. Any other rejection logs once and sends 500 `"<name> credential load failed"`. Thus a client close or a timeout does not make a false fault line in the log.
+
+**KB-INV-3 — Runner events have two declarations.** `TranslatedLegOptions.events` in `src/translated-leg.ts` lists the event names that the runner uses. `providerEvents` in `src/provider-events.ts` makes them from the provider id. When you add a runner event, add the field to `ProviderEvents<P>`, to the table in `scopedEvents`, and to `TranslatedLegOptions.events`. The handler passes its provider table to the runner, so the type check finds a missing field.
+
+**KB-INV-4 — The key-name guard pins exact source lines.** `test/unit/source-text-guards.test.ts` lets the Together key-name constant appear outside `src/together-auth.ts` only on the exact trimmed lines in `KEY_NAME_CONSTANT_USES` (an import from the key reader is also permitted). The guard also rejects the literal key name and computed env reads outside the key reader, so the env filter must use the constant. The `src/run-action.ts` entry is the line `if (name.toUpperCase() === TOGETHER_API_KEY_ENV)`. If you change that line, change the guard entry in the same commit.
+
+**KB-INV-5 — A workspace file can select the Together route.** Only the user config or an explicit `SUBSWITCH_CONFIG` can set the `providers.together` block, the routes and the profiles. But a project `.claude/agents/*.md` file or a project Claude Code setting can name a `together:` model. When a key is available, those requests go to Together and spend the user's balance. `subswitch doctor` lists a Together agent pin only when no usable key is found (`keyRequiredProviders` in `src/doctor.ts`). README and SECURITY.md tell users to check a cloned repository for such names.
 
 **`stream: true` is always sent, even when the client sets `stream: false`.** subswitch always requests an SSE stream from the backend, then `aggregateFrames` assembles a non-streaming response.
 
@@ -353,7 +383,7 @@ IncomingMessage (Anthropic wire)
 - `src/claude-models.ts` — Reverse-leg (Claude ingress) model registry; `buildOpenaiModelNamePredicate(registry)` derives `isOpenaiModelName` from `MODEL_REGISTRY` (mirror of PF-007 on the reverse leg — `astra` is now automatically reserved); `validClaudeAlias` (the only gate on `codexIngress.claude.aliases`); `claudeResolver`, `claudeModelRows`, `augmentCodexModels` (advertises each model's own `defaultEffort` as `default_reasoning_level`, levels low..max); `CLAUDE_MODELS` entries carry REQUIRED capability fields (`maxOutputTokens`, `thinkingAlwaysOn`, `forcedToolChoice`, `defaultEffort`); `claudeModel(id)` lookup; `isClaudeModelName` (the `claude-`/`claude:` namespace, case-insensitive) and `displayModelName` (bounded, charset-neutralized echo of a client-supplied name)
 - `src/router.ts` — Pure routing decision; accepts `ModelResolution` (not raw string); zero name matching; exhaustive switch; classification only — policy lives in server.ts
 - `src/codex-handler.ts` — `createCodexHandler`, `buildHeaders`, canonical model substitution, stable session ID, and `handleCountTokens`.
-- `src/translated-leg.ts` — `runTranslatedLeg` manages aborts, timers, the retry limit, both limit observers, and response delivery.
+- `src/translated-leg.ts` — `runTranslatedLeg` manages aborts, timers, the retry limit, both limit observers, and response delivery. A rejected credential load logs `credentialLoadFailed` with the cause name only and replies 500; an aborted wait gets the timeout reply.
 - `src/provider-transport.ts` — `createFrameWriter`, `readBoundedText`, `respondJson`, and `respondProxyError` with optional extra headers.
 - `src/provider-handler.ts` — `ProviderHandler` interface; P4 contract documented
 - `src/codex-request.ts` — All request translation logic; `translateRequest`, `translateEffort` (validates via `reasoningEffortsForModel(MODEL_REGISTRY, model)`), `estimateTokens` (chars/4 heuristic)
@@ -361,10 +391,15 @@ IncomingMessage (Anthropic wire)
 - `src/conversation-key.ts` — Deterministic v7-shaped UUID from sha256 of canonical request
 - `src/codex-response.ts` — `MAX_CONTENT_BLOCKS`; SSE parser (segment array; linear); Anthropic SSE translator state machine; `aggregateFrames`; `blockIndexByKey` NOT pruned on stop
 - `src/codex-auth.ts` — `CodexAuthManager`; all 7 auth events now table-derived via `events: ProviderEvents<"codex">`; `callTokenEndpoint` uses `AbortSignal.timeout(15_000)`; `forceRefresh()` 30s cooldown; `writeAtomic` self-heals EEXIST
-- `src/provider-events.ts` — `providerEvents<P>(id): ProviderEvents<P>`; 19-field table (11 handler/translator events + 1 insecureBaseUrlScheme + 7 auth events); compile-time log-injection control
+- `src/provider-events.ts` — `providerEvents<P>(id): ProviderEvents<P>`; one table of handler, runner and translator events (`credentialLoadFailed` included), `insecureBaseUrlScheme` and the auth events, pinned by the `ProviderEvents<P>` type; compile-time log-injection control
 - `src/config.ts` — `providers.codex.streamIdleTimeoutMs` (default 300 s, live); `anthropic.streamIdleTimeoutMs` removed in 0.3.0 (ADR-010) — `removed`-kind row in `LEGACY_KEY_ENTRIES`, hard-errors on load; `anthropic.headerTimeoutMs` never shipped — rejected by `z.strictObject`, not in table; `LEGACY_KEY_ENTRIES` has a `moved` row for `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs`; `providers.codex.maxAggregateBytes` (64 MiB default); strict schemas via `z.strictObject`; `isLoopbackHost` (exact-form predicate, reused by `codex-recorder.ts`)
-- `src/errors.ts` — `ProxyError` union (auth/upstream/translate/timeout); `IngestError` is server-local (single variant `client_disconnected`, excluded from `ProxyError`); `AnthropicErrorType` includes `not_found_error`; `upstreamStatusToAnthropicError`; 504→timeout and 502→upstream are both intentional (ADR-010)
-- `src/agent-scan.ts` — `unknown_provider` severity is `"info"`; `ambiguous` severity is `"fail"`
+- `src/errors.ts` — `ProxyError` union (auth/upstream/translate/timeout); `IngestError` is server-local (single variant `client_disconnected`, excluded from `ProxyError`); `AnthropicErrorType` includes `not_found_error`; `upstreamStatusToAnthropicError`; 504→timeout and 502→upstream are both intentional (ADR-010); `registerExactCredential` receives the loaded Together key, and `toAnthropicErrorBody` replaces that exact value in every error body it renders
+- `src/agent-scan.ts` — `unknown_provider` severity is `"info"`; `ambiguous` severity is `"fail"`; `provider_unconfigured` is `"fail"` only for a provider in `keyRequiredProviders` (Together)
+- `src/together-auth.ts` — Key loader: `TOGETHER_API_KEY` first, then on macOS only the Keychain item "Subswitch Together API key" (account `subswitch`) through `/usr/bin/security` with execFile, a 10 s timeout, an 8 KiB buffer and a HOME-only env. One shared read; a failed read is not kept. A missing or malformed key gives a marked local 401 that names the env var and the Keychain item, with no upstream request and no Anthropic fallback. The value is never echoed.
+- `src/together-handler.ts` — Together leg on the runner: outbound headers from an allow-list (Bearer key, content-type, accept, fixed user-agent); fixed error text with a strict code; 402 balance text; `x-should-retry: false` on 504, 524 and the runner timeout; local count_tokens estimate
+- `src/together-request.ts`, `src/together-response.ts` — Body allow-list with `max_tokens` clamped to the output cap (default 16384, user config only); stream translator with per-response tool ids
+- `src/run-action.ts` — `childEnvWithoutTogetherKey(parent)` makes the native child env: it drops every name whose upper-case form equals `TOGETHER_API_KEY_ENV`, because Windows env names ignore letter case
+- `test/unit/source-text-guards.test.ts` — `KEY_NAME_CONSTANT_USES` lists each permitted source line that uses the Together key-name constant outside `src/together-auth.ts`
 - `test/tools/` — `sse-parser.bench.ts` (the only guard against an SSE-parser perf regression)
 - `test/fixtures/sse-splits.golden.json` — Frame-boundary pin for `createSseParser`; 66,039 splits asserted
 - `e2e/capture/codex-recorder.ts` — Dev-only transparent wire-capture forwarder; `createCodexRecorderServer` factory (import-safe; upstream vetted at construction per ADR-009); the PF-013 headerless-SSE capture defect is **fixed**; capture bounded by `MAX_SSE_BUFFER_CHARS` (4 MiB) while forwarding never is (ADR-010/ADR-012)

@@ -3,7 +3,7 @@
 // translator) and by codex-request.ts (which needs it for instruction extraction).
 // No imports from the rest of the repo except the Anthropic wire-type.
 
-import type { AnthropicRequest } from "./anthropic-wire-types.js";
+import { ModelPeekSchema, type AnthropicRequest } from "./anthropic-wire-types.js";
 
 // ---------------------------------------------------------------------------
 // Over-window model sniff
@@ -31,7 +31,7 @@ export const MODEL_SNIFF_BYTES = 8 * 1024;
  *   - The three alternation arms are mutually exclusive: `[^"\\\x00-\x1f]` matches
  *     any printable non-special character; `\\["\\/bfnrt]` matches escape sequences;
  *     `\\u[0-9a-fA-F]{4}` matches Unicode escapes.  No arm overlaps another.
- *   - Value length is bounded by `{0,200}` — short enough for any model name.
+ *   - The byte window bounds the captured string, including an invalid Together id.
  *
  * Intentional divergence from JSON.parse on duplicate top-level `model` keys: this
  * regex takes the FIRST occurrence; JSON.parse takes the LAST.  This case is only
@@ -39,14 +39,14 @@ export const MODEL_SNIFF_BYTES = 8 * 1024;
  * sends duplicate top-level keys, so the divergence is theoretical.
  */
 const MODEL_SNIFF_REGEX =
-  /^\s*\{\s*"model"\s*:\s*("(?:[^"\\\x00-\x1f]|\\["\\\/bfnrt]|\\u[0-9a-fA-F]{4}){0,200}")/;
+  /^\s*\{\s*"model"\s*:\s*("(?:[^"\\\x00-\x1f]|\\["\\\/bfnrt]|\\u[0-9a-fA-F]{4})*")/;
 
 /**
  * Scan the leading bytes of a request body for the top-level `"model"` key.
  *
  * Returns the unescaped model name string on a match, or `undefined` when:
  *   - the buffer does not begin with `{"model": ...`,
- *   - the value exceeds 200 JSON string elements (escape sequences count as one),
+ *   - the value exceeds 200 characters and has no Together qualifier,
  *   - the captured literal is malformed JSON (JSON.parse throws), or
  *   - the buffer is empty.
  *
@@ -60,7 +60,7 @@ export const sniffLeadingModel = (prefix: Buffer): string | undefined => {
   if (match === null || match[1] === undefined) return undefined;
   try {
     const parsed: unknown = JSON.parse(match[1]);
-    return typeof parsed === "string" ? parsed : undefined;
+    return ModelPeekSchema.safeParse({ model: parsed }).data?.model;
   } catch {
     return undefined;
   }

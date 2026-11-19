@@ -1,13 +1,12 @@
 // Model registry and resolver for subswitch.
-// Intentionally no imports from the rest of the repo — config.ts imports this,
-// and that dependency edge must stay one-way.
+import { isTogetherModelId, TOGETHER_MODELS } from "./together-models.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /** Closed tuple of all supported provider identifiers. */
-export const PROVIDER_IDS = ["codex"] as const;
+export const PROVIDER_IDS = ["codex", "together"] as const;
 /**
  * Discriminator for provider-specific handler dispatch. A closed union ensures
  * `Record<ProviderId, ProviderHandler>` is a compile-time completeness proof
@@ -123,7 +122,8 @@ export interface RoutingTableBuild {
  *
  * - resolved: name mapped to a concrete destination.
  * - ambiguous: family name claimed by multiple providers; caller should error with provider list.
- * - unresolved: name not found (typo, or known-provider qualified name with bad id/family).
+ * - unresolved: name not found.
+ * - invalid_qualified: a Together-qualified name with a malformed id.
  * - unknown_qualifier: name looks like provider:id but the prefix is not in PROVIDER_IDS.
  *   Distinguishable from unresolved so Phase D can emit "unknown provider 'X'" vs "unknown model".
  */
@@ -131,6 +131,7 @@ export type ModelResolution =
   | { readonly kind: "resolved"; readonly target: ResolvedModel }
   | { readonly kind: "ambiguous"; readonly name: string; readonly providers: readonly ProviderId[] }
   | { readonly kind: "unresolved" }
+  | { readonly kind: "invalid_qualified" }
   | { readonly kind: "unknown_qualifier"; readonly qualifier: string };
 
 // ---------------------------------------------------------------------------
@@ -236,6 +237,9 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   { id: "gpt-5.6-luna", provider: "codex", family: "luna", gen: [5, 6] },
   // Retired from ChatGPT/Codex on 2026-10-14.
   { id: "gpt-5.5", provider: "codex", gen: [5, 5], retired: true },
+  ...TOGETHER_MODELS.map(({ id, family }): ModelEntry => ({
+    id, family, gen: [1], provider: "together",
+  })),
 ];
 
 // ---------------------------------------------------------------------------
@@ -623,7 +627,7 @@ export const buildRoutingTable = (
     // PF-007: a reserved key would route main-thread traffic to Codex; a reserved target
     // becomes routable via the alias map, which decideRoute's exact-membership check
     // would then match.
-    if (reserved) {
+    if (reserved || (provider === "together" && byId.get(target) !== provider)) {
       rejectedAliases.push({ alias, target });
       continue;
     }
@@ -650,7 +654,7 @@ export const buildRoutingTable = (
   // Qualifying an alias must preserve its explicit override, including a family
   // override such as sol. Exact registry IDs remain pinned in either spelling.
   for (const { alias, provider, reserved } of declarations) {
-    if (!reserved && !byId.has(alias))
+    if (!reserved && byAlias.has(alias) && !byId.has(alias))
       byQualified.set(`${provider}:${alias}`, byAlias.get(alias)!);
   }
   // An explicit declaration authorizes this target ID, not every unknown model.
@@ -688,9 +692,9 @@ export const buildRoutingTable = (
  *
  * 1. Exact id in byId → resolved. Canonical ids ALWAYS win; no alias can hijack one.
  * 2. Configured alias or otherwise-unclaimed declared target → resolved (one hop).
- * 3. Qualified "provider:id" → resolved only when the prefix is in PROVIDER_IDS.
- *    An unrecognised prefix returns unknown_qualifier, not unresolved, so callers can
- *    distinguish "typo in a model name" from "typo in a provider name".
+ * 3. Qualified "provider:id" → look up the name for a known provider.
+ *    For Together only, accept an unlisted id if it matches the grammar.
+ *    An invalid Together id returns invalid_qualified. An unknown prefix returns unknown_qualifier.
  * 4. Family lookup → unique claimant: resolved; contested: ambiguous.
  * 5. Otherwise → unresolved.
  *
@@ -727,7 +731,11 @@ export const resolveModel = (table: RoutingTable, name: string): ModelResolution
       if (qualifiedModel !== undefined) {
         return { kind: "resolved", target: qualifiedModel };
       }
-      // Known provider prefix but id/family not found — plain unresolved (not unknown_qualifier)
+      if (prefix === "together") {
+        const id = name.slice(colonIndex + 1);
+        if (!isTogetherModelId(id)) return { kind: "invalid_qualified" };
+        return { kind: "resolved", target: { id, provider: prefix } };
+      }
       return { kind: "unresolved" };
     }
     // Unknown prefix — not a provider name → distinguishable from "model not found" (F5)

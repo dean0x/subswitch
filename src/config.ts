@@ -10,6 +10,8 @@ import { validClaudeAlias } from "./claude-models.js";
 import { AccessProfilesSchema, RoutesSchema, validateExplicitConfig } from "./routing/routing-config.js";
 import type { AccessProfile, RoutePolicy } from "./routing/routing-types.js";
 import { ownValue } from "./plain-object.js";
+import { TOGETHER_API_KEY_ENV, TOGETHER_KEYCHAIN_SERVICE } from "./together-auth.js";
+import { TOGETHER_DEFAULT_OUTPUT_CAP } from "./together-request.js";
 
 export const DEFAULT_PORT = 4141 as const;
 
@@ -163,9 +165,12 @@ const AnthropicSchema = z
   })
   .prefault({});
 
-// Both sides are bounded to the same 200 chars as ModelPeekSchema's `model`: an
-// alias target flows into the outbound request body and the `route` log field, so
-// an unbounded one would be a config-side hole in a limit the request side enforces.
+// Both sides are bounded to 200 chars: an alias target flows into the outbound request
+// body and the `route` log field, so an unbounded one would be a config-side hole in the
+// request-side limits. Those limits are: ModelPeekSchema caps a plain `model` at 200
+// chars; a `together:` name of any length reaches the resolver, which accepts its id only
+// under the 200-char Together id grammar; the server clears `model` for an invalid
+// qualified name before it logs; and the logger strips control characters from each value.
 const AliasesSchema = z
   .record(z.string().min(1).max(200), z.string().min(1).max(200))
   .refine((aliases) => !Object.keys(aliases).some(isReservedAnthropicName), {
@@ -274,6 +279,41 @@ const injectKind = (raw: unknown, key: string): unknown => {
   return raw;
 };
 
+export const TOGETHER_DEFAULT_HOST = "api.together.ai";
+const MIB = 1024 * 1024;
+
+/**
+ * Parse a Together base URL that can carry the paid key. Return the URL only for HTTPS,
+ * or for HTTP to a loopback host, with no userinfo, query, fragment, backslash or
+ * whitespace; else return undefined. The startup host check also uses this parser.
+ */
+export const parseTogetherBaseUrl = (raw: string): URL | undefined => {
+  if (!/^https?:\/\/[^/?#\\\s]+/i.test(raw) || /[?#\\\s]/.test(raw) || /^https?:\/\/[^/]*@/i.test(raw)) return;
+  if (!URL.canParse(raw)) return;
+  const url = new URL(raw);
+  if (url.username || url.password) return;
+  if (url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHost(url.hostname))) return url;
+};
+
+const TogetherProviderSchema = z.strictObject({
+  kind: z.literal("together"),
+  baseUrl: z.string().refine((raw) => parseTogetherBaseUrl(raw) !== undefined, {
+    message: "Use HTTPS (or HTTP on loopback) without userinfo, query or fragment in the user configuration or SUBSWITCH_CONFIG.",
+  }).default(`https://${TOGETHER_DEFAULT_HOST}/v1`),
+  allowInsecureBaseUrl: z.boolean().default(false),
+  aliases: AliasesSchema,
+  outputCap: z.number().int().positive().default(TOGETHER_DEFAULT_OUTPUT_CAP),
+  requestTimeoutMs: z.number().int().positive().max(2_147_483_647).default(600_000),
+  streamIdleTimeoutMs: z.number().int().positive().max(2_147_483_647).default(300_000),
+  maxSseEventBytes: z.number().int().positive().default(4 * MIB),
+  maxAggregateBytes: z.number().int().positive().default(64 * MIB),
+  reasoningCache: z.strictObject({
+    maxEntries: z.number().int().positive().default(1024),
+    maxBytes: z.number().int().positive().default(16 * MIB),
+    maxTurnBytes: z.number().int().positive().max(MIB).default(MIB),
+  }).prefault({}),
+});
+
 /**
  * Per-provider file schemas, keyed by ProviderId.
  *
@@ -284,6 +324,7 @@ const injectKind = (raw: unknown, key: string): unknown => {
  */
 const PROVIDER_SCHEMAS = {
   codex: z.preprocess((raw) => injectKind(raw, "codex"), CodexProviderSchema).prefault({ kind: "codex" }),
+  together: z.preprocess((raw) => injectKind(raw, "together"), TogetherProviderSchema).prefault({ kind: "together" }),
 } satisfies { readonly [K in ProviderId]: z.ZodType };
 
 const ProvidersSchema = z.object(PROVIDER_SCHEMAS).prefault({});
@@ -426,7 +467,10 @@ export interface CodexProviderConfig {
 /** Provider id → that provider's resolved slice type. One entry per ProviderId. */
 interface ProviderConfigShape {
   readonly codex: CodexProviderConfig;
+  readonly together: TogetherProviderConfig;
 }
+
+export type TogetherProviderConfig = Readonly<Omit<z.infer<typeof TogetherProviderSchema>, "kind">>;
 
 /**
  * Resolved per-provider config, keyed by the closed ProviderId union.
@@ -492,12 +536,27 @@ export type Credential =
       readonly defaultOauthHost: string;
       /** Opt-in to a non-default host on either credential-bearing URL. */
       readonly allowInsecureBaseUrl: boolean;
+    }
+  | {
+      readonly kind: "api-key";
+      readonly baseUrl: string;
+      readonly defaultHost: string;
+      readonly allowInsecureBaseUrl: boolean;
+      readonly envName: typeof TOGETHER_API_KEY_ENV;
+      readonly keychainService: typeof TOGETHER_KEYCHAIN_SERVICE;
     };
 
 type CredentialKind = Credential["kind"];
 
 export type CredentialKindTable<R> = {
   [K in CredentialKind]: (credential: Extract<Credential, { kind: K }>) => R;
+};
+
+export const withCredential = <R>(credential: Credential, table: CredentialKindTable<R>): R => {
+  switch (credential.kind) {
+    case "oauth-file": return table["oauth-file"](credential);
+    case "api-key": return table["api-key"](credential);
+  }
 };
 
 /** The provider-neutral slice of config that doctor, health, and the CLI banner need. */
@@ -532,6 +591,15 @@ const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) =>
     displayName: "Codex",
     ...codexCredentialFor(config.providers.codex),
   }),
+  together: ({ providers: { together } }) => ({
+    displayName: "Together",
+    kind: "api-key",
+    baseUrl: together.baseUrl,
+    defaultHost: TOGETHER_DEFAULT_HOST,
+    allowInsecureBaseUrl: together.allowInsecureBaseUrl,
+    envName: TOGETHER_API_KEY_ENV,
+    keychainService: TOGETHER_KEYCHAIN_SERVICE,
+  }),
 };
 
 /**
@@ -554,6 +622,7 @@ export const providerConfigFor = (config: Config, id: ProviderId): ProviderRunti
  */
 export const aliasesByProvider = (config: Config): AliasesByProvider => ({
   codex: config.providers.codex.aliases,
+  together: config.providers.together.aliases,
 });
 
 // ---------------------------------------------------------------------------
@@ -593,10 +662,7 @@ export const enumerateDestinations = (config: Config): readonly RoutingDestinati
   { routing: "passthrough", id: "anthropic", displayName: "Anthropic" },
   ...PROVIDER_IDS.map((id): RoutingDestination => {
     const { displayName, ...credential } = providerConfigFor(config, id);
-    const destinations: CredentialKindTable<Extract<RoutingDestination, { routing: "registry" }>> = {
-      "oauth-file": (source) => ({ routing: "registry", id, displayName, credential: source }),
-    };
-    return destinations[credential.kind](credential);
+    return { routing: "registry", id, displayName, credential };
   }),
 ];
 
@@ -767,6 +833,7 @@ const PROVIDER_RESOLVERS: {
     maxAggregateBytes: file.maxAggregateBytes,
     allowInsecureBaseUrl: file.allowInsecureBaseUrl,
   }),
+  together: ({ kind: _kind, ...file }) => file,
 };
 
 /**
@@ -792,6 +859,7 @@ export const resolveConfig = (file: FileConfig): Config => ({
   },
   providers: {
     codex: PROVIDER_RESOLVERS.codex(file.providers.codex),
+    together: PROVIDER_RESOLVERS.together(file.providers.together),
   },
   limits: {
     maxBufferedBodyBytes: file.limits.maxBufferedBodyBytes,
@@ -872,8 +940,9 @@ const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
 
 /**
  * Dotted keys that a project `subswitch.config.json` can not set: explicit profiles
- * and routes, every sign-in address, every key that selects a credential file or
- * folder, and every `allowInsecureBaseUrl` opt-in. Only the user configuration or a
+ * and routes, the whole Together block (it selects a paid key and its host), every
+ * sign-in address, every key that selects a credential file or folder, and every
+ * `allowInsecureBaseUrl` opt-in. Only the user configuration or a
  * file selected with SUBSWITCH_CONFIG sets them, so a file in the current folder can
  * not change where subswitch sends a sign-in or which credential it loads.
  *
@@ -884,6 +953,7 @@ const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
 const PROJECT_REFUSED_KEYS: readonly string[] = [
   "accessProfiles",
   "routes",
+  "providers.together",
   "anthropic.baseUrl",
   "anthropic.allowInsecureBaseUrl",
   ...PROVIDER_IDS.flatMap(id => [
@@ -910,10 +980,10 @@ const PROJECT_REFUSED_KEYS: readonly string[] = [
  *   2. `SUBSWITCH_CONFIG` env var (tilde-expanded)
  *   3. implicit user config merged under `<cwd>/subswitch.config.json` (permitted project fields win)
  *
- * Profiles, routes, sign-in addresses, credential file and folder keys, and the
- * `allowInsecureBaseUrl` opt-ins (PROJECT_REFUSED_KEYS) require a user or explicit
- * config. Project files that declare
- * any of these keys fail before the merge, even for empty values.
+ * Profiles, routes, the Together block, sign-in addresses, credential file and folder
+ * keys, and the `allowInsecureBaseUrl` opt-ins (PROJECT_REFUSED_KEYS) require a user
+ * or explicit config. Project files that declare any of these keys fail before the
+ * merge, even for empty values.
  * With allowProjectPort false, the project port does not participate in the merge.
  * Only implicit user/project files silently fall back to defaults on ENOENT.
  * Explicit config selection bypasses the user/project merge.
@@ -973,7 +1043,9 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
   const isProject = !isExplicit && resolvedPath !== globalPath;
   if (isProject && isPlainObject(raw)) {
     const project = raw;
-    const forbidden = PROJECT_REFUSED_KEYS.filter(path => hasOwnPath(project, path));
+    const matched = PROJECT_REFUSED_KEYS.filter(path => hasOwnPath(project, path));
+    // Name only the outermost refused key: `providers.together` covers its own sub-keys.
+    const forbidden = matched.filter(path => !matched.some(outer => path.startsWith(`${outer}.`)));
     if (forbidden.length > 0) {
       return err({
         kind: "translate",

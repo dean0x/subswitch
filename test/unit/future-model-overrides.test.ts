@@ -19,7 +19,7 @@ function fixture(t: TestContext, aliases: Record<string, unknown> = { sol: futur
     configPath: join(root, "config.json"), env: {},
     readFile: () => JSON.stringify({
       anthropic: { baseUrl: "http://127.0.0.1:1/anthropic" },
-      providers: { codex: {
+      providers: { together: {}, codex: {
         aliases, authFile: join(root, "absent-auth.json"),
         baseUrl: "http://127.0.0.1:1/codex", oauthTokenUrl: "http://127.0.0.1:1/refresh",
       } },
@@ -85,7 +85,7 @@ describe("explicit future Codex model overrides", () => {
   });
 
   it("preserves canonical pins, one-hop aliases and unresolved undeclared names", () => {
-    const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: {
+    const { table } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: {
       sol: future, "gpt-6.1-sol": future, a: "b", b: "gpt-6-sol",
     } });
     for (const name of ["gpt-6.1-sol", "codex:gpt-6.1-sol"])
@@ -100,7 +100,7 @@ describe("explicit future Codex model overrides", () => {
   });
 
   it("does not let target-only declarations claim existing family or qualified registry names", () => {
-    const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: {
+    const { table } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: {
       worker: "sol", literal: "codex:gpt-6.1-sol", next: future, literalAlias: "codex:next",
     } });
     for (const name of ["sol", "codex:sol"])
@@ -114,11 +114,11 @@ describe("explicit future Codex model overrides", () => {
 
   it("keeps malformed/reserved aliases and unsupported configured providers invalid", () => {
     for (const value of [
-      { providers: { codex: { aliases: { "": future } } } },
-      { providers: { codex: { aliases: { sol: "" } } } },
-      { providers: { codex: { aliases: { sol: 42 } } } },
-      { providers: { codex: { aliases: { sonnet: future } } } },
-      { providers: { codex: { aliases: { sol: "claude-fixture" } } } },
+      { providers: { together: {}, codex: { aliases: { "": future } } } },
+      { providers: { together: {}, codex: { aliases: { sol: "" } } } },
+      { providers: { together: {}, codex: { aliases: { sol: 42 } } } },
+      { providers: { together: {}, codex: { aliases: { sonnet: future } } } },
+      { providers: { together: {}, codex: { aliases: { sol: "claude-fixture" } } } },
       { providers: { codexx: { aliases: { sol: future } } } },
     ]) {
       const loaded = loadConfig({ configPath: "/fabricated/no-read.json", env: {}, readFile: () => JSON.stringify(value) });
