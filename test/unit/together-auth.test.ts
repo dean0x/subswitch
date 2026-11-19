@@ -169,10 +169,11 @@ it("ends the first client's wait without stopping the child for a second client"
   assert.deepEqual(await b, keyFrom(keys.primary, "keychain"));
 });
 
-it("stops the child when the last waiter cancels and ignores a late result", async () => {
+it("stops the child when the last waiter cancels and preserves a new shared read", async () => {
   const child = deferredKey();
+  const replacement = deferredKey();
   const { readKey, calls, timers } = harness({ exec: () => calls.length === 1
-    ? child.promise : Promise.resolve({ stdout: keys.secondary }) });
+    ? child.promise : replacement.promise });
   const first = new AbortController();
   const second = new AbortController();
   const a = readKey(first.signal);
@@ -183,11 +184,19 @@ it("stops the child when the last waiter cancels and ignores a late result", asy
   assert.deepEqual(await b, cancelled);
   assert.equal(calls[0]?.[2].signal.aborted, true);
   assert.equal(timers[0]?.cleared, true);
-  const fresh = readKey(signal());
+
+  const freshFirst = new AbortController();
+  const freshSecond = new AbortController();
+  const fresh = readKey(freshFirst.signal);
   child.resolve({ stdout: keys.primary });
-  assert.deepEqual(await fresh, keyFrom(keys.secondary, "keychain"));
-  assert.deepEqual(await readKey(signal()), keyFrom(keys.secondary, "keychain"));
+  // Let the abandoned read finish before the second waiter joins the replacement.
+  await new Promise<void>((done) => setImmediate(done));
+  const joined = readKey(freshSecond.signal);
   assert.equal(calls.length, 2);
+  freshFirst.abort();
+  freshSecond.abort();
+  assert.deepEqual(await Promise.all([fresh, joined]), [cancelled, cancelled]);
+  assert.equal(calls[1]?.[2].signal.aborted, true);
 });
 
 it("bounds the whole shared wait even when the exec seam does not settle on abort", async () => {
