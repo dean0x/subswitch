@@ -371,6 +371,13 @@ other host. Together charges more for the US-only host `us-api.together.ai`.
 are always accepted, for tests. A URL with userinfo, a query or a fragment fails at load.
 The [config reference](#config-reference) lists every `providers.together` key.
 
+A workspace file can name a `together:` model, for example in a project
+`.claude/agents/*.md` file or a project Claude Code settings file. When a key is
+available, those requests spend your Together balance and send the conversation to
+Together. Before you use Claude Code in a cloned repository, check its agent files and
+settings for `together:` models. `subswitch doctor` lists a Together agent pin only when
+no usable key is found.
+
 ## Codex → Claude
 
 Sign in normally with both clients, then enable the reverse path:

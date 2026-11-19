@@ -174,8 +174,12 @@ request and does not retry.
 **Configuration trust.** The whole `providers.together` block loads only from the
 user configuration or an explicit `SUBSWITCH_CONFIG` file. A project
 `subswitch.config.json` that sets it, even to `{}` or `null`, fails at load, so a
-workspace file cannot redirect the key or change the output cap. The startup host check
-accepts `https://api.together.ai/v1` by default. With
+workspace file cannot redirect the key or change the output cap. A workspace file can
+name a `together:` model, for example in a project `.claude/agents/*.md` file or a
+project Claude Code settings file. When a key is available, those requests spend the
+user's Together balance and send the conversation to Together. Check a cloned repository
+for such names. `subswitch doctor` lists a Together agent pin only when no usable key is
+found. The startup host check accepts `https://api.together.ai/v1` by default. With
 `providers.together.allowInsecureBaseUrl: true` it also accepts `api-inference.together.ai`
 and `us-api.together.ai`, and no other host; `api.together.xyz` is refused. Loopback
 is always accepted, for tests. A refused host stops `subswitch serve`.
