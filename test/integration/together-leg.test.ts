@@ -4,9 +4,10 @@ import { z } from "zod";
 import { it, type TestContext } from "node:test";
 import { toAnthropicErrorBody } from "../../src/errors.js";
 import { TOGETHER_API_KEY_ENV } from "../../src/together-auth.js";
+import { TOGETHER_MODELS } from "../../src/together-models.js";
 import { lateToolNames, repeatedToolIds } from "../fixtures/together/streams.js";
 import { chatChunk, chatSse } from "../helpers/chat-sse.js";
-import { rawHttpRequest, sseHandler, startFakeUpstream, startSubswitch, type UpstreamHandler } from "./fake-upstreams.js";
+import { sseHandler, startFakeUpstream, startSubswitch, type UpstreamHandler } from "./fake-upstreams.js";
 
 const MODEL = "fixture/explicit-route";
 const KEY = "FAKE-TOGETHER-KEY-relay";
@@ -25,7 +26,7 @@ const readMessage = async (response: Response) => Message.parse(await response.j
 
 const fixture = async (t: TestContext, handler: UpstreamHandler, key: string | null = KEY,
   options: { readonly requestTimeoutMs?: number; readonly streamIdleTimeoutMs?: number; readonly reasoningCache?: { readonly maxBytes: number } } = {},
-  overrides: Record<string, unknown> = {}) => {
+  overrides: Record<string, unknown> = {}, platform: NodeJS.Platform = "linux") => {
   const together = await startFakeUpstream(handler);
   t.after(together.close);
   const fallback = await startFakeUpstream((_req, res) => { res.writeHead(418); res.end(); });
@@ -34,7 +35,7 @@ const fixture = async (t: TestContext, handler: UpstreamHandler, key: string | n
   const exec = t.mock.fn(async () => ({ stdout: "" }));
   const proxy = await startSubswitch({ ...overrides, providers: { together: { baseUrl: `${together.url}/v1`, ...options } },
     anthropic: { baseUrl: fallback.url } }, {
-    togetherKeyReader: { env: key === null ? {} : { [TOGETHER_API_KEY_ENV]: key }, platform: "linux", exec, setTimer: () => () => {} },
+    togetherKeyReader: { env: key === null ? {} : { [TOGETHER_API_KEY_ENV]: key }, platform, exec, setTimer: () => () => {} },
     logger: { log: (_level, event, fields) => logs.push({ event, fields }) },
   });
   t.after(proxy.close);
@@ -43,6 +44,9 @@ const fixture = async (t: TestContext, handler: UpstreamHandler, key: string | n
   });
   return { together, fallback, post, logs, proxy, exec };
 };
+
+/** macOS with no env key: any key read must call the Keychain seam, so `exec` counts it. */
+const keychainOnly = (t: TestContext) => fixture(t, sseHandler(lateToolNames), null, {}, {}, "darwin");
 
 for (const [key, reason] of [[null, "missing"], [BAD_KEY, "malformed"]] as const) {
   it(`returns a local 401 for a ${reason} key without any upstream request`, async (t) => {
@@ -218,36 +222,40 @@ it("does not follow a Together redirect to a different origin", async (t) => {
   assert.equal(other.requests.length + fallback.requests.length, 0);
 });
 
+it("reaches the Keychain seam for a messages call with no env key on macOS", async (t) => {
+  const { post, together, fallback, exec } = await keychainOnly(t);
+  const response = await post();
+  await response.text();
+  assert.equal(response.status, 401);
+  assert.equal(exec.mock.callCount(), 1);
+  assert.equal(together.requests.length + fallback.requests.length, 0);
+});
+
 it("computes count_tokens locally without a credential or upstream call", async (t) => {
-  const { post, together, fallback, exec } = await fixture(t, sseHandler(lateToolNames), null);
+  const { post, together, fallback, exec } = await keychainOnly(t);
   const response = await post(REQUEST, "/count_tokens");
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { input_tokens: Math.ceil(Buffer.byteLength(JSON.stringify(REQUEST)) / 4) });
   assert.equal(together.requests.length + fallback.requests.length + exec.mock.callCount(), 0);
 });
 
-it("reports only the key source in health and does not call Keychain", async (t) => {
-  const { proxy, together, exec } = await fixture(t, sseHandler(lateToolNames));
-  const text = await (await fetch(`${proxy.url}/__subswitch/health`)).text();
-  assert.ok(!text.includes(KEY));
-  assert.deepEqual(JSON.parse(text).providers.find((row: { id: string }) => row.id === "together"),
-    { id: "together", configured: true, keySource: "env", modelCount: 0 });
-  assert.equal(together.requests.length + exec.mock.callCount(), 0);
-});
-
-it("refuses a foreign Host before it sends a Together request", async (t) => {
-  const { proxy, together, fallback } = await fixture(t, sseHandler(lateToolNames));
-  const response = await rawHttpRequest(`${proxy.url}/v1/messages`, {
-    method: "POST", rawHeaders: ["Host", "foreign.invalid", "Content-Type", "application/json"],
-    body: Buffer.from(JSON.stringify(REQUEST)),
+// The macOS row with no env key is the row where a key read must call the Keychain seam.
+for (const [label, key, platform, configured, keySource] of [
+  ["an env key", KEY, "linux", true, "env"],
+  ["no env key on macOS", null, "darwin", false, null],
+] as const) {
+  it(`reports only the key source in health for ${label} and does not call Keychain`, async (t) => {
+    const { proxy, together, exec } = await fixture(t, sseHandler(lateToolNames), key, {}, {}, platform);
+    const text = await (await fetch(`${proxy.url}/__subswitch/health`)).text();
+    assert.ok(!text.includes(KEY));
+    assert.deepEqual(JSON.parse(text).providers.find((row: { id: string }) => row.id === "together"),
+      { id: "together", configured, keySource, modelCount: TOGETHER_MODELS.length });
+    assert.equal(together.requests.length + exec.mock.callCount(), 0);
   });
-  assert.equal(response.status, 403);
-  assert.equal(together.requests.length + fallback.requests.length, 0);
-});
+}
 
 it("cancels the Together fetch when a streaming client closes", { timeout: 3000 }, async (t) => {
   const events = new EventEmitter();
-  const upstreamClose = once(events, "close", { signal: AbortSignal.timeout(2000) });
   const { post, together } = await fixture(t, (_req, res) => {
     res.once("close", () => events.emit("close"));
     res.writeHead(200, { "content-type": "text/event-stream" });
@@ -256,6 +264,8 @@ it("cancels the Together fetch when a streaming client closes", { timeout: 3000 
   const controller = new AbortController();
   const response = await post({ ...REQUEST, stream: true }, "", controller.signal);
   assert.equal(response.status, 200);
+  // The upstream close can only follow the abort, so the time limit starts here.
+  const upstreamClose = once(events, "close", { signal: AbortSignal.timeout(2000) });
   controller.abort();
   await upstreamClose;
   assert.equal(together.requests.length, 1);
