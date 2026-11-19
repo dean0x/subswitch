@@ -467,12 +467,8 @@ const models = (config: Config, client: Client): void => {
     aliasesByProvider: aliasesByProvider(config),
   });
 
-  if (lines.length === 0) {
-    out("  (no aliases configured)");
-    return;
-  }
-
   out("subswitch models");
+  if (lines.length === 0) out("  (no aliases configured)");
   for (const line of lines) {
     // Colorize the status and source columns while keeping the already-aligned text intact.
     const colorized = line
@@ -483,6 +479,8 @@ const models = (config: Config, client: Client): void => {
       .replace("(direct)", pc.dim("(direct)"));
     out(`  ${colorized}`);
   }
+  // Any id with the together: prefix routes, so the vetted rows above are not the whole set.
+  out(`  together:<model-id>  →  any Together AI model (pass-through; output cap ${config.providers.together.outputCap} tokens)`);
 };
 
 // ---------------------------------------------------------------------------

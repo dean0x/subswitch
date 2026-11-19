@@ -155,6 +155,18 @@ describe("checkAgentModels", () => {
     ]);
   });
 
+  it("fails a pin to a key provider with no key and keeps other unconfigured pins informational", () => {
+    const files = [
+      { path: "/paid.md", text: "---\nmodel: together:fixture/unlisted\n---\n" },
+      { path: "/codex.md", text: "---\nmodel: gpt-5.6-sol\n---\n" },
+    ];
+    const findings = checkAgentModels(files, table, noConfiguredProviders, MODEL_REGISTRY, new Set(["together"]));
+    assert.deepEqual(findings.map(({ file, kind, severity }) => ({ file, kind, severity })), [
+      { file: "/paid.md", kind: "provider_unconfigured", severity: "fail" },
+      { file: "/codex.md", kind: "provider_unconfigured", severity: "info" },
+    ]);
+  });
+
   it("returns 'ambiguous' finding when a family name is claimed by multiple providers", () => {
     // Construct a minimal RoutingTable manually to simulate an ambiguous family.
     const ambiguousTable: RoutingTable = {

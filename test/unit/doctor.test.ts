@@ -16,6 +16,7 @@ import {
 import { loadConfig, type Config } from "../../src/config.js";
 import { PROVIDER_IDS, type ProviderId, type RoutingTable } from "../../src/models.js";
 import { checkAgentModels } from "../../src/agent-scan.js";
+import { TOGETHER_API_KEY_ENV } from "../../src/together-auth.js";
 
 describe("probeSubswitch", () => {
   it("returns running when the health endpoint responds with the subswitch shape", async () => {
@@ -607,10 +608,52 @@ it("doctor checks Together once through its injected Keychain seam and reports o
   const lines: string[] = [];
   const loaded = loadConfig({ configPath: "fixture", readFile: () => "{}", env: {} });
   assert.ok(loaded.ok);
-  await runDoctor(loaded.value.config, "fixture", true, {
+  const exitCode = await runDoctor(loaded.value.config, "fixture", true, {
     ...allPassIO(lines), togetherKeyReader: { env: {}, platform: "darwin", exec, setTimer: () => () => {} },
   });
   assert.equal(exec.mock.callCount(), 1);
-  assert.match(lines.join("\n"), /together auth:\s+keychain/);
+  assert.equal(exitCode, 0);
+  assert.match(lines.join("\n"), /together auth:\s+OK \(keychain\)$/m);
   assert.ok(!lines.join("\n").includes(key));
+});
+
+describe("doctor Together key severity matrix", () => {
+  const key = "FAKE-TOGETHER-KEY-doctor-matrix";
+  const envOnly = /\(Set TOGETHER_API_KEY \(environment variable only on this platform\)\.\)/;
+  const keychainHint = /\(Set TOGETHER_API_KEY or add the macOS Keychain item "Subswitch Together API key"\.\)/;
+  const rows = [
+    { name: "no block, pin or key", block: false, pin: false, value: undefined, platform: "linux", exit: 0, auth: /together auth:\s+unconfigured /, hint: envOnly },
+    { name: "a block and no key", block: true, pin: false, value: undefined, platform: "linux", exit: 1, auth: /together auth:\s+UNAVAILABLE /, hint: envOnly },
+    { name: "a pin and no key", block: false, pin: true, value: undefined, platform: "linux", exit: 1, auth: /together auth:\s+unconfigured /, hint: envOnly },
+    { name: "a block and a malformed key", block: true, pin: false, value: `${key} x`, platform: "linux", exit: 1, auth: /together auth:\s+UNAVAILABLE \(key is malformed\) /, hint: envOnly },
+    { name: "a pin and an env key", block: false, pin: true, value: key, platform: "linux", exit: 0, auth: /together auth:\s+OK \(env\)$/m, hint: undefined },
+    { name: "no block and no key on macOS", block: false, pin: false, value: undefined, platform: "darwin", exit: 0, auth: /together auth:\s+unconfigured /, hint: keychainHint },
+  ] as const;
+
+  for (const row of rows) {
+    it(`exits ${row.exit} for ${row.name}`, async (t) => {
+      const lines: string[] = [];
+      const exec = t.mock.fn(async (): Promise<{ stdout: string }> => { throw new Error("item not found"); });
+      const loaded = loadConfig({ configPath: "fixture", env: {},
+        readFile: () => JSON.stringify(row.block ? { providers: { together: {} } } : {}) });
+      assert.ok(loaded.ok);
+      const exitCode = await runDoctor(loaded.value.config, "fixture", true, {
+        ...allPassIO(lines),
+        togetherKeyReader: { env: row.value === undefined ? {} : { [TOGETHER_API_KEY_ENV]: row.value },
+          platform: row.platform, exec, setTimer: () => () => {} },
+        listAgentFiles: async () => (row.pin ? ["/project/.claude/agents/worker.md"] : []),
+        readTextFile: async () => "---\nmodel: together:fixture/unlisted\n---\n",
+      }, loaded.value.configuredProviders);
+      const output = lines.join("\n");
+      assert.equal(exitCode, row.exit, output);
+      assert.match(output, row.auth);
+      if (row.hint !== undefined) assert.match(output, row.hint);
+      if (row.platform === "linux") assert.doesNotMatch(output, /Keychain/);
+      assert.equal(exec.mock.callCount(), row.platform === "darwin" ? 1 : 0);
+      const agentRow = /agent model:\s+FAIL \/project\/\.claude\/agents\/worker\.md: model "together:fixture\/unlisted"/;
+      if (row.pin && row.value === undefined) assert.match(output, agentRow);
+      else assert.doesNotMatch(output, /agent model:/);
+      assert.ok(!output.includes(key), "doctor must never print the key value");
+    });
+  }
 });

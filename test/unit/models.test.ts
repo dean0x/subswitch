@@ -27,6 +27,12 @@ describe("Together registry guards", () => {
     });
   });
 
+  it("lists a vetted Together model with its provider", () => {
+    assert.deepEqual(formatModelsReport({ registry: [vetted], aliasesByProvider: { codex: {}, together: {} } }), [
+      "fixture-family  →  fixture/vetted  together  gen:1  enabled  (derived)",
+    ]);
+  });
+
   it("reports contested and reserved families and rejects reserved Together aliases", () => {
     const reserved = { ...vetted, id: "fixture/reserved", family: "sonnet" };
     const build = buildRoutingTable([

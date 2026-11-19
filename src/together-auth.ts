@@ -132,7 +132,11 @@ export const createTogetherKeyReader = (deps: TogetherKeyReaderDeps) => {
   return { readKey, keychainItemExists };
 };
 
-export const togetherKeyHint = `Set ${TOGETHER_API_KEY_ENV} or add the macOS Keychain item "${TOGETHER_KEYCHAIN_SERVICE}".`;
+const togetherKeyHint = `Set ${TOGETHER_API_KEY_ENV} or add the macOS Keychain item "${TOGETHER_KEYCHAIN_SERVICE}".`;
+
+/** The reader looks in the Keychain on macOS only, so other platforms get the env var hint alone. */
+export const togetherKeyHintFor = (platform: NodeJS.Platform): string =>
+  platform === "darwin" ? togetherKeyHint : `Set ${TOGETHER_API_KEY_ENV} (environment variable only on this platform).`;
 
 export const createTogetherAuth = (reader: ReturnType<typeof createTogetherKeyReader>): ProviderAuth<"together"> => ({
   refreshable: false,

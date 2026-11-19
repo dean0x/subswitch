@@ -7,7 +7,7 @@ import { aliasesByProvider, providerConfigFor, withCredential, type Config, type
 import { inspectAuthFile } from "./codex-auth.js";
 import { isPlainObject } from "./plain-object.js";
 import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
-import { createTogetherKeyReader, togetherKeyHint, type TogetherKeyReaderDeps } from "./together-auth.js";
+import { createTogetherKeyReader, togetherKeyHintFor, type TogetherKeyReaderDeps } from "./together-auth.js";
 import { checkAgentModels } from "./agent-scan.js";
 
 // ---------------------------------------------------------------------------
@@ -330,11 +330,15 @@ export const runDoctor = async (
       },
       "api-key": async () => {
         const inspection = await PROVIDER_AUTH_INSPECTORS.together(io.togetherKeyReader);
-        const usable = inspection.kind === "present";
-        const failed = !usable && configuredProviderIds.has(id);
-        const text = inspection.kind === "present" ? passStr(inspection.source)
-          : `${failed ? failStr("UNAVAILABLE") : pc.dim("unconfigured")} (${togetherKeyHint})`;
-        return { lines: [row(`${id} auth:`, text)], failed, credentialUsable: usable };
+        // Name the key source only, never the value.
+        if (inspection.kind === "present") {
+          return { lines: [row(`${id} auth:`, passStr(`OK (${inspection.source})`))], failed: false, credentialUsable: true };
+        }
+        const failed = configuredProviderIds.has(id);
+        const status = failed ? failStr("UNAVAILABLE") : pc.dim("unconfigured");
+        const reason = inspection.kind === "malformed" ? " (key is malformed)" : "";
+        const hint = togetherKeyHintFor(io.togetherKeyReader?.platform ?? process.platform);
+        return { lines: [row(`${id} auth:`, `${status}${reason} (${hint})`)], failed, credentialUsable: false };
       },
     };
     return withCredential(credential, checks);
@@ -438,7 +442,11 @@ export const runDoctor = async (
     }),
   );
 
-  const agentFindings = checkAgentModels(fileTexts, table, providersWithCredentials);
+  // A pin to a provider whose key the user supplies is an explicit opt-in. Without
+  // the key, every request of that agent gets a local 401, so the finding fails.
+  const pinNeedsKey: CredentialKindTable<boolean> = { "oauth-file": () => false, "api-key": () => true };
+  const keyRequiredProviders = new Set(PROVIDER_IDS.filter((id) => withCredential(providerConfigFor(config, id), pinNeedsKey)));
+  const agentFindings = checkAgentModels(fileTexts, table, providersWithCredentials, MODEL_REGISTRY, keyRequiredProviders);
 
   // Label the first finding row; blank-label subsequent rows to avoid N identical "agent model:"
   // labels in the columnar output when multiple agents are misconfigured.

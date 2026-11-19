@@ -109,6 +109,22 @@ const makeScriptedPrompts = (
 // ---------------------------------------------------------------------------
 
 describe("runInitInteractive — happy path", () => {
+  it("never asks for, prints or writes a Together key", async () => {
+    const key = "FAKE-TOGETHER-KEY-init-wizard";
+    const deps = makeFakeDeps();
+    const prompts = makeScriptedPrompts({ textResponse: "4141", selectResponse: "local" });
+
+    const exitCode = await runInitInteractive("/project", deps, { TOGETHER_API_KEY: key }, prompts);
+
+    assert.equal(exitCode, 0);
+    assert.deepEqual([...prompts.textCalls, ...prompts.selectCalls].map(({ message }) => message),
+      ["Proxy port", "Where should ANTHROPIC_BASE_URL be written?"]);
+    const shown = JSON.stringify([prompts.introArgs, prompts.warnArgs, prompts.noteArgs, prompts.outroArgs]);
+    assert.doesNotMatch(shown, /FAKE-TOGETHER-KEY-|TOGETHER_API_KEY/);
+    assert.equal(Object.keys(deps.written).length, 2);
+    for (const file of Object.values(deps.written)) assert.doesNotMatch(file, /FAKE-TOGETHER-KEY-|TOGETHER_API_KEY|together/i);
+  });
+
   it("returns exit code 0 and writes both files", async () => {
     const deps = makeFakeDeps();
     const prompts = makeScriptedPrompts({

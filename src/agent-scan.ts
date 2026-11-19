@@ -64,10 +64,14 @@ export type AgentFinding =
       readonly severity: "info";
       readonly canonical: string;
     })
-  /** Resolves to a known canonical but the provider lacks credentials. */
+  /**
+   * Resolves to a known canonical but the provider lacks credentials.
+   *
+   * "fail" only for a provider whose key the user must supply: the pin is the user's
+   * explicit opt-in to that provider, and every request of the agent gets a local 401.
+   */
   | (AgentFindingBase & {
       readonly kind: "provider_unconfigured";
-      readonly severity: "info";
       readonly canonical: string;
     })
   /** Resolves to a preview model — excluded from family alias derivation. */
@@ -164,6 +168,7 @@ export const parseFrontmatterModel = (text: string): string | undefined => {
  * @param table              Pre-built routing table (built once at startup by doctor).
  * @param configuredProviders Set of provider ids that have credentials available.
  * @param registry           Model registry — injectable for testing retired/preview kinds.
+ * @param keyRequiredProviders Providers whose pin fails without a credential.
  *
  * Finding kinds (in resolution order):
  * - unresolvable  (fail): resolveModel returns "unresolved" or "invalid_qualified".
@@ -172,7 +177,8 @@ export const parseFrontmatterModel = (text: string): string | undefined => {
  *   subswitch forwards the request to Anthropic unchanged — the qualifier does not block
  *   the request; only `ambiguous` stays "fail" because that conflict is subswitch-derived.
  * - retired       (info): resolves to a registry entry marked retired.
- * - provider_unconfigured (info): resolves ok but provider is not in configuredProviders.
+ * - provider_unconfigured (info, or fail for a provider in keyRequiredProviders): resolves ok
+ *   but provider is not in configuredProviders.
  * - preview_only  (info): resolves to a registry entry marked preview.
  */
 export const checkAgentModels = (
@@ -180,6 +186,7 @@ export const checkAgentModels = (
   table: RoutingTable,
   configuredProviders: ReadonlySet<string>,
   registry: readonly ModelEntry[] = MODEL_REGISTRY,
+  keyRequiredProviders: ReadonlySet<string> = new Set(),
 ): readonly AgentFinding[] => {
   const findings: AgentFinding[] = [];
 
@@ -217,7 +224,8 @@ export const checkAgentModels = (
         }
 
         if (!configuredProviders.has(target.provider)) {
-          findings.push({ file: path, model, kind: "provider_unconfigured", severity: "info", canonical: target.id });
+          const severity = keyRequiredProviders.has(target.provider) ? "fail" : "info";
+          findings.push({ file: path, model, kind: "provider_unconfigured", severity, canonical: target.id });
           break;
         }
 
