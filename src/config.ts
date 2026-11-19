@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
@@ -817,8 +817,17 @@ export interface LoadConfigOptions {
   readonly allowProjectPort?: boolean;
 }
 
-export const userConfigPath = (env: Record<string, string | undefined> = process.env, homeDir = env["HOME"] ?? homedir()): string =>
-  join(env["XDG_CONFIG_HOME"] ?? join(homeDir, ".config"), "subswitch", "config.json");
+/**
+ * The user configuration path. XDG_CONFIG_HOME counts only when it is an absolute path:
+ * the XDG Base Directory spec says that a relative value is invalid and must be ignored,
+ * and that an empty value means unset. A relative value would otherwise resolve against
+ * the current folder. Every reader of the user configuration path calls this function.
+ */
+export const userConfigPath = (env: Record<string, string | undefined> = process.env, homeDir = env["HOME"] ?? homedir()): string => {
+  const xdgConfigHome = env["XDG_CONFIG_HOME"];
+  const configHome = xdgConfigHome !== undefined && isAbsolute(xdgConfigHome) ? xdgConfigHome : join(homeDir, ".config");
+  return join(configHome, "subswitch", "config.json");
+};
 
 /** Own properties only; arrays and scalars replace, nested configuration objects merge. */
 export function mergeConfigObjects(base: Record<string, unknown>, overlay: Record<string, unknown>): Record<string, unknown> {

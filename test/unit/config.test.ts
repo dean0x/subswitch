@@ -10,6 +10,7 @@ import {
   aliasesByProvider,
   enumerateDestinations,
   isLoopbackHost,
+  userConfigPath,
   type LoadConfigOptions,
   type RoutingDestination,
 } from "../../src/config.js";
@@ -1258,4 +1259,21 @@ describe("a project config can not change sign-in addresses or credential files"
       assert.deepEqual(result.value.configPaths, [explicitPath]);
     });
   }
+});
+
+describe("userConfigPath — XDG_CONFIG_HOME counts only as an absolute path", () => {
+  const homeDir = "/fixture/home";
+
+  // The XDG Base Directory spec: a relative value is invalid and must be ignored, and an
+  // empty value means unset. A relative value would otherwise resolve against the
+  // current folder.
+  for (const value of ["relative/config", "./config", "../config", ""]) {
+    it(`uses ~/.config when XDG_CONFIG_HOME is ${JSON.stringify(value)}`, () => {
+      assert.equal(userConfigPath({ XDG_CONFIG_HOME: value }, homeDir), "/fixture/home/.config/subswitch/config.json");
+    });
+  }
+
+  it("uses an absolute XDG_CONFIG_HOME", () => {
+    assert.equal(userConfigPath({ XDG_CONFIG_HOME: "/fixture/xdg" }, homeDir), "/fixture/xdg/subswitch/config.json");
+  });
 });
