@@ -56,15 +56,24 @@ describe("Together config sources", () => {
     assert.match(result.error.message, /unsupported provider: together/);
   });
 
-  it("loads the same Together block from user config or SUBSWITCH_CONFIG", () => {
-    const readFile = (path: string) => path === "/user/config.json"
-      ? JSON.stringify({ providers: { together: { baseUrl: "http://127.0.0.1:4142/v1", outputCap: 1024 } } })
-      : missingFile();
-    for (const env of [{}, { SUBSWITCH_CONFIG: "/user/config.json" }]) {
+  it("loads the Together block from the user config or from a separate SUBSWITCH_CONFIG file", () => {
+    const files = new Map([
+      ["/user/config.json", { baseUrl: "http://127.0.0.1:4142/v1", outputCap: 1024 }],
+      ["/explicit/config.json", { baseUrl: "http://127.0.0.1:4143/v1", outputCap: 2048 }],
+    ]);
+    const readFile = (path: string) => {
+      const together = files.get(path);
+      return together === undefined ? missingFile() : JSON.stringify({ providers: { together } });
+    };
+    // The explicit file is not the user config, so only the explicit-file exemption lets the project gate pass it.
+    for (const [env, outputCap, baseUrl] of [
+      [{}, 1024, "http://127.0.0.1:4142/v1"],
+      [{ SUBSWITCH_CONFIG: "/explicit/config.json" }, 2048, "http://127.0.0.1:4143/v1"],
+    ] as const) {
       const result = loadConfig({ cwd: "/project", globalConfigPath: "/user/config.json", env, readFile });
       assert.ok(result.ok, !result.ok ? result.error.message : undefined);
-      assert.equal(result.value.config.providers.together.outputCap, 1024);
-      assert.equal(result.value.config.providers.together.baseUrl, "http://127.0.0.1:4142/v1");
+      assert.equal(result.value.config.providers.together.outputCap, outputCap);
+      assert.equal(result.value.config.providers.together.baseUrl, baseUrl);
       assert.ok(result.value.configuredProviders.has("together"));
     }
   });
