@@ -189,6 +189,15 @@ it("reports reasoning that fills max_tokens with no answer as an error in both c
   assert.equal(together.requests.length, 2);
 });
 
+it("names the applied output cap, not the client max_tokens, when reasoning fills the limit", async (t) => {
+  const stream = chatSse([chatChunk({ reasoning_content: "Long reasoning." }), chatChunk({}, "length"), "[DONE]"]);
+  const { post, together } = await fixture(t, sseHandler(stream));
+  const response = await post({ ...REQUEST, max_tokens: 100_000 });
+  assert.equal(response.status, 502);
+  assert.match(JSON.parse(await response.text()).error.message, /whole max_tokens limit \(16384 tokens\) for reasoning/);
+  assert.equal(JSON.parse(together.requests[0]?.body.toString() ?? "{}").max_tokens, 16_384);
+});
+
 it("scrubs the loaded exact key at the shared error renderer", async (t) => {
   const { post } = await fixture(t, sseHandler(lateToolNames));
   assert.equal((await post()).status, 200);
