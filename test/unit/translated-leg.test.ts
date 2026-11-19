@@ -8,6 +8,15 @@ import { err, ok } from "../../src/result.js";
 import { runTranslatedLeg, type TranslatedLegOptions } from "../../src/translated-leg.js";
 import { sampleLimitKey } from "../fixtures/limit-context.js";
 
+const requiresExplicitRedirectPolicy = (
+  res: ServerResponse,
+  options: Omit<TranslatedLegOptions<string>, "redirect">,
+): void => {
+  // @ts-expect-error Callers must select a redirect policy.
+  void runTranslatedLeg(res, options);
+};
+void requiresExplicitRedirectPolicy;
+
 const options = (overrides: Partial<TranslatedLegOptions<string>> = {}): TranslatedLegOptions<string> => ({
   url: "https://upstream.invalid/stream",
   model: "fixture-model",
@@ -31,6 +40,7 @@ const options = (overrides: Partial<TranslatedLegOptions<string>> = {}): Transla
   },
   buildHeaders: (credential) => ({ "x-fixture-auth": credential }),
   fetchImpl: async () => new Response("frame"),
+  redirect: "follow",
   createTranslator: () => ({ parser: new PassThrough(), translator: new PassThrough() }),
   aggregateFrames: (frames) => ok({ kind: "message", message: { text: frames.join("") } }),
   renderUpstreamError: (status) => ({ status, type: "api_error", message: "upstream rejected request" }),

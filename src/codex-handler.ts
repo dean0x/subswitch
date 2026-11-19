@@ -217,6 +217,7 @@ export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<
       events,
       auth,
       fetchImpl,
+      redirect: "follow",
       buildHeaders: (credential) => buildHeaders(credential, sessionId, transportConstants),
       limitKey: CODEX_LIMIT_KEY,
       renderUpstreamError: (status, detail, headers) => {

@@ -51,7 +51,7 @@ export interface TranslatedLegOptions<C> {
   readonly renderUpstreamError: (status: number, detail: string, headers: Headers) => UpstreamError;
   readonly limitKey?: LimitContext;
   readonly proxyErrorHeaders?: (kind: ProxyError["kind"]) => Record<string, string> | undefined;
-  readonly redirect?: "error";
+  readonly redirect: "follow" | "error";
 }
 
 type ReplyError = (error: ProxyError) => void;
@@ -75,7 +75,8 @@ const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOpt
         method: "POST",
         headers: options.buildHeaders(credential),
         body: JSON.stringify(options.body),
-        ...(options.redirect !== undefined ? { redirect: options.redirect } : {}),
+        // Keep the fetch init unchanged for the follow policy.
+        ...(options.redirect === "follow" ? {} : { redirect: options.redirect }),
         signal,
       });
     } catch {
