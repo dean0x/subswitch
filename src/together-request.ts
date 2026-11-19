@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
 import { buildInstructions } from "./anthropic-parse.js";
 import type { AnthropicMessage, AnthropicRequest } from "./anthropic-wire-types.js";
 import type { ProxyError } from "./errors.js";
 import { err, ok, type Result } from "./result.js";
-import { TOGETHER_DEFAULT_CAPABILITIES, TOGETHER_DEFAULT_OUTPUT_CAP, type TogetherCapabilities } from "./together-models.js";
+import {
+  TOGETHER_DEFAULT_CAPABILITIES, TOGETHER_DEFAULT_OUTPUT_CAP, type TogetherCapabilities, type TogetherReasoningField,
+} from "./together-models.js";
 
 export type TogetherRequestWarning =
   | "image_dropped"
@@ -29,8 +32,10 @@ type TogetherMessage =
   | { readonly role: "system"; readonly content: string }
   | { readonly role: "user"; readonly content: string | readonly UserPart[] }
   | { readonly role: "tool"; readonly tool_call_id: string; readonly content: string }
-  | { readonly role: "assistant"; readonly content: string | null; readonly tool_calls?: readonly ToolCall[];
-      readonly reasoning_content?: string };
+  | ({ readonly role: "assistant"; readonly content: string | null; readonly tool_calls?: readonly ToolCall[] }
+      & ReplayedReasoning);
+/** A replayed turn carries its reasoning in one of these fields, as the model row names. */
+type ReplayedReasoning = { readonly reasoning_content?: string; readonly reasoning?: string };
 
 export interface TogetherRequestOptions {
   readonly model: string;
@@ -58,6 +63,27 @@ export interface TogetherRequestOutcome {
 }
 
 export const reasoningKey = (conversationKey: string, toolId: string): string => `${conversationKey}|${toolId}`;
+
+/**
+ * Store key for the reasoning of a text-only turn, from the SHA-256 hex digest of its exact text.
+ * A conversation key has no "|" or "#", so this key never equals a tool-turn key.
+ */
+export const textReasoningKey = (conversationKey: string, textSha256Hex: string): string =>
+  `${conversationKey}#text#${textSha256Hex}`;
+
+const sha256Hex = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+
+interface TurnReasoning {
+  readonly field: TogetherReasoningField;
+  readonly forToolTurn: (firstToolId: string) => string | undefined;
+  readonly forTextTurn: (text: string) => string | undefined;
+}
+
+// Name each field explicitly. A computed key would widen the message type.
+const reasoningFields = (field: TogetherReasoningField, reasoning: string | undefined): ReplayedReasoning => {
+  if (reasoning === undefined) return {};
+  return field === "reasoning" ? { reasoning } : { reasoning_content: reasoning };
+};
 
 const isBlock = (value: unknown): value is Block =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -145,12 +171,12 @@ const toolArguments = (input: unknown): Result<string, ProxyError> => {
 
 const mapAssistantTurn = (
   content: AnthropicMessage["content"],
-  getTurnReasoning: (toolId: string) => string | undefined,
+  replay: TurnReasoning,
   messages: TogetherMessage[],
   warnings: TogetherRequestWarning[],
 ): Result<void, ProxyError> => {
   if (isString(content)) {
-    messages.push({ role: "assistant", content });
+    messages.push({ role: "assistant", content, ...reasoningFields(replay.field, replay.forTextTurn(content)) });
     return ok(undefined);
   }
   const texts: string[] = [];
@@ -172,13 +198,13 @@ const mapAssistantTurn = (
   }
   const first = calls[0];
   if (first !== undefined) {
-    const reasoning = getTurnReasoning(first.id);
     messages.push({
       role: "assistant", content: texts.length > 0 ? texts.join("\n") : null, tool_calls: calls,
-      ...(reasoning !== undefined ? { reasoning_content: reasoning } : {}),
+      ...reasoningFields(replay.field, replay.forToolTurn(first.id)),
     });
   } else if (texts.length > 0) {
-    messages.push({ role: "assistant", content: texts.join("\n") });
+    const text = texts.join("\n");
+    messages.push({ role: "assistant", content: text, ...reasoningFields(replay.field, replay.forTextTurn(text)) });
   }
   return ok(undefined);
 };
@@ -222,17 +248,24 @@ const mapMessages = (
   const instructions = buildInstructions(request.system);
   if (instructions) messages.push({ role: "system", content: instructions });
   const { conversationKey, getReasoning } = options;
-  const getTurnReasoning = (id: string): string | undefined =>
-    capabilities.reasoningReplay && conversationKey !== undefined
+  const { reasoningReplay, reasoningField } = capabilities;
+  const replay: TurnReasoning = {
+    field: reasoningField,
+    forToolTurn: (id) => reasoningReplay !== "off" && conversationKey !== undefined
       ? getReasoning?.(reasoningKey(conversationKey, id))
-      : undefined;
+      : undefined,
+    // Hash the exact text that goes upstream, with no trim. A changed character gives a key with no entry.
+    forTextTurn: (text) => reasoningReplay === "every-turn" && conversationKey !== undefined
+      ? getReasoning?.(textReasoningKey(conversationKey, sha256Hex(text)))
+      : undefined,
+  };
   for (const { role, content } of request.messages) {
     if (role === "system") {
       const text = buildInstructions(content);
       if (text) messages.push({ role: "system", content: text });
     } else if (role === "assistant" || role === "user") {
       const mapped = role === "assistant"
-        ? mapAssistantTurn(content, getTurnReasoning, messages, warnings)
+        ? mapAssistantTurn(content, replay, messages, warnings)
         : mapUserTurn(content, capabilities.images, messages, warnings);
       if (!mapped.ok) return mapped;
     } else {

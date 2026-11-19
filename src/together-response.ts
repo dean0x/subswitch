@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { Transform } from "node:stream";
 import { z } from "zod";
 import { createSseParser, MAX_CONTENT_BLOCKS, type SseEvent } from "./codex-response.js";
 import { toAnthropicErrorSse } from "./errors.js";
 import { isPlainObject } from "./plain-object.js";
-import { reasoningKey } from "./together-request.js";
+import { reasoningKey, textReasoningKey } from "./together-request.js";
 
 const MAX_ARGUMENT_BYTES = 1024 * 1024; // Across all calls in one response.
 const MAX_REASONING_BYTES = 1024 * 1024;
@@ -52,6 +53,8 @@ export interface TogetherTranslatorOptions {
   readonly maxTurnBytes?: number;
   readonly conversationKey?: string;
   readonly putReasoning?: (key: string, text: string) => void;
+  /** Also store the reasoning of a text-only turn, under a key from the hash of its exact text. */
+  readonly storeTextTurns?: boolean;
 }
 
 type TogetherStreamWarning = "unknown_finish_reason" | "usage_missing" | "reasoning_too_large";
@@ -81,6 +84,9 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
   const warnings: TogetherStreamWarning[] = [];
   const reasoning: string[] = [];
   const { conversationKey, putReasoning, maxTurnBytes = MAX_REASONING_BYTES } = options;
+  // Hash the emitted text one delta at a time, so the translator holds no copy of the text.
+  const textHash = options.storeTextTurns === true && conversationKey !== undefined && putReasoning !== undefined
+    ? createHash("sha256") : undefined;
   let reasoningBytes = 0;
   let argumentsBytes = 0;
   let unparsableChunks = 0;
@@ -120,6 +126,7 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
       hasText = true;
     }
     emit("content_block_delta", { index: 0, delta: { type: "text_delta", text } });
+    textHash?.update(text, "utf8");
   };
 
   const appendTools = (deltas: readonly z.infer<typeof ToolDelta>[]): void => {
@@ -208,8 +215,12 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
     if (finishReason === undefined) closeBlocks();
     if (terminal) return;
     terminal = true;
-    if (firstToolId !== undefined && conversationKey !== undefined && reasoning.length > 0) {
-      putReasoning?.(reasoningKey(conversationKey, firstToolId), reasoning.join(""));
+    if (conversationKey !== undefined && reasoning.length > 0) {
+      if (firstToolId !== undefined) {
+        putReasoning?.(reasoningKey(conversationKey, firstToolId), reasoning.join(""));
+      } else if (hasText && textHash !== undefined) {
+        putReasoning?.(textReasoningKey(conversationKey, textHash.digest("hex")), reasoning.join(""));
+      }
     }
     const stop = stopReason(finishReason, firstToolId !== undefined);
     if (stop === undefined) warnings.push("unknown_finish_reason");

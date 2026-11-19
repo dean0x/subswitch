@@ -93,6 +93,7 @@ export const createTogetherHandler = (deps: TogetherHandlerDeps): ProviderHandle
           const stream = createTogetherSseTranslator({
             model: canonicalModel, seed: randomUUID(), maxEventBytes: provider.maxSseEventBytes,
             maxTurnBytes: provider.reasoningCache.maxTurnBytes, putReasoning,
+            storeTextTurns: capability?.reasoningReplay === "every-turn",
             ...(conversationKey === undefined ? {} : { conversationKey }),
           });
           diagnostics = stream.diagnostics;

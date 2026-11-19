@@ -281,6 +281,43 @@ it("does not store reasoning without a conversation key", async () => {
   assert.equal(message(frames)["stop_reason"], "tool_use");
 });
 
+// The SHA-256 hex digest of the UTF-8 text "Hello world".
+const HELLO_WORLD_SHA256 = "64ec88ca00b268e5ba1a35678a1b5316d212f4f366b2477232534a8aeca37f3c";
+
+it("stores exact reasoning for a text-only turn under the text key when text turns are stored", async () => {
+  const puts: string[][] = [];
+  const { frames } = await translate(chatSse([
+    chatChunk({ reasoning_content: " think\n" }), chatChunk({ content: "Hello" }),
+    chatChunk({ content: " world", reasoning_content: "more " }), chatChunk({}, "stop"), "[DONE]",
+  ]), { conversationKey: "conversation", storeTextTurns: true, putReasoning: (...entry) => { puts.push(entry); } });
+  assert.deepEqual(puts, [[`conversation#text#${HELLO_WORLD_SHA256}`, " think\nmore "]]);
+  assert.deepEqual(message(frames)["content"], [{ type: "text", text: "Hello world" }]);
+});
+
+it("stores a text and tool turn only under the first tool ID when text turns are stored", async () => {
+  const puts: string[][] = [];
+  await translate(chatSse([
+    chatChunk({ reasoning_content: "reason", content: "Hello world", tool_calls: [toolDelta(0, "tool", "{}")] }),
+    chatChunk({}, "stop"), "[DONE]",
+  ]), { conversationKey: "conversation", storeTextTurns: true, putReasoning: (...entry) => { puts.push(entry); } });
+  assert.deepEqual(puts, [["conversation|toolu_response-a_0", "reason"]]);
+});
+
+it("stores no text-turn reasoning for a tool-turns row, an overflow, or no conversation key", async () => {
+  const stream = chatSse([chatChunk({ reasoning_content: "reason", content: "Hello" }), chatChunk({}, "stop"), "[DONE]"]);
+  const cases: readonly Partial<TogetherTranslatorOptions>[] = [
+    { conversationKey: "conversation" },
+    { conversationKey: "conversation", storeTextTurns: true, maxTurnBytes: 5 },
+    { storeTextTurns: true },
+  ];
+  for (const options of cases) {
+    const puts: string[][] = [];
+    const { frames } = await translate(stream, { ...options, putReasoning: (...entry) => { puts.push(entry); } });
+    assert.deepEqual(puts, [], JSON.stringify(options));
+    assert.deepEqual(message(frames)["content"], [{ type: "text", text: "Hello" }]);
+  }
+});
+
 it("maps JSON and SSE error objects to fixed text and permits only strict codes", async () => {
   const message = "FAKE-TOGETHER-KEY-must-not-appear";
   const error = { error: { code: "service_unavailable", message } };

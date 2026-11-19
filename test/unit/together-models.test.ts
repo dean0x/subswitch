@@ -4,14 +4,14 @@ import { isTogetherModelId, TOGETHER_DEFAULT_CAPABILITIES, TOGETHER_MODELS } fro
 
 // No live check has confirmed price or image support yet, so every row is UNCONFIRMED.
 const UNCONFIRMED = { price: false, images: false };
-const row = { maxOutputTokens: 16_384, reasoningReplay: true, confirmed: UNCONFIRMED };
+const row = { maxOutputTokens: 16_384, reasoningReplay: "tool-turns", reasoningField: "reasoning_content", confirmed: UNCONFIRMED };
 
 it("holds the six Together catalog rows with their exact data", () => {
   assert.deepEqual(TOGETHER_MODELS, [
     { ...row, name: "Qwen3.8 Flash", id: "Qwen/Qwen3.8-Flash", family: "qwen3.8-flash",
       contextWindow: 1_000_000, images: true, priceInPerMTokens: 0.15, priceOutPerMTokens: 0.47 },
     { ...row, name: "DeepSeek V4 Pro", id: "deepseek-ai/DeepSeek-V4-Pro-0813", family: "deepseek-v4-pro",
-      contextWindow: 1_048_576, images: false, priceInPerMTokens: 1.32, priceOutPerMTokens: 3.96 },
+      contextWindow: 1_048_576, images: false, reasoningField: "reasoning", priceInPerMTokens: 1.32, priceOutPerMTokens: 3.96 },
     { ...row, name: "DeepSeek V4.1 Flash", id: "deepseek-ai/DeepSeek-V4.1-Flash-1017", family: "deepseek-v4.1-flash",
       contextWindow: 1_000_000, images: true, priceInPerMTokens: 0.30, priceOutPerMTokens: 1.20 },
     { ...row, name: "GLM-5.3", id: "zai-org/GLM-5.3", family: "glm-5.3",
@@ -19,8 +19,19 @@ it("holds the six Together catalog rows with their exact data", () => {
     { ...row, name: "GLM-5.3 Flash", id: "zai-org/GLM-5.3-Flash", family: "glm-5.3-flash",
       contextWindow: 1_048_575, images: true, priceInPerMTokens: 0.15, priceOutPerMTokens: 0.50 },
     { ...row, name: "Kimi K3.1 Pro", id: "moonshotai/Kimi-K3.1-Pro", family: "kimi-k3.1-pro",
-      contextWindow: 1_048_576, images: true, priceInPerMTokens: 2.00, priceOutPerMTokens: 10.00 },
+      contextWindow: 1_048_576, images: true, reasoningReplay: "every-turn", priceInPerMTokens: 2.00, priceOutPerMTokens: 10.00 },
   ]);
+});
+
+it("replays reasoning in the reasoning field only for DeepSeek V4 Pro and on text turns only for Kimi K3.1 Pro", () => {
+  assert.deepEqual(
+    TOGETHER_MODELS.filter((model) => model.reasoningField !== "reasoning_content").map((model) => [model.id, model.reasoningField]),
+    [["deepseek-ai/DeepSeek-V4-Pro-0813", "reasoning"]],
+  );
+  assert.deepEqual(
+    TOGETHER_MODELS.filter((model) => model.reasoningReplay !== "tool-turns").map((model) => [model.id, model.reasoningReplay]),
+    [["moonshotai/Kimi-K3.1-Pro", "every-turn"]],
+  );
 });
 
 it("turns off inline images only for GLM-5.3 and DeepSeek V4 Pro", () => {
@@ -47,11 +58,12 @@ it("rejects Together model IDs outside the grammar or length limit", () => {
   }
 });
 
-it("leaves unknown model limits unset and permits image and reasoning replay", () => {
+it("leaves unknown model limits unset and replays tool-turn reasoning in reasoning_content", () => {
   assert.deepEqual(TOGETHER_DEFAULT_CAPABILITIES, {
     contextWindow: undefined,
     maxOutputTokens: undefined,
     images: true,
-    reasoningReplay: true,
+    reasoningReplay: "tool-turns",
+    reasoningField: "reasoning_content",
   });
 });
