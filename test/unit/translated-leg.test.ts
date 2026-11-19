@@ -3,6 +3,7 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { PassThrough, Transform } from "node:stream";
 import { it } from "node:test";
+import type { AnthropicErrorType } from "../../src/errors.js";
 import type { LimitObservation } from "../../src/limit-observation.js";
 import { err, ok } from "../../src/result.js";
 import { runTranslatedLeg, type TranslatedLegOptions } from "../../src/translated-leg.js";
@@ -214,6 +215,23 @@ it("returns a 502 with the error from a completed aggregate", async (t) => {
   assert.equal(res.statusCode, 502);
   assert.equal(end.mock.calls[0]?.arguments[0],
     '{"type":"error","error":{"type":"api_error","message":"fixture aggregate error"}}');
+});
+
+it("adds the caller's headers for the error type to the 502 from a completed aggregate", async () => {
+  const noRetry = (type: AnthropicErrorType) => type === "invalid_request_error" ? { "x-should-retry": "false" } : undefined;
+  const cases: readonly [AnthropicErrorType, Partial<TranslatedLegOptions<string>>, string | undefined][] = [
+    ["invalid_request_error", { aggregateErrorHeaders: noRetry }, "false"],
+    ["api_error", { aggregateErrorHeaders: noRetry }, undefined],
+    ["invalid_request_error", {}, undefined],
+  ];
+  for (const [errorType, extra, expected] of cases) {
+    const res = response();
+    await runTranslatedLeg(res, options({
+      ...extra, aggregateFrames: () => ok({ kind: "error", errorType, message: "fixture aggregate error" }),
+    }));
+    assert.equal(res.statusCode, 502);
+    assert.equal(res.getHeader("x-should-retry"), expected, `${errorType} ${Object.keys(extra).join()}`);
+  }
 });
 
 it("returns an upstream unreachable 502 when fetch rejects without an abort", async (t) => {

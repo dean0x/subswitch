@@ -173,6 +173,22 @@ for (const [id, replayed] of [["moonshotai/Kimi-K3.1-Pro", true], ["zai-org/GLM-
   });
 }
 
+it("reports reasoning that fills max_tokens with no answer as an error in both client modes", async (t) => {
+  const stream = chatSse([chatChunk({ reasoning_content: "Long reasoning." }), chatChunk({}, "length"), "[DONE]"]);
+  const { post, together } = await fixture(t, sseHandler(stream));
+  const error = { type: "error", error: { type: "invalid_request_error", message:
+    "Together model used the whole max_tokens limit (100 tokens) for reasoning and returned no answer. "
+    + "Raise max_tokens or providers.together.outputCap, or use a model that reasons less." } };
+  const streamed = await post({ ...REQUEST, stream: true });
+  assert.equal(streamed.status, 200);
+  assert.equal(await streamed.text(), `event: error\ndata: ${JSON.stringify(error)}\n\n`);
+  const folded = await post();
+  assert.equal(folded.status, 502);
+  assert.equal(folded.headers.get("x-should-retry"), "false");
+  assert.deepEqual(JSON.parse(await folded.text()), error);
+  assert.equal(together.requests.length, 2);
+});
+
 it("scrubs the loaded exact key at the shared error renderer", async (t) => {
   const { post } = await fixture(t, sseHandler(lateToolNames));
   assert.equal((await post()).status, 200);

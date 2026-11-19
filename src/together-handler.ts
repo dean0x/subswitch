@@ -85,6 +85,8 @@ export const createTogetherHandler = (deps: TogetherHandlerDeps): ProviderHandle
           authorization: authHeaders["authorization"] ?? "", "content-type": "application/json", accept: "text/event-stream", "user-agent": "subswitch",
         }),
         proxyErrorHeaders: (kind) => kind === "timeout" ? NO_RETRY : undefined,
+        // A request error repeats on a retry of the same request, and each retry spends again.
+        aggregateErrorHeaders: (errorType) => errorType === "invalid_request_error" ? NO_RETRY : undefined,
         renderUpstreamError,
         renderJsonResponse: (detail) => ({
           status: 502, type: "api_error", message: parseError(detail) ?? "Together returned an unexpected JSON response",
@@ -92,7 +94,7 @@ export const createTogetherHandler = (deps: TogetherHandlerDeps): ProviderHandle
         createTranslator: () => {
           const stream = createTogetherSseTranslator({
             model: canonicalModel, seed: randomUUID(), maxEventBytes: provider.maxSseEventBytes,
-            maxTurnBytes: provider.reasoningCache.maxTurnBytes, putReasoning,
+            maxTokens: translated.value.body.max_tokens, maxTurnBytes: provider.reasoningCache.maxTurnBytes, putReasoning,
             storeTextTurns: capability?.reasoningReplay === "every-turn",
             ...(conversationKey === undefined ? {} : { conversationKey }),
           });

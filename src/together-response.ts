@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Transform } from "node:stream";
 import { z } from "zod";
 import { createSseParser, MAX_CONTENT_BLOCKS, type SseEvent } from "./codex-response.js";
-import { toAnthropicErrorSse } from "./errors.js";
+import { toAnthropicErrorSse, type AnthropicErrorType } from "./errors.js";
 import { isPlainObject } from "./plain-object.js";
 import { reasoningKey, textReasoningKey } from "./together-request.js";
 
@@ -50,6 +50,8 @@ export interface TogetherTranslatorOptions {
   /** Use a fresh UUID per response. Tests can supply a fixed seed. */
   readonly seed: string;
   readonly maxEventBytes: number;
+  /** The max_tokens value of the upstream request. The error for a reasoning-only length stop names it. */
+  readonly maxTokens: number;
   readonly maxTurnBytes?: number;
   readonly conversationKey?: string;
   readonly putReasoning?: (key: string, text: string) => void;
@@ -101,9 +103,9 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
     translator.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
   };
 
-  const fail = (message: string): void => {
+  const fail = (message: string, type: AnthropicErrorType = "api_error"): void => {
     terminal = true;
-    translator.push(toAnthropicErrorSse("api_error", message));
+    translator.push(toAnthropicErrorSse(type, message));
   };
 
   const start = (): void => {
@@ -188,6 +190,13 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
     const ready = readyTools();
     if (ready === undefined) {
       fail("Together stream contained invalid tool arguments");
+      return;
+    }
+    // Reasoning used the whole output limit, so an empty max_tokens reply would hide the cause.
+    // The cause is the request limit, so the client must not retry the same request.
+    if (finishReason === "length" && !hasText && ready.length === 0 && reasoningBytes > 0) {
+      fail(`Together model used the whole max_tokens limit (${options.maxTokens} tokens) for reasoning and returned no answer. `
+        + "Raise max_tokens or providers.together.outputCap, or use a model that reasons less.", "invalid_request_error");
       return;
     }
     if (finishReason === undefined && !hasText && ready.length === 0) {
