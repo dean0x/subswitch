@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
@@ -817,8 +817,17 @@ export interface LoadConfigOptions {
   readonly allowProjectPort?: boolean;
 }
 
-export const userConfigPath = (env: Record<string, string | undefined> = process.env, homeDir = env["HOME"] ?? homedir()): string =>
-  join(env["XDG_CONFIG_HOME"] ?? join(homeDir, ".config"), "subswitch", "config.json");
+/**
+ * The user configuration path. XDG_CONFIG_HOME counts only when it is an absolute path:
+ * the XDG Base Directory spec says that a relative value is invalid and must be ignored,
+ * and that an empty value means unset. A relative value would otherwise resolve against
+ * the current folder. Every reader of the user configuration path calls this function.
+ */
+export const userConfigPath = (env: Record<string, string | undefined> = process.env, homeDir = env["HOME"] ?? homedir()): string => {
+  const xdgConfigHome = env["XDG_CONFIG_HOME"];
+  const configHome = xdgConfigHome !== undefined && isAbsolute(xdgConfigHome) ? xdgConfigHome : join(homeDir, ".config");
+  return join(configHome, "subswitch", "config.json");
+};
 
 /** Own properties only; arrays and scalars replace, nested configuration objects merge. */
 export function mergeConfigObjects(base: Record<string, unknown>, overlay: Record<string, unknown>): Record<string, unknown> {
@@ -862,6 +871,38 @@ const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
 };
 
 /**
+ * Dotted keys that a project `subswitch.config.json` can not set: explicit profiles
+ * and routes, every sign-in address, every key that selects a credential file or
+ * folder, and every `allowInsecureBaseUrl` opt-in. Only the user configuration or a
+ * file selected with SUBSWITCH_CONFIG sets them, so a file in the current folder can
+ * not change where subswitch sends a sign-in or which credential it loads.
+ *
+ * Matched with `hasOwnPath`, so an inherited key can not forge or hide a match.
+ * Provider keys come from PROVIDER_IDS: a new provider with these key names is
+ * refused without an edit here.
+ */
+const PROJECT_REFUSED_KEYS: readonly string[] = [
+  "accessProfiles",
+  "routes",
+  "anthropic.baseUrl",
+  "anthropic.allowInsecureBaseUrl",
+  ...PROVIDER_IDS.flatMap(id => [
+    `providers.${id}.baseUrl`,
+    `providers.${id}.oauthTokenUrl`,
+    `providers.${id}.authFile`,
+    `providers.${id}.allowInsecureBaseUrl`,
+  ]),
+  "codexIngress.subscriptionBaseUrl",
+  "codexIngress.apiBaseUrl",
+  "codexIngress.allowInsecureBaseUrl",
+  "codexIngress.claude.baseUrl",
+  "codexIngress.claude.oauthTokenUrl",
+  "codexIngress.claude.authFile",
+  "codexIngress.claude.configDir",
+  "codexIngress.claude.allowInsecureBaseUrl",
+];
+
+/**
  * Load subswitch.config.json (all fields optional) merged over defaults.
  *
  * Path precedence (highest to lowest):
@@ -869,8 +910,10 @@ const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
  *   2. `SUBSWITCH_CONFIG` env var (tilde-expanded)
  *   3. implicit user config merged under `<cwd>/subswitch.config.json` (permitted project fields win)
  *
- * Profiles and routes, including profile endpoint opt-ins, require a user or explicit config.
- * Project files that declare either key fail before the merge, even for empty values.
+ * Profiles, routes, sign-in addresses, credential file and folder keys, and the
+ * `allowInsecureBaseUrl` opt-ins (PROJECT_REFUSED_KEYS) require a user or explicit
+ * config. Project files that declare
+ * any of these keys fail before the merge, even for empty values.
  * With allowProjectPort false, the project port does not participate in the merge.
  * Only implicit user/project files silently fall back to defaults on ENOENT.
  * Explicit config selection bypasses the user/project merge.
@@ -930,7 +973,7 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
   const isProject = !isExplicit && resolvedPath !== globalPath;
   if (isProject && isPlainObject(raw)) {
     const project = raw;
-    const forbidden = ["accessProfiles", "routes"].filter(key => Object.hasOwn(project, key));
+    const forbidden = PROJECT_REFUSED_KEYS.filter(path => hasOwnPath(project, path));
     if (forbidden.length > 0) {
       return err({
         kind: "translate",

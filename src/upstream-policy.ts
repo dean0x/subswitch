@@ -22,7 +22,7 @@ export const vetCredentialUrl = (options: {
     return err(
       `${path} points at '${url.host}' (expected '${options.expectedHost}'). ` +
         `${options.refreshToken ? "Your long-lived refresh token" : "Credentials"} would be sent to an untrusted host. ` +
-        `Set "${options.optInKey}": true in subswitch.config.json to opt in.`,
+        `Set "${options.optInKey}": true in the user configuration, or in a file selected with SUBSWITCH_CONFIG, to opt in.`,
     );
   }
   logger.log("warn", events.baseUrlOverrideDetected);

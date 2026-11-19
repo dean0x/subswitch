@@ -9,7 +9,9 @@ Codex-facing transport is enabled by `codexIngress.enabled`, which defaults to
 **false**. This example keeps `codexIngress.claude.enabled` false and therefore
 selects raw transport. `init --client codex` enables the separate Claude routing path.
 
-For a local transport test, add the following to a SubSwitch configuration:
+For a local transport test, add the following to the SubSwitch user configuration or
+to a file that you select with `SUBSWITCH_CONFIG`. A project `subswitch.config.json`
+can not set the base URL keys:
 
 ```json
 {
