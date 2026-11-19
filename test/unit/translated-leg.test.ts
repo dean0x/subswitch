@@ -78,6 +78,23 @@ it("sets the close listener before credential load", async () => {
   assert.equal(res.listenerCount("close"), 0);
 });
 
+it("ends a pending credential wait on client close without a fetch", async (t) => {
+  const res = response();
+  const { auth } = options();
+  const fetchImpl = t.mock.fn(async () => new Response("frame"));
+  const run = runTranslatedLeg(res, options({
+    auth: { ...auth, getCredentials: () => new Promise(() => {}) },
+    fetchImpl,
+  }));
+  res.destroy();
+  res.emit("close");
+  const settled = await Promise.race([run.then(() => true), new Promise<boolean>((resolve) => setImmediate(resolve, false))]);
+
+  assert.equal(settled, true, "the runner must settle after close");
+  assert.equal(fetchImpl.mock.callCount(), 0);
+  assert.equal(res.listenerCount("close"), 0);
+});
+
 it("sets redirect on the injected POST without replacing its headers or signal", async () => {
   const requests: { url: string; init?: RequestInit }[] = [];
   const { auth } = options();

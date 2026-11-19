@@ -2,6 +2,7 @@ import type { ServerResponse } from "node:http";
 import { Readable, type Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { abortable } from "./abortable.js";
 import {
   SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, toAnthropicErrorBody, toAnthropicErrorSse,
   type AnthropicError, type AnthropicErrorType, type ProxyError,
@@ -61,7 +62,14 @@ type FramePipeline = readonly [Readable, Transform, Transform];
 const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, signal: AbortSignal,
   replyError: ReplyError): Promise<Response | undefined> => {
   const { auth, events, fetchImpl, logger, model, name } = options;
-  const initial = await auth.getCredentials(signal);
+  // Bound the wait even when a credential source does not observe cancellation.
+  const initial = await abortable(auth.getCredentials(signal), signal).catch((): Result<C, ProxyError> =>
+    ({ ok: false, error: { kind: "upstream", status: 500, message: `${name} credential load failed` } }));
+  if (res.destroyed || res.writableEnded) return;
+  if (signal.aborted) {
+    replyError({ kind: "timeout", message: `${name} request timed out` });
+    return;
+  }
   if (!initial.ok) {
     replyError(initial.error);
     return;
