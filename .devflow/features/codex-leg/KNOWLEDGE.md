@@ -1,11 +1,11 @@
 ---
 feature: codex-leg
 name: Codex translation leg (gpt-* → /responses)
-description: "Use when modifying Codex request translation, model alias resolution, session/cache key derivation, protocol headers, reasoning round-trips, count_tokens estimation, ambiguous-model routing policy, timeout asymmetry, or the codex-recorder dev tool. Keywords: codex, gpt, responses, conversation key, session_id, prompt_cache_key, reasoning, effort, translation, routing table, alias, family, canonical, buildRoutingTable, resolveModel, ModelResolution, buildHeaders, CodexTransportConstants, maxAggregateBytes, forceRefresh, count_tokens, estimateTokens, ambiguous_model_name, IngestError, readBodyForRouting, sniffLeadingModel, maxBufferedBodyBytes, bodyMode, anthropic:streamed, ADR-010, streamIdleTimeoutMs, astra, reasoningEfforts, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, unknownReasoningEfforts, buildOpenaiModelNamePredicate, createCodexRecorderServer, MAX_SSE_BUFFER_CHARS, allowInsecureUpstream."
+description: "Use when modifying Codex request translation, model alias resolution, session/cache key derivation, protocol headers, reasoning round-trips, count_tokens estimation, ambiguous-model routing policy, timeout asymmetry, or the codex-recorder dev tool. Keywords: codex, gpt, responses, conversation key, session_id, prompt_cache_key, reasoning, effort, translation, routing table, alias, family, canonical, buildRoutingTable, resolveModel, ModelResolution, buildHeaders, CodexTransportConstants, maxAggregateBytes, forceRefresh, count_tokens, estimateTokens, ambiguous_model_name, IngestError, readBodyForRouting, sniffLeadingModel, maxBufferedBodyBytes, bodyMode, anthropic:streamed, ADR-010, streamIdleTimeoutMs, astra, reasoningEfforts, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, unknownReasoningEfforts, buildOpenaiModelNamePredicate, createCodexRecorderServer, MAX_SSE_BUFFER_CHARS, allowInsecureUpstream, together, together: pass-through, invalid_qualified, TOGETHER_MODELS, runTranslatedLeg, api-key credential, registerExactCredential."
 category: domain-knowledge
 directories: [src]
 created: 2026-07-22
-updated: 2026-09-14
+updated: 2026-11-19
 ---
 
 # Codex Translation Leg (gpt-* → /responses)
@@ -15,6 +15,8 @@ updated: 2026-09-14
 subswitch translates Anthropic Messages API requests into OpenAI Responses API calls against `https://chatgpt.com/backend-api/codex/responses`. Routing is decided by `resolveModel` (in `src/models.ts`) and `decideRoute` (in `src/router.ts`), with `MODEL_REGISTRY` as the sole source of routable models (applies ADR-006). Everything else passes through to the Anthropic leg unchanged.
 
 The pipeline has three stages: **resolve** in `server.ts`, **route** in `router.ts`, and **send**. `codex-handler.ts` translates the request. `translated-leg.ts` sends it and manages the response. The router accepts a typed `ModelResolution`, not a raw string.
+
+**Together leg.** `together-handler.ts` uses the same runner to send Chat Completions requests to `<baseUrl>/chat/completions`. Each provider accessor carries a credential kind: `oauth-file` (Codex) or `api-key` (Together). A static key gets one attempt, no limit key and `redirect: "error"`. The request signal bounds the credential wait, so a client close ends a pending key read and no upstream request goes out.
 
 **Governing principle (ADR-010):** a relay fronting an origin API must be indistinguishable from the origin. A bound that reclaims a provably dead connection is legitimate; a bound that can terminate a request the origin was about to answer, or emit a status the origin never sends, is a defect. This principle drove the removal of the byte-budget slot system and the **removal** (not deprecation) of the Anthropic-leg stream timeout.
 
@@ -58,9 +60,11 @@ Credential state is deliberately **not** an input to `buildRoutingTable`: gating
 
 1. **Exact id** in `byId` → `{ kind: "resolved" }`. Canonical ids ALWAYS win — no alias can hijack a real model id. Retired and preview models are routable here.
 2. **Alias** in `byAlias` → `{ kind: "resolved" }`. One hop only; Map built with `Object.hasOwn` at table-build time — prototype-pollution safe at request time.
-3. **Qualified** `"provider:id"` or `"provider:family"` in `byQualified` → `{ kind: "resolved" }` when the prefix is in `PROVIDER_IDS`. An unknown prefix returns `{ kind: "unknown_qualifier" }` so callers can distinguish "bad provider" from "bad model". A known prefix with an unknown id/family returns `{ kind: "unresolved" }`.
+3. **Qualified** `"provider:id"` or `"provider:family"` in `byQualified` → `{ kind: "resolved" }` when the prefix is in `PROVIDER_IDS`. An unknown prefix returns `{ kind: "unknown_qualifier" }` so callers can distinguish "bad provider" from "bad model". A known prefix with an unknown id/family returns `{ kind: "unresolved" }`. **Exception, the `together:` pass-through:** an unlisted id that passes the id grammar resolves to Together, and an id that fails it returns `{ kind: "invalid_qualified" }`. `server.ts` answers that with a marked local 400 (`x-subswitch-synthesized: 1`, "Invalid model id after the together: qualifier."), and no upstream gets the request. This is the only rule that accepts an arbitrary id. The id goes into the JSON body only, never into a URL or a header.
 4. **Family** in `byFamily` → unique claimant: `{ kind: "resolved" }`; contested: `{ kind: "ambiguous", name, providers }`.
 5. **Otherwise** → `{ kind: "unresolved" }`. Caller routes to Anthropic.
+
+**`TOGETHER_MODELS` (`src/together-models.ts`) is empty** until the model-id data commit. `MODEL_REGISTRY` appends its entries as provider `together`. Until that commit, only the `together:` pass-through routes to Together.
 
 **Retired models are in `byId` but not in `byFamily`.** An exact-id pin on a retired model keeps routing and receives a truthful upstream error; a bare family name never floats onto a retired model.
 
@@ -363,8 +367,12 @@ IncomingMessage (Anthropic wire)
 - `src/codex-auth.ts` — `CodexAuthManager`; all 7 auth events now table-derived via `events: ProviderEvents<"codex">`; `callTokenEndpoint` uses `AbortSignal.timeout(15_000)`; `forceRefresh()` 30s cooldown; `writeAtomic` self-heals EEXIST
 - `src/provider-events.ts` — `providerEvents<P>(id): ProviderEvents<P>`; 19-field table (11 handler/translator events + 1 insecureBaseUrlScheme + 7 auth events); compile-time log-injection control
 - `src/config.ts` — `providers.codex.streamIdleTimeoutMs` (default 300 s, live); `anthropic.streamIdleTimeoutMs` removed in 0.3.0 (ADR-010) — `removed`-kind row in `LEGACY_KEY_ENTRIES`, hard-errors on load; `anthropic.headerTimeoutMs` never shipped — rejected by `z.strictObject`, not in table; `LEGACY_KEY_ENTRIES` has a `moved` row for `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs`; `providers.codex.maxAggregateBytes` (64 MiB default); strict schemas via `z.strictObject`; `isLoopbackHost` (exact-form predicate, reused by `codex-recorder.ts`)
-- `src/errors.ts` — `ProxyError` union (auth/upstream/translate/timeout); `IngestError` is server-local (single variant `client_disconnected`, excluded from `ProxyError`); `AnthropicErrorType` includes `not_found_error`; `upstreamStatusToAnthropicError`; 504→timeout and 502→upstream are both intentional (ADR-010)
-- `src/agent-scan.ts` — `unknown_provider` severity is `"info"`; `ambiguous` severity is `"fail"`
+- `src/errors.ts` — `ProxyError` union (auth/upstream/translate/timeout); `IngestError` is server-local (single variant `client_disconnected`, excluded from `ProxyError`); `AnthropicErrorType` includes `not_found_error`; `upstreamStatusToAnthropicError`; 504→timeout and 502→upstream are both intentional (ADR-010); `registerExactCredential` receives the loaded Together key, and `toAnthropicErrorBody` replaces that exact value in every error body it renders
+- `src/agent-scan.ts` — `unknown_provider` severity is `"info"`; `ambiguous` severity is `"fail"`; `provider_unconfigured` is `"fail"` only for a provider in `keyRequiredProviders` (Together)
+- `src/together-auth.ts` — Key loader: `TOGETHER_API_KEY` first, then on macOS only the Keychain item "Subswitch Together API key" (account `subswitch`) through `/usr/bin/security` with execFile, a 10 s timeout, an 8 KiB buffer and a HOME-only env. One shared read; a failed read is not kept. A missing or malformed key gives a marked local 401 that names the env var and the Keychain item, with no upstream request and no Anthropic fallback. The value is never echoed.
+- `src/together-handler.ts` — Together leg on the runner: outbound headers from an allow-list (Bearer key, content-type, accept, fixed user-agent); fixed error text with a strict code; 402 balance text; `x-should-retry: false` on 504, 524 and the runner timeout; local count_tokens estimate
+- `src/together-request.ts`, `src/together-response.ts` — Body allow-list with `max_tokens` clamped to the output cap (default 16384, user config only); stream translator with per-response tool ids
+- `src/run-action.ts` — Deletes `TOGETHER_API_KEY` from its copy of the parent env before the spawn
 - `test/tools/` — `sse-parser.bench.ts` (the only guard against an SSE-parser perf regression)
 - `test/fixtures/sse-splits.golden.json` — Frame-boundary pin for `createSseParser`; 66,039 splits asserted
 - `e2e/capture/codex-recorder.ts` — Dev-only transparent wire-capture forwarder; `createCodexRecorderServer` factory (import-safe; upstream vetted at construction per ADR-009); the PF-013 headerless-SSE capture defect is **fixed**; capture bounded by `MAX_SSE_BUFFER_CHARS` (4 MiB) while forwarding never is (ADR-010/ADR-012)

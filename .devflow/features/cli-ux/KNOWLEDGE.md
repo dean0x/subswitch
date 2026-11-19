@@ -1,11 +1,11 @@
 ---
 feature: cli-ux
 name: CLI / init command / terminal UX
-description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, log event names, config load and provider config resolution, the models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, providerEvents, provider-events, log injection, FIELD_KEYS, renderToken, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, buildDeps, ProviderConfigs, PROVIDER_SCHEMAS, PROVIDER_RESOLVERS, detectUnknownProviderKeys, detectLegacyConfigKeys, LEGACY_KEY_ENTRIES, renderLegacyKeyEntry, credentialUsable, providersWithCredentials, enumerateDestinations, RoutingDestination, isLoopbackHost, isLoopbackHostname, strictObject, oauthTokenUrl, PROVIDER_AUTH_INSPECTORS, plain-object, SERVER_TUNING, applyInboundPolicy, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, drainRejectedUpload, hostGateVerdict, responseForClientError, client_disconnected, respondJson, anthropic:ambiguous, anthropic:fallback, maxBufferedBodyBytes, readBodyForRouting, IngestError, bodyMode, anthropic:streamed, sniffLeadingModel, ADR-010, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, registry_entry_unknown_effort, buildOpenaiModelNamePredicate, isReservedAnthropicName, ANTHROPIC_NAME_RE, routableModelCount, retired, gpt-6-sol, gpt-6-luna, fable, best, isClaudeModelName, codex-doctor."
+description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, log event names, config load and provider config resolution, the models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, providerEvents, provider-events, log injection, FIELD_KEYS, renderToken, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, buildDeps, ProviderConfigs, PROVIDER_SCHEMAS, PROVIDER_RESOLVERS, detectUnknownProviderKeys, detectLegacyConfigKeys, LEGACY_KEY_ENTRIES, renderLegacyKeyEntry, credentialUsable, providersWithCredentials, enumerateDestinations, RoutingDestination, isLoopbackHost, isLoopbackHostname, strictObject, oauthTokenUrl, PROVIDER_AUTH_INSPECTORS, plain-object, SERVER_TUNING, applyInboundPolicy, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, drainRejectedUpload, hostGateVerdict, responseForClientError, client_disconnected, respondJson, anthropic:ambiguous, anthropic:fallback, maxBufferedBodyBytes, readBodyForRouting, IngestError, bodyMode, anthropic:streamed, sniffLeadingModel, ADR-010, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, registry_entry_unknown_effort, buildOpenaiModelNamePredicate, isReservedAnthropicName, ANTHROPIC_NAME_RE, routableModelCount, retired, gpt-6-sol, gpt-6-luna, fable, best, isClaudeModelName, codex-doctor, together, keyRequiredProviders, togetherKeyHintFor, together: pass-through, CredentialKindTable, withCredential, keySource."
 category: architecture
 directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/codex-doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts, src/provider-transport.ts]
 created: 2026-07-23
-updated: 2026-09-27
+updated: 2026-11-19
 ---
 
 # CLI / init command / terminal UX
@@ -29,7 +29,8 @@ subswitch [command] [flags]
   serve     (default) — start the MITM proxy
   doctor    — preflight health checks; exits non-zero on any failure
   init      — interactive or non-interactive first-time setup
-  models    — show effective alias table (registry × aliases)
+  models    — show effective alias table (registry × aliases), then the
+              together:<model-id> pass-through line with the output cap
               --json  Output model registry as JSON (no color, no TTY check)
 ```
 
@@ -138,7 +139,7 @@ Per-command flag validation walks `parseArgs` **tokens**, not `values`. The main
 **Dispatch order in the request handler:**
 
 1. `res.on("close", …)` listener registered first — must be the earliest hook.
-2. `hostGateVerdict(req.headers)` — foreign Host → 403 + `drainRejectedUpload(req)` + return.
+2. `hostGateVerdict(req.headers)` — foreign Host → 403 + `drainRejectedUpload(req)` + return. This also covers Together requests: a foreign Host or Origin gets the 403 before the key load.
 3. `/__subswitch/*` namespace — handled locally, never forwarded.
 4. `readBodyForRouting(req, limits.maxBufferedBodyBytes)` — reads up to the window. Returns discriminated `IngestedBody`: `complete` (body fits) or `over_window` (body exceeded cap, prefix held). `IngestError` has one variant: `client_disconnected`.
 5. Exhaustive `IngestError` switch:
@@ -163,6 +164,8 @@ Per-command flag validation walks `parseArgs` **tokens**, not `values`. The main
 
 **`IngestError`** (module-local type, `server.ts`): `{ kind: "client_disconnected"; message: string }`. Single variant — `body_too_large` was removed; over-window Anthropic bodies are streamed, not rejected. Intentionally excluded from `ProxyError` so `proxyErrorToAnthropic` can never be called with it — any attempt is a compile error.
 
+**Together wiring.** The startup host check vets `providers.together.baseUrl`. It accepts the default `https://api.together.ai/v1` and loopback. It accepts `api-inference.together.ai` or `us-api.together.ai` only with `providers.together.allowInsecureBaseUrl: true`, and it refuses every other host (`api.together.xyz` too). A refused host stops the startup. Config load already refuses a Together URL with userinfo, a query or a fragment. The whole `providers.together` block loads only from the user config or SUBSWITCH_CONFIG. The health arm reports `configured` and `keySource: "env" | null` from `envKeyPresent(env)` and never runs the Keychain tool. A source-text guard keeps every read of the key env var in `src/together-auth.ts`. It also refuses a computed env index and any use of the exported name constant outside three named uses (the run-action deletion and the provider accessor data).
+
 **Byte-budget admission gate is GONE.** The old `inFlightBytes`, `queue`, `acquireSlot`, `drainQueue`, `releaseSlot`, `getReservationBytes`, `SlotError`, `QueueEntry`, and the synthesized 529/`rate_limited`/`disconnected_while_queued` labels were all removed as ADR-010 violations.
 
 **Ambiguous model routing fails open (ADR-010).** When `resolveModel` returns `"ambiguous"`, the relay logs `warn ambiguous_model_name` and forwards to Anthropic unchanged — it does not synthesize a 400.
@@ -180,7 +183,7 @@ Per-command flag validation walks `parseArgs` **tokens**, not `values`. The main
 
 ### src/errors.ts
 
-`ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed — upstream 5xx incl. 529 → `api_error`); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` exported as single chokepoint for `x-subswitch-synthesized`; `redactCredentials` inside `toAnthropicErrorBody` (ADR-008).
+`ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed — upstream 5xx incl. 529 → `api_error`); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` exported as single chokepoint for `x-subswitch-synthesized`; `redactCredentials` inside `toAnthropicErrorBody` (ADR-008). The same render site also replaces each exact value in a bounded set; `server.ts` registers the loaded Together key there through `registerExactCredential`.
 
 ### src/init.ts — Functional-core / imperative-shell
 
@@ -190,7 +193,7 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 
 **Effectful execution layer:** `executeInit(options, deps, projectDir)` returns `Result<readonly [configPath, settingsPath], InitError>`. Write order is config-first. All reads happen before any write.
 
-**Wizard:** prompts only for port and settings-target. `makeClackPrompts()` lazy-imports `@clack/prompts` via dynamic `import()` — called only when entering the interactive path.
+**Wizard:** prompts only for port and settings-target. `makeClackPrompts()` lazy-imports `@clack/prompts` via dynamic `import()` — called only when entering the interactive path. Neither init path asks for, prints or writes the Together key.
 
 ### src/doctor.ts — Preflight gate
 
@@ -203,9 +206,16 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 - Provider present but credential missing/broken → failure.
 - Credential file exists but does not parse → failure regardless of opt-in.
 
+**Together (`api-key` kind).** Doctor reads the key once per run through the injected reader (env first, then the Keychain on macOS). It never prints the value.
+- Key found → `OK (env)` or `OK (keychain)`.
+- No usable key and no `providers.together` block → `unconfigured` (informational).
+- No usable key with a block → `UNAVAILABLE` (failure). A malformed key adds `(key is malformed)`.
+- An agent pin that resolves to Together with no key → `agent model: FAIL` (see agent-scan).
+- The hint comes from `togetherKeyHintFor(platform)`: on macOS it names the env var and the Keychain item; elsewhere it says "environment variable only on this platform".
+
 ### src/agent-scan.ts — Agent frontmatter scanner
 
-`parseFrontmatterModel(text)` hand-rolled, no YAML dependency. `checkAgentModels(files, table, configuredProviders)` maps to six finding kinds (`retired` among them, severity `"info"`).
+`parseFrontmatterModel(text)` hand-rolled, no YAML dependency. `checkAgentModels(files, table, configuredProviders, registry, keyRequiredProviders)` maps to six finding kinds (`retired` among them, severity `"info"`). `provider_unconfigured` is `"info"`, except for a provider in `keyRequiredProviders`: doctor fills that set from the credential kind table (`api-key` only), because a pin is the explicit opt-in to a paid key. A malformed `together:` pin is `unresolvable` (`"fail"`).
 
 **`unknown_provider` is now severity `"info"`, not `"fail"` (ADR-010).** An unknown qualifier does not make the request fail — subswitch forwards it to Anthropic unchanged. By contrast `ambiguous` stays `"fail"` because that conflict is subswitch-derived and WILL produce a routing error.
 
