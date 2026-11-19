@@ -150,8 +150,10 @@ the project's exact-form `isLoopbackHost` predicate from `src/config.ts`, so
 
 ### Routing subswitch through the recorder
 
-Edit (or create) `subswitch.config.json` and set `providers.codex.baseUrl` to point
-at the recorder instead of directly to Codex:
+Edit (or create) the user config (`~/.config/subswitch/config.json`) or a file that
+you select with `SUBSWITCH_CONFIG`. Set `providers.codex.baseUrl` to point at the
+recorder instead of directly to Codex. A project `subswitch.config.json` can not set
+this key:
 
 ```json
 {

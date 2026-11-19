@@ -219,6 +219,9 @@ If you prefer to configure manually instead of using `init`:
 Optionally create `subswitch.config.json` in your project root for custom port or
 model selection (all fields optional — see
 [`subswitch.config.example.json`](subswitch.config.example.json)).
+A project file can not set sign-in addresses, credential files or `allowInsecureBaseUrl`
+opt-ins. The example file also lists these keys. Set them in the user config (see
+[Configuration](#configuration)).
 
 ### Run from source
 
@@ -399,10 +402,12 @@ Codex setup changes only the user-level `openai_base_url` value, preserving othe
 TOML settings and comments. It writes SubSwitch's user config to
 `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`).
 Permitted project settings merge over this fallback; explicit `SUBSWITCH_CONFIG`
-remains authoritative. Profiles and routes require the user file or an explicit file.
+remains authoritative. Profiles, routes, sign-in addresses, credential files and
+`allowInsecureBaseUrl` opt-ins require the user file or an explicit file.
 Start the proxy before launching Codex. Existing custom
 providers are not replaced. A custom upstream is preserved only when it is loopback or
-you have explicitly set `codexIngress.allowInsecureBaseUrl: true` in the SubSwitch config.
+you have explicitly set `codexIngress.allowInsecureBaseUrl: true` in the SubSwitch user
+config or the `SUBSWITCH_CONFIG` file.
 Setup names an unapproved host and stops before writing files.
 
 Set the model in a native Codex role file, for example `~/.codex/claude-worker.toml`:
@@ -467,6 +472,8 @@ The reverse path uses the existing Claude Keychain/file credential store and
 refreshes it when needed. `codexIngress.claude.configDir` selects a native Claude
 configuration directory; if omitted, `CLAUDE_CONFIG_DIR` and then the native default
 apply. `codexIngress.claude.authFile` explicitly selects a file-backed store.
+Set these two keys in the user config or in a file selected with `SUBSWITCH_CONFIG`.
+A project `subswitch.config.json` can not set them.
 Automatic prompt caching is enabled, with cached-token counts and a short hashed
 native thread identifier available in logs. If native Codex omits its bearer token on the local
 endpoint, SubSwitch uses its existing Codex credential manager only when the
@@ -524,15 +531,17 @@ These two effort sets are not live-verified.
 
 ## Configuration
 
-Optional configuration goes in `subswitch.config.json` (gitignored). See
-[`subswitch.config.example.json`](subswitch.config.example.json) for every knob and its
-default.
+Optional configuration goes in the user config or in a project `subswitch.config.json`
+(gitignored). See [`subswitch.config.example.json`](subswitch.config.example.json) for
+every knob and its default. Some keys in the example load only from the user config or
+an explicit file. The list follows below.
 
 The config file is located by the following precedence (highest wins):
 
 1. `SUBSWITCH_CONFIG` env var — absolute or `~`-relative path; **missing file is an error**
 2. Permitted settings from `subswitch.config.json` in the current directory, merged over the user fallback
-3. `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`), then built-in defaults
+3. `$XDG_CONFIG_HOME/subswitch/config.json` (default `~/.config/subswitch/config.json`), then built-in defaults.
+   SubSwitch uses `XDG_CONFIG_HOME` only when it is an absolute path. A relative or empty value is ignored.
 
 An explicit `SUBSWITCH_CONFIG` file is authoritative and is not merged with the user fallback.
 Explicit config paths passed by callers of `loadConfig` also bypass the merge.
@@ -545,6 +554,18 @@ A project file that declares any of these keys fails with an error, even for an 
 Move those keys to the user file, or select the file with `SUBSWITCH_CONFIG`.
 Use `configVersion: 2` for explicit profiles and routes.
 The [Wave 1 example](subswitch.wave1.example.json) shows their format.
+
+Sign-in addresses, credential files and the `allowInsecureBaseUrl` opt-ins also load
+only from the user configuration or an explicit file. These keys are
+`anthropic.baseUrl`, `providers.codex.baseUrl`, `providers.codex.oauthTokenUrl`,
+`providers.codex.authFile`, `codexIngress.subscriptionBaseUrl`,
+`codexIngress.apiBaseUrl`, `codexIngress.claude.baseUrl`,
+`codexIngress.claude.oauthTokenUrl`, `codexIngress.claude.authFile`,
+`codexIngress.claude.configDir`, and `allowInsecureBaseUrl` in `anthropic`,
+`providers.codex`, `codexIngress` and `codexIngress.claude`. A project file that sets
+one of these keys fails with an error that names the key. Set the key in the user file,
+or select the file with `SUBSWITCH_CONFIG`.
+The example file lists these keys, so do not copy all of it into a project file.
 
 Other project settings retain their merge behavior, except the `run-action` port.
 `run-action` uses the user or explicit file's port, then the built-in default.

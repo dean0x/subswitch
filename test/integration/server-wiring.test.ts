@@ -163,6 +163,7 @@ describe("buildDeps — SEC-04 host-rejection gate (providers.codex.baseUrl)", (
     assert.match(result.error, /providers\.codex\.baseUrl/, "error message must name the config key");
     assert.match(result.error, /evil\.example/, "error message must name the offending host");
     assert.match(result.error, /allowInsecureBaseUrl/, "error message must name the opt-in key");
+    assert.match(result.error, /user configuration.*SUBSWITCH_CONFIG/, "error message must say where the opt-in can go");
     const errorLine = lines.find((line) => line.includes("codex_base_url_host_rejected"));
     assert.ok(errorLine !== undefined, `expected codex_base_url_host_rejected event; got: ${lines.join(" | ")}`);
     assert.match(errorLine, /level=error/);
@@ -391,6 +392,7 @@ describe("buildDeps — SEC-04 host-rejection gate (anthropic.baseUrl)", () => {
     assert.match(result.error, /anthropic\.baseUrl/, "error message must name the config key");
     assert.match(result.error, /evil\.example/, "error message must name the offending host");
     assert.match(result.error, /allowInsecureBaseUrl/, "error message must name the opt-in key");
+    assert.match(result.error, /user configuration.*SUBSWITCH_CONFIG/, "error message must say where the opt-in can go");
     const errorLine = lines.find((line) => line.includes("anthropic_base_url_host_rejected"));
     assert.ok(errorLine !== undefined, `expected anthropic_base_url_host_rejected event; got: ${lines.join(" | ")}`);
     assert.match(errorLine, /level=error/);
