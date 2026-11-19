@@ -1,7 +1,7 @@
 ---
 feature: cli-ux
 name: CLI / init command / terminal UX
-description: "Use when modifying the CLI entry point, init wizard, doctor preflight command, logger output format, log event names, config load and provider config resolution, the models alias table, or any terminal UX concern (colors, TTY detection, FORCE_COLOR, dry-run, CI safety). Keywords: cli, parseArgs, CliCommand, init, doctor, models, logger, providerEvents, provider-events, log injection, FIELD_KEYS, renderToken, clack, picocolors, TTY, NO_COLOR, FORCE_COLOR, interactive, non-interactive, dry-run, smoke-tarball, tty.ts, models.ts, agent-scan, buildRoutingTable, buildDeps, ProviderConfigs, PROVIDER_SCHEMAS, PROVIDER_RESOLVERS, detectUnknownProviderKeys, detectLegacyConfigKeys, LEGACY_KEY_ENTRIES, renderLegacyKeyEntry, credentialUsable, providersWithCredentials, enumerateDestinations, RoutingDestination, isLoopbackHost, isLoopbackHostname, strictObject, oauthTokenUrl, PROVIDER_AUTH_INSPECTORS, plain-object, SERVER_TUNING, applyInboundPolicy, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, drainRejectedUpload, hostGateVerdict, responseForClientError, client_disconnected, respondJson, anthropic:ambiguous, anthropic:fallback, maxBufferedBodyBytes, readBodyForRouting, IngestError, bodyMode, anthropic:streamed, sniffLeadingModel, ADR-010, DEFAULT_REASONING_EFFORTS, reasoningEffortsForModel, registry_entry_unknown_effort, buildOpenaiModelNamePredicate, isReservedAnthropicName, ANTHROPIC_NAME_RE, routableModelCount, retired, gpt-6-sol, gpt-6-luna, fable, best, isClaudeModelName, codex-doctor, together, keyRequiredProviders, togetherKeyHintFor, together: pass-through, CredentialKindTable, withCredential, keySource."
+description: "Use when changing the CLI, init wizard, doctor, logger output, log event names, config load, the models table or terminal UX (TTY, colors, dry-run). Keywords: cli, doctor, logger, providerEvents, agent-scan, config."
 category: architecture
 directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/codex-doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts, src/provider-transport.ts]
 created: 2026-07-23
@@ -9,6 +9,11 @@ updated: 2026-11-19
 ---
 
 # CLI / init command / terminal UX
+
+## Rules
+- **KB-INV-1** A new provider log event goes into the `ProviderEvents<P>` type and the `scopedEvents` table in `src/provider-events.ts`; the type pins the table, so do not quote a field count.
+- **KB-INV-2** `subswitch doctor` lists a Together agent pin only when no usable key is found; with a key, a workspace `together:` pin routes to Together and spends the user's balance.
+- The Rules list starts with this refresh. Older rules stay in `## Anti-Patterns` and `## Gotchas` below.
 
 ## Overview
 
@@ -89,7 +94,7 @@ Both walk with `Object.hasOwn` only, through the shared `isPlainObject` predicat
 
 ### src/provider-events.ts — Compile-time-safe log event names
 
-`providerEvents<P extends ProviderId>(providerId: P): ProviderEvents<P>` derives **19** provider-scoped log event names from a provider id using template-literal types. This is a security control: a config-supplied `string` containing `"\n"` is a COMPILE error at the call site — only a closed `ProviderId` union member can reach the derivation.
+`providerEvents<P extends ProviderId>(providerId: P): ProviderEvents<P>` derives the provider-scoped log event names from a provider id using template-literal types. The `ProviderEvents<P>` type pins the field set. The set includes `credentialLoadFailed` (`<provider>_credential_load_failed`), which the shared runner in `src/translated-leg.ts` logs with `model` and `errorCode` (the cause name) only. This is a security control: a config-supplied `string` containing `"\n"` is a COMPILE error at the call site — only a closed `ProviderId` union member can reach the derivation.
 
 ### src/models.ts — Pure model registry (no repo imports)
 
@@ -210,7 +215,7 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 - Key found → `OK (env)` or `OK (keychain)`.
 - No usable key and no `providers.together` block → `unconfigured` (informational).
 - No usable key with a block → `UNAVAILABLE` (failure). A malformed key adds `(key is malformed)`.
-- An agent pin that resolves to Together with no key → `agent model: FAIL` (see agent-scan).
+- An agent pin that resolves to Together with no key → `agent model: FAIL` (see agent-scan). With a usable key, doctor does not list the pin. A project `.claude/agents/*.md` file or a project Claude Code setting can name a `together:` model, so README and SECURITY.md tell users to check a cloned repository.
 - The hint comes from `togetherKeyHintFor(platform)`: on macOS it names the env var and the Keychain item; elsewhere it says "environment variable only on this platform".
 
 ### src/agent-scan.ts — Agent frontmatter scanner
@@ -324,7 +329,7 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 - `src/tty.ts` — `resolveColorEnabled(env, isTTY)` — single color-enable source of truth
 - `src/cli.ts` — Binary entry point; `parseCliArgs` → `CliCommand` union; exhaustive switch with `never` guard
 - `src/config.ts` — `FileConfig`/`Config` split; `z.strictObject` for all top-level sub-schemas; `isLoopbackHost` (exported, strict dotted-quad + localhost + ::1 only); https-or-loopback refinements; `LEGACY_KEY_ENTRIES` + `detectLegacyConfigKeys` — single hard-error mechanism; `resolveConfig` field-by-field; `enumerateDestinations` + `RoutingDestination`; totality anchors
-- `src/provider-events.ts` — `providerEvents<P extends ProviderId>`; template-literal `ProviderEvents<P>`; 19-field table; compile-time log-injection control
+- `src/provider-events.ts` — `providerEvents<P extends ProviderId>`; template-literal `ProviderEvents<P>`; one event table that the type pins; compile-time log-injection control
 - `src/logger.ts` — `createConsoleLogger`; `FIELD_KEYS` bidirectional completeness check; `renderToken` strips all C0/DEL/C1 control characters then quotes — applied to values AND event token
 - `src/inbound-policy.ts` — `SERVER_TUNING` (exported); `applyInboundPolicy(server, logger)` (single entry point — applies tuning AND registers `clientError` handler); `appliedServers` WeakSet (idempotency guard); `hostGateVerdict(headers)` (pure, exported — wire-side Host/Origin gate); `responseForClientError(code)` (Object.hasOwn, prototype-safe); `writtenAtLastResponse` WeakMap (per-request reply guard, snapshots `socket.bytesWritten` at each response finish)
 - `src/server.ts` — `buildDeps(config, logger?)` — the one wiring site; `IngestError` (module-local, single variant `client_disconnected`); dispatch order: close listener → host gate → namespace → `readBodyForRouting` → exhaustive error switch → over-window routing → provider dispatch; `client_disconnected` log event for headerless close; `bodyMode` field (`buffered`/`streamed`); `anthropic:streamed`/`anthropic:streamed:unsniffed`/`anthropic:ambiguous`/`anthropic:fallback` route labels
@@ -356,7 +361,7 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 - PF-011: A green suite proves nothing until each control has been proven RED against the mutation it claims to catch.
 - PF-010: Zod strips unknown keys → a pre-restructure config parses clean while every setting silently reverts to defaults. `z.strictObject` now guards leaf sub-schemas; the raw pre-parse scans guard the outer structure.
 - PF-006: Doctor exits non-zero without live services; smoke uses `--version` not `doctor`; drives the `configuredProviders` severity split.
-- `.devflow/features/codex-leg/KNOWLEDGE.md` — Full model resolution contract, `buildHeaders`, `ProviderEvents<P>` 19-field table, and the Codex handler/translator/auth side.
+- `.devflow/features/codex-leg/KNOWLEDGE.md` — Full model resolution contract, `buildHeaders`, the `ProviderEvents<P>` table, the runner's credential fault log, the `run-action` child env filter for the Together key, and the Codex handler/translator/auth side.
 - `src/version.ts` — Source of `SUBSWITCH_VERSION` used by `--version`, doctor, `/__subswitch/health`, and `models --json`.
 
 ## Bidirectional ingress and configuration (2026-09-08)
