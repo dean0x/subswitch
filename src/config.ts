@@ -863,9 +863,10 @@ const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
 
 /**
  * Dotted keys that a project `subswitch.config.json` can not set: explicit profiles
- * and routes, every sign-in address, and every `allowInsecureBaseUrl` opt-in. Only the
- * user configuration or a file selected with SUBSWITCH_CONFIG sets them, so a file in
- * the current folder can not change where subswitch sends a sign-in.
+ * and routes, every sign-in address, every key that selects a credential file or
+ * folder, and every `allowInsecureBaseUrl` opt-in. Only the user configuration or a
+ * file selected with SUBSWITCH_CONFIG sets them, so a file in the current folder can
+ * not change where subswitch sends a sign-in or which credential it loads.
  *
  * Matched with `hasOwnPath`, so an inherited key can not forge or hide a match.
  * Provider keys come from PROVIDER_IDS: a new provider with these key names is
@@ -879,6 +880,7 @@ const PROJECT_REFUSED_KEYS: readonly string[] = [
   ...PROVIDER_IDS.flatMap(id => [
     `providers.${id}.baseUrl`,
     `providers.${id}.oauthTokenUrl`,
+    `providers.${id}.authFile`,
     `providers.${id}.allowInsecureBaseUrl`,
   ]),
   "codexIngress.subscriptionBaseUrl",
@@ -886,6 +888,8 @@ const PROJECT_REFUSED_KEYS: readonly string[] = [
   "codexIngress.allowInsecureBaseUrl",
   "codexIngress.claude.baseUrl",
   "codexIngress.claude.oauthTokenUrl",
+  "codexIngress.claude.authFile",
+  "codexIngress.claude.configDir",
   "codexIngress.claude.allowInsecureBaseUrl",
 ];
 
@@ -897,8 +901,9 @@ const PROJECT_REFUSED_KEYS: readonly string[] = [
  *   2. `SUBSWITCH_CONFIG` env var (tilde-expanded)
  *   3. implicit user config merged under `<cwd>/subswitch.config.json` (permitted project fields win)
  *
- * Profiles, routes, sign-in addresses and their `allowInsecureBaseUrl` opt-ins
- * (PROJECT_REFUSED_KEYS) require a user or explicit config. Project files that declare
+ * Profiles, routes, sign-in addresses, credential file and folder keys, and the
+ * `allowInsecureBaseUrl` opt-ins (PROJECT_REFUSED_KEYS) require a user or explicit
+ * config. Project files that declare
  * any of these keys fail before the merge, even for empty values.
  * With allowProjectPort false, the project port does not participate in the merge.
  * Only implicit user/project files silently fall back to defaults on ENOENT.

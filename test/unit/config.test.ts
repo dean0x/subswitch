@@ -1149,13 +1149,13 @@ describe("isLoopbackHost — exact loopback forms only (ADR-009, PF-011)", () =>
   });
 });
 
-describe("a project config can not change sign-in addresses", () => {
+describe("a project config can not change sign-in addresses or credential files", () => {
   const projectPath = "/fixture/project/subswitch.config.json";
   const userPath = "/fixture/home/.config/subswitch/config.json";
   const explicitPath = "/fixture/selected/subswitch.json";
   type Entry = readonly [path: string, value: (host: string) => string | boolean];
   const optIn = (): boolean => true;
-  const signInKeyGroups: readonly { readonly group: string; readonly entries: readonly Entry[] }[] = [
+  const refusedKeyGroups: readonly { readonly group: string; readonly entries: readonly Entry[] }[] = [
     { group: "anthropic", entries: [
       ["anthropic.baseUrl", host => `https://${host}`],
       ["anthropic.allowInsecureBaseUrl", optIn],
@@ -1163,6 +1163,7 @@ describe("a project config can not change sign-in addresses", () => {
     { group: "providers.codex", entries: [
       ["providers.codex.baseUrl", host => `https://${host}/backend-api/codex`],
       ["providers.codex.oauthTokenUrl", host => `https://${host}/oauth/token`],
+      ["providers.codex.authFile", host => `/fixture/${host}/codex/auth.json`],
       ["providers.codex.allowInsecureBaseUrl", optIn],
     ] },
     { group: "codexIngress", entries: [
@@ -1173,10 +1174,12 @@ describe("a project config can not change sign-in addresses", () => {
     { group: "codexIngress.claude", entries: [
       ["codexIngress.claude.baseUrl", host => `https://${host}`],
       ["codexIngress.claude.oauthTokenUrl", host => `https://${host}/v1/oauth/token`],
+      ["codexIngress.claude.authFile", host => `/fixture/${host}/claude/.credentials.json`],
+      ["codexIngress.claude.configDir", host => `/fixture/${host}/claude`],
       ["codexIngress.claude.allowInsecureBaseUrl", optIn],
     ] },
   ];
-  const everyEntry = signInKeyGroups.flatMap(group => group.entries);
+  const everyEntry = refusedKeyGroups.flatMap(group => group.entries);
 
   /** Builds a config object that sets each dotted path to its value for `host`. */
   const fileWith = (entries: readonly Entry[], host: string): Record<string, unknown> => {
@@ -1198,8 +1201,8 @@ describe("a project config can not change sign-in addresses", () => {
       ...options,
     });
 
-  for (const { group, entries } of signInKeyGroups) {
-    describe(`${group} sign-in keys`, () => {
+  for (const { group, entries } of refusedKeyGroups) {
+    describe(`${group} refused keys`, () => {
       for (const entry of entries) {
         it(`refuses ${entry[0]} in a project config and names the key`, () => {
           const result = loadFiles({ [projectPath]: fileWith([entry], "relay.example") });
@@ -1215,13 +1218,13 @@ describe("a project config can not change sign-in addresses", () => {
     });
   }
 
-  it("names every refused sign-in key when a project config sets all of them", () => {
+  it("names every refused key when a project config sets all of them", () => {
     const result = loadFiles({ [projectPath]: fileWith(everyEntry, "relay.example") });
     assert.ok(!result.ok);
     for (const [path] of everyEntry) assert.ok(result.error.message.includes(path), `message must name ${path}`);
   });
 
-  it("accepts every sign-in key from the user config while project settings still merge", () => {
+  it("accepts every refused key from the user config while project settings still merge", () => {
     const result = loadFiles({
       [userPath]: fileWith(everyEntry, "user.example"),
       [projectPath]: {
@@ -1244,7 +1247,7 @@ describe("a project config can not change sign-in addresses", () => {
   });
 
   for (const selection of [{ env: { SUBSWITCH_CONFIG: explicitPath } }, { configPath: explicitPath }]) {
-    it(`accepts every sign-in key from the file selected with ${Object.keys(selection)[0]}`, () => {
+    it(`accepts every refused key from the file selected with ${Object.keys(selection)[0]}`, () => {
       const result = loadFiles({
         [userPath]: fileWith(everyEntry, "user.example"),
         [explicitPath]: fileWith(everyEntry, "selected.example"),
