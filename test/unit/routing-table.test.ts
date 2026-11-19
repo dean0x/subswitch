@@ -13,6 +13,7 @@ import {
   PROVIDER_IDS,
   buildRoutingTable,
   resolveModel,
+  type AliasesByProvider,
   type ModelEntry,
   type ProviderId,
   type ModelResolution,
@@ -52,8 +53,8 @@ const foreignEntry = (
   ...overrides,
 });
 
-/** A no-aliases record for the single current provider. */
-const NO_ALIASES: Record<ProviderId, Readonly<Record<string, string>>> = { together: {}, codex: {} };
+/** A no-aliases record for every provider. Many tests share it, so its type is readonly. */
+const NO_ALIASES: AliasesByProvider = { together: {}, codex: {} };
 
 /** Shorthand: build a table with just codex aliases. */
 const buildTable = (
@@ -380,22 +381,14 @@ describe("F13 — resolveModel is the sole resolution entry point", () => {
       entry("gpt-5.6-terra", { family: "terra", gen: [5, 6] }),
       entry("gpt-5.6-retired", { family: "retired-fam", gen: [5, 6], retired: true }),
     ];
-    const syntheticProviders = ["codex", "openai"] as const;
-    const aliasesByProvider = syntheticProviders.reduce(
-      (acc, p) => {
-        acc[p as ProviderId] = {};
-        return acc;
-      },
-      NO_ALIASES,
-    );
-    const { table } = buildRoutingTable(reg, aliasesByProvider);
+    const { table } = buildRoutingTable(reg, NO_ALIASES);
 
     // resolved — exact id
     const r1 = resolveModel(table, "gpt-5.6-sol");
     assert.equal(r1.kind, "resolved");
 
     // resolved — alias (add one to verify)
-    const aliasesByProvider2 = { ...aliasesByProvider, codex: { fast: "gpt-5.6-terra" } };
+    const aliasesByProvider2 = { ...NO_ALIASES, codex: { fast: "gpt-5.6-terra" } };
     const { table: t2 } = buildRoutingTable(reg, aliasesByProvider2);
     const r2 = resolveModel(t2, "fast");
     assert.equal(r2.kind, "resolved");
@@ -582,15 +575,7 @@ describe("Contested family — ambiguous resolution", () => {
       entry("gpt-5.6-sol", { family: "sol", gen: [5, 6] }),
       foreignEntry("gpt-5.6-sol-fp", "openai", { family: "sol", gen: [5, 6] }),
     ];
-    const syntheticProviders = ["codex", "openai"] as const;
-    const aliasesByProvider = syntheticProviders.reduce(
-      (acc, p) => {
-        acc[p as ProviderId] = {};
-        return acc;
-      },
-      NO_ALIASES,
-    );
-    const { table, ambiguousFamilies } = buildRoutingTable(reg, aliasesByProvider);
+    const { table, ambiguousFamilies } = buildRoutingTable(reg, NO_ALIASES);
 
     // Build result carries the ambiguous family diagnostic
     assert.equal(ambiguousFamilies.length, 1);
