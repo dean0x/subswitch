@@ -223,6 +223,8 @@ Controls, in this order:
 4. Load the key.
 5. Part 0 (free): read `GET /v1/models` once. Compute the worst case again at
    max(catalog price, live price), and refuse above the ceiling before any paid request.
+   A row with no numeric live price uses its catalog price. The report shows that row
+   with `live: null`.
 
 The probe writes its own `SUBSWITCH_CONFIG` temp file (mode 0600). The file sets the
 Together base URL to the relay and `outputCap` to 4096. The probe sends one request at a
@@ -235,6 +237,10 @@ redirect. It refuses each of these with a local 400, which Claude Code does not 
 - a paid request above the cap of its part (request 19 of 18 gets a refusal);
 - a body above the bound of its part;
 - a `max_tokens` value above the bound of its part, or no `max_tokens`;
+- a model that is not one of the six catalog rows;
+- an `n` value other than 1;
+- an image or other content part that is not text, in Part 1 or Part 2, and more than
+  one in a Part 3 request;
 - any other route, and a second model list.
 
 | Part | Requests | Body bound | max_tokens | Checks |

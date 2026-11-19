@@ -19,7 +19,7 @@ import { err, ok, type Result } from "../../src/result.js";
 import { childEnvWithoutTogetherKey } from "../../src/run-action.js";
 import { buildDeps, createProxyServer, listenServer, liveTogetherKeyReaderDeps } from "../../src/server.js";
 import { createTogetherKeyReader, type TogetherKeyReaderDeps } from "../../src/together-auth.js";
-import { TOGETHER_MODELS } from "../../src/together-models.js";
+import { TOGETHER_MODELS, type TogetherModel } from "../../src/together-models.js";
 import { CredentialUnavailable, probeHeaders } from "./credentials.js";
 import { isolatedNativeEnv, nativeProcess } from "./native-process.js";
 import { object } from "./probe.js";
@@ -29,7 +29,11 @@ export interface Price { readonly in: number; readonly out: number }
 export type PlanRefusal = "ci_refused" | "ack_missing" | "ack_invalid" | "above_ceiling";
 export interface RunPlan { readonly paidRequests: number; readonly ceilingUsd: number; readonly worstCaseUsd: number }
 
-interface PhaseBound { readonly requests: number; readonly maxTokens: number; readonly bodyBytes: number; readonly worstInputTokens: number }
+interface PhaseBound {
+  readonly requests: number; readonly maxTokens: number; readonly bodyBytes: number; readonly worstInputTokens: number;
+  /** Content parts that are not text (an image, for example). Their tokens are not body bytes. */
+  readonly nonTextParts: number;
+}
 const KIB = 1024;
 const PART1_MARGIN_BYTES = 64 * KIB;
 /** Assumed upper bound of the input tokens of one 8x8 image. The live run decides it. */
@@ -37,10 +41,12 @@ const IMAGE_TOKENS = 4_096;
 // Body bytes count as input tokens: a token holds at least one byte. Part 1 bodies after the
 // first may grow to the first size plus the margin, so its worst case uses 128 KiB + 64 KiB.
 const PHASES: Readonly<Record<Part, PhaseBound>> = {
-  1: { requests: 4, maxTokens: 4_096, bodyBytes: 128 * KIB, worstInputTokens: 128 * KIB + PART1_MARGIN_BYTES },
-  2: { requests: 8, maxTokens: 2_048, bodyBytes: 16 * KIB, worstInputTokens: 16 * KIB },
-  3: { requests: 6, maxTokens: 16, bodyBytes: 8 * KIB, worstInputTokens: 8 * KIB + IMAGE_TOKENS },
+  1: { requests: 4, maxTokens: 4_096, bodyBytes: 128 * KIB, worstInputTokens: 128 * KIB + PART1_MARGIN_BYTES, nonTextParts: 0 },
+  2: { requests: 8, maxTokens: 2_048, bodyBytes: 16 * KIB, worstInputTokens: 16 * KIB, nonTextParts: 0 },
+  3: { requests: 6, maxTokens: 16, bodyBytes: 8 * KIB, worstInputTokens: 8 * KIB + IMAGE_TOKENS, nonTextParts: 1 },
 };
+/** The worst case uses the highest price of these rows, so the relay forwards no other model. */
+const CATALOG_IDS: ReadonlySet<string> = new Set(TOGETHER_MODELS.map((model) => model.id));
 const PARTS: readonly Part[] = [1, 2, 3];
 const PAID_REQUESTS = PARTS.reduce((sum, part) => sum + PHASES[part].requests, 0);
 const BOUNDS = {
@@ -81,7 +87,7 @@ export const planRun = (env: Readonly<Record<string, string | undefined>>,
   return ok({ paidRequests: PAID_REQUESTS, ceilingUsd, worstCaseUsd: worst });
 };
 
-export type RelayRefusal = "route" | "no_part" | "request_cap" | "body_bound" | "max_tokens";
+export type RelayRefusal = "route" | "no_part" | "request_cap" | "body_bound" | "max_tokens" | "model" | "choices" | "content";
 export interface RelayRecord {
   /** 0 is the free model list before Part 1. */
   readonly phase: 0 | Part;
@@ -147,6 +153,17 @@ const jsonParse = (text: string): unknown => {
 };
 const jsonObject = (text: string): Record<string, unknown> | undefined => object(jsonParse(text));
 
+/** Count the content parts that are not text, in every message. A part of unknown shape counts too. */
+const nonTextParts = (body: Record<string, unknown> | undefined): number => {
+  let count = 0;
+  const messages = body?.["messages"];
+  for (const value of Array.isArray(messages) ? messages : []) {
+    const content = object(value)?.["content"];
+    for (const part of Array.isArray(content) ? content : []) if (object(part)?.["type"] !== "text") count++;
+  }
+  return count;
+};
+
 const requestFacts = (body: Record<string, unknown> | undefined) => {
   const fields = new Set<string>();
   let toolResults = 0;
@@ -194,7 +211,8 @@ const routeOf = (req: http.IncomingMessage): "models" | "chat" | undefined => {
 
 /**
  * Loopback relay in front of Together. It forwards one free model list before Part 1, then
- * at most the planned paid requests of each part, each under its body and max_tokens bound.
+ * at most the planned paid requests of each part, each under its body and max_tokens bound,
+ * for a catalog row, with one choice and with no more non-text parts than the part allows.
  * A refusal is a local 400 (Claude Code does not retry it). It never retries.
  */
 export const createCountingRelay = async (options: { readonly upstream: string; readonly timeoutMs?: number }):
@@ -218,7 +236,12 @@ export const createCountingRelay = async (options: { readonly upstream: string; 
     if (bytes > limit) return "body_bound";
     const maxTokens = body?.["max_tokens"];
     const bounded = typeof maxTokens === "number" && Number.isInteger(maxTokens) && maxTokens >= 1 && maxTokens <= bound.maxTokens;
-    return bounded ? undefined : "max_tokens";
+    if (!bounded) return "max_tokens";
+    // The worst case holds only for a catalog row, one choice per request and the planned images.
+    const model = body?.["model"];
+    if (typeof model !== "string" || !CATALOG_IDS.has(model)) return "model";
+    if (body !== undefined && Object.hasOwn(body, "n") && body["n"] !== 1) return "choices";
+    return nonTextParts(body) > bound.nonTextParts ? "content" : undefined;
   };
 
   const forward = async (req: http.IncomingMessage, res: http.ServerResponse, current: 0 | Part, raw: Buffer,
@@ -344,7 +367,7 @@ const finitePrice = (value: unknown): number | undefined =>
 /** Part 0 (free): the live price of each catalog row, in USD per 1M tokens. */
 const readLivePrices = async (relayUrl: string, key: string): Promise<Result<Map<string, Price>, "model_list_unavailable">> => {
   const response = await fetch(`${relayUrl}/v1/models`, { headers: { authorization: `Bearer ${key}`, accept: "application/json" },
-    signal: AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS) });
+    redirect: "error", signal: AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS) });
   const text = await readCapped(response, MAX_RESPONSE_BYTES);
   const parsed = text === undefined || response.status !== 200 ? undefined : jsonParse(text);
   const list = Array.isArray(parsed) ? parsed : object(parsed)?.["data"];
@@ -454,7 +477,8 @@ const runPart2 = async (relay: CountingRelay, proxyUrl: string, fabricatedProxyU
   const steps: object[] = [];
   const step = async (name: string, run: () => Promise<ClientResult>): Promise<ClientResult> => {
     const before = relay.records.length;
-    const result = await run();
+    // A failed step keeps the evidence of the other steps. It records a fixed code, never an error text.
+    const result = await run().catch((): ClientResult => ({ summary: { clientError: "request_failed" }, content: undefined }));
     await relay.settled();
     steps.push({ step: name, client: result.summary, relay: relay.records.slice(before) });
     return result;
@@ -494,27 +518,33 @@ const imageStatus = (status: number | null): "accepted" | "rejected" | "unknown"
 };
 
 /**
- * Part 3: one image request per row. Rows marked without images skip the proxy, which
- * would refuse the image itself, and go to the relay with a probe-built body.
+ * Send one 8x8 PNG to a row. A row marked without images skips the proxy, which would
+ * refuse the image itself, and goes to the relay with a probe-built body.
  */
+const sendImage = async (relayUrl: string, proxyUrl: string, key: string, model: TogetherModel): Promise<void> => {
+  if (model.images) {
+    await post(proxyUrl, { model: `together:${model.id}`, max_tokens: PHASES[3].maxTokens, stream: false, messages: [{ role: "user",
+      content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: PNG_8X8 } }, { type: "text", text: IMAGE_PROMPT }] }] });
+    return;
+  }
+  const response = await fetch(`${relayUrl}/v1/chat/completions`, { method: "POST", redirect: "error", signal: AbortSignal.timeout(CLIENT_TIMEOUT_MS),
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ model: model.id, max_tokens: PHASES[3].maxTokens, messages: [{ role: "user", content: [
+      { type: "image_url", image_url: { url: `data:image/png;base64,${PNG_8X8}` } }, { type: "text", text: IMAGE_PROMPT }] }] }) });
+  await readCapped(response, MAX_RESPONSE_BYTES);
+};
+
+/** Part 3: one image request per row. */
 const runPart3 = async (relay: CountingRelay, proxyUrl: string, key: string) => {
   const rows: object[] = [];
   for (const model of TOGETHER_MODELS) {
     const before = relay.records.length;
-    if (model.images) {
-      await post(proxyUrl, { model: `together:${model.id}`, max_tokens: PHASES[3].maxTokens, stream: false, messages: [{ role: "user",
-        content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: PNG_8X8 } }, { type: "text", text: IMAGE_PROMPT }] }] });
-    } else {
-      const response = await fetch(`${relay.url}/v1/chat/completions`, { method: "POST", signal: AbortSignal.timeout(CLIENT_TIMEOUT_MS),
-        headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({ model: model.id, max_tokens: PHASES[3].maxTokens, messages: [{ role: "user", content: [
-          { type: "image_url", image_url: { url: `data:image/png;base64,${PNG_8X8}` } }, { type: "text", text: IMAGE_PROMPT }] }] }) });
-      await readCapped(response, MAX_RESPONSE_BYTES);
-    }
+    // A failed row keeps the other rows. It records a fixed code, never an error text.
+    const clientError = await sendImage(relay.url, proxyUrl, key, model).then(() => null, () => "request_failed");
     await relay.settled();
     const status = relay.records.slice(before).find((entry) => entry.refused === null)?.status ?? null;
     rows.push({ id: model.id, route: model.images ? "subswitch" : "direct", catalogImages: model.images,
-      upstreamStatus: status, images: imageStatus(status) });
+      upstreamStatus: status, images: imageStatus(status), clientError });
   }
   return rows;
 };

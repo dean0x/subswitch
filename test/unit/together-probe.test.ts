@@ -13,7 +13,7 @@ const KEY_IN_REPORT = '{"success":false,"code":"key_in_report"}';
 
 /** A Chat Completions body of exactly `bytes` bytes (ASCII, so length is bytes). A null max_tokens omits the field. */
 const bodyOf = (bytes: number, maxTokens: number | null = 16, extra: object = {}): string => {
-  const base = JSON.stringify({ model: "m", ...(maxTokens === null ? {} : { max_tokens: maxTokens }), messages: [], ...extra, pad: "" });
+  const base = JSON.stringify({ model: KIMI, ...(maxTokens === null ? {} : { max_tokens: maxTokens }), messages: [], ...extra, pad: "" });
   return base.replace('"pad":""', `"pad":"${"x".repeat(bytes - base.length)}"`);
 };
 
@@ -161,6 +161,40 @@ describe("createCountingRelay", () => {
     assert.deepEqual([await send(bodyOf(200, 17)), await send(bodyOf(200, null)), await send("not json"),
       await send(bodyOf(200, 16))], [400, 400, 400, 200]);
     assert.equal(upstream.requests.length, 1);
+  });
+
+  it("refuses a model outside the catalog, more than one choice, and an image above the allowance of its part", async (t) => {
+    const { relay, send, upstream } = await relayFixture(t);
+    const image = { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } };
+    const withImages = (count: number) =>
+      ({ messages: [{ role: "user", content: [...Array.from({ length: count }, () => image), { type: "text", text: "q" }] }] });
+    relay.setPart(2);
+    assert.deepEqual([await send(bodyOf(300, 16, { model: "org/not-in-catalog" })), await send(bodyOf(300, 16, { n: 2 })),
+      await send(bodyOf(300, 16, withImages(1)))], [400, 400, 400]);
+    relay.setPart(3);
+    assert.deepEqual([await send(bodyOf(300, 16, withImages(2))), await send(bodyOf(300, 16, withImages(1))),
+      await send(bodyOf(300, 16, { n: 1 }))], [400, 200, 200]);
+    await relay.settled();
+    assert.equal(upstream.requests.length, 2);
+    assert.deepEqual(relay.records.map((entry) => entry.refused), ["model", "choices", "content", "content", null, null]);
+  });
+
+  it("does not follow an upstream redirect, so the key does not go to another host", async (t) => {
+    const other = await startFakeUpstream(okSse);
+    t.after(other.close);
+    // A follow turns a 301, 302 or 303 into a GET to the new location, so these codes catch a follow.
+    const redirects = [301, 302, 303, 307, 308];
+    const { relay, send } = await relayFixture(t, (_req, res, _body, index) => {
+      res.writeHead(redirects[index] ?? 500, { location: `${other.url}/v1/chat/completions` });
+      res.end();
+    });
+    relay.setPart(2);
+    const statuses: number[] = [];
+    for (let i = 0; i < redirects.length; i++) statuses.push(await send(bodyOf(100), { headers: { authorization: `Bearer ${KEY}` } }));
+    await relay.settled();
+    assert.deepEqual(statuses, redirects.map(() => 502));
+    assert.equal(other.requests.length, 0);
+    assert.deepEqual(relay.records.map((entry) => entry.status), redirects.map(() => null));
   });
 
   it("refuses another route, a second model list and a paid request before a part is set", async (t) => {
