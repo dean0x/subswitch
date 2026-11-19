@@ -3,10 +3,11 @@ import { readdir, readFile as fsReadFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
-import { aliasesByProvider, providerConfigFor, type Config, type CredentialKindTable } from "./config.js";
+import { aliasesByProvider, providerConfigFor, withCredential, type Config, type CredentialKindTable } from "./config.js";
 import { inspectAuthFile } from "./codex-auth.js";
 import { isPlainObject } from "./plain-object.js";
 import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
+import { createTogetherKeyReader, togetherKeyHint, type TogetherKeyReaderDeps } from "./together-auth.js";
 import { checkAgentModels } from "./agent-scan.js";
 
 // ---------------------------------------------------------------------------
@@ -19,11 +20,14 @@ import { checkAgentModels } from "./agent-scan.js";
 // provider.
 // ---------------------------------------------------------------------------
 
-type AuthInspector = typeof inspectAuthFile;
-
-export const PROVIDER_AUTH_INSPECTORS: Readonly<Record<ProviderId, AuthInspector>> = {
+export const PROVIDER_AUTH_INSPECTORS = {
   codex: inspectAuthFile,
-} as const;
+  together: async (deps: TogetherKeyReaderDeps | undefined) => {
+    if (deps === undefined) return { kind: "missing" } as const;
+    const result = await createTogetherKeyReader(deps).readKey(new AbortController().signal);
+    return result.ok ? { kind: "present", source: result.value.source } as const : { kind: result.error };
+  },
+} satisfies Record<ProviderId, unknown>;
 
 // ---------------------------------------------------------------------------
 // Discriminated-union result types
@@ -201,6 +205,7 @@ export const makeLiveReadTextFile = (): DoctorIO["readTextFile"] => async (path)
 export interface DoctorIO {
   readonly write: (line: string) => void;
   readonly readAuthFile: (path: string) => Promise<string>;
+  readonly togetherKeyReader?: TogetherKeyReaderDeps;
   readonly httpGet: (url: string) => Promise<HttpGetResult>;
   readonly tlsConnect: (host: string, port: number) => Promise<TlsStatus>;
   readonly color: boolean;
@@ -293,7 +298,7 @@ export const runDoctor = async (
 
         try {
           const raw = await io.readAuthFile(authFile);
-          const inspection = PROVIDER_AUTH_INSPECTORS[id](raw);
+          const inspection = PROVIDER_AUTH_INSPECTORS.codex(raw);
           if (!inspection.ok) {
             // A malformed credential file causes a failure even without a provider block.
             lines.push(row(`${id} auth:`, failStr(`INVALID (${inspection.error.message})`)));
@@ -323,8 +328,16 @@ export const runDoctor = async (
           return { lines, failed: true, credentialUsable: false };
         }
       },
+      "api-key": async () => {
+        const inspection = await PROVIDER_AUTH_INSPECTORS.together(io.togetherKeyReader);
+        const usable = inspection.kind === "present";
+        const failed = !usable && configuredProviderIds.has(id);
+        const text = inspection.kind === "present" ? passStr(inspection.source)
+          : `${failed ? failStr("UNAVAILABLE") : pc.dim("unconfigured")} (${togetherKeyHint})`;
+        return { lines: [row(`${id} auth:`, text)], failed, credentialUsable: usable };
+      },
     };
-    return checks[credential.kind](credential);
+    return withCredential(credential, checks);
   };
 
   // Run subswitch probe, anthropic TLS, per-provider TLS, and per-provider auth

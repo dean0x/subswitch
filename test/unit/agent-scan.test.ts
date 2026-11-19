@@ -117,7 +117,7 @@ describe("parseFrontmatterModel", () => {
 
 describe("checkAgentModels", () => {
   // Build a routing table from the real registry with no overrides.
-  const { table } = buildRoutingTable(MODEL_REGISTRY, { codex: {} });
+  const { table } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: {} });
   // All providers configured by default.
   const configuredProviders = new Set<string>(["codex"]);
   const noConfiguredProviders = new Set<string>();
@@ -187,7 +187,7 @@ describe("checkAgentModels", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-retired", provider: "codex", gen: [5, 0], retired: true },
     ];
-    const { table: regTable } = buildRoutingTable(reg, { codex: {} });
+    const { table: regTable } = buildRoutingTable(reg, { together: {}, codex: {} });
     const files = [{ path: "/agent.md", text: "---\nmodel: gpt-retired\n---\n" }];
     const findings = checkAgentModels(files, regTable, configuredProviders, reg);
     assert.equal(findings.length, 1);
@@ -208,7 +208,7 @@ describe("checkAgentModels", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-preview", provider: "codex", gen: [5, 7], preview: true },
     ];
-    const { table: regTable } = buildRoutingTable(reg, { codex: {} });
+    const { table: regTable } = buildRoutingTable(reg, { together: {}, codex: {} });
     const files = [{ path: "/agent.md", text: "---\nmodel: gpt-preview\n---\n" }];
     const findings = checkAgentModels(files, regTable, configuredProviders, reg);
     assert.equal(findings.length, 1);
@@ -349,7 +349,7 @@ describe("checkAgentModels", () => {
       label: "retired",
       findings: checkAgentModels(
         [{ path: "/agent.md", text: "---\nmodel: gpt-retired\n---\n" }],
-        buildRoutingTable(retiredReg, { codex: {} }).table,
+        buildRoutingTable(retiredReg, { together: {}, codex: {} }).table,
         configuredProviders,
         retiredReg,
       ),
@@ -364,7 +364,7 @@ describe("checkAgentModels", () => {
       label: "preview_only",
       findings: checkAgentModels(
         [{ path: "/agent.md", text: "---\nmodel: gpt-preview\n---\n" }],
-        buildRoutingTable(previewReg, { codex: {} }).table,
+        buildRoutingTable(previewReg, { together: {}, codex: {} }).table,
         configuredProviders,
         previewReg,
       ),

@@ -1,4 +1,5 @@
 import { describe, it } from "node:test";
+import { registerExactCredential } from "../../src/errors.js";
 import assert from "node:assert/strict";
 import {
   upstreamStatusToAnthropicError,
@@ -199,4 +200,12 @@ describe("toAnthropicErrorBody credential redaction", () => {
     // Surrounding context must be retained
     assert.ok(body.error.message.includes("upstream returned:"), "surrounding context must be preserved");
   });
+});
+
+it("redacts repeated bare occurrences of a registered credential in every error shape", () => {
+  const key = "FAKE-TOGETHER-KEY-$-[fixture]";
+  const message = `a ${key} b ${key} c`;
+  registerExactCredential(key);
+  assert.equal(JSON.parse(toAnthropicErrorBody("api_error", message)).error.message, "a <redacted> b <redacted> c");
+  assert.ok(!toAnthropicErrorSse("api_error", message).includes(key));
 });

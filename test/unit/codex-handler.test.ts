@@ -9,7 +9,7 @@ import { CodexAuthManager, type AuthFileStore } from "../../src/codex-auth.js";
 import type { ProviderAuth, ProviderCredential } from "../../src/provider-auth.js";
 import { providerEvents } from "../../src/provider-events.js";
 import { ok } from "../../src/result.js";
-import { loadConfig, providerConfigFor, type Config, type CodexProviderConfig } from "../../src/config.js";
+import { loadConfig, codexCredentialFor, type Config, type CodexProviderConfig } from "../../src/config.js";
 import type { ProviderId } from "../../src/models.js";
 
 /**
@@ -35,7 +35,7 @@ const codexDepsFrom = (config: Config) => ({
   providerId: "codex" as ProviderId,
   provider: config.providers.codex,
   pingIntervalMs: config.limits.pingIntervalMs,
-  loginCommand: providerConfigFor(config, "codex").loginCommand,
+  loginCommand: codexCredentialFor(config.providers.codex).loginCommand,
 });
 
 /**

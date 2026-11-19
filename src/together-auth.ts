@@ -1,3 +1,5 @@
+import type { ProviderAuth } from "./provider-auth.js";
+import type { ProxyError } from "./errors.js";
 import { abortable } from "./abortable.js";
 import { err, ok, type Result } from "./result.js";
 
@@ -20,6 +22,7 @@ interface KeychainExecOptions {
 export interface TogetherKeyReaderDeps {
   readonly env: Readonly<NodeJS.ProcessEnv>;
   readonly platform: NodeJS.Platform;
+  readonly onKeyLoaded?: (key: string) => void;
   /** Use execFile semantics: reject on any failed exit. */
   readonly exec: (file: string, args: string[], options: KeychainExecOptions) => Promise<{ stdout: string }>;
   /** Start a one-shot timer and return its cancel function. */
@@ -76,15 +79,21 @@ export const createTogetherKeyReader = (deps: TogetherKeyReaderDeps) => {
   let cached: TogetherKey | undefined;
   let pending: SharedRead | undefined;
 
+  const remember = (result: TogetherKeyResult): TogetherKeyResult => {
+    if (result.ok) {
+      deps.onKeyLoaded?.(result.value.key);
+      cached = result.value;
+    }
+    return result;
+  };
+
   const beginRead = (): SharedRead => {
     const controller = new AbortController();
     const result = runKeychain(deps, controller, true).then<TogetherKeyResult>((output) => {
       if (pending?.controller !== controller) return err("missing");
       pending = undefined;
       if (controller.signal.aborted || output === undefined) return err("missing");
-      const key = parseKey(output.stdout, "keychain");
-      if (key.ok) cached = key.value;
-      return key;
+      return remember(parseKey(output.stdout, "keychain"));
     });
     return { controller, result, waiters: 0 };
   };
@@ -95,9 +104,7 @@ export const createTogetherKeyReader = (deps: TogetherKeyReaderDeps) => {
     if (pending === undefined) {
       const raw = deps.env[TOGETHER_API_KEY_ENV];
       if (raw !== undefined) {
-        const key = parseKey(raw, "env");
-        if (key.ok) cached = key.value;
-        return key;
+        return remember(parseKey(raw, "env"));
       }
       if (deps.platform !== "darwin") return err("missing");
       pending = beginRead();
@@ -124,3 +131,17 @@ export const createTogetherKeyReader = (deps: TogetherKeyReaderDeps) => {
 
   return { readKey, keychainItemExists };
 };
+
+export const togetherKeyHint = `Set ${TOGETHER_API_KEY_ENV} or add the macOS Keychain item "${TOGETHER_KEYCHAIN_SERVICE}".`;
+
+export const createTogetherAuth = (reader: ReturnType<typeof createTogetherKeyReader>): ProviderAuth<"together"> => ({
+  refreshable: false,
+  getCredentials: async (signal = new AbortController().signal) => {
+    const result = await reader.readKey(signal);
+    if (result.ok) return ok({ provider: "together", authHeaders: { authorization: `Bearer ${result.value.key}` } });
+    if (result.error === "aborted") return err({ kind: "timeout", message: "Together request timed out" });
+    const reason = result.error === "malformed" ? "Together key is malformed." : "Together key is missing.";
+    return err({ kind: "auth", message: `${reason} ${togetherKeyHint}` });
+  },
+  forceRefresh: async () => err<ProxyError>({ kind: "auth", message: `Together uses a static key. ${togetherKeyHint}` }),
+});

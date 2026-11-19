@@ -3,8 +3,8 @@ import { CLIENT_IDS, parseClientSelection, selectedClients, type ClientId, type 
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
-import { type Config, type CredentialKindTable, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
-import { buildDeps, createProxyServer, listenServer } from "./server.js";
+import { type Config, withCredential, type CredentialKindTable, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
+import { liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
   runInitInteractive,
@@ -272,6 +272,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
 // ---------------------------------------------------------------------------
 
 const BANNER_HOST: CredentialKindTable<string> = {
+  "api-key": ({ baseUrl }) => new URL(baseUrl).hostname,
   "oauth-file": ({ baseUrl }) => {
     try {
       return new URL(baseUrl).hostname;
@@ -347,7 +348,7 @@ const serve = async (
   for (const id of PROVIDER_IDS) {
     const modelCount = routableModelCount(MODEL_REGISTRY, id);
     const credential = providerConfigFor(effectiveConfig, id);
-    const host = BANNER_HOST[credential.kind](credential);
+    const host = withCredential(credential, BANNER_HOST);
     const hostSuffix = host !== "" ? `  → ${host}` : "";
     errOut(`  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${hostSuffix}`);
   }
@@ -385,6 +386,7 @@ const doctor = async (result: LoadConfigResult, client: Client): Promise<void> =
     {
       write: out,
       readAuthFile: (path) => readFile(path, "utf8"),
+      togetherKeyReader: liveTogetherKeyReaderDeps(),
       httpGet: makeLiveHttpGet(),
       tlsConnect: makeLiveTlsConnect(),
       color,

@@ -1,13 +1,12 @@
 // Model registry and resolver for subswitch.
-// Intentionally no imports from the rest of the repo — config.ts imports this,
-// and that dependency edge must stay one-way.
+import { TOGETHER_MODELS } from "./together-models.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /** Closed tuple of all supported provider identifiers. */
-export const PROVIDER_IDS = ["codex"] as const;
+export const PROVIDER_IDS = ["codex", "together"] as const;
 /**
  * Discriminator for provider-specific handler dispatch. A closed union ensures
  * `Record<ProviderId, ProviderHandler>` is a compile-time completeness proof
@@ -236,6 +235,9 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   { id: "gpt-5.6-luna", provider: "codex", family: "luna", gen: [5, 6] },
   // Retired from ChatGPT/Codex on 2026-10-14.
   { id: "gpt-5.5", provider: "codex", gen: [5, 5], retired: true },
+  ...TOGETHER_MODELS.map(({ id, family }): ModelEntry => ({
+    id, family, gen: [1], provider: "together",
+  })),
 ];
 
 // ---------------------------------------------------------------------------
@@ -623,7 +625,7 @@ export const buildRoutingTable = (
     // PF-007: a reserved key would route main-thread traffic to Codex; a reserved target
     // becomes routable via the alias map, which decideRoute's exact-membership check
     // would then match.
-    if (reserved) {
+    if (reserved || (provider === "together" && byId.get(target) !== provider)) {
       rejectedAliases.push({ alias, target });
       continue;
     }
@@ -650,7 +652,7 @@ export const buildRoutingTable = (
   // Qualifying an alias must preserve its explicit override, including a family
   // override such as sol. Exact registry IDs remain pinned in either spelling.
   for (const { alias, provider, reserved } of declarations) {
-    if (!reserved && !byId.has(alias))
+    if (!reserved && byAlias.has(alias) && !byId.has(alias))
       byQualified.set(`${provider}:${alias}`, byAlias.get(alias)!);
   }
   // An explicit declaration authorizes this target ID, not every unknown model.

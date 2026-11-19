@@ -20,6 +20,56 @@ const missingFile = (): never => {
   throw error;
 };
 
+describe("Together config sources", () => {
+  for (const [label, together] of [
+    ["TP-5 loopback host", { baseUrl: "http://127.0.0.1:4142/v1" }],
+    ["TP-6 host opt-in", { allowInsecureBaseUrl: true }],
+    ["TP-7 empty block", {}],
+    ["TP-7 null block", null],
+  ] as const) {
+    it(`rejects ${label} in project config`, () => {
+      const result = loadConfig({ cwd: "/project", globalConfigPath: "/user/config.json", env: {},
+        readFile: () => JSON.stringify({ providers: { together } }) });
+      assert.ok(!result.ok);
+      assert.match(result.error.message, /providers\.together not allowed in project configuration/);
+      assert.match(result.error.message, /user configuration at \/user\/config\.json.*SUBSWITCH_CONFIG/);
+    });
+  }
+
+  it("refuses Together userinfo, query and fragment before startup", () => {
+    for (const baseUrl of ["https://user:password@api.together.ai/v1", "https://api.together.ai/v1?", "https://api.together.ai/v1#"]) {
+      const result = loadConfig({ configPath: "fixture", env: {},
+        readFile: () => JSON.stringify({ providers: { together: { baseUrl } } }) });
+      assert.ok(!result.ok);
+      assert.match(result.error.message, /user configuration or SUBSWITCH_CONFIG/);
+    }
+  });
+
+  it("does not accept Together as an access-profile provider", () => {
+    const result = loadConfig({ configPath: "fixture", env: {}, readFile: () => JSON.stringify({
+      configVersion: 2,
+      accessProfiles: { together: { provider: "together", product: "chatgpt-codex", billing: "subscription", account: "test",
+        credential: { kind: "native-oauth", authFile: "/no-auth.json" } } },
+      routes: { test: { clients: ["claude-code"], primary: { profile: "together", model: "fixture", effort: "low" } } },
+    }) });
+    assert.ok(!result.ok);
+    assert.match(result.error.message, /unsupported provider: together/);
+  });
+
+  it("loads the same Together block from user config or SUBSWITCH_CONFIG", () => {
+    const readFile = (path: string) => path === "/user/config.json"
+      ? JSON.stringify({ providers: { together: { baseUrl: "http://127.0.0.1:4142/v1", outputCap: 1024 } } })
+      : missingFile();
+    for (const env of [{}, { SUBSWITCH_CONFIG: "/user/config.json" }]) {
+      const result = loadConfig({ cwd: "/project", globalConfigPath: "/user/config.json", env, readFile });
+      assert.ok(result.ok, !result.ok ? result.error.message : undefined);
+      assert.equal(result.value.config.providers.together.outputCap, 1024);
+      assert.equal(result.value.config.providers.together.baseUrl, "http://127.0.0.1:4142/v1");
+      assert.ok(result.value.configuredProviders.has("together"));
+    }
+  });
+});
+
 describe("loadConfig", () => {
   it("returns full defaults when the implicit cwd config file is missing", () => {
     // No configPath, no SUBSWITCH_CONFIG env var — implicit cwd path → silently use defaults.

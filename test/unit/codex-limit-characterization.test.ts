@@ -3,7 +3,7 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import { it } from "node:test";
 import { createCodexHandler } from "../../src/codex-handler.js";
-import { loadConfig, providerConfigFor } from "../../src/config.js";
+import { loadConfig, codexCredentialFor } from "../../src/config.js";
 import type { LimitObservation } from "../../src/limit-observation.js";
 import { ReasoningCache } from "../../src/reasoning-cache.js";
 import { ok } from "../../src/result.js";
@@ -22,7 +22,7 @@ async function deliver(upstream: Response) {
     providerId: "codex",
     provider: config.providers.codex,
     pingIntervalMs: config.limits.pingIntervalMs,
-    loginCommand: providerConfigFor(config, "codex").loginCommand,
+    loginCommand: codexCredentialFor(config.providers.codex).loginCommand,
     logger: { log() {}, recordLimit: (record) => records.push(record) },
     auth: {
       refreshable: false,

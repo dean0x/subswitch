@@ -11,15 +11,18 @@
  * but the annotation is removed. That two-sidedness is what makes these lines a test
  * rather than a comment.
  */
-import type { Config, ProviderConfigs, CodexProviderConfig, CredentialKindTable, providerConfigFor } from "../../src/config.js";
+import { withCredential, type Config, type ProviderConfigs, type CodexProviderConfig, type CredentialKindTable, type providerConfigFor } from "../../src/config.js";
 
 const credentialKindsRequireHandlers = (credential: ReturnType<typeof providerConfigFor>): string => {
   // @ts-expect-error a credential kind with no handler must not compile.
-  const missingKind: CredentialKindTable<string> = {};
+  const missingKind: CredentialKindTable<string> = { "oauth-file": (source) => source.authFile };
   void missingKind;
 
-  const complete: CredentialKindTable<string> = { "oauth-file": (credential) => credential.authFile };
-  return complete[credential.kind](credential);
+  const complete: CredentialKindTable<string> = {
+    "oauth-file": (source) => source.authFile,
+    "api-key": (source) => source.envName,
+  };
+  return withCredential(credential, complete);
 };
 void credentialKindsRequireHandlers;
 
@@ -37,30 +40,23 @@ const codexSlice: CodexProviderConfig = {
   allowInsecureBaseUrl: false,
 };
 
-const providerConfigsIsTotalOverProviderId = (): void => {
+const providerConfigsIsTotalOverProviderId = (together: ProviderConfigs["together"]): void => {
   // A record covering every ProviderId is the only accepted shape.
-  const complete: ProviderConfigs = { codex: codexSlice };
+  const complete: ProviderConfigs = { codex: codexSlice, together };
   void complete;
 
   // @ts-expect-error a ProviderId with no slice must not compile.
-  const missingProvider: ProviderConfigs = {};
+  const missingProvider: ProviderConfigs = { codex: codexSlice };
   void missingProvider;
 
   // @ts-expect-error a key that is not a ProviderId must not compile either — excess-property
   // checking is what stops a slice being wired under a misspelled id, and it is what an
   // index signature on `ProviderConfigs` would silently give away.
-  const excessProvider: ProviderConfigs = { codex: codexSlice, kimi: codexSlice };
+  const excessProvider: ProviderConfigs = { ...complete, kimi: codexSlice };
   void excessProvider;
 
-  // Scope of the two lines above, stated honestly: while PROVIDER_IDS is `["codex"]` the
-  // mapped type evaluates to exactly `{ readonly codex: CodexProviderConfig }`, so they
-  // pin totality and closedness as of today — they cannot distinguish the mapped type from
-  // a hand-written interface of the same shape. What the MAPPED form buys is the future
-  // case, and that is verified by mutation rather than by a fixture: adding a second entry
-  // to PROVIDER_IDS makes `ProviderConfigShape[K]` unindexable and fails the compile at
-  // PROVIDER_SCHEMAS, PROVIDER_CONFIG_ACCESSORS, aliasesByProvider, PROVIDER_RESOLVERS,
-  // resolveConfig and ServerDeps.providers. That mutation is the replacement for the
-  // "UNENFORCED SITE" comment this shape deleted; re-run it before trusting this file.
+  // These assertions require both slices and reject extra keys. A new provider ID
+  // must also have entries in every provider map in the application.
 };
 void providerConfigsIsTotalOverProviderId;
 

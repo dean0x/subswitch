@@ -1,4 +1,4 @@
-import { isLoopbackHost } from "./config.js";
+import { isLoopbackHost, parseTogetherBaseUrl } from "./config.js";
 import type { Logger } from "./logger.js";
 import { ok, err, type Result } from "./result.js";
 
@@ -10,10 +10,24 @@ export const vetCredentialUrl = (options: {
   allowOverride: boolean;
   logger: Logger;
   refreshToken?: boolean;
+  together?: true;
   events: { insecureBaseUrlScheme: string; baseUrlHostRejected: string; baseUrlOverrideDetected: string };
 }): Result<void, string> => {
   const { path, logger, events } = options;
-  const url = new URL(options.url);
+  const url = options.together ? parseTogetherBaseUrl(options.url) : new URL(options.url);
+  if (options.together) {
+    const defaultPort = url?.protocol === "https:" && !url.port;
+    if (url && (isLoopbackHost(url.hostname) || (defaultPort && url.hostname === options.expectedHost))) return ok(undefined);
+    const alternate = defaultPort && (url.hostname === "api-inference.together.ai" || url.hostname === "us-api.together.ai");
+    if (alternate && options.allowOverride) {
+      logger.log("warn", events.baseUrlOverrideDetected);
+      return ok(undefined);
+    }
+    logger.log("error", events.baseUrlHostRejected, { path });
+    return err(`${path} is not an allowed Together URL. Use the default host or set "${options.optInKey}": true ` +
+      "for api-inference.together.ai or us-api.together.ai in the user configuration or SUBSWITCH_CONFIG.");
+  }
+  if (!url) return err(`${path} is not a valid URL.`);
   if (isLoopbackHost(url.hostname)) return ok(undefined);
   if (url.protocol !== "https:") logger.log("warn", events.insecureBaseUrlScheme);
   if (url.hostname === options.expectedHost && (!url.port || url.port === "443")) return ok(undefined);

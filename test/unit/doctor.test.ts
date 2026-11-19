@@ -334,13 +334,10 @@ describe("runDoctor", () => {
       allPassIO(lines),
       new Set<ProviderId>(PROVIDER_IDS),
     );
-    // Each provider's rows must be contiguous: no interleaving from concurrent checks.
-    const output = lines.join("\n");
-    for (const id of PROVIDER_IDS) {
-      const authFileIdx = output.indexOf(`${id}.authFile:`);
-      const modeIdx = output.indexOf(`${id} auth mode:`);
-      assert.ok(authFileIdx >= 0 && modeIdx > authFileIdx, `${id} rows must be present and ordered`);
-    }
+    const codexFile = lines.findIndex((line) => line.includes("codex.authFile:"));
+    const codexMode = lines.findIndex((line) => line.includes("codex auth mode:"));
+    const together = lines.findIndex((line) => line.includes("together auth:"));
+    assert.ok(codexFile >= 0 && codexMode > codexFile && together > codexMode);
   });
 });
 
@@ -602,4 +599,18 @@ describe("makeLiveListAgentFiles — absolute path deduplication", () => {
       await rm(tmpDirRaw, { recursive: true, force: true });
     }
   });
+});
+
+it("doctor checks Together once through its injected Keychain seam and reports only the source", async (t) => {
+  const key = "FAKE-TOGETHER-KEY-doctor";
+  const exec = t.mock.fn(async () => ({ stdout: `${key}\n` }));
+  const lines: string[] = [];
+  const loaded = loadConfig({ configPath: "fixture", readFile: () => "{}", env: {} });
+  assert.ok(loaded.ok);
+  await runDoctor(loaded.value.config, "fixture", true, {
+    ...allPassIO(lines), togetherKeyReader: { env: {}, platform: "darwin", exec, setTimer: () => () => {} },
+  });
+  assert.equal(exec.mock.callCount(), 1);
+  assert.match(lines.join("\n"), /together auth:\s+keychain/);
+  assert.ok(!lines.join("\n").includes(key));
 });

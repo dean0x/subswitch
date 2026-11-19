@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { upstreamStatusToAnthropicError, toAnthropicErrorBody } from "./errors.js";
 import { respondJson, respondProxyError } from "./provider-transport.js";
-import { codexCredentialFor, type CodexProviderConfig, type CredentialKindTable } from "./config.js";
+import { type CodexProviderConfig } from "./config.js";
 import type { Logger } from "./logger.js";
 import { providerEvents } from "./provider-events.js";
 import type { ProviderId } from "./models.js";
@@ -17,10 +17,6 @@ import type { LimitContext } from "./limit-observation.js";
 import { runTranslatedLeg } from "./translated-leg.js";
 
 const CODEX_LIMIT_KEY: LimitContext = { provider: "codex", product: "chatgpt-codex", protocol: "responses" };
-
-const AUTH_HINT: CredentialKindTable<string> = {
-  "oauth-file": ({ loginCommand }) => ` — run \`${loginCommand}\``,
-};
 
 /**
  * `P` ties `providerId` to `auth`, and that is all it does.
@@ -152,8 +148,7 @@ export const codexTransportConstants = (userAgent: string): CodexTransportConsta
 
 export const createCodexHandler = <P extends ProviderId>(deps: CodexHandlerDeps<P>): ProviderHandler => {
   const { providerId, provider, logger, auth, cache, pingIntervalMs } = deps;
-  const source = codexCredentialFor(provider, deps.loginCommand);
-  const authHint = AUTH_HINT[source.kind](source);
+  const authHint = ` — run \`${deps.loginCommand}\``;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const newSessionId = deps.newSessionId ?? randomUUID;
   // Event names resolved once here, not per request: the hot path does no string work,

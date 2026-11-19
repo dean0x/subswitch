@@ -28,13 +28,15 @@ export class ReasoningCache {
   constructor(
     private readonly maxEntries: number,
     private readonly maxBytes: number,
+    private readonly strictByteBound = false,
   ) {
     assert(Number.isInteger(maxEntries) && maxEntries > 0, "maxEntries must be a positive integer");
     assert(Number.isInteger(maxBytes) && maxBytes > 0, "maxBytes must be a positive integer");
   }
 
   put(callId: string, items: readonly unknown[]): void {
-    const bytes = computeBytes(items);
+    const bytes = this.strictByteBound ? Buffer.byteLength(JSON.stringify(items)) : computeBytes(items);
+    if (this.strictByteBound && bytes > this.maxBytes) return;
 
     // Remove existing entry first so a key overwrite correctly subtracts its old bytes.
     const existing = this.entries.get(callId);

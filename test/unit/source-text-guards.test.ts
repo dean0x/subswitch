@@ -75,3 +75,13 @@ describe("source-text guards", () => {
     }
   });
 });
+
+it("uses execFile with no shell for the Together Keychain read", () => {
+  const reader = readSrc("together-auth.ts");
+  const factory = readSrc("server.ts");
+  assert.match(factory, /exec: promisify\(execFile\)/);
+  for (const source of [reader, factory]) {
+    assert.doesNotMatch(source, /import\s*\{[^}]*\bexec\b[^}]*\}\s*from\s*["']node:child_process["']/);
+    assert.doesNotMatch(source, /\bshell\s*:/);
+  }
+});
