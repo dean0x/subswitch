@@ -165,9 +165,12 @@ const AnthropicSchema = z
   })
   .prefault({});
 
-// Both sides are bounded to the same 200 chars as ModelPeekSchema's `model`: an
-// alias target flows into the outbound request body and the `route` log field, so
-// an unbounded one would be a config-side hole in a limit the request side enforces.
+// Both sides are bounded to 200 chars: an alias target flows into the outbound request
+// body and the `route` log field, so an unbounded one would be a config-side hole in the
+// request-side limits. Those limits are: ModelPeekSchema caps a plain `model` at 200
+// chars; a `together:` name of any length reaches the resolver, which accepts its id only
+// under the 200-char Together id grammar; the server clears `model` for an invalid
+// qualified name before it logs; and the logger strips control characters from each value.
 const AliasesSchema = z
   .record(z.string().min(1).max(200), z.string().min(1).max(200))
   .refine((aliases) => !Object.keys(aliases).some(isReservedAnthropicName), {
