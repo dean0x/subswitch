@@ -221,10 +221,14 @@ Controls, in this order:
 3. Compute the worst case and refuse when it is above the ceiling. Then print the plan
    line: the paid request count, the bounds and the worst case in USD.
 4. Load the key.
-5. Part 0 (free): read `GET /v1/models` once. Compute the worst case again at
-   max(catalog price, live price), and refuse above the ceiling before any paid request.
-   A row with no numeric live price uses its catalog price. The report shows that row
-   with `live: null`.
+5. Part 0 (free): read `GET /v1/models` once. Stop when a planned row has no live
+   input or output price that is a number at or above 0. The planned rows are the Part 1
+   and Part 2 rows and the six Part 3 rows. The probe prints
+   `{"success":false,"code":"live_price_missing","rows":["<id>",...]}` with the ids of
+   those rows, sends no paid request and exits 2. A catalog price is not confirmed, so it
+   does not replace a missing live price.
+6. Compute the worst case again at max(catalog price, live price), and refuse above the
+   ceiling before any paid request.
 
 The probe writes its own `SUBSWITCH_CONFIG` temp file (mode 0600). The file sets the
 Together base URL to the relay and `outputCap` to 4096. The probe sends one request at a

@@ -411,12 +411,18 @@ describe("renderReport", () => {
 });
 
 describe("runProbe control order", () => {
-  /** A free model list that prices the Kimi row at `input` USD per 1M input tokens, as an array or as `{ data: [...] }`. */
-  const modelList = (input: number, shape: "array" | "data" = "array"): UpstreamHandler => (_req, res) => {
-    const rows = [{ id: KIMI, pricing: { input, output: 10 } }];
+  // The six catalog rows, in catalog order. Part 3 sends one request to each, so each needs a live price.
+  const QWEN = "Qwen/Qwen3.8-Flash", DEEPSEEK = "deepseek-ai/DeepSeek-V4-Pro-0813";
+  const ROWS = [QWEN, DEEPSEEK, "deepseek-ai/DeepSeek-V4.1-Flash-1017", "zai-org/GLM-5.3", "zai-org/GLM-5.3-Flash", KIMI];
+  /** A live price for each of the six rows: the Kimi row at `input` USD per 1M input tokens, the others below the catalog. */
+  const pricedRows = (input: number): Record<string, unknown>[] =>
+    ROWS.map((id) => ({ id, pricing: id === KIMI ? { input, output: 10 } : { input: 0.1, output: 0.1 } }));
+  /** A free model list of `rows`, as an array or as `{ data: [...] }`. */
+  const listOf = (rows: readonly object[], shape: "array" | "data" = "array"): UpstreamHandler => (_req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(shape === "array" ? rows : { data: rows }));
   };
+  const modelList = (input: number, shape: "array" | "data" = "array"): UpstreamHandler => listOf(pricedRows(input), shape);
   const reply = (status: number, text: string): UpstreamHandler => (_req, res) => {
     res.writeHead(status, { "content-type": "application/json" });
     res.end(text);
@@ -483,6 +489,27 @@ describe("runProbe control order", () => {
     assert.deepEqual([run.code, run.liveRuns], [2, 0]);
   });
 
+  it("stops with live_price_missing and no paid request when a planned row has no live price", async (t) => {
+    const flash = "zai-org/GLM-5.3-Flash";
+    const others = pricedRows(2).filter((row) => row["id"] !== flash);
+    // The row is absent from the list, or present with no pricing object.
+    for (const rows of [others, [...others, { id: flash }]]) {
+      const run = await probe(t, { [ACK]: "2.50" }, { upstream: listOf(rows), keychain: keychainKey });
+      assert.equal(run.lines.at(-1), '{"success":false,"code":"live_price_missing","rows":["zai-org/GLM-5.3-Flash"]}');
+      assert.deepEqual(run.upstream.requests.map((request) => `${request.method} ${request.url}`), ["GET /v1/models"]);
+      assert.deepEqual([run.code, run.liveRuns], [2, 0]);
+    }
+  });
+
+  it("counts a string price and a negative price as missing", async (t) => {
+    const bad: Record<string, object> = { [QWEN]: { input: "0.15", output: 0.47 }, [DEEPSEEK]: { input: 1.32, output: -1 } };
+    const rows = pricedRows(2).map((row) => ({ ...row, pricing: bad[String(row["id"])] ?? row["pricing"] }));
+    const run = await probe(t, { [ACK]: "2.50" }, { upstream: listOf(rows), keychain: keychainKey });
+    assert.equal(run.lines.at(-1), `{"success":false,"code":"live_price_missing","rows":["${QWEN}","${DEEPSEEK}"]}`);
+    assert.deepEqual(run.upstream.requests.map((request) => `${request.method} ${request.url}`), ["GET /v1/models"]);
+    assert.deepEqual([run.code, run.liveRuns], [2, 0]);
+  });
+
   it("exits 1 and prints the report when the live report does not pass", async (t) => {
     const run = await probe(t, { [ACK]: "2.50" }, { upstream: modelList(2), keychain: keychainKey,
       report: { success: false, refusals: 1 } });
@@ -490,7 +517,7 @@ describe("runProbe control order", () => {
     assert.deepEqual([run.code, run.liveRuns], [1, 1]);
   });
 
-  it("runs the live parts once when both checks pass and prints their report", async (t) => {
+  it("runs the live parts once when all six rows have a live price and both checks pass, and prints their report", async (t) => {
     const run = await probe(t, { [ACK]: "2.50" }, { upstream: modelList(2), keychain: keychainKey });
     assert.equal(run.lines.at(-1), '{"success":true}');
     assert.deepEqual([run.code, run.keyReads, run.liveRuns], [0, 1, 1]);

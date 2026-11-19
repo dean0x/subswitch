@@ -3,9 +3,10 @@
  * `SUBSWITCH_TOGETHER_PROBE_ACK_USD=<ceiling> npm run probe:together`; npm test and CI never do.
  *
  * Controls, in this order: refuse when CI is set; parse the spend acknowledgement; refuse a
- * worst case above it; load the key through the product loader; read the free model list and
- * refuse again at max(catalog, live) prices, all before any paid request. Every Together request
- * goes through a loopback relay that counts and bounds it. The key is never in argv or output.
+ * worst case above it; load the key through the product loader; read the free model list, stop
+ * when a planned row has no live price, and refuse again at max(catalog, live) prices, all before
+ * any paid request. Every Together request goes through a loopback relay that counts and bounds
+ * it. The key is never in argv or output.
  */
 import http from "node:http";
 import { randomUUID } from "node:crypto";
@@ -511,6 +512,10 @@ const post = async (url: string, body: object, cancelAfterFirstChunk = false): P
 };
 
 const KIMI = "moonshotai/Kimi-K3.1-Pro", GLM = "zai-org/GLM-5.3", DEEPSEEK = "deepseek-ai/DeepSeek-V4-Pro-0813";
+/** The rows of the paid parts, in catalog order: Part 3 sends to each catalog row, Parts 1 and 2 to the named rows. */
+const PLANNED_IDS: readonly string[] = [...new Set([...TOGETHER_MODELS.map((model) => model.id), KIMI, GLM, DEEPSEEK])];
+/** The planned rows with no live price. A catalog price is not confirmed, so it cannot stand in for one. */
+const missingLivePrices = (live: ReadonlyMap<string, Price>): readonly string[] => PLANNED_IDS.filter((id) => !live.has(id));
 const PART1_AGENT = "together_probe";
 const PART1_TIMEOUT_MS = 300_000;
 
@@ -698,6 +703,11 @@ export const runProbe = async (seams: ProbeSeams): Promise<number> => {
     const live = await readLivePrices(relay.value.url, key);
     if (!live.ok) {
       seams.print(refusal(live.error));
+      return 2;
+    }
+    const missing = missingLivePrices(live.value);
+    if (missing.length > 0) {
+      seams.print(refusal("live_price_missing", { rows: missing }));
       return 2;
     }
     const checked = planRun(seams.env, live.value);
