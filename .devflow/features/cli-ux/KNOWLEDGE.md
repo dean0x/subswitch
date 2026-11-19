@@ -12,7 +12,7 @@ updated: 2026-11-19
 
 ## Rules
 - **KB-INV-1** A new provider log event goes into the `ProviderEvents<P>` type and the `scopedEvents` table in `src/provider-events.ts`; the type pins the table, so do not quote a field count.
-- **KB-INV-2** `subswitch doctor` lists a Together agent pin only when no usable key is found; with a key, a workspace `together:` pin routes to Together and spends the user's balance.
+- **KB-INV-2** `subswitch doctor` lists a Together agent pin only when no usable key is found; with a key, a workspace Together pin (a `together:` name, or the id or family of a catalog row) routes to Together and spends the user's balance.
 - The Rules list starts with this refresh. Older rules stay in `## Anti-Patterns` and `## Gotchas` below.
 
 ## Overview
@@ -34,10 +34,13 @@ subswitch [command] [flags]
   serve     (default) — start the MITM proxy
   doctor    — preflight health checks; exits non-zero on any failure
   init      — interactive or non-interactive first-time setup
-  models    — show effective alias table (registry × aliases), then the
+  models    — show effective alias table (registry × aliases; the registry
+              holds the Codex models and the six Together rows), then the
               together:<model-id> pass-through line with the output cap
               --json  Output model registry as JSON (no color, no TTY check)
 ```
+
+**Together rows in `models`.** The registry holds six Together rows from `TOGETHER_MODELS`: `Qwen/Qwen3.8-Flash`, `deepseek-ai/DeepSeek-V4-Pro-0813`, `deepseek-ai/DeepSeek-V4.1-Flash-1017`, `zai-org/GLM-5.3`, `zai-org/GLM-5.3-Flash` and `moonshotai/Kimi-K3.1-Pro`. Each shows provider `together`. A bare id or family of a row routes to the paid Together route and spends the user's balance, the same as `together:<id>`; the `together:<model-id>` line still covers every other Together id. The price, image and max output values of the rows are UNCONFIRMED until the live check (`npm run probe:together`) runs. `models --schema-version 3` route discovery lists only provider `codex` ids in `models.codex`, never a Together id.
 
 Global flags (`--help/-h`, `--version/-v`) are handled before subcommand dispatch and always exit 0. `init` is the only subcommand dispatched BEFORE `loadConfig()` — it must not depend on a pre-existing config file. `doctor`, `serve`, and `models` all call `loadConfig()` before dispatching.
 
@@ -215,7 +218,7 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 - Key found → `OK (env)` or `OK (keychain)`.
 - No usable key and no `providers.together` block → `unconfigured` (informational).
 - No usable key with a block → `UNAVAILABLE` (failure). A malformed key adds `(key is malformed)`.
-- An agent pin that resolves to Together with no key → `agent model: FAIL` (see agent-scan). With a usable key, doctor does not list the pin. A project `.claude/agents/*.md` file or a project Claude Code setting can name a `together:` model, so README and SECURITY.md tell users to check a cloned repository.
+- An agent pin that resolves to Together with no key → `agent model: FAIL` (see agent-scan). With a usable key, doctor does not list the pin. A project `.claude/agents/*.md` file or a project Claude Code setting can name a Together model (a `together:` name, or the id or family of a catalog row), so README and SECURITY.md tell users to check a cloned repository.
 - The hint comes from `togetherKeyHintFor(platform)`: on macOS it names the env var and the Keychain item; elsewhere it says "environment variable only on this platform".
 
 ### src/agent-scan.ts — Agent frontmatter scanner
