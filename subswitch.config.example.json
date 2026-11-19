@@ -46,6 +46,21 @@
       "maxSseEventBytes": 4194304,
       "maxAggregateBytes": 67108864,
       "allowInsecureBaseUrl": false
+    },
+    "together": {
+      "baseUrl": "https://api.together.ai/v1",
+      "aliases": {},
+      "outputCap": 16384,
+      "reasoningCache": {
+        "maxEntries": 1024,
+        "maxBytes": 16777216,
+        "maxTurnBytes": 1048576
+      },
+      "requestTimeoutMs": 600000,
+      "streamIdleTimeoutMs": 300000,
+      "maxSseEventBytes": 4194304,
+      "maxAggregateBytes": 67108864,
+      "allowInsecureBaseUrl": false
     }
   },
   "limits": {

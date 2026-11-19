@@ -27,19 +27,24 @@ update to the newest commit before reporting.
 
 subswitch is a **loopback-only development proxy**. It binds `127.0.0.1` and its
 only clients are the developer's own tools on the same machine. It sits between
-Claude Code and two upstreams — `api.anthropic.com` and the Codex backend — both
-reached over TLS.
+Claude Code and its upstreams — `api.anthropic.com`, the Codex backend and, only for
+requests that name a `together:` model, the paid Together AI API — all reached over
+TLS.
 
 Defense-in-depth controls built into the proxy:
 
 - **Loopback binding.** The server binds `127.0.0.1` and is never exposed to the
   network. Claude Code requires a plain-HTTP local base URL; traffic to subswitch
-  never leaves the machine, and both upstream legs use TLS.
+  never leaves the machine, and every upstream leg uses TLS. Loopback binding is not
+  authentication: subswitch has no local token, so any local process can send
+  requests through it, including paid Together requests (see
+  [Together AI API key](#together-ai-api-key)).
 - **Credentials never transit subswitch's config.** The Anthropic leg is a verbatim
   byte relay — `authorization` and every `anthropic-*` header pass through
   untouched. The Codex leg reads `~/.codex/auth.json` (written by the Codex CLI),
   refreshes the OAuth token in place, and writes it back atomically while
-  preserving unknown keys.
+  preserving unknown keys. The Together key comes from `TOGETHER_API_KEY` or from
+  one macOS Keychain item, never from a config file.
 - **Type-level redaction in logs.** Token material and request/response bodies
   are *unrepresentable* in the logger by type — the log field set is closed
   (model, path, route, status, latency, event/error codes). Nothing sensitive
@@ -116,3 +121,66 @@ real model discovery, and isolated native settings. It tests actual upstreams
 without rotating shared stores. Its HTTP control rejects WebSocket upgrades and
 otherwise relays bytes, exercising native fallback without changing client flags.
 See [production acceptance](e2e/gates/production-parity.md).
+
+## Together AI API key
+
+The Together AI route is the only paid destination. Together bills each request per
+token to the user's own API key. SubSwitch uses the key only for a Claude Code request
+that names a `together:<model-id>` model; no other route and no fallback uses it.
+Claude Code is the only supported client for this route. This section describes the
+configured behavior; a live check against the Together API is not done yet.
+
+**Local spend exposure.** SubSwitch listens on loopback and has no local token. Any
+local process on the machine can send a `together:` request to the proxy, and
+SubSwitch sends it to Together with the key. The `Host`/`Origin` gate stops web
+pages, not local processes. Use a small prepaid Together balance with auto-recharge
+off, and stop `subswitch serve` when you do not use Together.
+
+**Spend limits.** Together has no budgets and no per-key spend caps, and Together
+meters usage with a delay, so spend can overshoot a prepaid balance. SubSwitch has no
+spend counter. `providers.together.outputCap` (default 16384 tokens) bounds output
+tokens per request, not input tokens. The worst case is
+`requests × (input tokens × input price + outputCap × output price)`. A Together 402
+(balance too low) returns a 402 with `x-should-retry: false`; after a top-up, Together
+can continue to return 402 for up to 5 minutes. SubSwitch makes one attempt per
+request and does not retry.
+
+**Key source and handling.**
+
+- SubSwitch reads `TOGETHER_API_KEY` first. On macOS only, when that variable is not
+  set, it reads the Keychain item with service `Subswitch Together API key` and
+  account `subswitch`. It runs `/usr/bin/security` with fixed arguments, no shell, a
+  10 s limit, an 8 KiB output limit and an environment that holds only `HOME`. Any
+  failure means no key.
+- Add the Keychain item with
+  `security add-generic-password -s "Subswitch Together API key" -a subswitch -w`.
+  `-w` is last with no value, so `security` prompts for the key. Never put the key
+  on a command line.
+- Set `TOGETHER_API_KEY` only in the environment of `subswitch serve`, not in Claude
+  Code settings. `subswitch run-action` removes it from the environment of the
+  native client that it starts.
+- SubSwitch reads the key once, on the first Together request, and keeps it in
+  process memory until the process stops. A failed Keychain read is not kept, so
+  the next request tries again and macOS can ask again.
+- The key goes only to the Together host, as `authorization: Bearer <key>`. Requests
+  to Together carry only fixed headers; client headers and client credentials never
+  reach Together. Redirects from Together are refused.
+- Error bodies replace the exact loaded key value. The key is not in logs, `doctor`
+  output, `models --json` or the health endpoint. `doctor` shows only the key source.
+  `models` and the health endpoint never read the Keychain.
+- A missing or malformed key gives a local 401 with no upstream request and no
+  fallback to Anthropic. A malformed `together:` model name gives a local 400.
+
+**Configuration trust.** The whole `providers.together` block loads only from the
+user configuration or an explicit `SUBSWITCH_CONFIG` file. A project
+`subswitch.config.json` that sets it, even to `{}` or `null`, fails at load, so a
+workspace file cannot redirect the key or change the output cap. The startup host check
+accepts `https://api.together.ai/v1` by default. With
+`providers.together.allowInsecureBaseUrl: true` it also accepts `api-inference.together.ai`
+and `us-api.together.ai`, and no other host; `api.together.xyz` is refused. Loopback
+is always accepted, for tests. A refused host stops `subswitch serve`.
+
+**Data disclosure.** Each Together request sends the conversation to Together: the
+system prompt, the messages, the tool definitions, the tool results (which can hold
+file contents) and images. Together's terms and data policies apply. Together
+reasoning stays in bounded process memory and is never sent to the client.
