@@ -10,6 +10,7 @@ import {
   aliasesByProvider,
   enumerateDestinations,
   isLoopbackHost,
+  type LoadConfigOptions,
   type RoutingDestination,
 } from "../../src/config.js";
 import { PROVIDER_IDS } from "../../src/models.js";
@@ -1146,4 +1147,112 @@ describe("isLoopbackHost — exact loopback forms only (ADR-009, PF-011)", () =>
     // the SCHEME check via requireHttpsOrLoopback is a separate control.
     assert.ok(!result.ok, "http:// to a non-loopback host must still fail schema-level refinement even with allowInsecureBaseUrl");
   });
+});
+
+describe("a project config can not change sign-in addresses", () => {
+  const projectPath = "/fixture/project/subswitch.config.json";
+  const userPath = "/fixture/home/.config/subswitch/config.json";
+  const explicitPath = "/fixture/selected/subswitch.json";
+  type Entry = readonly [path: string, value: (host: string) => string | boolean];
+  const optIn = (): boolean => true;
+  const signInKeyGroups: readonly { readonly group: string; readonly entries: readonly Entry[] }[] = [
+    { group: "anthropic", entries: [
+      ["anthropic.baseUrl", host => `https://${host}`],
+      ["anthropic.allowInsecureBaseUrl", optIn],
+    ] },
+    { group: "providers.codex", entries: [
+      ["providers.codex.baseUrl", host => `https://${host}/backend-api/codex`],
+      ["providers.codex.oauthTokenUrl", host => `https://${host}/oauth/token`],
+      ["providers.codex.allowInsecureBaseUrl", optIn],
+    ] },
+    { group: "codexIngress", entries: [
+      ["codexIngress.subscriptionBaseUrl", host => `https://${host}/backend-api/codex`],
+      ["codexIngress.apiBaseUrl", host => `https://${host}/v1`],
+      ["codexIngress.allowInsecureBaseUrl", optIn],
+    ] },
+    { group: "codexIngress.claude", entries: [
+      ["codexIngress.claude.baseUrl", host => `https://${host}`],
+      ["codexIngress.claude.oauthTokenUrl", host => `https://${host}/v1/oauth/token`],
+      ["codexIngress.claude.allowInsecureBaseUrl", optIn],
+    ] },
+  ];
+  const everyEntry = signInKeyGroups.flatMap(group => group.entries);
+
+  /** Builds a config object that sets each dotted path to its value for `host`. */
+  const fileWith = (entries: readonly Entry[], host: string): Record<string, unknown> => {
+    const root: Record<string, unknown> = {};
+    for (const [path, value] of entries) {
+      const segments = path.split(".");
+      let node = root;
+      for (const segment of segments.slice(0, -1)) node = (node[segment] ??= {}) as Record<string, unknown>;
+      node[segments[segments.length - 1]!] = value(host);
+    }
+    return root;
+  };
+  const valueAt = (root: unknown, path: string): unknown =>
+    path.split(".").reduce<unknown>((node, segment) => (node as Record<string, unknown>)[segment], root);
+  const loadFiles = (files: Readonly<Record<string, unknown>>, options: LoadConfigOptions = {}) =>
+    loadConfig({
+      env: {}, cwd: "/fixture/project", homeDir: "/fixture/home",
+      readFile: path => Object.hasOwn(files, path) ? JSON.stringify(files[path]) : missingFile(),
+      ...options,
+    });
+
+  for (const { group, entries } of signInKeyGroups) {
+    describe(`${group} sign-in keys`, () => {
+      for (const entry of entries) {
+        it(`refuses ${entry[0]} in a project config and names the key`, () => {
+          const result = loadFiles({ [projectPath]: fileWith([entry], "relay.example") });
+          assert.ok(!result.ok, `${entry[0]} from a project config must fail the load`);
+          assert.equal(result.error.kind, "translate");
+          assert.match(result.error.message, /not allowed in project configuration/);
+          assert.ok(result.error.message.includes(entry[0]), `message must name ${entry[0]}: ${result.error.message}`);
+          assert.ok(result.error.message.includes(projectPath), "message must name the project file");
+          assert.ok(result.error.message.includes(userPath), "message must name the user config file");
+          assert.match(result.error.message, /user configuration.*SUBSWITCH_CONFIG/);
+        });
+      }
+    });
+  }
+
+  it("names every refused sign-in key when a project config sets all of them", () => {
+    const result = loadFiles({ [projectPath]: fileWith(everyEntry, "relay.example") });
+    assert.ok(!result.ok);
+    for (const [path] of everyEntry) assert.ok(result.error.message.includes(path), `message must name ${path}`);
+  });
+
+  it("accepts every sign-in key from the user config while project settings still merge", () => {
+    const result = loadFiles({
+      [userPath]: fileWith(everyEntry, "user.example"),
+      [projectPath]: {
+        port: 4567, logLevel: "debug",
+        anthropic: { connectTimeoutMs: 5000 },
+        providers: { codex: { aliases: { fast: "gpt-6-sol" } } },
+        codexIngress: { enabled: true, claude: { enabled: true } },
+      },
+    });
+    assert.ok(result.ok, result.ok ? "" : result.error.message);
+    for (const [path, value] of everyEntry)
+      assert.equal(valueAt(result.value.config, path), value("user.example"), `${path} must come from the user config`);
+    assert.equal(result.value.config.port, 4567);
+    assert.equal(result.value.config.logLevel, "debug");
+    assert.equal(result.value.config.anthropic.connectTimeoutMs, 5000);
+    assert.deepEqual(result.value.config.providers.codex.aliases, { fast: "gpt-6-sol" });
+    assert.equal(result.value.config.codexIngress.enabled, true);
+    assert.equal(result.value.config.codexIngress.claude.enabled, true);
+    assert.deepEqual(result.value.configPaths, [userPath, projectPath]);
+  });
+
+  for (const selection of [{ env: { SUBSWITCH_CONFIG: explicitPath } }, { configPath: explicitPath }]) {
+    it(`accepts every sign-in key from the file selected with ${Object.keys(selection)[0]}`, () => {
+      const result = loadFiles({
+        [userPath]: fileWith(everyEntry, "user.example"),
+        [explicitPath]: fileWith(everyEntry, "selected.example"),
+      }, selection);
+      assert.ok(result.ok, result.ok ? "" : result.error.message);
+      for (const [path, value] of everyEntry)
+        assert.equal(valueAt(result.value.config, path), value("selected.example"), `${path} must come from the selected file`);
+      assert.deepEqual(result.value.configPaths, [explicitPath]);
+    });
+  }
 });

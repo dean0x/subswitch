@@ -862,6 +862,34 @@ const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
 };
 
 /**
+ * Dotted keys that a project `subswitch.config.json` can not set: explicit profiles
+ * and routes, every sign-in address, and every `allowInsecureBaseUrl` opt-in. Only the
+ * user configuration or a file selected with SUBSWITCH_CONFIG sets them, so a file in
+ * the current folder can not change where subswitch sends a sign-in.
+ *
+ * Matched with `hasOwnPath`, so an inherited key can not forge or hide a match.
+ * Provider keys come from PROVIDER_IDS: a new provider with these key names is
+ * refused without an edit here.
+ */
+const PROJECT_REFUSED_KEYS: readonly string[] = [
+  "accessProfiles",
+  "routes",
+  "anthropic.baseUrl",
+  "anthropic.allowInsecureBaseUrl",
+  ...PROVIDER_IDS.flatMap(id => [
+    `providers.${id}.baseUrl`,
+    `providers.${id}.oauthTokenUrl`,
+    `providers.${id}.allowInsecureBaseUrl`,
+  ]),
+  "codexIngress.subscriptionBaseUrl",
+  "codexIngress.apiBaseUrl",
+  "codexIngress.allowInsecureBaseUrl",
+  "codexIngress.claude.baseUrl",
+  "codexIngress.claude.oauthTokenUrl",
+  "codexIngress.claude.allowInsecureBaseUrl",
+];
+
+/**
  * Load subswitch.config.json (all fields optional) merged over defaults.
  *
  * Path precedence (highest to lowest):
@@ -869,8 +897,9 @@ const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
  *   2. `SUBSWITCH_CONFIG` env var (tilde-expanded)
  *   3. implicit user config merged under `<cwd>/subswitch.config.json` (permitted project fields win)
  *
- * Profiles and routes, including profile endpoint opt-ins, require a user or explicit config.
- * Project files that declare either key fail before the merge, even for empty values.
+ * Profiles, routes, sign-in addresses and their `allowInsecureBaseUrl` opt-ins
+ * (PROJECT_REFUSED_KEYS) require a user or explicit config. Project files that declare
+ * any of these keys fail before the merge, even for empty values.
  * With allowProjectPort false, the project port does not participate in the merge.
  * Only implicit user/project files silently fall back to defaults on ENOENT.
  * Explicit config selection bypasses the user/project merge.
@@ -930,7 +959,7 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
   const isProject = !isExplicit && resolvedPath !== globalPath;
   if (isProject && isPlainObject(raw)) {
     const project = raw;
-    const forbidden = ["accessProfiles", "routes"].filter(key => Object.hasOwn(project, key));
+    const forbidden = PROJECT_REFUSED_KEYS.filter(path => hasOwnPath(project, path));
     if (forbidden.length > 0) {
       return err({
         kind: "translate",

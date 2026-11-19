@@ -93,8 +93,9 @@ describe("user configuration fallback", () => {
   it("merges project settings over user defaults without losing sibling fields", () => {
     const result = loadConfig({ env: {}, globalConfigPath: "/fixture/global.json", readFile: path => path === "/fixture/global.json" ?
       '{"port":4142,"codexIngress":{"enabled":true,"claude":{"enabled":true,"aliases":{"worker":"claude-sonnet-5"}}}}' :
-      '{"codexIngress":{"allowInsecureBaseUrl":true,"claude":{"aliases":{"second":"claude-opus-5"}}}}' });
+      '{"codexIngress":{"maxUpstreamSockets":64,"claude":{"aliases":{"second":"claude-opus-5"}}}}' });
     assert.ok(result.ok); assert.equal(result.value.config.port, 4142); assert.equal(result.value.config.codexIngress.claude.enabled, true);
+    assert.equal(result.value.config.codexIngress.maxUpstreamSockets, 64);
     assert.deepEqual(result.value.config.codexIngress.claude.aliases, { worker: "claude-sonnet-5", second: "claude-opus-5" });
   });
   it("keeps explicit configuration authoritative and preserves own-property semantics", () => {
