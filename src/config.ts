@@ -276,17 +276,14 @@ const injectKind = (raw: unknown, key: string): unknown => {
   return raw;
 };
 
-/**
- * Per-provider file schemas, keyed by ProviderId.
- *
- * `satisfies` against a mapped type over the closed union checks an object literal
- * in BOTH directions: a missing ProviderId key fails the constraint, and a key that
- * is not a ProviderId is an excess property. Adding a provider id without adding a
- * schema — or adding a schema under a misspelled id — is a compile error here.
- */
 export const TOGETHER_DEFAULT_HOST = "api.together.ai";
 const MIB = 1024 * 1024;
 
+/**
+ * Parse a Together base URL that can carry the paid key. Return the URL only for HTTPS,
+ * or for HTTP to a loopback host, with no userinfo, query, fragment, backslash or
+ * whitespace; else return undefined. The startup host check also uses this parser.
+ */
 export const parseTogetherBaseUrl = (raw: string): URL | undefined => {
   if (!/^https?:\/\/[^/?#\\\s]+/i.test(raw) || /[?#\\\s]/.test(raw) || /^https?:\/\/[^/]*@/i.test(raw)) return;
   if (!URL.canParse(raw)) return;
@@ -314,6 +311,14 @@ const TogetherProviderSchema = z.strictObject({
   }).prefault({}),
 });
 
+/**
+ * Per-provider file schemas, keyed by ProviderId.
+ *
+ * `satisfies` against a mapped type over the closed union checks an object literal
+ * in BOTH directions: a missing ProviderId key fails the constraint, and a key that
+ * is not a ProviderId is an excess property. Adding a provider id without adding a
+ * schema — or adding a schema under a misspelled id — is a compile error here.
+ */
 const PROVIDER_SCHEMAS = {
   codex: z.preprocess((raw) => injectKind(raw, "codex"), CodexProviderSchema).prefault({ kind: "codex" }),
   together: z.preprocess((raw) => injectKind(raw, "together"), TogetherProviderSchema).prefault({ kind: "together" }),

@@ -665,9 +665,9 @@ export const createProxyServer = (deps: ServerDeps): Server => {
           // unambiguously; at minimum, forwarding lets it answer with its own error, which is
           // always preferable to the relay inventing one.
           //
-          // PROVIDER_IDS only has "codex" today, so this branch is currently unreachable in
-          // practice.  It becomes live the moment a second provider ships — the forward-safe
-          // policy ensures correctness by default.
+          // No family has two providers in the registry today, so this branch is currently
+          // unreachable in practice.  It becomes live when two providers claim one family —
+          // the forward-safe policy ensures correctness by default.
           //
           // The warn log preserves diagnostic value: `model` carries the ambiguous name
           // annotated with the provider list ("name (p1, p2)") so operators can identify and
