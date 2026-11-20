@@ -44,6 +44,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   contents that tools read, and images.
 - Subswitch listens on loopback and has no local token. Any local process can send
   requests that spend the Together key. Keep the Together balance small.
+- **Kimi Code route for Claude Code (opt-in).** With a `providers.kimi` block in your
+  user config, a Claude Code request for a Kimi model (`k3.1-pro`,
+  `k3.1-pro-highspeed`, `k3`, `k3-256k`, `kimi-for-coding`,
+  `kimi-for-coding-highspeed`, `kimi:<id>` or a `providers.kimi.aliases` entry) goes
+  to the Kimi coding Messages API. Without the block, a Kimi model name gets a local
+  400 and Subswitch reads no Kimi file. Claude Code is the only supported client for
+  this route. The tests use simulated Kimi servers; live behavior against Kimi is not
+  verified yet.
+- Sign in with `kimi login` in your own Terminal. Subswitch reads the sign-in file of
+  the Kimi CLI (versions 0.38.0 to 2.7.2), renews it when it is due or once after a
+  401, and writes it back under the Kimi CLI lock. Subswitch never runs the Kimi CLI.
+  It refuses a sign-in file or folder that is not private to your user.
+- `providers.kimi.region` is `global` (the default) or `mainland-cn`. The region
+  selects the Kimi hosts and the sign-in file. A URL or a file that does not match the
+  region fails at load. A project config file that sets `providers.kimi` fails at load.
+- The Kimi route has no fallback. A Kimi failure gives a fixed local error, and the
+  request does not go to Anthropic or to another provider.
+- The serve banner shows `(not turned on)` and no host for a provider without its
+  block. `doctor` shows `not turned on` for the Kimi sign-in without the block, and
+  with it shows only the expiry and whether a renewal is due.
+- `npm run probe:kimi` runs the Kimi live check. `--dry-run` uses only fakes and the
+  loopback host. `--live` is for the owner: it needs a terminal and a typed phrase, and
+  it caps every request.
 
 ## [0.8.0] - 2026-11-19
 

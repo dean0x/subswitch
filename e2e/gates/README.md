@@ -81,6 +81,36 @@ only that run's processes and files. Reports contain allowlisted counts, statuse
 and booleans; they never emit native stdout/stderr, tool output, prompts, credentials,
 signatures, or raw metadata.
 
+## Kimi live check
+
+```sh
+npm run probe:kimi -- --dry-run --evidence-root <absolute private folder>
+npm run probe:kimi -- --live --evidence-root <absolute private folder>
+```
+
+Run the check from the repository root. It starts a capped SubSwitch proxy in the same
+process, with the Kimi opt-in block only in its own configuration. It refuses to start
+when your user configuration has a `providers.kimi` block. Every upstream request
+reserves a cap before it is sent: 18 Kimi requests, 4608 requested Kimi tokens, 256
+output tokens per request, 8 Claude requests, 1 sign-in renewal, 32 loopback calls and
+4 MiB per body. Hosts are fixed. The check never sets the Claude Code base URL or
+sign-in variables.
+
+1. The probe layer sends six plain HTTP requests to the proxy: a stream, a JSON reply, a
+   tool call, a tool result, `count_tokens` and a cancelled stream.
+2. After a 75 s cooldown, the Claude Code layer publishes the action control file of the
+   proxy and prints the `subswitch run-action` command for Claude Code. The owner runs it
+   in a second Terminal. A run with no Claude Code request through the action ingress
+   fails. On exit, the check removes the control file.
+3. The check writes `report.json` in a new dated folder under the evidence root. The
+   report holds only counts, status classes, fixed codes and booleans.
+
+`--live` refuses under CI, without a terminal on stdin and stdout, and without the typed
+phrase that names the caps. `--dry-run` skips only that gate. It uses a temporary home,
+a free port, a fabricated Kimi sign-in, fake Kimi and Claude servers, and a fake client
+that `run-action` starts in place of Claude Code. The dry run makes no request off the
+loopback host.
+
 ## Direct backend checks
 
 ```sh
