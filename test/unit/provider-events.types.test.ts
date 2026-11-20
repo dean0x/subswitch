@@ -14,7 +14,7 @@
  * `@ts-expect-error` fails in both directions: it errors if the line below it compiles
  * (the guarantee was lost) and the line itself errors if the annotation is removed.
  */
-import { providerEvents } from "../../src/provider-events.js";
+import { KIMI_EVENTS, providerEvents } from "../../src/provider-events.js";
 import type { ProviderId } from "../../src/models.js";
 
 const onlyProviderIdsCanBecomeEventNames = (): void => {
@@ -89,3 +89,16 @@ const eventNamesAreTiedToTheProviderTheyName = <P extends ProviderId>(providerId
   void authFileUnreadableAfterRefresh;
 };
 void eventNamesAreTiedToTheProviderTheyName;
+
+const kimiEventsKeepTheKimiPrefix = (): void => {
+  // The Kimi table spreads the provider table, so its names stay typed over "kimi".
+  const loadFailed: "kimi_credential_load_failed" = KIMI_EVENTS.credentialLoadFailed;
+  void loadFailed;
+  const lockLost: "kimi_lock_lost" = KIMI_EVENTS.lockLost;
+  void lockLost;
+
+  // @ts-expect-error a Kimi event name is not the name of the same event for another provider.
+  const codexName: "codex_credential_load_failed" = KIMI_EVENTS.credentialLoadFailed;
+  void codexName;
+};
+void kimiEventsKeepTheKimiPrefix;
