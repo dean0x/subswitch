@@ -52,6 +52,7 @@
     "probe:compat": "tsx e2e/gates/run.ts",
     "probe:native-codex": "tsx e2e/gates/native-codex.ts",
     "probe:native-claude": "tsx e2e/gates/native-claude.ts",
+    "probe:kimi": "tsx e2e/gates/kimi-live-check.ts",
     "check": "npm run typecheck && npm run test",
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build",
