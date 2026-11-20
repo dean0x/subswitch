@@ -192,6 +192,48 @@ const liveFactoryViolations = (file: string, source: string): string[] => {
   return violations;
 };
 
+// ---------------------------------------------------------------------------
+// G3 — every CLI child in test/ starts through the shared CLI-child helper
+//
+// SOURCE-TEXT GUARD: the helper gives the child a fresh HOME, XDG_CONFIG_HOME,
+// XDG_CACHE_HOME and SUBSWITCH_CONFIG, and the exec-deny preload. A test that names the
+// CLI entry file itself could start a child that reads the user's real stores.
+// ---------------------------------------------------------------------------
+
+const TEST_DIR = join(SRC_DIR, "../test");
+const CLI_CHILD_HELPER = "helpers/cli-child.ts";
+/**
+ * A path to the source or the built CLI entry file: the folder (src or dist) and the file
+ * name on one line. A bare file name, as in the G2 file lists, is data and not a path.
+ */
+const CLI_ENTRY_FILE = /\bsrc\b[^\n]*\bcli\.ts\b|\bdist\b[^\n]*\bcli\.js\b/;
+
+describe("source-text guards: CLI child processes", () => {
+  it("G3: only the CLI-child helper names the CLI entry file in test/", () => {
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: TEST_DIR });
+    assert.ok(files.includes(CLI_CHILD_HELPER) && files.includes("integration/cli.test.ts"),
+      "The test file list must include the helper and the CLI tests");
+    assert.match(readFileSync(join(TEST_DIR, CLI_CHILD_HELPER), "utf8"), CLI_ENTRY_FILE);
+    for (const file of files) {
+      if (file === CLI_CHILD_HELPER) continue;
+      assert.doesNotMatch(readFileSync(join(TEST_DIR, file), "utf8"), CLI_ENTRY_FILE,
+        `Start the CLI child in test/${file} through test/${CLI_CHILD_HELPER}`);
+    }
+  });
+
+  it("G3: the entry pattern catches each way to name the CLI entry file", () => {
+    // Built from parts, so this file does not name the entry file itself.
+    const entry = "cli" + ".ts", built = "cli" + ".js";
+    for (const text of [`join(repoRoot, "src", "${entry}")`, `resolve("src/${entry}")`, `new URL("../../src/${entry}", import.meta.url)`,
+      `join(root, "dist", "${built}")`]) {
+      assert.match(text, CLI_ENTRY_FILE, `The pattern must catch ${text}`);
+    }
+    for (const text of ['import { cliChildCommand } from "../helpers/cli-child.js";', `new Set(["${entry}", "run-action.ts"])`]) {
+      assert.doesNotMatch(text, CLI_ENTRY_FILE, `The pattern must allow ${text}`);
+    }
+  });
+});
+
 describe("source-text guards: live deps factories", () => {
   it("G2: only server.ts defines a live factory, and only cli.ts and run-action.ts call one", () => {
     const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
