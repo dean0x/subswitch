@@ -27,9 +27,9 @@ update to the newest commit before reporting.
 
 subswitch is a **loopback-only development proxy**. It binds `127.0.0.1` and its
 only clients are the developer's own tools on the same machine. It sits between
-Claude Code and its upstreams — `api.anthropic.com`, the Codex backend and, only for
-requests that name a `together:` model, the paid Together AI API — all reached over
-TLS.
+Claude Code and its upstreams — `api.anthropic.com`, the Codex backend, only for
+requests that name a `together:` model the paid Together AI API, and only with a
+`providers.kimi` block the Kimi coding API — all reached over TLS.
 
 Defense-in-depth controls built into the proxy:
 
@@ -44,7 +44,9 @@ Defense-in-depth controls built into the proxy:
   untouched. The Codex leg reads `~/.codex/auth.json` (written by the Codex CLI),
   refreshes the OAuth token in place, and writes it back atomically while
   preserving unknown keys. The Together key comes from `TOGETHER_API_KEY` or from
-  one macOS Keychain item, never from a config file.
+  one macOS Keychain item, never from a config file. The Kimi leg reads the sign-in
+  file of the Kimi CLI and writes it back under the Kimi CLI lock (see
+  [Kimi sign-in](#kimi-sign-in)).
 - **Type-level redaction in logs.** Token material and request/response bodies
   are *unrepresentable* in the logger by type — the log field set is closed
   (model, path, route, status, latency, event/error codes). Nothing sensitive
@@ -195,3 +197,47 @@ is always accepted, for tests. A refused host stops `subswitch serve`.
 system prompt, the messages, the tool definitions, the tool results (which can hold
 file contents) and images. Together's terms and data policies apply. Together
 reasoning stays in bounded process memory and is never sent to the client.
+
+## Kimi sign-in
+
+The Kimi route is off by default. SubSwitch reads no Kimi file and sends nothing to Kimi
+unless the user configuration has a `providers.kimi` block. Claude Code is the only
+supported client for this route. This section describes the configured behavior; the
+tests use simulated Kimi servers, and a live check against Kimi is not done yet.
+
+**Sign-in file.** The user signs in with `kimi login` in their own Terminal. SubSwitch
+never runs the Kimi CLI and never starts a sign-in. It reads the Kimi CLI sign-in file of
+the configured region. It renews the sign-in when it is due, and once after Kimi refuses
+an access token. Each renewal runs under the Kimi CLI lock, has a fixed time limit, and
+writes the new record back atomically with every key of the file. A renewal that may
+have reached Kimi is never sent again; SubSwitch records each renewal in a small file
+beside the lock before it sends it.
+
+**File checks.** SubSwitch refuses a sign-in file or folder that is not private to the
+user: the folders must have mode 0700, the file mode 0600, the user must own them, and
+no link is accepted. A folder above them must not be open to writes by other users.
+The file must hold a valid record of a supported Kimi CLI version (0.38.0 to 2.7.2).
+Any other state gives a local 401 with a fixed text and no upstream request.
+
+**Token handling.** The Kimi token goes only to the Kimi hosts of the region, as
+`authorization: Bearer <token>`. Requests to Kimi carry only fixed headers; client
+headers and client credentials never reach Kimi. Redirects from Kimi are refused. Error
+bodies replace the exact loaded token value, and the token is not in logs, `doctor`
+output, `models --json` or the health endpoint. `doctor` shows only the expiry and
+whether a renewal is due, and it never renews.
+
+**Configuration trust.** The whole `providers.kimi` block loads only from the user
+configuration or an explicit `SUBSWITCH_CONFIG` file. A project `subswitch.config.json`
+that sets it fails at load, so a workspace file cannot turn the route on, change the
+hosts or select another sign-in file. The region selects the hosts from a fixed table.
+A host, port or file name that does not match the region fails at load, and the block
+has no opt-in for other hosts.
+
+**No fallback.** A Kimi failure gives a fixed local error. The request does not go to
+Anthropic or to another provider.
+
+**Local access and data.** Any local process can send Kimi requests through the proxy,
+and they use the user's Kimi plan. Each Kimi request sends the conversation to Kimi,
+with tool results (which can hold file contents) and images. Kimi's terms and data
+policies apply. Kimi thinking stays in bounded process memory and is never sent to the
+client.
