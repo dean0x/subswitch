@@ -27,7 +27,7 @@ export const subswitchStateDir = async (
   home: string,
 ): Promise<Result<string, StateDirFault>> => {
   if (!isAbsolute(home)) return err("state_folder_unavailable");
-  const path = join(xdgBaseDir(env, "XDG_CACHE_HOME", join(home, ".cache")), "subswitch");
+  const path = join(xdgBaseDir(env["XDG_CACHE_HOME"], join(home, ".cache")), "subswitch");
   try {
     await mkdir(path, { recursive: true, mode: 0o700 });
     return isPrivateFolder(await lstat(path)) ? ok(path) : err("state_folder_not_private");
