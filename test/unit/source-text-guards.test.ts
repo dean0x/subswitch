@@ -156,6 +156,81 @@ describe("source-text guards", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// G2 — only server.ts defines live deps factories
+//
+// SOURCE-TEXT GUARD: a live factory builds the real readers, stores and runners. Only
+// server.ts defines one, so a test that injects fakes can not meet a second, unseen copy.
+// cli.ts and run-action.ts may call one. A runner needs node:child_process, so only the
+// named files may load that module.
+// ---------------------------------------------------------------------------
+
+const LIVE_FACTORY_HOME = "server.ts";
+const LIVE_FACTORY_CALLERS: ReadonlySet<string> = new Set(["cli.ts", "run-action.ts"]);
+/** A live factory name: live<Thing>Deps. */
+const LIVE_FACTORY_NAME = /\blive[A-Z][\w$]*Deps\b/;
+/** A declaration, a rename by `as`, an assignment, a property key or a method of that name. */
+const LIVE_FACTORY_DEFINITION =
+  /(?:\b(?:function\s*\*?|const|let|var|class)\s+|\bas\s+)live[A-Z][\w$]*Deps\b|\blive[A-Z][\w$]*Deps\s*(?:[:=](?!=)|\([^)]*\)\s*(?::[^{;]*)?\{)/;
+/** The files that may load node:child_process, each with its reason. */
+const CHILD_PROCESS_FILES: ReadonlyMap<string, string> = new Map([
+  ["server.ts", "the live deps factories build the program runners"],
+  ["claude-auth.ts", "the Claude client-ingress store runs the macOS Keychain tool"],
+  ["run-action.ts", "run-action starts the client command that the user names"],
+]);
+const CHILD_PROCESS_MODULE = /["'](?:node:)?child_process["']/;
+
+const liveFactoryViolations = (file: string, source: string): string[] => {
+  if (file === LIVE_FACTORY_HOME) return [];
+  const violations: string[] = [];
+  if (CHILD_PROCESS_MODULE.test(source) && !CHILD_PROCESS_FILES.has(file)) violations.push("loads node:child_process");
+  for (const line of source.split("\n").map((text) => text.trim())) {
+    if (!LIVE_FACTORY_NAME.test(line)) continue;
+    if (LIVE_FACTORY_DEFINITION.test(line)) violations.push(`defines a live factory: ${line}`);
+    else if (!LIVE_FACTORY_CALLERS.has(file)) violations.push(`uses a live factory: ${line}`);
+  }
+  return violations;
+};
+
+describe("source-text guards: live deps factories", () => {
+  it("G2: only server.ts defines a live factory, and only cli.ts and run-action.ts call one", () => {
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
+    for (const file of [LIVE_FACTORY_HOME, ...LIVE_FACTORY_CALLERS, ...CHILD_PROCESS_FILES.keys()]) {
+      assert.ok(files.includes(file), `The source list must include ${file}`);
+    }
+    assert.match(readSrc(LIVE_FACTORY_HOME), /export const liveTogetherKeyReaderDeps = /);
+    for (const file of files) {
+      assert.deepEqual(liveFactoryViolations(file, readSrc(file)), [], `Move the live factory to src/${LIVE_FACTORY_HOME}`);
+    }
+  });
+
+  it("G2: the guard catches each way to define a live factory or a runner outside server.ts", () => {
+    const definitions = [
+      "export const liveKimiStoreDeps = () => ({",
+      "function liveGeminiDeps() {",
+      "export function* liveFooDeps() {",
+      "let liveFooDeps;",
+      "export { build as liveFooDeps };",
+      "const deps = { liveFooDeps: () => ({}) };",
+      "liveFooDeps(): FooDeps {",
+      "liveFooDeps = () => ({});",
+    ];
+    for (const line of definitions) {
+      assert.notDeepEqual(liveFactoryViolations("cli.ts", line), [], `The guard must catch: ${line}`);
+    }
+    const runners = ['import { spawn } from "node:child_process";', "const { execFile } = await import('child_process');"];
+    for (const line of runners) assert.notDeepEqual(liveFactoryViolations("gemini-renewal.ts", line), [], `The guard must catch: ${line}`);
+    assert.notDeepEqual(liveFactoryViolations("doctor.ts", "togetherKeyReader: liveTogetherKeyReaderDeps(),"), [],
+      "a file that is not a named caller must not call a live factory");
+    const calls = [
+      'import { liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";',
+      "togetherKeyReader: liveTogetherKeyReaderDeps(),",
+      "const deps = cond === liveFooDeps() ? a : b;",
+    ];
+    for (const line of calls) assert.deepEqual(liveFactoryViolations("cli.ts", line), [], `A named caller may call: ${line}`);
+  });
+});
+
 it("uses execFile with no shell for the Together Keychain read", () => {
   const reader = readSrc("together-auth.ts");
   const factory = readSrc("server.ts");
