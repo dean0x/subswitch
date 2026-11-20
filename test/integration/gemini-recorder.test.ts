@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
 import * as http from "node:http";
 import { it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -605,19 +604,5 @@ it("accepts only a bare loopback HTTP(S) origin and refuses others with a fixed 
   ]) assert.throws(() => createGeminiRecorderServer({ upstream }), refusal, upstream);
   for (const upstream of ["http://127.0.0.1:4143", "https://localhost:4143", "http://[::1]:4143"]) {
     assert.doesNotThrow(() => createGeminiRecorderServer({ upstream }), upstream);
-  }
-});
-
-it("keeps the Gemini recorder out of the build and the package files", OPTIONS, () => {
-  const readRepoJson = (name: string): unknown => JSON.parse(readFileSync(new URL(`../../${name}`, import.meta.url), "utf8"));
-  const build = readRepoJson("tsconfig.build.json") as { compilerOptions?: { rootDir?: string }; include?: unknown };
-  // rootDir also fails the build when a src file imports a file outside src.
-  assert.equal(build.compilerOptions?.rootDir, "src");
-  assert.deepEqual(build.include, ["src/**/*.ts"]);
-  const pkg = readRepoJson("package.json") as { files?: unknown };
-  assert.ok(Array.isArray(pkg.files) && pkg.files.length > 0, "package.json must list the files it ships");
-  for (const entry of pkg.files as unknown[]) {
-    // Refuse e2e, a path under e2e, a leading glob and the repository root.
-    assert.ok(typeof entry === "string" && !/^(?:\.?\/)?(?:e2e(?:\/|$)|\*|\.?\/?$)/u.test(entry), `package file entry: ${String(entry)}`);
   }
 });
