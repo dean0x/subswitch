@@ -226,6 +226,42 @@ it("bounds SSE lines and skeleton arrays without dropping relay bytes", OPTIONS,
   });
 });
 
+it("walks a body breadth first so a deep first field does not hide the later fields", OPTIONS, async () => {
+  const sessionId = "fake-session-5e21";
+  const userAgent = "fake-user-agent-0c7d";
+  const parts = Array.from({ length: 4 }, () => Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`k${i}`, i])));
+  const body = Buffer.from(JSON.stringify({
+    request: {
+      contents: Array.from({ length: 4 }, () => ({ role: "user", parts })),
+      generationConfig: { maxOutputTokens: 8192 },
+      toolConfig: { functionCallingConfig: { mode: "AUTO" } },
+      sessionId,
+    },
+    requestType: "agent",
+    userAgent,
+  }));
+  await withRecorder((req, res) => {
+    req.resume();
+    req.once("end", () => res.end());
+  }, async (base, output) => {
+    await send(base, {
+      path: "/v1internal:generateContent",
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": body.length },
+    }, body);
+    const transcript = output.join("\n");
+    for (const shape of [
+      "$.request.contents=array(len=4)",
+      "$.request.generationConfig.maxOutputTokens=number(8192)",
+      "$.request.toolConfig.functionCallingConfig.mode=string(len=4)",
+      "$.request.sessionId=string(len=17)",
+      '$.requestType=string(len=5,value="agent")',
+      "$.userAgent=string(len=20)",
+    ]) assert.ok(transcript.includes(shape), `Missing transcript shape: ${shape}`);
+    assert.ok(!transcript.includes(sessionId) && !transcript.includes(userAgent));
+  });
+});
+
 it("rejects an ambiguous target without forwarding it", OPTIONS, async () => {
   let forwardCount = 0;
   await withRecorder((_req, res) => {

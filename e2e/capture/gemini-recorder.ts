@@ -109,6 +109,11 @@ interface ShapeField {
   readonly showString?: boolean;
 }
 
+interface ShapeNode extends ShapeField {
+  readonly value: unknown;
+  readonly fingerprinted?: boolean;
+}
+
 const scalarShape = (value: unknown, field: ShapeField): string => {
   if (typeof value === "string") {
     const shown = field.revealValues && field.showString ? `,value=${safeValue(value)}` : "";
@@ -122,49 +127,61 @@ const scalarShape = (value: unknown, field: ShapeField): string => {
   return "null";
 };
 
-const addShape = (value: unknown, field: ShapeField, out: string[]): void => {
-  if (out.length >= MAX_FIELDS) return;
-  const { path, depth, revealValues, tierContainer = false } = field;
+const shapeLine = (node: ShapeNode): string => {
+  const { value, path } = node;
+  if (node.fingerprinted === true) return `${path}=${fingerprint(value)}`;
+  if (Array.isArray(value)) return `${path}=array(len=${value.length})`;
+  return isPlainObject(value) ? `${path}=object` : `${path}=${scalarShape(value, node)}`;
+};
+
+/** Return at most `room` child nodes, in array or key order. */
+const childNodes = (node: ShapeNode, room: number): ShapeNode[] => {
+  const { value, path, depth, revealValues, tierContainer = false } = node;
+  const children: ShapeNode[] = [];
+  if (node.fingerprinted === true || depth >= MAX_DEPTH) return children;
   if (Array.isArray(value)) {
-    out.push(`${path}=array(len=${value.length})`);
-    if (depth >= MAX_DEPTH) return;
-    for (let i = 0; i < Math.min(value.length, MAX_ARRAY_ITEMS) && out.length < MAX_FIELDS; i++) {
+    for (let i = 0; i < Math.min(value.length, MAX_ARRAY_ITEMS, room); i++) {
       const item: unknown = value[i];
-      addShape(item, { path: `${path}[${i}]`, depth: depth + 1, revealValues, tierContainer: tierContainer && isPlainObject(item) }, out);
+      children.push({ value: item, path: `${path}[${i}]`, depth: depth + 1, revealValues, tierContainer: tierContainer && isPlainObject(item) });
     }
-    return;
+    return children;
   }
-  if (!isPlainObject(value)) {
-    out.push(`${path}=${scalarShape(value, field)}`);
-    return;
-  }
-  out.push(`${path}=object`);
-  if (depth >= MAX_DEPTH) return;
-  let keys = 0;
+  if (!isPlainObject(value)) return children;
   for (const key in value) {
     if (!Object.hasOwn(value, key)) continue;
-    if (keys >= MAX_OBJECT_KEYS || out.length >= MAX_FIELDS) break;
-    keys++;
-    const childPath = path + keyPath(key);
+    if (children.length >= Math.min(MAX_OBJECT_KEYS, room)) break;
     const child = value[key];
+    const childPath = path + keyPath(key);
     // A finite count such as usageMetadata.totalTokenCount or maxOutputTokens is not a secret.
     if (FINGERPRINT_KEYS.test(key) && !(typeof child === "number" && Number.isFinite(child))) {
-      out.push(`${childPath}=${fingerprint(child)}`);
+      children.push({ value: child, path: childPath, depth: depth + 1, revealValues: false, fingerprinted: true });
       continue;
     }
-    addShape(child, {
+    children.push({
+      value: child,
       path: childPath,
       depth: depth + 1,
       revealValues: revealValues && key !== "args" && key !== "functionResponse",
       tierContainer: /Tiers?$/u.test(key),
       showString: SHOW_STRINGS.has(key) || (key === "id" && tierContainer),
-    }, out);
+    });
   }
+  return children;
 };
 
+/**
+ * Walk breadth first: every field at one depth prints before the next depth,
+ * so a deep first field cannot use up MAX_FIELDS and hide a later sibling.
+ * Each queued node prints one line, so the queue never holds more than MAX_FIELDS.
+ */
 const shapeOf = (value: unknown): string => {
+  const queue: ShapeNode[] = [{ value, path: "$", depth: 0, revealValues: true }];
   const fields: string[] = [];
-  addShape(value, { path: "$", depth: 0, revealValues: true }, fields);
+  for (let head = 0; head < queue.length; head++) {
+    const node = queue[head]!;
+    fields.push(shapeLine(node));
+    queue.push(...childNodes(node, MAX_FIELDS - queue.length));
+  }
   return fields.join(" ");
 };
 
