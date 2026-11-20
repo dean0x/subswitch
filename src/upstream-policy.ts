@@ -1,4 +1,4 @@
-import { isLoopbackHost, parseTogetherBaseUrl } from "./config.js";
+import { isLoopbackHost, parseCredentialUrl } from "./config.js";
 import type { Logger } from "./logger.js";
 import { ok, err, type Result } from "./result.js";
 
@@ -16,7 +16,7 @@ export const vetCredentialUrl = (options: {
   events: { insecureBaseUrlScheme: string; baseUrlHostRejected: string; baseUrlOverrideDetected: string };
 }): Result<void, string> => {
   const { path, logger, events } = options;
-  const url = options.together ? parseTogetherBaseUrl(options.url) : new URL(options.url);
+  const url = options.together ? parseCredentialUrl(options.url) : new URL(options.url);
   if (options.together) {
     const defaultPort = url?.protocol === "https:" && !url.port;
     if (url && (isLoopbackHost(url.hostname) || (defaultPort && url.hostname === options.expectedHost))) return ok(undefined);

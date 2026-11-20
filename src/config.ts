@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
@@ -12,6 +12,7 @@ import type { AccessProfile, RoutePolicy } from "./routing/routing-types.js";
 import { ownValue } from "./plain-object.js";
 import { TOGETHER_API_KEY_ENV, TOGETHER_KEYCHAIN_SERVICE } from "./together-auth.js";
 import { TOGETHER_DEFAULT_OUTPUT_CAP } from "./together-request.js";
+import { KIMI_CREDENTIALS_FOLDER, KIMI_DEFAULT_HOME, KIMI_REGION_TABLE, KIMI_REGIONS } from "./kimi-constants.js";
 
 export const DEFAULT_PORT = 4141 as const;
 
@@ -283,11 +284,12 @@ export const TOGETHER_DEFAULT_HOST = "api.together.ai";
 const MIB = 1024 * 1024;
 
 /**
- * Parse a Together base URL that can carry the paid key. Return the URL only for HTTPS,
- * or for HTTP to a loopback host, with no userinfo, query, fragment, backslash or
- * whitespace; else return undefined. The startup host check also uses this parser.
+ * Parse a URL that carries a credential: the Together paid key or the Kimi sign-in.
+ * Return the URL only for HTTPS, or for HTTP to a loopback host, with no userinfo,
+ * query, fragment, backslash or whitespace; else return undefined. The startup host
+ * check of Together also uses this parser.
  */
-export const parseTogetherBaseUrl = (raw: string): URL | undefined => {
+export const parseCredentialUrl = (raw: string): URL | undefined => {
   if (!/^https?:\/\/[^/?#\\\s]+/i.test(raw) || /[?#\\\s]/.test(raw) || /^https?:\/\/[^/]*@/i.test(raw)) return;
   if (!URL.canParse(raw)) return;
   const url = new URL(raw);
@@ -295,11 +297,13 @@ export const parseTogetherBaseUrl = (raw: string): URL | undefined => {
   if (url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHost(url.hostname))) return url;
 };
 
+const CredentialUrlSchema = z.string().refine((raw) => parseCredentialUrl(raw) !== undefined, {
+  message: "Use HTTPS (or HTTP on loopback) without userinfo, query or fragment in the user configuration or SUBSWITCH_CONFIG.",
+});
+
 const TogetherProviderSchema = z.strictObject({
   kind: z.literal("together"),
-  baseUrl: z.string().refine((raw) => parseTogetherBaseUrl(raw) !== undefined, {
-    message: "Use HTTPS (or HTTP on loopback) without userinfo, query or fragment in the user configuration or SUBSWITCH_CONFIG.",
-  }).default(`https://${TOGETHER_DEFAULT_HOST}/v1`),
+  baseUrl: CredentialUrlSchema.default(`https://${TOGETHER_DEFAULT_HOST}/v1`),
   allowInsecureBaseUrl: z.boolean().default(false),
   aliases: AliasesSchema,
   outputCap: z.number().int().positive().default(TOGETHER_DEFAULT_OUTPUT_CAP),
@@ -315,6 +319,67 @@ const TogetherProviderSchema = z.strictObject({
 });
 
 /**
+ * True when a parsed Kimi URL is on the region's own host: HTTPS on the default port,
+ * or a loopback address. Only injected test deps can serve a loopback address; the
+ * startup check refuses one for the live store.
+ */
+const isKimiRegionUrl = (raw: string, host: string): boolean => {
+  const url = parseCredentialUrl(raw);
+  return url !== undefined &&
+    (isLoopbackHost(url.hostname) || (url.protocol === "https:" && url.hostname === host && url.port === ""));
+};
+
+/**
+ * True when `path` names the region's Kimi CLI credential slot: an absolute, normal
+ * path to `<home>/credentials/<slot>`. Checked here, at config load, so the Kimi sign-in
+ * code gets a checked path and does no file access before it reads the file.
+ */
+const isKimiCredentialPath = (path: string, credentialFile: string): boolean =>
+  isAbsolute(path) && resolve(path) === path && !path.includes("\0") &&
+  basename(dirname(path)) === KIMI_CREDENTIALS_FOLDER && basename(path) === credentialFile;
+
+/**
+ * The Kimi block. The region selects the default hosts and the Kimi CLI credential slot
+ * from a fixed table. A URL or a credential file that does not match the region fails
+ * the load. The block has no host opt-in key, and `optedIn` is not a key: resolveConfig
+ * sets it from the blocks that are in the file.
+ */
+const KimiProviderSchema = z.strictObject({
+  kind: z.literal("kimi"),
+  region: z.enum(KIMI_REGIONS).default("global"),
+  authFile: z.string().min(1).optional(),
+  baseUrl: CredentialUrlSchema.optional(),
+  oauthTokenUrl: CredentialUrlSchema.optional(),
+  aliases: AliasesSchema,
+  requestTimeoutMs: z.number().int().positive().max(2_147_483_647).default(600_000),
+  streamIdleTimeoutMs: z.number().int().positive().max(2_147_483_647).default(300_000),
+  maxSseEventBytes: z.number().int().positive().default(4 * MIB),
+  maxAggregateBytes: z.number().int().positive().default(64 * MIB),
+  reasoningCache: z.strictObject({
+    maxEntries: z.number().int().positive().default(1024),
+    maxBytes: z.number().int().positive().default(16 * MIB),
+    maxTurnBytes: z.number().int().positive().max(MIB).default(MIB),
+  }).prefault({}),
+}).transform(({ region, authFile, baseUrl, oauthTokenUrl, ...rest }, ctx) => {
+  const profile = KIMI_REGION_TABLE[region];
+  const resolved = {
+    ...rest,
+    region,
+    authFile: expandHome(authFile ?? `${KIMI_DEFAULT_HOME}/${KIMI_CREDENTIALS_FOLDER}/${profile.credentialFile}`),
+    baseUrl: baseUrl ?? profile.baseUrl,
+    oauthTokenUrl: oauthTokenUrl ?? profile.oauthTokenUrl,
+  };
+  for (const [key, host] of [["baseUrl", profile.apiHost], ["oauthTokenUrl", profile.oauthHost]] as const) {
+    if (!isKimiRegionUrl(resolved[key], host))
+      ctx.addIssue({ code: "custom", path: [key], message: `use https://${host} (the ${region} region host) on the default port` });
+  }
+  if (!isKimiCredentialPath(resolved.authFile, profile.credentialFile))
+    ctx.addIssue({ code: "custom", path: ["authFile"],
+      message: `use an absolute path that ends in ${KIMI_CREDENTIALS_FOLDER}/${profile.credentialFile} (the ${region} region slot)` });
+  return resolved;
+});
+
+/**
  * Per-provider file schemas, keyed by ProviderId.
  *
  * `satisfies` against a mapped type over the closed union checks an object literal
@@ -325,6 +390,7 @@ const TogetherProviderSchema = z.strictObject({
 const PROVIDER_SCHEMAS = {
   codex: z.preprocess((raw) => injectKind(raw, "codex"), CodexProviderSchema).prefault({ kind: "codex" }),
   together: z.preprocess((raw) => injectKind(raw, "together"), TogetherProviderSchema).prefault({ kind: "together" }),
+  kimi: z.preprocess((raw) => injectKind(raw, "kimi"), KimiProviderSchema).prefault({ kind: "kimi" }),
 } satisfies { readonly [K in ProviderId]: z.ZodType };
 
 const ProvidersSchema = z.object(PROVIDER_SCHEMAS).prefault({});
@@ -468,9 +534,18 @@ export interface CodexProviderConfig {
 interface ProviderConfigShape {
   readonly codex: CodexProviderConfig;
   readonly together: TogetherProviderConfig;
+  readonly kimi: KimiProviderConfig;
 }
 
 export type TogetherProviderConfig = Readonly<Omit<z.infer<typeof TogetherProviderSchema>, "kind">>;
+
+/**
+ * The Kimi settings. `authFile` is tilde-expanded and checked at load. `optedIn` is true
+ * only when a `providers.kimi` block is in the user configuration or in SUBSWITCH_CONFIG.
+ */
+export type KimiProviderConfig = Readonly<Omit<z.infer<typeof KimiProviderSchema>, "kind">> & {
+  readonly optedIn: boolean;
+};
 
 /**
  * Resolved per-provider config, keyed by the closed ProviderId union.
@@ -581,6 +656,19 @@ export const codexCredentialFor = (
   requireHttps: false,
 });
 
+/** Kimi has no host opt-in: each URL must be on its region's own host, over https. */
+export const kimiCredentialFor = (provider: KimiProviderConfig): Extract<Credential, { kind: "oauth-file" }> => ({
+  kind: "oauth-file",
+  authFile: provider.authFile,
+  loginCommand: `kimi login --region ${provider.region}`,
+  baseUrl: provider.baseUrl,
+  defaultHost: KIMI_REGION_TABLE[provider.region].apiHost,
+  oauthTokenUrl: provider.oauthTokenUrl,
+  defaultOauthHost: KIMI_REGION_TABLE[provider.region].oauthHost,
+  allowInsecureBaseUrl: false,
+  requireHttps: true,
+});
+
 /**
  * Total map from ProviderId to its config slice.
  *
@@ -602,6 +690,10 @@ const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) =>
     allowInsecureBaseUrl: together.allowInsecureBaseUrl,
     envName: TOGETHER_API_KEY_ENV,
     keychainService: TOGETHER_KEYCHAIN_SERVICE,
+  }),
+  kimi: (config) => ({
+    displayName: "Kimi",
+    ...kimiCredentialFor(config.providers.kimi),
   }),
 };
 
@@ -626,6 +718,7 @@ export const providerConfigFor = (config: Config, id: ProviderId): ProviderRunti
 export const aliasesByProvider = (config: Config): AliasesByProvider => ({
   codex: config.providers.codex.aliases,
   together: config.providers.together.aliases,
+  kimi: config.providers.kimi.aliases,
 });
 
 // ---------------------------------------------------------------------------
@@ -819,9 +912,11 @@ export const detectUnknownProviderKeys = (raw: unknown): readonly string[] => {
  * exactOptionalPropertyTypes stays honest and `Config` stays hand-written: a field
  * added to the schema but not to the resolver fails to compile instead of silently
  * riding along untransformed.
+ *
+ * `optedIn` is true when the provider's block is in the file (detectConfiguredProviders).
  */
 const PROVIDER_RESOLVERS: {
-  readonly [K in ProviderId]: (file: FileConfig["providers"][K]) => ProviderConfigShape[K];
+  readonly [K in ProviderId]: (file: FileConfig["providers"][K], optedIn: boolean) => ProviderConfigShape[K];
 } = {
   codex: (file) => ({
     baseUrl: file.baseUrl,
@@ -837,6 +932,19 @@ const PROVIDER_RESOLVERS: {
     allowInsecureBaseUrl: file.allowInsecureBaseUrl,
   }),
   together: ({ kind: _kind, ...file }) => file,
+  kimi: (file, optedIn) => ({
+    region: file.region,
+    authFile: file.authFile,
+    baseUrl: file.baseUrl,
+    oauthTokenUrl: file.oauthTokenUrl,
+    aliases: file.aliases,
+    requestTimeoutMs: file.requestTimeoutMs,
+    streamIdleTimeoutMs: file.streamIdleTimeoutMs,
+    maxSseEventBytes: file.maxSseEventBytes,
+    maxAggregateBytes: file.maxAggregateBytes,
+    reasoningCache: file.reasoningCache,
+    optedIn,
+  }),
 };
 
 /**
@@ -848,8 +956,11 @@ const PROVIDER_RESOLVERS: {
  * cannot preserve the key→slice-type correlation without a cast, and the cast is
  * exactly the completeness check PROVIDER_RESOLVERS exists to provide.
  * Expands tilde in authFile.
+ *
+ * `configuredProviders` is the set from detectConfiguredProviders, the one owner of
+ * "the block is in the file". A provider's `optedIn` comes only from this set.
  */
-export const resolveConfig = (file: FileConfig): Config => ({
+export const resolveConfig = (file: FileConfig, configuredProviders: ReadonlySet<ProviderId>): Config => ({
   ...(file.configVersion === 2 ? { configVersion: 2 as const, accessProfiles: file.accessProfiles, routes: file.routes } : {}),
   port: file.port,
   logLevel: file.logLevel,
@@ -861,8 +972,9 @@ export const resolveConfig = (file: FileConfig): Config => ({
     allowInsecureBaseUrl: file.anthropic.allowInsecureBaseUrl,
   },
   providers: {
-    codex: PROVIDER_RESOLVERS.codex(file.providers.codex),
-    together: PROVIDER_RESOLVERS.together(file.providers.together),
+    codex: PROVIDER_RESOLVERS.codex(file.providers.codex, configuredProviders.has("codex")),
+    together: PROVIDER_RESOLVERS.together(file.providers.together, configuredProviders.has("together")),
+    kimi: PROVIDER_RESOLVERS.kimi(file.providers.kimi, configuredProviders.has("kimi")),
   },
   limits: {
     maxBufferedBodyBytes: file.limits.maxBufferedBodyBytes,
@@ -934,6 +1046,9 @@ export interface LoadConfigResult {
  * Which `providers.<id>` blocks are literally present in the raw config object.
  * Own-property checks only — a JSON-parsed object's inherited keys must never
  * count as user intent.
+ *
+ * The one owner of "the block exists": doctor reads this set from LoadConfigResult,
+ * and resolveConfig sets each provider's `optedIn` from the same set.
  */
 const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
   const found = new Set<ProviderId>();
@@ -948,7 +1063,9 @@ const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
 
 /**
  * Dotted keys that a project `subswitch.config.json` can not set: explicit profiles
- * and routes, the whole Together block (it selects a paid key and its host), every
+ * and routes, the whole Together block (it selects a paid key and its host), the whole
+ * Kimi block (its presence turns on a sign-in route, and it selects the region, the
+ * credential file and the hosts), every
  * sign-in address, every key that selects a credential file or folder, and every
  * `allowInsecureBaseUrl` opt-in. Only the user configuration or a
  * file selected with SUBSWITCH_CONFIG sets them, so a file in the current folder can
@@ -962,6 +1079,7 @@ const PROJECT_REFUSED_KEYS: readonly string[] = [
   "accessProfiles",
   "routes",
   "providers.together",
+  "providers.kimi",
   "anthropic.baseUrl",
   "anthropic.allowInsecureBaseUrl",
   ...PROVIDER_IDS.flatMap(id => [
@@ -988,7 +1106,7 @@ const PROJECT_REFUSED_KEYS: readonly string[] = [
  *   2. `SUBSWITCH_CONFIG` env var (tilde-expanded)
  *   3. implicit user config merged under `<cwd>/subswitch.config.json` (permitted project fields win)
  *
- * Profiles, routes, the Together block, sign-in addresses, credential file and folder
+ * Profiles, routes, the Together and Kimi blocks, sign-in addresses, credential file and folder
  * keys, and the `allowInsecureBaseUrl` opt-ins (PROJECT_REFUSED_KEYS) require a user
  * or explicit config. Project files that declare any of these keys fail before the
  * merge, even for empty values.
@@ -1052,7 +1170,7 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
   if (isProject && isPlainObject(raw)) {
     const project = raw;
     const matched = PROJECT_REFUSED_KEYS.filter(path => hasOwnPath(project, path));
-    // Name only the outermost refused key: `providers.together` covers its own sub-keys.
+    // Name only the outermost refused key: a whole-block key covers its own sub-keys.
     const forbidden = matched.filter(path => !matched.some(outer => path.startsWith(`${outer}.`)));
     if (forbidden.length > 0) {
       return err({
@@ -1128,12 +1246,13 @@ export const loadConfig = (options: LoadConfigOptions = {}): Result<LoadConfigRe
     });
   }
 
+  const configuredProviders = detectConfiguredProviders(raw);
   return ok({
-    config: resolveConfig(parsed.data),
+    config: resolveConfig(parsed.data, configuredProviders),
     configPaths: sources.map(source => source.path),
     configPath: !fileFound && loadedGlobal ? loadedGlobal : resolvedPath,
     fileFound: fileFound || loadedGlobal !== undefined,
-    configuredProviders: detectConfiguredProviders(raw),
+    configuredProviders,
   });
 };
 

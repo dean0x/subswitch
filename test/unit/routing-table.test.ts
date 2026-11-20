@@ -226,7 +226,7 @@ describe("Together qualified resolution", () => {
   const vetted = { id: "fixture/vetted", provider: "together", family: "fixture-family", gen: [1] } satisfies ModelEntry;
   const { table } = buildRoutingTable(
     [vetted, entry("together:fixture/exact"), entry("fixture/codex")],
-    { codex: { "together:fixture/alias": "fixture/codex", [vetted.id]: "fixture/codex" },
+    { ...emptyAliases(), codex: { "together:fixture/alias": "fixture/codex", [vetted.id]: "fixture/codex" },
       together: { "fixture-pin": vetted.id, "unlisted-pin": "fixture/unlisted" } },
   );
 

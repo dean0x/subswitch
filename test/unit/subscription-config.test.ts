@@ -34,6 +34,7 @@ describe("subscription-only explicit configuration", () => {
     if (!loaded.ok) assert.equal(loaded.error.message,
       error("accessProfiles.work.billing", "unsupported billing: api"));
   });
+  // Intentional: Kimi routes only through providers.kimi and has no v2 accessProfiles route.
   it("rejects a Kimi subscription profile at config load", () => {
     const loaded = load({ ...profile, provider: "kimi", product: "kimi-code" });
     assert.equal(loaded.ok, false);

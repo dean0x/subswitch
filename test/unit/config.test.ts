@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +11,7 @@ import {
   aliasesByProvider,
   enumerateDestinations,
   isLoopbackHost,
+  providerConfigFor,
   userConfigPath,
   type LoadConfigOptions,
   type RoutingDestination,
@@ -77,6 +79,159 @@ describe("Together config sources", () => {
       assert.equal(result.value.config.providers.together.outputCap, outputCap);
       assert.equal(result.value.config.providers.together.baseUrl, baseUrl);
       assert.ok(result.value.configuredProviders.has("together"));
+    }
+  });
+});
+
+describe("Kimi config block", () => {
+  // The Kimi CLI names its global-region slot from the first 16 hex characters of the
+  // SHA-256 of this exact JSON text. Spelled out here, apart from the code under test.
+  const globalSlot = `kimi-code-env-${createHash("sha256")
+    .update('{"oauthHost":"https://auth.kimi.ai","baseUrl":"https://api.kimi.ai/coding/v1"}').digest("hex").slice(0, 16)}.json`;
+  const loadKimi = (kimi: unknown) => loadConfig({ configPath: "/fixture/selected.json", env: {},
+    readFile: () => JSON.stringify({ providers: { kimi } }) });
+  const loadUser = (user: unknown) => loadConfig({ cwd: "/fixture/project", globalConfigPath: "/fixture/user.json", env: {},
+    readFile: (path) => path === "/fixture/user.json" ? JSON.stringify(user) : missingFile() });
+
+  it("defaults to the global region, its hosts and its Kimi CLI slot, turned off", () => {
+    const result = loadConfig({ readFile: missingFile, env: {} });
+    assert.ok(result.ok);
+    const { kimi } = result.value.config.providers;
+    assert.equal(kimi.region, "global");
+    assert.equal(kimi.baseUrl, "https://api.kimi.ai/coding/v1");
+    assert.equal(kimi.oauthTokenUrl, "https://auth.kimi.ai/api/oauth/token");
+    assert.equal(kimi.authFile, join(homedir(), ".kimi-code", "credentials", globalSlot));
+    assert.equal(kimi.optedIn, false);
+    assert.equal(result.value.configuredProviders.has("kimi"), false);
+  });
+
+  it("takes the mainland-cn hosts and slot from the region table", () => {
+    const result = loadKimi({ region: "mainland-cn" });
+    assert.ok(result.ok, !result.ok ? result.error.message : undefined);
+    const { kimi } = result.value.config.providers;
+    assert.equal(kimi.baseUrl, "https://api.kimi.com/coding/v1");
+    assert.equal(kimi.oauthTokenUrl, "https://auth.kimi.com/api/oauth/token");
+    assert.equal(kimi.authFile, join(homedir(), ".kimi-code", "credentials", "kimi-code.json"));
+  });
+
+  for (const [region, apiHost, authHost] of [["global", "api.kimi.ai", "auth.kimi.ai"], ["mainland-cn", "api.kimi.com", "auth.kimi.com"]] as const) {
+    it(`gives the ${region} credential its exact hosts, https only, with no host opt-in`, () => {
+      const result = loadKimi({ region });
+      assert.ok(result.ok, !result.ok ? result.error.message : undefined);
+      const credential = providerConfigFor(result.value.config, "kimi");
+      assert.equal(credential.kind, "oauth-file");
+      if (credential.kind !== "oauth-file") return;
+      assert.equal(credential.defaultHost, apiHost);
+      assert.equal(credential.defaultOauthHost, authHost);
+      assert.equal(credential.requireHttps, true);
+      assert.equal(credential.allowInsecureBaseUrl, false);
+      assert.equal(credential.loginCommand, `kimi login --region ${region}`);
+    });
+  }
+
+  it("turns the route on only when the block is in the user config or in SUBSWITCH_CONFIG", () => {
+    const fromUser = loadUser({ providers: { kimi: {} } });
+    assert.ok(fromUser.ok, !fromUser.ok ? fromUser.error.message : undefined);
+    assert.equal(fromUser.value.config.providers.kimi.optedIn, true);
+    assert.ok(fromUser.value.configuredProviders.has("kimi"));
+    const selected = loadKimi({});
+    assert.ok(selected.ok, !selected.ok ? selected.error.message : undefined);
+    assert.equal(selected.value.config.providers.kimi.optedIn, true);
+    const otherBlock = loadUser({ providers: { together: {} } });
+    assert.ok(otherBlock.ok, !otherBlock.ok ? otherBlock.error.message : undefined);
+    assert.equal(otherBlock.value.config.providers.kimi.optedIn, false);
+  });
+
+  it("refuses an optedIn key, an unknown region and a host opt-in key in the block", () => {
+    for (const kimi of [{ optedIn: true }, { region: "europe" }, { allowInsecureBaseUrl: true }]) {
+      const result = loadKimi(kimi);
+      assert.ok(!result.ok, `${JSON.stringify(kimi)} must fail the load`);
+      assert.match(result.error.message, /^invalid config: providers\.kimi/);
+    }
+  });
+
+  for (const [label, kimi] of [
+    ["an http URL to a remote host", { baseUrl: "http://api.kimi.ai/coding/v1" }],
+    ["the other region's API host", { baseUrl: "https://api.kimi.com/coding/v1" }],
+    ["a foreign API host", { baseUrl: "https://relay.example/coding/v1" }],
+    ["a non-default API port", { baseUrl: "https://api.kimi.ai:8443/coding/v1" }],
+    ["userinfo in the API URL", { baseUrl: "https://user:secret@api.kimi.ai/coding/v1" }],
+    ["a query in the API URL", { baseUrl: "https://api.kimi.ai/coding/v1?x=1" }],
+    ["a fragment in the token URL", { oauthTokenUrl: "https://auth.kimi.ai/api/oauth/token#x" }],
+    ["the other region's token host", { region: "mainland-cn", oauthTokenUrl: "https://auth.kimi.ai/api/oauth/token" }],
+    ["an http token URL to a remote host", { oauthTokenUrl: "http://auth.kimi.ai/api/oauth/token" }],
+  ] as const) {
+    it(`refuses ${label}`, () => {
+      const result = loadKimi(kimi);
+      assert.ok(!result.ok, `${label} must fail the load`);
+      assert.match(result.error.message, /providers\.kimi\.(baseUrl|oauthTokenUrl)/);
+    });
+  }
+
+  it("accepts loopback URLs, which only injected test deps can serve", () => {
+    const result = loadKimi({ baseUrl: "http://127.0.0.1:4142/coding/v1", oauthTokenUrl: "http://127.0.0.1:4143/api/oauth/token" });
+    assert.ok(result.ok, !result.ok ? result.error.message : undefined);
+    assert.equal(result.value.config.providers.kimi.baseUrl, "http://127.0.0.1:4142/coding/v1");
+  });
+
+  for (const [label, authFile] of [
+    ["a relative path", `credentials/${globalSlot}`],
+    ["a path with a parent step", `/fixture/kimi/credentials/../credentials/${globalSlot}`],
+    ["a folder other than credentials", `/fixture/kimi/oauth/${globalSlot}`],
+    ["the other region's slot", "/fixture/kimi/credentials/kimi-code.json"],
+    ["a NUL byte", `/fixture/kimi\0/credentials/${globalSlot}`],
+  ] as const) {
+    it(`refuses an authFile with ${label}, before any file access`, () => {
+      const result = loadKimi({ authFile });
+      assert.ok(!result.ok, `${label} must fail the load`);
+      assert.match(result.error.message, /providers\.kimi\.authFile/);
+    });
+  }
+
+  it("accepts a Kimi CLI home in another folder and expands ~", () => {
+    const custom = loadKimi({ authFile: `/fixture/kimi-home/credentials/${globalSlot}` });
+    assert.ok(custom.ok, !custom.ok ? custom.error.message : undefined);
+    assert.equal(custom.value.config.providers.kimi.authFile, `/fixture/kimi-home/credentials/${globalSlot}`);
+    const tilde = loadKimi({ region: "mainland-cn", authFile: "~/kimi-home/credentials/kimi-code.json" });
+    assert.ok(tilde.ok, !tilde.ok ? tilde.error.message : undefined);
+    assert.equal(tilde.value.config.providers.kimi.authFile, join(homedir(), "kimi-home", "credentials", "kimi-code.json"));
+  });
+
+  it("carries every providers.kimi field through resolveConfig", () => {
+    const result = loadKimi({
+      region: "mainland-cn",
+      authFile: "/fixture/kimi-home/credentials/kimi-code.json",
+      baseUrl: "https://api.kimi.com/coding/v1/",
+      oauthTokenUrl: "https://auth.kimi.com/api/oauth/token/",
+      aliases: { "kimi-fast": "k3" },
+      requestTimeoutMs: 111,
+      streamIdleTimeoutMs: 222,
+      maxSseEventBytes: 333,
+      maxAggregateBytes: 444,
+      reasoningCache: { maxEntries: 5, maxBytes: 6, maxTurnBytes: 7 },
+    });
+    assert.ok(result.ok, !result.ok ? result.error.message : undefined);
+    assert.deepEqual(result.value.config.providers.kimi, {
+      region: "mainland-cn",
+      authFile: "/fixture/kimi-home/credentials/kimi-code.json",
+      baseUrl: "https://api.kimi.com/coding/v1/",
+      oauthTokenUrl: "https://auth.kimi.com/api/oauth/token/",
+      aliases: { "kimi-fast": "k3" },
+      requestTimeoutMs: 111,
+      streamIdleTimeoutMs: 222,
+      maxSseEventBytes: 333,
+      maxAggregateBytes: 444,
+      reasoningCache: { maxEntries: 5, maxBytes: 6, maxTurnBytes: 7 },
+      optedIn: true,
+    });
+    assert.deepEqual(aliasesByProvider(result.value.config).kimi, { "kimi-fast": "k3" });
+  });
+
+  it("refuses a Kimi alias key or target that is a reserved Anthropic name", () => {
+    for (const aliases of [{ sonnet: "k3" }, { "kimi-fast": "claude-test" }]) {
+      const result = loadKimi({ aliases });
+      assert.ok(!result.ok, `${JSON.stringify(aliases)} must fail the load`);
+      assert.match(result.error.message, /providers\.kimi\.aliases/);
     }
   });
 });
@@ -1290,6 +1445,18 @@ describe("a project config can not change sign-in addresses or credential files"
       assert.ok(!result.ok, "a project providers.together block must fail the load");
       assert.match(result.error.message, /^providers\.together not allowed in project configuration/);
       assert.ok(!result.error.message.includes("providers.together."), `sub-keys must not repeat: ${result.error.message}`);
+      assert.ok(result.error.message.includes(userPath), "message must name the user config file");
+    });
+  }
+
+  // The Kimi block selects a sign-in file, its region and its hosts, so a project file
+  // can set none of it: not even an empty or null block that only turns the route on.
+  for (const kimi of [{ region: "mainland-cn" }, { baseUrl: "https://relay.example/coding/v1" }, { aliases: { fast: "k3" } }, {}, null]) {
+    it(`refuses the whole providers.kimi block ${JSON.stringify(kimi)} and names only that key`, () => {
+      const result = loadFiles({ [projectPath]: { port: 4567, providers: { kimi } } });
+      assert.ok(!result.ok, "a project providers.kimi block must fail the load");
+      assert.match(result.error.message, /^providers\.kimi not allowed in project configuration/);
+      assert.ok(!result.error.message.includes("providers.kimi."), `sub-keys must not repeat: ${result.error.message}`);
       assert.ok(result.error.message.includes(userPath), "message must name the user config file");
     });
   }

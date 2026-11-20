@@ -4,8 +4,9 @@ import { homedir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
 import {
-  aliasesByProvider, codexCredentialFor, providerConfigFor, withCredential,
-  type CodexProviderConfig, type Config, type CredentialKindTable, type ProviderConfigs, type TogetherProviderConfig,
+  aliasesByProvider, codexCredentialFor, kimiCredentialFor, providerConfigFor, withCredential,
+  type CodexProviderConfig, type Config, type CredentialKindTable, type KimiProviderConfig, type ProviderConfigs,
+  type TogetherProviderConfig,
 } from "./config.js";
 import { inspectAuthFile, type AuthInspection } from "./codex-auth.js";
 import { isPlainObject } from "./plain-object.js";
@@ -94,6 +95,15 @@ const inspectTogetherKey = async (_slice: TogetherProviderConfig, io: DoctorIO):
   return { kind: "api-key", key: result.ok ? { kind: "present", source: result.value.source } : { kind: result.error } };
 };
 
+/**
+ * The Kimi row reads nothing: this build has no Kimi store reader with its file checks,
+ * and a plain read would skip them. The row reports the file as not readable.
+ */
+const inspectKimiAuth = async (slice: KimiProviderConfig): Promise<DoctorAuthInspection> => {
+  const { authFile, loginCommand } = kimiCredentialFor(slice);
+  return { kind: "oauth-file", authFile, loginCommand, result: err({ kind: "unreadable", missing: false }) };
+};
+
 // ---------------------------------------------------------------------------
 // Per-provider auth inspector registry (totality anchor)
 //
@@ -108,6 +118,7 @@ export const PROVIDER_AUTH_INSPECTORS: {
 } = {
   codex: inspectCodexAuth,
   together: inspectTogetherKey,
+  kimi: inspectKimiAuth,
 };
 
 // ---------------------------------------------------------------------------

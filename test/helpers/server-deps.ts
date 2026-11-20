@@ -10,6 +10,7 @@ const refusingProviderDeps = (refused: string[]): ProviderDepsById => ({
       throw new Error("Unexpected Keychain call: inject the Together deps");
     },
   },
+  kimi: undefined,
 });
 
 type TestOptions = NonNullable<Parameters<typeof buildDeps>[2]> & { readonly refusedStoreCalls?: string[] };

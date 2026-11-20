@@ -34,6 +34,7 @@ import {
 } from "./models.js";
 import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 import type { ProviderHandler } from "./provider-handler.js";
+import { notOptedInHandler } from "./provider-opt-in.js";
 import { codexIngressRoute } from "./codex-ingress.js";
 import { rejectCodexUpgrade, type CodexIngressEntry } from "./openai-passthrough.js";
 import { CodexGateway } from "./codex-gateway.js";
@@ -101,6 +102,8 @@ const createCodexProvider = (config: Config, logger: Logger, auth: ProviderAuth<
 export interface ProviderDepsById {
   readonly codex: undefined;
   readonly together: TogetherKeyReaderDeps;
+  /** No Kimi store yet: every Kimi request gets the fixed local error. */
+  readonly kimi: undefined;
 }
 
 /** Injected provider deps, by provider id. buildDeps uses the live deps for a missing entry. */
@@ -247,6 +250,8 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
     providers: {
       codex: createCodexProvider(config, logger, codexAuth),
       together: createTogetherProvider(config, logger, keyReaderDeps, routingOptions.fetchImpl),
+      // This build has no Kimi leg. The fixed local error reads no credential, file or network.
+      kimi: notOptedInHandler("Kimi", "kimi"),
     },
     togetherEnv: keyReaderDeps.env,
     resolve: (name) => resolveModelFromTable(table, name),
