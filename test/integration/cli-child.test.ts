@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cliChildCommand, cliChildFolders, readExecLog, runCliChild } from "../helpers/cli-child.js";
 
@@ -52,8 +52,8 @@ describe("CLI child helper", () => {
     const folders = await freshFolders(t);
     const command = cliChildCommand(folders, ["models"], { env: { NO_COLOR: "1" } });
     assert.equal(command.env["HOME"], folders.home);
-    assert.equal(command.env["XDG_CONFIG_HOME"], join(folders.home, ".config"));
-    assert.equal(command.env["XDG_CACHE_HOME"], join(folders.home, ".cache"));
+    assert.equal(command.env["XDG_CONFIG_HOME"], join(folders.home, "xdg-config"));
+    assert.equal(command.env["XDG_CACHE_HOME"], join(folders.home, "xdg-cache"));
     assert.equal(command.env["SUBSWITCH_CONFIG"], folders.configFile);
     assert.equal(await readFile(folders.configFile, "utf8"), "{}");
     assert.equal(command.env["NO_COLOR"], "1");
@@ -83,15 +83,68 @@ describe("CLI child helper", () => {
     assert.equal(cliChildCommand(folders, ["models"], { env: { SUBSWITCH_CONFIG: "" } }).env["SUBSWITCH_CONFIG"], "");
   });
 
-  it("runs doctor with the fresh folders and refuses its Keychain call", { timeout: 30_000 }, async (t) => {
+  it("refuses path variables outside the temporary folders", async (t) => {
+    const folders = await freshFolders(t);
+    const temp = tmpdir();
+    const outside = join(dirname(temp), `${basename(temp)}-outside`, "not-created");
+    for (const name of ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "SUBSWITCH_LIMIT_DIR", "XDG_STATE_HOME", "XDG_DATA_HOME"]) {
+      assert.throws(() => cliChildCommand(folders, ["models"], { env: { [name]: outside } }), new RegExp(name));
+    }
+  });
+
+  it("checks a relative folder against the child working folder", async (t) => {
+    const folders = await freshFolders(t);
+    const temp = tmpdir();
+    const outside = join(dirname(temp), `${basename(temp)}-outside`, "not-created");
+    assert.throws(() => cliChildCommand(folders, ["models"], {
+      cwd: temp, env: { CODEX_HOME: relative(temp, outside) },
+    }), /CODEX_HOME/);
+  });
+
+  it("passes PATH and a separate temporary limit folder to the child", async (t) => {
+    const folders = await freshFolders(t);
+    const limitDir = await mkdtemp(join(tmpdir(), "subswitch-child-limits-"));
+    t.after(() => rm(limitDir, { recursive: true, force: true }));
+    const command = cliChildCommand(folders, ["limits"], { env: { PATH: "/usr/bin", SUBSWITCH_LIMIT_DIR: limitDir } });
+    assert.equal(command.env["PATH"], "/usr/bin");
+    assert.equal(command.env["SUBSWITCH_LIMIT_DIR"], limitDir);
+  });
+
+  it("rejects a timeout kill with the child process error", async (t) => {
+    const folders = await freshFolders(t);
+    await assert.rejects(runCliChild(folders, ["--help"], { timeoutMs: 1 }), { killed: true, signal: "SIGKILL" });
+  });
+
+  it("rejects an output overflow with the child process error", async (t) => {
+    const folders = await freshFolders(t);
+    const writeOutput = "data:text/javascript,process.stdout.write('x'.repeat(1024*1024+1))";
+    await assert.rejects(runCliChild(folders, ["--help"], { env: { NODE_OPTIONS: `--import=${writeOutput}` } }), {
+      code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    });
+  });
+
+  it("rejects a start failure with the child process error", async (t) => {
+    const folders = await freshFolders(t);
+    await assert.rejects(runCliChild(folders, ["--help"], { cwd: join(folders.home, "not-created") }), { code: "ENOENT" });
+  });
+
+  it("returns code 1 for a normal exit with that code", async (t) => {
+    const folders = await freshFolders(t);
+    const result = await runCliChild(folders, ["not-a-command"]);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /unknown command/);
+  });
+
+  it("runs doctor with the fresh folders and checks the exec log", { timeout: 30_000 }, async (t) => {
     const folders = await freshFolders(t);
     const result = await runCliChild(folders, ["doctor"], { env: { NO_COLOR: "1" } });
     assert.equal(doctorRow(result.stdout, "config:"), folders.configFile, result.stdout + result.stderr);
     assert.equal(doctorRow(result.stdout, "codex.authFile:"), join(folders.home, ".codex", "auth.json"));
     const log = await readExecLog(folders);
     assert.equal(log[0], "preload");
-    // On macOS the doctor looks for the Together key in the Keychain; the preload refuses it.
+    // On macOS, doctor attempts one Together key lookup.
     if (process.platform === "darwin") assert.deepEqual(log.slice(1), ["execFile /usr/bin/security"]);
+    else assert.deepEqual(log.slice(1), []);
   });
 
   it("reads the user configuration from the fresh XDG_CONFIG_HOME when SUBSWITCH_CONFIG is empty", { timeout: 30_000 }, async (t) => {

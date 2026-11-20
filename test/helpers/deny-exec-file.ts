@@ -1,16 +1,18 @@
 /**
  * Preload for test child processes (`node --import tsx --import <this file>`).
  *
- * It replaces each node:child_process function that can start a program (spawn, spawnSync,
- * execFile, execFileSync, exec, execSync and fork) before the program under test loads, so
- * the child can never start a program, for example the macOS Keychain tool. The log file
- * named by SUBSWITCH_TEST_EXEC_LOG gets "preload" when this file runs, which is the positive
- * control that the preload ran, and one "<function> <file or command>" line for each attempt.
+ * The preload intercepts seven node:child_process functions in this process: spawn,
+ * spawnSync, execFile, execFileSync, exec, execSync and fork. It is not a process sandbox.
+ * It does not cover the ChildProcess class form, process.execve or grandchildren.
+ * The replacements do not preserve util.promisify.custom.
  *
- * Allow-list mode: when SUBSWITCH_TEST_EXEC_ALLOW holds a JSON array of strings, spawn,
- * spawnSync, execFile and execFileSync may start this Node binary (process.execPath) with
- * exactly those arguments. The log gets "allowed <function> <file>" for that start. Every
- * other attempt is still refused and logged.
+ * The preload writes "preload" to SUBSWITCH_TEST_EXEC_LOG as a positive control. It logs
+ * each refused call as "<function> <file or command>".
+ *
+ * If SUBSWITCH_TEST_EXEC_ALLOW holds a JSON array of strings, spawn, spawnSync, execFile
+ * and execFileSync can start this Node binary (process.execPath) with those exact arguments.
+ * The preload logs each such call as "allowed <function> <file>". It refuses all other
+ * calls to the seven replacements.
  */
 import { appendFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
