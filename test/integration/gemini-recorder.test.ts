@@ -30,7 +30,7 @@ const close = async (server: http.Server): Promise<void> => {
 
 const withRecorder = async (
   respond: http.RequestListener,
-  run: (base: string, output: readonly string[]) => Promise<void>,
+  run: (base: string, output: readonly string[], recorder: http.Server) => Promise<void>,
   options: { readonly upstreamIdleMs?: number } = {},
 ): Promise<void> => {
   const upstream = http.createServer(respond);
@@ -39,7 +39,7 @@ const withRecorder = async (
     const output: string[] = [];
     const recorder = createGeminiRecorderServer({ ...options, upstream: upstreamUrl, output: (line) => output.push(line) });
     try {
-      await run(await listen(recorder), output);
+      await run(await listen(recorder), output, recorder);
     } finally {
       await close(recorder);
     }
@@ -116,7 +116,7 @@ it("relays the Gemini request and split SSE bytes but prints only permitted valu
     `data: ${JSON.stringify({ response: { modelVersion: "gemini-bâtch", candidates: [], usageMetadata: { totalTokenCount: 4242 } }, traceId })}\r\n\r\n`,
     ': fake SSE comment\nother: fake SSE field\n\n',
     'data: {"response":{"candidates":[{"content":{"parts":[{"text":"fake reply"}]}}]}}\n\n',
-    `data: ${JSON.stringify({ response: { candidates: [{ finishReason: "STOP\n\u001b\u0085 FORGED" }] } })}`,
+    `data: ${JSON.stringify({ response: { candidates: [{ finishReason: "STOP\n\u001b\u0085\u2028\u202eFORGED" }] } })}`,
   ].join(""));
   const split = wire.indexOf(Buffer.from("â")) + 1;
   assert.ok(split > 1);
@@ -164,7 +164,7 @@ it("relays the Gemini request and split SSE bytes but prints only permitted valu
       "fake request hop", "fake response hop"]) {
       assert.ok(!transcript.includes(literal), `Transcript disclosed a fabricated value: ${literal}`);
     }
-    assert.ok(output.every((line) => !/[\n\r\u001b\u0085\u{2028}]/u.test(line) && line.startsWith("#1 ")));
+    assert.ok(output.every((line) => !/[\n\r\u001b\u0085\u{2028}\u{202e}]/u.test(line) && line.startsWith("#1 ")));
     for (const shape of [
       '#1 REQUEST PATCH /v1internal:streamGenerateContent?alt="sse"&x&x',
       'authorization: <len:23,sha8:',
@@ -231,15 +231,21 @@ it("prints JSON errors and direct tier ids, preserves the body, and does not fol
 });
 
 it("returns a fixed 502 when the upstream disconnects before its reply", OPTIONS, async () => {
+  const token = "fake-bearer-502-3c8e";
   await withRecorder((req) => req.destroy(), async (base, output) => {
-    const response = await send(base, { path: "/v1internal:fetchAvailableModels" });
+    const response = await send(base, { path: "/v1internal:fetchAvailableModels", headers: { authorization: `Bearer ${token}` } });
     assert.equal(response.status, 502);
+    assert.ok(!response.body.toString().includes(token), "the 502 body has the fabricated bearer");
     assert.equal(response.body.toString(), "upstream connection error");
-    assert.match(output.join("\n"), /#1 TOTAL status=502 requestBytes=0 responseBytes=\d+/u);
+    const transcript = output.join("\n");
+    assert.ok(!transcript.includes(token), "the transcript has the fabricated bearer");
+    assert.ok(transcript.includes("#1 REQUEST HEADER authorization: <len:"), transcript);
+    assert.match(transcript, /#1 TOTAL status=502 requestBytes=0 responseBytes=\d+/u);
   });
 });
 
 it("tears down the upstream when the client disconnects mid-stream", OPTIONS, async () => {
+  const token = "fake-bearer-abort-6f41";
   let markUpstreamClosed: () => void = () => undefined;
   const upstreamClosed = new Promise<boolean>((resolve) => { markUpstreamClosed = () => resolve(true); });
   await withRecorder((_req, res) => {
@@ -259,7 +265,7 @@ it("tears down the upstream when the client disconnects mid-stream", OPTIONS, as
       markUpstreamClosed();
     });
   }, async (base, output) => {
-    const request = http.request(`${base}/v1internal:streamGenerateContent?alt=sse`, (response) => {
+    const request = http.request(`${base}/v1internal:streamGenerateContent?alt=sse`, { headers: { authorization: `Bearer ${token}` } }, (response) => {
       response.on("error", () => undefined);
       // Headers and a first body chunk are in, so the relay is mid-stream.
       response.once("data", () => request.destroy());
@@ -271,6 +277,9 @@ it("tears down the upstream when the client disconnects mid-stream", OPTIONS, as
     await waitForLine(output, /kind=aborted/u);
     assert.ok(output.some((line) => /^#1 TOTAL status=200 requestBytes=0 responseBytes=\d+ kind=aborted cause=client$/u.test(line)),
       output.join("\n"));
+    const transcript = output.join("\n");
+    assert.ok(!transcript.includes(token), "the transcript has the fabricated bearer");
+    assert.ok(transcript.includes("#1 REQUEST HEADER authorization: <len:"), transcript);
   });
 });
 
@@ -561,6 +570,27 @@ it("rejects an ambiguous target without forwarding it", OPTIONS, async () => {
     assert.equal(response.status, 400);
     assert.equal(forwardCount, 0);
     assert.doesNotMatch(output.join("\n"), /example\.invalid|fake-query/u);
+  });
+});
+
+it("closes a connection whose local address is not 127.0.0.1 without forwarding it", OPTIONS, async () => {
+  let forwardCount = 0;
+  await withRecorder((_req, res) => {
+    forwardCount++;
+    res.end();
+  }, async (base, output, recorder) => {
+    let localAddress = "";
+    // Give each accepted socket another local address, as a bind on another address does. No IPv6 listen is needed.
+    recorder.on("connection", (socket) => {
+      Object.defineProperty(socket, "localAddress", { value: localAddress });
+    });
+    for (const address of ["::ffff:127.0.0.1", "192.0.2.10"]) {
+      localAddress = address;
+      const outcome = await send(base, { path: "/v1internal:loadCodeAssist" }).then(() => "reply", () => "closed");
+      assert.equal(outcome, "closed", address);
+    }
+    assert.equal(forwardCount, 0);
+    assert.deepEqual(output, []);
   });
 });
 
