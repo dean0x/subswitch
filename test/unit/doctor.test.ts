@@ -439,9 +439,9 @@ describe("runDoctor — agent model scan", () => {
   // ---------------------------------------------------------------------------
 
   it("unknown_provider finding alone does NOT cause exit code 1 (ADR-010: relay cannot honestly call this a failure)", async () => {
-    // "kimi:k2-ultra" has an unknown_qualifier resolution — the prefix "kimi" is not in
-    // PROVIDER_IDS. subswitch forwards it to Anthropic unchanged, so flagging it as a
-    // failure would be a lie (ADR-010). The finding must be severity "info" → exit 0.
+    // "not-a-provider:other-model" has an unknown_qualifier resolution — the prefix
+    // "not-a-provider" is not in PROVIDER_IDS and never will be. subswitch forwards it to
+    // Anthropic unchanged, so flagging it as a failure would be a lie (ADR-010). The finding must be severity "info" → exit 0.
     //
     // Mutation that MUST turn this RED: change `severity: "info"` back to `severity: "fail"`
     // in the unknown_qualifier arm of checkAgentModels → exitCode becomes 1 → assertion fails.
@@ -449,7 +449,7 @@ describe("runDoctor — agent model scan", () => {
     const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       listAgentFiles: async () => ["/project/.claude/agents/exotic.md"],
-      readTextFile: async () => "---\nmodel: kimi:k2-ultra\n---\n",
+      readTextFile: async () => "---\nmodel: not-a-provider:other-model\n---\n",
     });
     assert.equal(exitCode, 0, "unknown_provider finding must not cause exit code 1 — it is informational (ADR-010)");
   });
@@ -461,13 +461,13 @@ describe("runDoctor — agent model scan", () => {
     await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       listAgentFiles: async () => ["/project/.claude/agents/exotic.md"],
-      readTextFile: async () => "---\nmodel: kimi:k2-ultra\n---\n",
+      readTextFile: async () => "---\nmodel: not-a-provider:other-model\n---\n",
     });
     const output = lines.join("\n");
-    assert.ok(output.includes("kimi:k2-ultra"), "output must mention the model name");
-    assert.ok(output.includes("kimi"), "output must mention the unknown qualifier");
+    assert.ok(output.includes("not-a-provider:other-model"), "output must mention the model name");
+    assert.ok(output.includes("not-a-provider"), "output must mention the unknown qualifier");
     // Must NOT emit a FAIL row for unknown_provider (it is info).
-    const findingLine = lines.find((l) => l.includes("kimi:k2-ultra"));
+    const findingLine = lines.find((l) => l.includes("not-a-provider:other-model"));
     assert.ok(findingLine !== undefined, "must have a line for the unknown_provider finding");
     assert.ok(
       !findingLine.includes("FAIL"),

@@ -7,6 +7,7 @@ import {
   type RoutingTable,
   type ModelEntry,
 } from "../../src/models.js";
+import { emptyAliases } from "../helpers/provider-aliases.js";
 
 // ---------------------------------------------------------------------------
 // parseFrontmatterModel — frontmatter parsing
@@ -117,7 +118,7 @@ describe("parseFrontmatterModel", () => {
 
 describe("checkAgentModels", () => {
   // Build a routing table from the real registry with no overrides.
-  const { table } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: {} });
+  const { table } = buildRoutingTable(MODEL_REGISTRY, emptyAliases());
   // All providers configured by default.
   const configuredProviders = new Set<string>(["codex"]);
   const noConfiguredProviders = new Set<string>();
@@ -186,11 +187,11 @@ describe("checkAgentModels", () => {
   it("returns 'unknown_provider' finding when the model uses an unrecognised provider prefix", () => {
     // Non-vacuity: this test would fail if kind were changed to any other value, and the
     // severity assertion below ensures the test fails if severity is changed back to "fail".
-    const files = [{ path: "/agent.md", text: "---\nmodel: kimi:k2-ultra\n---\n" }];
+    const files = [{ path: "/agent.md", text: "---\nmodel: not-a-provider:other-model\n---\n" }];
     const findings = checkAgentModels(files, table, configuredProviders);
     assert.equal(findings.length, 1);
     assert.equal(findings[0]!.kind, "unknown_provider");
-    assert.equal(findings[0]!.qualifier, "kimi");
+    assert.equal(findings[0]!.qualifier, "not-a-provider");
     // ADR-010: an unknown qualifier forwards to Anthropic and works — this is informational,
     // not a failure. By contrast "ambiguous" stays "fail" because that is subswitch-derived.
     assert.equal(
@@ -209,7 +210,7 @@ describe("checkAgentModels", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-retired", provider: "codex", gen: [5, 0], retired: true },
     ];
-    const { table: regTable } = buildRoutingTable(reg, { together: {}, codex: {} });
+    const { table: regTable } = buildRoutingTable(reg, emptyAliases());
     const files = [{ path: "/agent.md", text: "---\nmodel: gpt-retired\n---\n" }];
     const findings = checkAgentModels(files, regTable, configuredProviders, reg);
     assert.equal(findings.length, 1);
@@ -230,7 +231,7 @@ describe("checkAgentModels", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-preview", provider: "codex", gen: [5, 7], preview: true },
     ];
-    const { table: regTable } = buildRoutingTable(reg, { together: {}, codex: {} });
+    const { table: regTable } = buildRoutingTable(reg, emptyAliases());
     const files = [{ path: "/agent.md", text: "---\nmodel: gpt-preview\n---\n" }];
     const findings = checkAgentModels(files, regTable, configuredProviders, reg);
     assert.equal(findings.length, 1);
@@ -371,7 +372,7 @@ describe("checkAgentModels", () => {
       label: "retired",
       findings: checkAgentModels(
         [{ path: "/agent.md", text: "---\nmodel: gpt-retired\n---\n" }],
-        buildRoutingTable(retiredReg, { together: {}, codex: {} }).table,
+        buildRoutingTable(retiredReg, emptyAliases()).table,
         configuredProviders,
         retiredReg,
       ),
@@ -386,7 +387,7 @@ describe("checkAgentModels", () => {
       label: "preview_only",
       findings: checkAgentModels(
         [{ path: "/agent.md", text: "---\nmodel: gpt-preview\n---\n" }],
-        buildRoutingTable(previewReg, { together: {}, codex: {} }).table,
+        buildRoutingTable(previewReg, emptyAliases()).table,
         configuredProviders,
         previewReg,
       ),

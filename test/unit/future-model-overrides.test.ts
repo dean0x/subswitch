@@ -9,6 +9,7 @@ import { buildDeps } from "../../src/server.js";
 import { runDoctor, type DoctorIO } from "../../src/doctor.js";
 import { noopLogger } from "../../src/logger.js";
 import { MODEL_REGISTRY, buildRoutingTable, resolveModel } from "../../src/models.js";
+import { emptyAliases } from "../helpers/provider-aliases.js";
 
 const future = "gpt-fixture-next-sol";
 
@@ -85,7 +86,7 @@ describe("explicit future Codex model overrides", () => {
   });
 
   it("preserves canonical pins, one-hop aliases and unresolved undeclared names", () => {
-    const { table } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: {
+    const { table } = buildRoutingTable(MODEL_REGISTRY, { ...emptyAliases(), codex: {
       sol: future, "gpt-6.1-sol": future, a: "b", b: "gpt-6-sol",
     } });
     for (const name of ["gpt-6.1-sol", "codex:gpt-6.1-sol"])
@@ -100,7 +101,7 @@ describe("explicit future Codex model overrides", () => {
   });
 
   it("does not let target-only declarations claim existing family or qualified registry names", () => {
-    const { table } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: {
+    const { table } = buildRoutingTable(MODEL_REGISTRY, { ...emptyAliases(), codex: {
       worker: "sol", literal: "codex:gpt-6.1-sol", next: future, literalAlias: "codex:next",
     } });
     for (const name of ["sol", "codex:sol"])
