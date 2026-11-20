@@ -100,6 +100,7 @@ describe("Kimi native store: read", () => {
       await symlink(join(h.root, "real"), h.credentials);
     }],
     ["a file over 64 KiB", "invalid_record", (h) => writeFile(h.file, cliText({ ...record(), pad: "x".repeat(64 * 1024) }))],
+    ["a home folder that other users can write", "unsafe_path", (h) => chmod(h.root, 0o777)],
   ];
   for (const [name, code, arrange] of unsafeFiles) {
     it(`refuses ${name} with ${code}`, async (t) => {
@@ -281,6 +282,17 @@ describe("Kimi native store: CLI lock", () => {
     }), "lock_lost");
     assert.equal(await readFile(file, "utf8"), before);
     assert.ok((await lstat(lock)).isDirectory(), "the successor lock stays");
+  });
+
+  it("fails with changed when the sign-in folder is replaced under the lease", async (t) => {
+    const { root, credentials, file, store } = await kimiHome(t);
+    const text = await readFile(file, "utf8");
+    await rejectsWith(store.withLease(signal(), async (lease) => {
+      await rename(credentials, join(root, "moved"));
+      await mkdir(credentials, { mode: 0o700 });
+      await writeFile(file, text, { mode: 0o600 });
+      await lease.verify();
+    }), "changed");
   });
 
   it("aborts the lease signal when the heartbeat finds that another process took the lock", async (t) => {
