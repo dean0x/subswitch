@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import * as http from "node:http";
 import { it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -216,6 +217,41 @@ it("returns a fixed 502 when the upstream disconnects before its reply", OPTIONS
   });
 });
 
+it("tears down the upstream when the client disconnects mid-stream", OPTIONS, async () => {
+  let markUpstreamClosed: () => void = () => undefined;
+  const upstreamClosed = new Promise<boolean>((resolve) => { markUpstreamClosed = () => resolve(true); });
+  await withRecorder((_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    let ticks = 0;
+    const timer = setInterval(() => {
+      // Bounded: the stream ends by itself after about 2 s, later than the wait below.
+      if (ticks++ >= 40) {
+        clearInterval(timer);
+        res.end();
+        return;
+      }
+      res.write('data: {"response":{}}\n\n');
+    }, 50);
+    res.socket?.once("close", () => {
+      clearInterval(timer);
+      markUpstreamClosed();
+    });
+  }, async (base, output) => {
+    const request = http.request(`${base}/v1internal:streamGenerateContent?alt=sse`, (response) => {
+      response.on("error", () => undefined);
+      // Headers and a first body chunk are in, so the relay is mid-stream.
+      response.once("data", () => request.destroy());
+    });
+    request.on("error", () => undefined);
+    request.end();
+    const closed = await Promise.race([upstreamClosed, delay(1_000, false)]);
+    assert.ok(closed, "upstream kept streaming after the client disconnected");
+    await waitForLine(output, /kind=aborted/u);
+    assert.ok(output.some((line) => /^#1 TOTAL status=200 requestBytes=0 responseBytes=\d+ kind=aborted$/u.test(line)),
+      output.join("\n"));
+  });
+});
+
 it("bounds SSE lines and skeleton arrays without dropping relay bytes", OPTIONS, async () => {
   const large = `data: ${"x".repeat(4 * 1024 * 1024 + 1)}\n\n`;
   const data = JSON.stringify({ candidates: Array.from({ length: 50 }, () => ({})), model: "m".repeat(256) });
@@ -382,4 +418,36 @@ it("refuses an out-of-range port before listen", OPTIONS, () => {
   assert.equal(result.status, 1);
   assert.equal(result.stdout, "gemini-recorder: port must be an integer from 1024 to 65535\n");
   assert.equal(result.stderr, "");
+});
+
+it("accepts only a bare loopback HTTP(S) origin and refuses others with a fixed message", OPTIONS, () => {
+  const refusal = { name: "Error", message: "gemini-recorder: upstream override must be an HTTP(S) loopback origin" };
+  for (const upstream of [
+    "not a url",
+    "ftp://127.0.0.1",
+    "http://10.0.0.1",
+    "http://[::2]",
+    "http://127.0.0.1.example.invalid",
+    "http://fake-user:fake-pass@127.0.0.1",
+    "http://127.0.0.1/fake-path",
+    "http://127.0.0.1/?fake=query",
+    "http://127.0.0.1/#fake-fragment",
+  ]) assert.throws(() => createGeminiRecorderServer({ upstream }), refusal, upstream);
+  for (const upstream of ["http://127.0.0.1:4143", "https://localhost:4143", "http://[::1]:4143"]) {
+    assert.doesNotThrow(() => createGeminiRecorderServer({ upstream }), upstream);
+  }
+});
+
+it("keeps the Gemini recorder out of the build and the package files", OPTIONS, () => {
+  const readRepoJson = (name: string): unknown => JSON.parse(readFileSync(new URL(`../../${name}`, import.meta.url), "utf8"));
+  const build = readRepoJson("tsconfig.build.json") as { compilerOptions?: { rootDir?: string }; include?: unknown };
+  // rootDir also fails the build when a src file imports a file outside src.
+  assert.equal(build.compilerOptions?.rootDir, "src");
+  assert.deepEqual(build.include, ["src/**/*.ts"]);
+  const pkg = readRepoJson("package.json") as { files?: unknown };
+  assert.ok(Array.isArray(pkg.files) && pkg.files.length > 0, "package.json must list the files it ships");
+  for (const entry of pkg.files as unknown[]) {
+    // Refuse e2e, a path under e2e, a leading glob and the repository root.
+    assert.ok(typeof entry === "string" && !/^(?:\.?\/)?(?:e2e(?:\/|$)|\*|\.?\/?$)/u.test(entry), `package file entry: ${String(entry)}`);
+  }
 });

@@ -10,6 +10,7 @@
  * **Derived fixtures MUST use fabricated values.**
  *
  * The relay forwards credentials on the wire. It prints shapes to stdout only.
+ * It decodes a gzip body for the view only and forwards the wire bytes unchanged.
  */
 
 import * as http from "node:http";
@@ -40,6 +41,9 @@ const MAX_FIELDS = 100;
 const MAX_OBJECT_KEYS = 24;
 const MAX_ARRAY_ITEMS = 4;
 const DATA_PREFIX = Buffer.from("data:");
+const LF = 0x0a;
+const CR = 0x0d;
+const COLON = 0x3a;
 const SHOW_HEADERS = new Set(["content-type", "content-length", "user-agent", "x-goog-api-client", "transfer-encoding"]);
 const SHOW_STRINGS = new Set([
   "model", "modelVersion", "role", "finishReason", "mimeType", "requestType", "ideType", "platform",
@@ -223,14 +227,14 @@ const sseCapture = (emit: RecorderOutput): BodyCapture => {
   const finishLine = (): void => {
     const bytes = capture.bytes;
     const isData = bytes.subarray(0, DATA_PREFIX.length).equals(DATA_PREFIX);
-    const line = bytes.at(-1) === 13 ? bytes.subarray(0, -1) : bytes;
+    const line = bytes.at(-1) === CR ? bytes.subarray(0, -1) : bytes;
     if (isData) events++;
     if (line.length !== 0 && detail < MAX_SSE_DETAIL_LINES) {
       detail++;
       if (size > MAX_CAPTURE_BYTES) {
         emit("SSE kind=line-cap");
       } else if (!isData) {
-        emit(line[0] === 58 ? "SSE kind=comment" : "SSE kind=other");
+        emit(line[0] === COLON ? "SSE kind=comment" : "SSE kind=other");
       } else {
         const parsed = parseJson(line.subarray(DATA_PREFIX.length));
         emit(parsed.ok ? `SSE event=${events} bytes=${line.length} ${shapeOf(parsed.value)}` : "SSE kind=invalid-json");
@@ -242,7 +246,7 @@ const sseCapture = (emit: RecorderOutput): BodyCapture => {
   return {
     add: (chunk) => {
       for (let start = 0; start < chunk.length;) {
-        const newline = chunk.indexOf(10, start);
+        const newline = chunk.indexOf(LF, start);
         const end = newline === -1 ? chunk.length : newline;
         const limit = detail < MAX_SSE_DETAIL_LINES ? MAX_CAPTURE_BYTES : DATA_PREFIX.length;
         const keep = Math.min(end - start, limit - size);
