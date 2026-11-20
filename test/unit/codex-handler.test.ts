@@ -15,15 +15,14 @@ import type { ProviderId } from "../../src/models.js";
 /**
  * SYNTHETIC-PROVIDER CAST — the single sanctioned cast in this file.
  *
- * `ProviderId` is the one-member union `"codex"` today, so a handler that only ever
- * receives `"codex"` cannot distinguish a threaded provider id from a hardcoded
- * literal. Casting through `string` (a direct `as ProviderId` is rejected outright)
- * supplies the second value that makes those assertions falsifiable.
+ * A handler that only ever receives `"codex"` cannot distinguish a threaded provider id
+ * from a hardcoded literal. Casting through `string` (a direct `as ProviderId` is
+ * rejected outright) supplies the second value that makes those assertions falsifiable.
  *
- * Remove this and its callers when a second real provider lands and PROVIDER_IDS
- * expands. (mirrors test/unit/routing-table.test.ts)
+ * The second value is "not-a-provider", an id that is never real, so a new provider id
+ * can not change what these tests prove. (mirrors test/unit/routing-table.test.ts)
  */
-const otherProviderName: string = "kimi";
+const otherProviderName: string = "not-a-provider";
 const OTHER_PROVIDER = otherProviderName as ProviderId;
 
 /**
@@ -219,7 +218,7 @@ describe("providerId is threaded into aggregateFrames at the handler call site",
     const parsed = JSON.parse(res.body) as { error: { message: string } };
     assert.equal(
       parsed.error.message,
-      "kimi stream ended before producing a message",
+      "not-a-provider stream ended before producing a message",
       "aggregateFrames must receive the handler's own providerId — a 'codex …' message means the call site hardcoded it",
     );
   });
@@ -520,7 +519,7 @@ describe("log event names derive from the handler's providerId", () => {
   it("emits a second provider's id in the event name, not 'codex'", async () => {
     const events = await runWithCapturedEvents(OTHER_PROVIDER);
     assert.ok(
-      events.includes("kimi_upstream_error"),
+      events.includes("not-a-provider_upstream_error"),
       `event name must be derived from providerId; got: ${events.join(", ")}`,
     );
     assert.ok(
@@ -701,21 +700,24 @@ describe("buildHeaders — auth-first header order with owned-name guard (avoids
 /**
  * Upstream 401 message includes the provider's loginCommand from deps.
  *
- * The loginCommand cannot be synthesised from providerId: a provider whose id is "kimi"
- * may log in with "kimi auth login", not "kimi login". The value comes from the
+ * The loginCommand cannot be synthesised from providerId: a provider whose id is
+ * "not-a-provider" may log in with "not-a-provider auth login", not
+ * "not-a-provider login". The value comes from the
  * hand-written PROVIDER_CONFIG_ACCESSORS table in config.ts and is read from deps.
  *
  * PF-011: proven RED against the named mutation before trusting green.
  */
 describe("upstream 401 names the provider loginCommand in the client-visible message", () => {
   /**
-   * U2.1: providerId: OTHER_PROVIDER, loginCommand: "kimi auth login".
+   * U2.1: providerId: OTHER_PROVIDER, loginCommand: "not-a-provider auth login".
    * auth is makeStandardAuth() — refreshable: false — exercising the non-refreshable path.
-   * Assert message ends with "kimi auth login" and does NOT match /kimi login/.
+   * Assert message ends with "not-a-provider auth login" and does NOT match
+   * /not-a-provider login/.
    *
    * Mutation that MUST turn it red: synthesise the login command as `${providerId} login`
-   * instead of reading from deps (i.e. produce "kimi login" instead of "kimi auth login").
-   * Proven red: doesNotMatch(/kimi login/) fails because the synthesised form IS "kimi login".
+   * instead of reading from deps (i.e. produce "not-a-provider login" instead of
+   * "not-a-provider auth login"). Proven red: doesNotMatch(/not-a-provider login/) fails
+   * because the synthesised form IS "not-a-provider login".
    */
   it("U2.1 — message ends with the loginCommand from deps, not a synthesised providerId-login form", async () => {
     const configResult = loadConfig({
@@ -729,7 +731,7 @@ describe("upstream 401 names the provider loginCommand in the client-visible mes
     const handler = createCodexHandler({
       ...codexDepsFrom(configResult.value.config),
       providerId: OTHER_PROVIDER,
-      loginCommand: "kimi auth login",
+      loginCommand: "not-a-provider auth login",
       logger: noopLogger,
       auth: makeStandardAuth(),
       cache: new ReasoningCache(4, 1024),
@@ -745,13 +747,13 @@ describe("upstream 401 names the provider loginCommand in the client-visible mes
     const parsed = JSON.parse(res.body) as { error: { message: string } };
     assert.match(
       parsed.error.message,
-      /kimi auth login/,
+      /not-a-provider auth login/,
       "message must include the loginCommand from deps",
     );
     assert.doesNotMatch(
       parsed.error.message,
-      /kimi login/,
-      'synthesising `${providerId} login` would produce "kimi login" — must read from deps',
+      /not-a-provider login/,
+      'synthesising `${providerId} login` would produce "not-a-provider login" — must read from deps',
     );
   });
 });
