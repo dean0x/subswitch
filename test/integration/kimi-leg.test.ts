@@ -101,6 +101,12 @@ const signingFetch = (bodies: Item[]): typeof fetch => async (input, init) => {
   const [status, text] = signedReply(body);
   return new Response(text, { status, headers: { "content-type": status === 200 ? "text/event-stream" : "application/json" } });
 };
+/** The Kimi fetch of the rig. It refuses every host but the loopback fakes, so no test request can leave this host. */
+const loopbackFetch: typeof fetch = async (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  if (url.hostname !== "127.0.0.1") throw new Error(`The test rig blocks a Kimi request to ${url.hostname}`);
+  return fetch(input, init);
+};
 /** The Kimi side of one session: thinking and a tool call first, then text. */
 const kimiSession: UpstreamHandler = (req, res, body, index) =>
   sseReply(index === 0 ? KIMI_TOOL_TURN : [{ type: "text", text: "Kimi answer" }])(req, res, body, index);
@@ -184,7 +190,7 @@ const startRig = async (t: TestContext, options: RigOptions = {}) => {
   t.after(async () => { for (const fake of [kimi, token, anthropic, codex, together, openai]) await fake.close(); });
   if (kimiHandler === "closed") await kimi.close();
 
-  const kimiDeps: KimiStoreDeps = { openStore: (file) => createKimiNativeStore(file), fetch, now: Date.now };
+  const kimiDeps: KimiStoreDeps = { openStore: (file) => createKimiNativeStore(file), fetch: loopbackFetch, now: Date.now };
   const togetherDeps: TogetherKeyReaderDeps = {
     env: { [TOGETHER_API_KEY_ENV]: "FAKE-TOGETHER-KEY-kimi-leg" }, platform: "linux", setTimer: () => () => {},
     exec: async () => { throw new Error("no Keychain read in this test"); },
@@ -283,11 +289,12 @@ describe("Kimi leg: credential leak rows", () => {
     assert.equal((await rig.post(leakRequest, CLIENT_HEADERS)).status, 200);
     assert.equal(rig.kimi.requests.length, 1);
     const request = rig.kimi.requests[0]!;
-    assert.equal(request.headers["authorization"], `Bearer ${ACCESS}`, "the Kimi bearer reached Kimi, so the row is live");
+    assert.ok(String(request.headers["authorization"]).includes(ACCESS), "the Kimi bearer reached Kimi, so the row is live");
     return request;
   };
   const rows: ReadonlyArray<{ readonly name: string; readonly check: (request: RecordedRequest) => void }> = [
     { name: "the client authorization never reaches Kimi", check: (request) => {
+      assert.equal(request.headers["authorization"], `Bearer ${ACCESS}`);
       assert.equal(requestText(request).includes("FAKE-CLIENT-SIGN-IN"), false);
     } },
     { name: "the client x-api-key never reaches Kimi", check: (request) => {
@@ -313,10 +320,8 @@ describe("Kimi leg: credential leak rows", () => {
     const rig = await startRig(t);
     await kimiRequest(rig);
     assert.equal((await rig.post(chatRequest("claude-sonnet-4-6", HELLO), CLIENT_HEADERS)).status, 200);
-    assert.equal(rig.anthropic.requests.length, 1);
-    const request = rig.anthropic.requests[0]!;
-    assert.equal(request.headers["authorization"], CLIENT_SIGN_IN);
-    assert.equal(requestText(request).includes(KIMI_TOKEN), false);
+    for (const request of rig.anthropic.requests) assert.equal(requestText(request).includes(KIMI_TOKEN), false, "no Kimi token at Anthropic");
+    assert.deepEqual(rig.anthropic.requests.map((request) => request.headers["authorization"]), [CLIENT_SIGN_IN]);
   });
 
   it("no Kimi token reaches a client response or a log, also when Kimi echoes it in an error", async (t) => {
@@ -391,7 +396,7 @@ describe("Kimi leg: a Claude and Kimi session", () => {
     assert.equal(JSON.stringify(routed[1]).includes(KIMI_SIGNATURE), false);
   });
 
-  it("an explicit route can not name Kimi, so Kimi output never enters the route replay cache", () => {
+  it("an explicit route profile can not name the Kimi provider, so Kimi output never enters the route replay cache", () => {
     const loaded = loadConfig({ configPath: "kimi-route.json", globalConfigPath: false, env: {}, readFile: () => JSON.stringify({
       configVersion: 2,
       accessProfiles: { kimi: {
@@ -401,7 +406,7 @@ describe("Kimi leg: a Claude and Kimi session", () => {
       routes: { kimi: { clients: ["claude-code"], primary: { profile: "kimi", model: "k3", effort: "high" } } },
     }) });
     assert.equal(loaded.ok, false);
-    if (!loaded.ok) assert.match(loaded.error.message, /provider/);
+    if (!loaded.ok) assert.match(loaded.error.message, /unsupported provider: kimi/);
   });
 });
 
