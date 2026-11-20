@@ -35,7 +35,7 @@ const runMain = async (args: readonly string[], overrides: Partial<GateIO> = {},
   return { code, runs, asked, lines };
 };
 
-describe("Kimi live check: the live gate (TP-80)", () => {
+describe("Kimi live check: the live gate", () => {
   it("pins the cap phrase to each cap value", () => {
     assert.equal(LIVE_PHRASE,
       "start the Kimi live check: 18 Kimi attempts, 4608 tokens, 256 tokens per request, 8 Claude requests, 1 refresh");
@@ -108,7 +108,7 @@ describe("Kimi live check: the entry", () => {
   }
 });
 
-describe("Kimi live check: the caps (TP-81)", () => {
+describe("Kimi live check: the caps", () => {
   it("pins the caps and the hard-coded Kimi URLs", () => {
     assert.deepEqual(CAP_LIMITS, { kimi: 18, kimiTokens: 4608, claude: 8, refresh: 1, loopback: 32 });
     assert.equal(MAX_BODY_BYTES, 4 * 1024 * 1024);
@@ -161,7 +161,7 @@ describe("Kimi live check: the caps (TP-81)", () => {
   }
 });
 
-describe("Kimi live check: the capped Kimi fetch (TP-81)", () => {
+describe("Kimi live check: the capped Kimi fetch", () => {
   const body = (extra: Record<string, unknown> = {}): string =>
     JSON.stringify({ model: PROBE_MODEL, max_tokens: 256, stream: true, messages: [{ role: "user", content: "hi" }], ...extra });
   const recorder = (reply: () => Promise<Response> = async () => new Response("{}", { status: 200 })) => {
@@ -308,7 +308,7 @@ describe("Kimi live check: the capped Claude forwarder", () => {
   });
 });
 
-describe("Kimi live check: the run rules (H1)", () => {
+describe("Kimi live check: the run rules", () => {
   const passing = (): Exercise => ({
     probes: [], renewal: { expected: false, tokenPosts: 0, status: "none", storeChanged: false },
     session: { actionStarted: true, outcome: "complete", requests: 1, errorReplies: 0 },
@@ -361,7 +361,7 @@ describe("Kimi live check: the run rules (H1)", () => {
   });
 });
 
-describe("Kimi live check: the user config (H1)", () => {
+describe("Kimi live check: the user config", () => {
   const HOME = "/fabricated-home";
   const loaded = (text: string) => loadConfig({
     env: { HOME }, homeDir: HOME, cwd: "/fabricated-project", allowProjectPort: false,
@@ -384,7 +384,7 @@ describe("Kimi live check: the user config (H1)", () => {
   });
 });
 
-describe("Kimi live check: the evidence (TP-83)", () => {
+describe("Kimi live check: the evidence", () => {
   const sample = (): Evidence => ({
     schemaVersion: 1, mode: "dry-run", success: true, failure: null, durationMs: 1200, cooldownMs: 75_000,
     caps: { limits: CAP_LIMITS, used: { ...emptyCounts(), kimi: 6, kimiTokens: 1536, refresh: 1, loopback: 9 } },
