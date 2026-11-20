@@ -133,14 +133,16 @@ const createTogetherProvider = (config: Config, logger: Logger, keyReaderDeps: T
   });
 };
 
-type CredentialUrl = Pick<Parameters<typeof vetCredentialUrl>[0], "url" | "expectedHost" | "allowOverride" | "refreshToken" | "together"> & {
+type CredentialUrl = Pick<Parameters<typeof vetCredentialUrl>[0],
+  "url" | "expectedHost" | "allowOverride" | "refreshToken" | "requireHttps" | "together"> & {
   readonly key: string;
 };
 
 const CREDENTIAL_URLS: CredentialKindTable<readonly CredentialUrl[]> = {
-  "oauth-file": ({ baseUrl, defaultHost, oauthTokenUrl, defaultOauthHost, allowInsecureBaseUrl }) => [
-    { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: allowInsecureBaseUrl, refreshToken: false },
-    { url: oauthTokenUrl, expectedHost: defaultOauthHost, key: "oauthTokenUrl", allowOverride: allowInsecureBaseUrl, refreshToken: true },
+  "oauth-file": ({ baseUrl, defaultHost, oauthTokenUrl, defaultOauthHost, allowInsecureBaseUrl, requireHttps }) => [
+    { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: allowInsecureBaseUrl, refreshToken: false, requireHttps },
+    { url: oauthTokenUrl, expectedHost: defaultOauthHost, key: "oauthTokenUrl", allowOverride: allowInsecureBaseUrl, refreshToken: true,
+      requireHttps },
   ],
   "api-key": ({ baseUrl, defaultHost, allowInsecureBaseUrl }) => [
     { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: allowInsecureBaseUrl, together: true },

@@ -536,6 +536,8 @@ export type Credential =
       readonly defaultOauthHost: string;
       /** Opt-in to a non-default host on either credential-bearing URL. */
       readonly allowInsecureBaseUrl: boolean;
+      /** Refuse a plain http credential URL that is not loopback. Startup fails on it. */
+      readonly requireHttps: boolean;
     }
   | {
       readonly kind: "api-key";
@@ -576,6 +578,7 @@ export const codexCredentialFor = (
   oauthTokenUrl: provider.oauthTokenUrl,
   defaultOauthHost: "auth.openai.com",
   allowInsecureBaseUrl: provider.allowInsecureBaseUrl,
+  requireHttps: false,
 });
 
 /**
