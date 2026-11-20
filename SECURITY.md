@@ -231,7 +231,8 @@ configuration or an explicit `SUBSWITCH_CONFIG` file. A project `subswitch.confi
 that sets it fails at load, so a workspace file cannot turn the route on, change the
 hosts or select another sign-in file. The region selects the hosts from a fixed table.
 A host, port or file name that does not match the region fails at load, and the block
-has no opt-in for other hosts.
+has no opt-in for other hosts. A loopback URL loads, but it stops `subswitch serve` at
+startup.
 
 **No fallback.** A Kimi failure gives a fixed local error. The request does not go to
 Anthropic or to another provider.

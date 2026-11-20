@@ -90,6 +90,16 @@ export interface KimiAuth extends ProviderAuth<"kimi"> {
 
 type Renewal = Result<KimiSnapshot, KimiErrorCode>;
 
+/** One renewal request: the lease, the record whose refresh token it sends, its grant and its failure count. */
+interface RenewalAttempt {
+  readonly lease: KimiLease;
+  readonly current: KimiSnapshot;
+  readonly grant: string;
+  readonly failures: number;
+  /** True when the lease signal aborted because the lock was lost, not at the renewal deadline. */
+  readonly lockLost: () => boolean;
+}
+
 /** The fingerprint of an access token, so the manager holds no refused token text. */
 const accessOf = (record: KimiTokenRecord): string => kimiFingerprint(record.access_token);
 
@@ -171,11 +181,14 @@ export const createKimiAuth = (deps: KimiAuthDeps): KimiAuth => {
     return err(toKimiProxyError(code));
   };
 
+  /** Save a busy marker, so that the grant waits before its next request. */
+  const backoff = ({ lease, grant, failures }: RenewalAttempt): Promise<void> => lease.writeMarker(grant, "busy",
+    deps.now() + Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (failures - 1)), failures);
+
   /** One renewal under the lock. The lease signal aborts at the renewal deadline or when the lock is lost. */
   const renewUnderLock = async (lease: KimiLease, renewal: AbortSignal, refusedAccess: string | undefined,
     progress: { sent: boolean }): Promise<Renewal> => {
     const { signal } = lease;
-    const lockLost = (): boolean => signal.aborted && !renewal.aborted;
     const current = await lease.read();
     if (!kimiRenewalDue(current.record, deps.now()) && accessOf(current.record) !== refusedAccess) return ok(current);
     const grant = kimiGrantOf(current.record);
@@ -184,14 +197,15 @@ export const createKimiAuth = (deps: KimiAuthDeps): KimiAuth => {
     if (same?.outcome === "denied") return err("reauthorization_required");
     if (same?.outcome === "pending") return err("refresh_recovery_required");
     if (same !== undefined && same.retryAt > deps.now()) return err("refresh_busy");
-    const failures = same === undefined ? 1 : Math.min(same.failures + 1, MAX_FAILURES);
-    const backoff = (): Promise<void> => lease.writeMarker(grant, "busy",
-      deps.now() + Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (failures - 1)), failures);
+    const attempt: RenewalAttempt = {
+      lease, current, grant, failures: same === undefined ? 1 : Math.min(same.failures + 1, MAX_FAILURES),
+      lockLost: () => signal.aborted && !renewal.aborted,
+    };
     // The marker goes to disk before the request. After a restart, a lost reply or a lost
     // lock, the pending marker stops a second send of a grant that Kimi may have rotated.
-    await lease.writeMarker(grant, "prepared", deps.now() + PREPARED_HOLD_MS, failures);
+    await lease.writeMarker(grant, "prepared", deps.now() + PREPARED_HOLD_MS, attempt.failures);
     await lease.verify();
-    await lease.writeMarker(grant, "pending", 0, failures);
+    await lease.writeMarker(grant, "pending", 0, attempt.failures);
     await lease.verify();
     signal.throwIfAborted();
     progress.sent = true;
@@ -205,20 +219,26 @@ export const createKimiAuth = (deps: KimiAuthDeps): KimiAuth => {
         body: new URLSearchParams({ client_id: KIMI_OAUTH_CLIENT_ID, grant_type: "refresh_token", refresh_token: current.record.refresh_token }),
       }), signal);
     } catch (error) {
-      if (lockLost()) return err("lock_lost");
+      if (attempt.lockLost()) return err("lock_lost");
       if (!provedNotSent(error)) return err("refresh_recovery_required");
-      await backoff();
+      await backoff(attempt);
       return err("refresh_unavailable");
     }
+    return settleReply(attempt, response);
+  };
+
+  /** The result of a token reply: a saved refusal, an adopted CLI rotation, or the new record written back. */
+  const settleReply = async (attempt: RenewalAttempt, response: Response): Promise<Renewal> => {
+    const { lease, current, grant, failures } = attempt;
     // The 429 status alone proves the cooldown, so it is saved before a slow body can use up the deadline.
-    if (response.status === 429) await backoff();
+    if (response.status === 429) await backoff(attempt);
     let body: BoundedText;
     try {
-      body = await readBoundedBody(response.body, TOKEN_REPLY_MAX_BYTES, signal);
+      body = await readBoundedBody(response.body, TOKEN_REPLY_MAX_BYTES, lease.signal);
       // An abort can end the body read as if the body were complete.
-      signal.throwIfAborted();
+      lease.signal.throwIfAborted();
     } catch {
-      if (lockLost()) return err("lock_lost");
+      if (attempt.lockLost()) return err("lock_lost");
       return err(response.status === 429 ? "refresh_busy" : "refresh_recovery_required");
     }
     const whole = body.complete && !body.truncated;
@@ -239,7 +259,7 @@ export const createKimiAuth = (deps: KimiAuthDeps): KimiAuth => {
         (reply?.["error"] === "invalid_client" || reply?.["error"] === "unauthorized_client") &&
         reply["access_token"] === undefined && reply["refresh_token"] === undefined;
       if (!clientRefused) return err("refresh_recovery_required");
-      await backoff();
+      await backoff(attempt);
       return err("refresh_rejected");
     }
     const next = response.status === 200 && whole && reply !== undefined ? renewedRecord(current.record, reply, deps.now()) : undefined;
