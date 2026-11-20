@@ -1,17 +1,23 @@
 /**
  * Kimi through the CLI child. Without the block, the doctor Kimi row makes no file call
  * under the Kimi home; with it, doctor reads the file through the store. The models
- * commands list the Kimi ids. Each child has a fresh HOME below the resolved temporary
- * root, so the Kimi home is a fabricated folder. The doctor config keeps every probe on
- * the loopback host.
+ * commands list the Kimi ids, and the serve banner names the Kimi host only with the block.
+ * Each child has a fresh HOME below the resolved temporary root, so the Kimi home is a
+ * fabricated folder. The doctor config keeps every probe on the loopback host, and the
+ * serve child gets no request.
  */
 import { describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { KIMI_REGION_TABLE } from "../../src/kimi-constants.js";
 import { KIMI_MODELS } from "../../src/kimi-models.js";
-import { cliChildFolders, offlineDoctorConfig, readExecLog, runCliChild } from "../helpers/cli-child.js";
+import {
+  cliChildCommand, cliChildFolders, offlineDoctorConfig, readExecLog, runCliChild, type CliChildFolders,
+} from "../helpers/cli-child.js";
 
 const SLOT = KIMI_REGION_TABLE.global.credentialFile;
 
@@ -58,6 +64,42 @@ describe("CLI doctor Kimi row", () => {
         "doctor only checks and opens the sign-in path");
       assert.deepEqual(calls.filter((line) => line.includes(join(kimiHome, "oauth"))), [], "doctor makes no lock or marker");
     });
+});
+
+/** Start `serve` in the child, stop it after the ready banner, and return the Kimi banner line. */
+const kimiBannerLine = async (folders: CliChildFolders): Promise<string | undefined> => {
+  const command = cliChildCommand(folders, ["serve"], { env: { NO_COLOR: "1", SUBSWITCH_LIMIT_RECORDING: "0" } });
+  const child = spawn(command.file, command.args, { cwd: command.cwd, env: command.env, stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const exited = once(child, "exit");
+  try {
+    // At most 20 s: the banner ends with the doctor hint.
+    for (let wait = 0; wait < 1000 && !stderr.includes("subswitch doctor") && child.exitCode === null; wait++) await delay(20);
+  } finally {
+    child.kill("SIGTERM");
+    await exited;
+  }
+  assert.match(stderr, /subswitch ready/, stderr);
+  return stderr.split("\n").find((line) => line.trimStart().startsWith("kimi "));
+};
+
+describe("CLI serve banner: Kimi", () => {
+  it("without the block, marks Kimi as not turned on and names no Kimi host", { timeout: 30_000 }, async (t) => {
+    const { folders } = await kimiChild(t);
+    await writeFile(folders.configFile, JSON.stringify(await offlineDoctorConfig()));
+    const line = await kimiBannerLine(folders);
+    assert.match(line ?? "", /not turned on/);
+    assert.doesNotMatch(line ?? "", /kimi\.ai/);
+  });
+
+  it("with the block, names the Kimi host (positive control)", { timeout: 30_000 }, async (t) => {
+    const { folders } = await kimiChild(t);
+    await writeFile(folders.configFile, JSON.stringify(await offlineDoctorConfig({ providers: { kimi: {} } })));
+    const line = await kimiBannerLine(folders);
+    assert.match(line ?? "", /→ api\.kimi\.ai$/);
+    assert.doesNotMatch(line ?? "", /not turned on/);
+  });
 });
 
 describe("CLI models: Kimi", () => {

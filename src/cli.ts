@@ -348,9 +348,13 @@ const serve = async (
   for (const id of PROVIDER_IDS) {
     const modelCount = routableModelCount(MODEL_REGISTRY, id);
     const credential = providerConfigFor(effectiveConfig, id);
-    const host = withCredential(credential, BANNER_HOST);
-    const hostSuffix = host !== "" ? `  → ${host}` : "";
-    errOut(`  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${hostSuffix}`);
+    // A provider without its block sends nothing, so its row names no host.
+    let suffix = "  (not turned on)";
+    if (credential.active) {
+      const host = withCredential(credential, BANNER_HOST);
+      suffix = host !== "" ? `  → ${host}` : "";
+    }
+    errOut(`  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${suffix}`);
   }
   if (effectiveConfig.codexIngress.enabled) {
     errOut(effectiveConfig.codexIngress.claude.enabled ? "  codex ingress  OpenAI passthrough + Claude model routing (HTTP/WebSocket)" :
