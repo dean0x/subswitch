@@ -886,15 +886,24 @@ export interface LoadConfigOptions {
 }
 
 /**
- * The user configuration path. XDG_CONFIG_HOME counts only when it is an absolute path:
- * the XDG Base Directory spec says that a relative value is invalid and must be ignored,
+ * An XDG base folder: the variable `name` when it is an absolute path, else `fallback`.
+ * The XDG Base Directory spec says that a relative value is invalid and must be ignored,
  * and that an empty value means unset. A relative value would otherwise resolve against
- * the current folder. Every reader of the user configuration path calls this function.
+ * the current folder.
+ */
+export const xdgBaseDir = (
+  env: Readonly<Record<string, string | undefined>>, name: "XDG_CONFIG_HOME" | "XDG_CACHE_HOME", fallback: string,
+): string => {
+  const value = env[name];
+  return value !== undefined && isAbsolute(value) ? value : fallback;
+};
+
+/**
+ * The user configuration path, under XDG_CONFIG_HOME when that is an absolute path (see
+ * xdgBaseDir). Every reader of the user configuration path calls this function.
  */
 export const userConfigPath = (env: Record<string, string | undefined> = process.env, homeDir = env["HOME"] ?? homedir()): string => {
-  const xdgConfigHome = env["XDG_CONFIG_HOME"];
-  const configHome = xdgConfigHome !== undefined && isAbsolute(xdgConfigHome) ? xdgConfigHome : join(homeDir, ".config");
-  return join(configHome, "subswitch", "config.json");
+  return join(xdgBaseDir(env, "XDG_CONFIG_HOME", join(homeDir, ".config")), "subswitch", "config.json");
 };
 
 /** Own properties only; arrays and scalars replace, nested configuration objects merge. */
