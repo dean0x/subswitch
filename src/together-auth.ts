@@ -22,7 +22,8 @@ interface KeychainExecOptions {
 export interface TogetherKeyReaderDeps {
   readonly env: Readonly<NodeJS.ProcessEnv>;
   readonly platform: NodeJS.Platform;
-  readonly onKeyLoaded?: (key: string) => void;
+  /** Return false to refuse the loaded key: the reader then neither holds nor returns it. */
+  readonly onKeyLoaded?: (key: string) => boolean;
   /** Use execFile semantics: reject on any failed exit. */
   readonly exec: (file: string, args: string[], options: KeychainExecOptions) => Promise<{ stdout: string }>;
   /** Start a one-shot timer and return its cancel function. */
@@ -80,10 +81,9 @@ export const createTogetherKeyReader = (deps: TogetherKeyReaderDeps) => {
   let pending: SharedRead | undefined;
 
   const remember = (result: TogetherKeyResult): TogetherKeyResult => {
-    if (result.ok) {
-      deps.onKeyLoaded?.(result.value.key);
-      cached = result.value;
-    }
+    if (!result.ok) return result;
+    if (deps.onKeyLoaded?.(result.value.key) === false) return err("malformed");
+    cached = result.value;
     return result;
   };
 

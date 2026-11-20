@@ -132,6 +132,17 @@ for (const [name, value] of [
   });
 }
 
+it("refuses and does not hold a loaded key that the error scrub can not hold", async () => {
+  const loaded: string[] = [];
+  const onKeyLoaded = (key: string) => { loaded.push(key); return false; };
+  const env = harness({ env: keyEnv(keys.primary), onKeyLoaded });
+  assert.deepEqual(await env.readKey(signal()), malformed);
+  assert.deepEqual(await env.readKey(signal()), malformed);
+  const keychain = harness({ onKeyLoaded });
+  assert.deepEqual(await keychain.readKey(signal()), malformed);
+  assert.deepEqual(loaded, [keys.primary, keys.primary, keys.primary]);
+});
+
 it("shares one first read among ten waiters and holds the success", async () => {
   const child = deferredKey();
   const { readKey, calls, timers } = harness({ exec: () => child.promise });

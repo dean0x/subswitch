@@ -205,7 +205,63 @@ describe("toAnthropicErrorBody credential redaction", () => {
 it("redacts repeated bare occurrences of a registered credential in every error shape", () => {
   const key = "FAKE-TOGETHER-KEY-$-[fixture]";
   const message = `a ${key} b ${key} c`;
-  registerExactCredential(key);
+  registerExactCredential("together", key);
   assert.equal(JSON.parse(toAnthropicErrorBody("api_error", message)).error.message, "a <redacted> b <redacted> c");
   assert.ok(!toAnthropicErrorSse("api_error", message).includes(key));
+});
+
+/**
+ * The exact-value scrub keeps one current and one previous value per source.
+ * Every value is a fake: a unique label, then filler that never holds a label,
+ * so one test's value can not match inside another test's value.
+ */
+describe("exact credential scrub slots", () => {
+  const fakeToken = (label: string, length: number): string =>
+    `${label}-`.padEnd(length, "q7Z2x9W4");
+  const sseMessage = (frame: string): string => JSON.parse(frame.split("\n")[1]!.slice("data: ".length)).error.message;
+
+  it("redacts a 600-character opaque token in an upstream error body and in an SSE error frame", () => {
+    const token = fakeToken("FAKE-OPAQUE-600", 600);
+    const upstream = JSON.stringify({ error: { message: `upstream refused ${token}` } });
+    const expected = JSON.stringify({ error: { message: "upstream refused <redacted>" } });
+    assert.equal(registerExactCredential("codex", token), true);
+    assert.equal(JSON.parse(toAnthropicErrorBody("api_error", upstream)).error.message, expected);
+    assert.equal(sseMessage(toAnthropicErrorSse("api_error", upstream)), expected);
+  });
+
+  it("keeps the Together key redacted after 40 rotations of another source", () => {
+    const together = fakeToken("FAKE-TOGETHER-LIVE", 64);
+    assert.equal(registerExactCredential("together", together), true);
+    for (let rotation = 0; rotation < 40; rotation++) {
+      assert.equal(registerExactCredential("codex", fakeToken(`FAKE-ROTATION-${rotation}`, 48)), true);
+    }
+    assert.equal(redactCredentials(`key ${together} end`), "key <redacted> end");
+  });
+
+  it("keeps the previous value of a source redacted after one rotation", () => {
+    const first = fakeToken("FAKE-SLOT-FIRST", 40);
+    const second = fakeToken("FAKE-SLOT-SECOND", 40);
+    registerExactCredential("codex", first);
+    registerExactCredential("codex", second);
+    assert.equal(redactCredentials(`${first} ${second}`), "<redacted> <redacted>");
+  });
+
+  it("keeps the previous value when the current value is registered again", () => {
+    const first = fakeToken("FAKE-AGAIN-FIRST", 40);
+    const second = fakeToken("FAKE-AGAIN-SECOND", 40);
+    registerExactCredential("codex", first);
+    registerExactCredential("codex", second);
+    registerExactCredential("codex", second);
+    assert.equal(redactCredentials(`${first} ${second}`), "<redacted> <redacted>");
+  });
+
+  it("holds values of 16 to 8192 characters and refuses a value outside those bounds", () => {
+    const shortest = fakeToken("FAKE-MIN", 16);
+    const longest = fakeToken("FAKE-MAX", 8192);
+    assert.equal(registerExactCredential("codex", fakeToken("FAKE-SHORT", 15)), false);
+    assert.equal(registerExactCredential("codex", fakeToken("FAKE-LONG", 8193)), false);
+    assert.equal(registerExactCredential("codex", shortest), true);
+    assert.equal(registerExactCredential("codex", longest), true);
+    assert.equal(redactCredentials(`${shortest} ${longest}`), "<redacted> <redacted>");
+  });
 });

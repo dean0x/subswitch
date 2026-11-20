@@ -121,7 +121,8 @@ const createTogetherProvider = (config: Config, logger: Logger, keyReaderDeps: T
   const provider = config.providers.together;
   const { maxEntries, maxBytes } = provider.reasoningCache;
   const cache = new ReasoningCache(maxEntries, maxBytes, true);
-  const reader = createTogetherKeyReader({ ...keyReaderDeps, onKeyLoaded: registerExactCredential });
+  // A key that the error scrub can not hold is refused with the fixed "malformed" error.
+  const reader = createTogetherKeyReader({ ...keyReaderDeps, onKeyLoaded: (key) => registerExactCredential("together", key) });
   return createTogetherHandler({
     provider, logger, fetchImpl, auth: createTogetherAuth(reader),
     putReasoning: (key, text) => cache.put(key, [text]),

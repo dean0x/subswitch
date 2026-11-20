@@ -188,7 +188,7 @@ Per-command flag validation walks `parseArgs` **tokens**, not `values`. The main
 
 ### src/errors.ts
 
-`ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed — upstream 5xx incl. 529 → `api_error`); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` exported as single chokepoint for `x-subswitch-synthesized`; `redactCredentials` inside `toAnthropicErrorBody` (ADR-008). The same render site also replaces each exact value in a bounded set; `server.ts` registers the loaded Together key there through `registerExactCredential`.
+`ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed — upstream 5xx incl. 529 → `api_error`); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` exported as single chokepoint for `x-subswitch-synthesized`; `redactCredentials` inside `toAnthropicErrorBody` (ADR-008). The same render site also replaces the exact value of every loaded credential, with one current and one previous slot per provider id; `server.ts` registers the loaded Together key there through `registerExactCredential("together", key)`, and a key it refuses is refused as malformed.
 
 ### src/init.ts — Functional-core / imperative-shell
 
