@@ -287,6 +287,27 @@ describe("source-text guards: live deps factories", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// G4 — Kimi fixtures stay in Kimi-named test files
+//
+// SOURCE-TEXT GUARD: shared tests use Claude or Codex fixtures, so the removal of a
+// provider can not take a shared test with it. This check finds only the Kimi fixtures
+// that carry the FAKE-KIMI marker, in any letter case.
+// ---------------------------------------------------------------------------
+
+const KIMI_FIXTURE_MARKER = /FAKE-KIMI/i;
+const KIMI_TEST_FILE = /(?:^|\/)kimi-[^/]*\.ts$/;
+const THIS_GUARD = "unit/source-text-guards.test.ts";
+
+describe("source-text guards: provider fixtures", () => {
+  it("G4: only Kimi-named test files hold a marked Kimi fixture", () => {
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs,json,sse}", { cwd: TEST_DIR });
+    const marked = files.filter((file) => file !== THIS_GUARD && KIMI_FIXTURE_MARKER.test(readFileSync(join(TEST_DIR, file), "utf8")));
+    assert.ok(marked.includes("integration/kimi-leg.test.ts"), "The marker search must find the Kimi leg fixtures");
+    assert.deepEqual(marked.filter((file) => !KIMI_TEST_FILE.test(file)), [], "Move each Kimi fixture to a Kimi-named test file");
+  });
+});
+
 it("uses execFile with no shell for the Together Keychain read", () => {
   const reader = readSrc("together-auth.ts");
   const factory = readSrc("server.ts");
