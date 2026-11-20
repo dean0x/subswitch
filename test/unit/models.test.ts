@@ -83,9 +83,15 @@ describe("Kimi registry entries", () => {
   it("claims no Codex id or family and no reserved Anthropic name", () => {
     const codex = MODEL_REGISTRY.filter((entry) => entry.provider === "codex");
     const codexNames = new Set(codex.flatMap((entry) => [entry.id, ...(entry.family === undefined ? [] : [entry.family])]));
-    for (const id of KIMI_IDS) {
+    for (const { id, family } of MODEL_REGISTRY.filter((entry) => entry.provider === "kimi")) {
+      assert.equal(family, undefined, `${id} must route by exact id only`);
       assert.equal(codexNames.has(id), false, `${id} must not be a Codex id or family`);
       assert.equal(isReservedAnthropicName(id), false, `${id} must not be a reserved Anthropic name`);
+    }
+    // An exact id wins over a family, so a Kimi id equal to a family would take its traffic.
+    for (const family of new Set(codex.flatMap((entry) => entry.family === undefined ? [] : [entry.family]))) {
+      const target = kimiTarget(family);
+      assert.equal("provider" in target ? target.provider : target.kind, "codex", `${family} must stay on Codex`);
     }
     assert.deepEqual(ambiguousFamilies, []);
     assert.deepEqual(reservedNameEntries, []);
