@@ -11,8 +11,11 @@
  *
  * The relay forwards credentials on the wire. It prints shapes to stdout only.
  * It decodes a gzip body for the view only and forwards the wire bytes unchanged.
+ * By default it closes an upstream that stays idle for 300 s, the product default stream idle bound.
+ * An aborted exchange prints a fixed cause token: client, request, upstream or upstream-idle.
  */
 
+import * as crypto from "node:crypto";
 import * as http from "node:http";
 import * as https from "node:https";
 import { pathToFileURL } from "node:url";
@@ -29,7 +32,11 @@ const LISTEN_PORT = 4143;
 const DEFAULT_UPSTREAM = "https://daily-cloudcode-pa.googleapis.com";
 const UPSTREAM_REFUSAL = "gemini-recorder: upstream override must be an HTTP(S) loopback origin";
 const UPSTREAM_FAILURE = "upstream connection error";
-const UPSTREAM_IDLE_MS = 120_000;
+/** The product default stream idle bound, so the recorder does not cut a turn that the product keeps. */
+const UPSTREAM_IDLE_MS = 300_000;
+/** The largest delay that a Node timer keeps; Node sets a larger value to 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+const IDLE_REFUSAL = `gemini-recorder: upstream idle bound must be an integer from 1 to ${MAX_TIMER_MS} ms`;
 const MAX_LINE_CHARS = 8_192;
 const MAX_VALUE_CHARS = 64;
 const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
@@ -50,6 +57,10 @@ const SHOW_STRINGS = new Set([
   "pluginType", "status", "reason", "domain", "@type", "type", "alt",
 ]);
 const FINGERPRINT_KEYS = /thoughtSignature|token|secret|email|project/iu;
+/** A finite count under a token key, such as usageMetadata.totalTokenCount or maxOutputTokens, prints in full. */
+const TOKEN_COUNT_KEYS = /token/iu;
+/** Below tool input and tool output, this placeholder takes the place of each key name. */
+const HIDDEN_KEY_PATH = ".<key>";
 const stdoutOutput: RecorderOutput = (line) => process.stdout.write(`${line}\n`);
 
 const safeText = (value: string, maxChars: number): string =>
@@ -95,13 +106,19 @@ const parseJson = (body: Buffer): JsonParse => {
   }
 };
 
-const fingerprint = (value: unknown): string => {
+type Fingerprint = (value: unknown) => string;
+
+/** Key each body fingerprint with a random key of one recorder, so equal values match within one run only. */
+const keyedFingerprint = (key: Buffer): Fingerprint => (value) => {
+  let text: string;
   try {
-    return redactedValue(typeof value === "string" ? value : JSON.stringify(value));
+    text = typeof value === "string" ? value : JSON.stringify(value);
   } catch {
     // A parsed object can exceed the native stringifier's stack limit.
     return "<fingerprint-unavailable>";
   }
+  const digest = crypto.createHmac("sha256", key).update(text, "utf8").digest("hex").slice(0, 8);
+  return `<len:${text.length},hmac8:${digest}>`;
 };
 
 const keyPath = (key: string): string => /^[a-zA-Z_$][a-zA-Z0-9_$]{0,63}$/u.test(key)
@@ -134,7 +151,7 @@ const scalarShape = (value: unknown, field: ShapeField): string => {
   return "null";
 };
 
-const shapeLine = (node: ShapeNode): string => {
+const shapeLine = (node: ShapeNode, fingerprint: Fingerprint): string => {
   const { value, path } = node;
   if (node.fingerprinted === true) return `${path}=${fingerprint(value)}`;
   if (Array.isArray(value)) return `${path}=array(len=${value.length})`;
@@ -158,9 +175,13 @@ const childNodes = (node: ShapeNode, room: number): ShapeNode[] => {
     if (!Object.hasOwn(value, key)) continue;
     if (children.length >= Math.min(MAX_OBJECT_KEYS, room)) break;
     const child = value[key];
+    if (!revealValues) {
+      // Key names below tool input and tool output can be data too, so no key name prints or selects a view.
+      children.push({ value: child, path: path + HIDDEN_KEY_PATH, depth: depth + 1, revealValues: false });
+      continue;
+    }
     const childPath = path + keyPath(key);
-    // A finite count such as usageMetadata.totalTokenCount or maxOutputTokens is not a secret.
-    if (FINGERPRINT_KEYS.test(key) && !(typeof child === "number" && Number.isFinite(child))) {
+    if (FINGERPRINT_KEYS.test(key) && !(TOKEN_COUNT_KEYS.test(key) && typeof child === "number" && Number.isFinite(child))) {
       children.push({ value: child, path: childPath, depth: depth + 1, revealValues: false, fingerprinted: true });
       continue;
     }
@@ -181,12 +202,12 @@ const childNodes = (node: ShapeNode, room: number): ShapeNode[] => {
  * so a deep first field cannot use up MAX_FIELDS and hide a later sibling.
  * Each queued node prints one line, so the queue never holds more than MAX_FIELDS.
  */
-const shapeOf = (value: unknown): string => {
+const shapeOf = (value: unknown, fingerprint: Fingerprint): string => {
   const queue: ShapeNode[] = [{ value, path: "$", depth: 0, revealValues: true }];
   const fields: string[] = [];
   for (let head = 0; head < queue.length; head++) {
     const node = queue[head]!;
-    fields.push(shapeLine(node));
+    fields.push(shapeLine(node, fingerprint));
     queue.push(...childNodes(node, MAX_FIELDS - queue.length));
   }
   return fields.join(" ");
@@ -197,7 +218,7 @@ interface BodyCapture {
   readonly end: () => void;
 }
 
-const jsonCapture = (kind: string, emit: RecorderOutput): BodyCapture => {
+const jsonCapture = (kind: string, emit: RecorderOutput, fingerprint: Fingerprint): BodyCapture => {
   const capture = new BoundedCapture(MAX_CAPTURE_BYTES);
   let capped = false;
   return {
@@ -212,14 +233,14 @@ const jsonCapture = (kind: string, emit: RecorderOutput): BodyCapture => {
         emit(`${kind} BODY kind=body-cap`);
       } else if (capture.bytes.length > 0) {
         const parsed = parseJson(capture.bytes);
-        emit(`${kind} BODY ${parsed.ok ? shapeOf(parsed.value) : "kind=non-json"}`);
+        emit(`${kind} BODY ${parsed.ok ? shapeOf(parsed.value, fingerprint) : "kind=non-json"}`);
       }
     },
   };
 };
 
 /** Inspect one physical data line at a time. Keep wire bytes separate from the view. */
-const sseCapture = (emit: RecorderOutput): BodyCapture => {
+const sseCapture = (emit: RecorderOutput, fingerprint: Fingerprint): BodyCapture => {
   const capture = new BoundedCapture(MAX_CAPTURE_BYTES);
   let size = 0;
   let events = 0;
@@ -237,7 +258,7 @@ const sseCapture = (emit: RecorderOutput): BodyCapture => {
         emit(line[0] === COLON ? "SSE kind=comment" : "SSE kind=other");
       } else {
         const parsed = parseJson(line.subarray(DATA_PREFIX.length));
-        emit(parsed.ok ? `SSE event=${events} bytes=${line.length} ${shapeOf(parsed.value)}` : "SSE kind=invalid-json");
+        emit(parsed.ok ? `SSE event=${events} bytes=${line.length} ${shapeOf(parsed.value, fingerprint)}` : "SSE kind=invalid-json");
       }
     }
     size = 0;
@@ -317,7 +338,17 @@ const observeBody = (source: http.IncomingMessage, capture: BodyCapture, count: 
   source.once("end", capture.end);
 };
 
-const relay = (req: http.IncomingMessage, res: http.ServerResponse, upstream: URL, emit: RecorderOutput): void => {
+/** The side that ended an exchange. It labels the transcript only. */
+type AbortCause = "client" | "request" | "upstream" | "upstream-idle";
+
+interface RelaySettings {
+  readonly upstream: URL;
+  readonly upstreamIdleMs: number;
+  readonly fingerprint: Fingerprint;
+}
+
+const relay = (req: http.IncomingMessage, res: http.ServerResponse, settings: RelaySettings, emit: RecorderOutput): void => {
+  const { upstream, fingerprint } = settings;
   const method = req.method ?? "GET";
   const path = req.url ?? "/";
   let requestBytes = 0;
@@ -325,6 +356,9 @@ const relay = (req: http.IncomingMessage, res: http.ServerResponse, upstream: UR
   let status = 0;
   let outgoing: http.ClientRequest | undefined;
   let incoming: http.IncomingMessage | undefined;
+  let cause: AbortCause | undefined;
+  // Keep the first cause: the later errors of the same teardown do not change it.
+  const noteCause = (next: AbortCause): AbortCause => (cause ??= next);
   const total = (suffix: string): void => emit(`TOTAL status=${status} requestBytes=${requestBytes} responseBytes=${responseBytes}${suffix}`);
   const fail = (code: number, message: string): void => {
     if (res.destroyed || res.writableEnded) return;
@@ -333,19 +367,27 @@ const relay = (req: http.IncomingMessage, res: http.ServerResponse, upstream: UR
     } else {
       status = code;
       responseBytes = Buffer.byteLength(message);
-      emit(`RESPONSE status=${status} kind=synthetic`);
+      emit(`RESPONSE status=${status} kind=synthetic${cause === undefined ? "" : ` cause=${cause}`}`);
       res.writeHead(status, { "content-type": "text/plain", "content-length": responseBytes }).end(message);
     }
   };
+  const failUpstream = (next: AbortCause): void => {
+    noteCause(next);
+    fail(502, UPSTREAM_FAILURE);
+  };
   res.once("finish", () => total(""));
   res.once("close", () => {
-    if (!res.writableFinished) total(" kind=aborted");
+    if (!res.writableFinished) total(` kind=aborted cause=${noteCause("client")}`);
+    // Teardown has its own predicate. The cause is a one-way label and never decides it.
     if (!res.writableFinished || !req.complete) {
       outgoing?.destroy();
       incoming?.destroy();
     }
   });
-  req.once("error", () => res.destroy());
+  req.once("error", () => {
+    noteCause("request");
+    res.destroy();
+  });
   // Preserve the accepted target verbatim. The vetted origin selects the socket.
   if (!/^(?:\*|\/(?!\/)[\x21-\x7e]*)$/u.test(path) || /[\\#]/u.test(path)) {
     fail(400, "invalid request target");
@@ -355,7 +397,7 @@ const relay = (req: http.IncomingMessage, res: http.ServerResponse, upstream: UR
   recordHeaders(req.rawHeaders, "REQUEST", emit);
   const onReply = (reply: http.IncomingMessage): void => {
     incoming = reply;
-    reply.once("error", () => fail(502, UPSTREAM_FAILURE));
+    reply.once("error", () => failUpstream("upstream"));
     if (res.destroyed || res.writableEnded) {
       reply.destroy();
       return;
@@ -368,32 +410,37 @@ const relay = (req: http.IncomingMessage, res: http.ServerResponse, upstream: UR
     const mime = reply.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
     const sse = mime === "text/event-stream";
     const capture = bodyView(reply.headers["content-encoding"], sse ? "SSE" : "RESPONSE BODY",
-      sse ? sseCapture(emit) : jsonCapture("RESPONSE", emit), emit);
+      sse ? sseCapture(emit, fingerprint) : jsonCapture("RESPONSE", emit, fingerprint), emit);
     observeBody(reply, capture, (bytes) => { responseBytes += bytes; });
     reply.pipe(res);
   };
   const transport = upstream.protocol === "https:" ? https : http;
   try {
     outgoing = transport.request(upstream, { method, path, agent: false }, onReply);
-    outgoing.once("error", () => fail(502, UPSTREAM_FAILURE));
-    outgoing.setTimeout(UPSTREAM_IDLE_MS, () => outgoing?.destroy(new Error(UPSTREAM_FAILURE)));
+    outgoing.once("error", () => failUpstream("upstream"));
+    outgoing.setTimeout(settings.upstreamIdleMs, () => {
+      noteCause("upstream-idle");
+      outgoing?.destroy(new Error(UPSTREAM_FAILURE));
+    });
     setRawRequestHeaders(outgoing, filterRawHeaders(req.rawHeaders, HOP_BY_HOP));
     if (!outgoing.hasHeader("content-length") && (req.headers["transfer-encoding"] || req.headers["content-length"])) {
       // Regenerate HTTP framing, including for methods Node does not chunk by default.
       outgoing.setHeader("transfer-encoding", "chunked");
     }
-    observeBody(req, bodyView(req.headers["content-encoding"], "REQUEST BODY", jsonCapture("REQUEST", emit), emit),
+    observeBody(req, bodyView(req.headers["content-encoding"], "REQUEST BODY", jsonCapture("REQUEST", emit, fingerprint), emit),
       (bytes) => { requestBytes += bytes; });
     req.pipe(outgoing);
   } catch {
     outgoing?.destroy();
-    fail(502, UPSTREAM_FAILURE);
+    failUpstream("upstream");
   }
 };
 
 export interface RecorderOptions {
   readonly upstream?: string;
   readonly output?: RecorderOutput;
+  /** Close an upstream that stays idle this long. Default: 300 s. */
+  readonly upstreamIdleMs?: number;
 }
 
 const parseLoopbackOrigin = (value: string): URL | undefined => {
@@ -409,6 +456,10 @@ const parseLoopbackOrigin = (value: string): URL | undefined => {
 export const createGeminiRecorderServer = (options: RecorderOptions = {}): http.Server => {
   const upstream = options.upstream === undefined ? new URL(DEFAULT_UPSTREAM) : parseLoopbackOrigin(options.upstream);
   if (upstream === undefined) throw new Error(UPSTREAM_REFUSAL);
+  const upstreamIdleMs = options.upstreamIdleMs ?? UPSTREAM_IDLE_MS;
+  // Zero turns the socket timeout off, so require a bound that a timer keeps.
+  if (!Number.isInteger(upstreamIdleMs) || upstreamIdleMs < 1 || upstreamIdleMs > MAX_TIMER_MS) throw new Error(IDLE_REFUSAL);
+  const settings: RelaySettings = { upstream, upstreamIdleMs, fingerprint: keyedFingerprint(crypto.randomBytes(32)) };
   const output = options.output ?? stdoutOutput;
   let seq = 0;
   return http.createServer((req, res) => {
@@ -418,7 +469,7 @@ export const createGeminiRecorderServer = (options: RecorderOptions = {}): http.
       return;
     }
     const id = ++seq;
-    relay(req, res, upstream, (line) => output(safeText(`#${id} ${line}`, MAX_LINE_CHARS - 1)));
+    relay(req, res, settings, (line) => output(safeText(`#${id} ${line}`, MAX_LINE_CHARS - 1)));
   });
 };
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import * as http from "node:http";
@@ -31,12 +32,13 @@ const close = async (server: http.Server): Promise<void> => {
 const withRecorder = async (
   respond: http.RequestListener,
   run: (base: string, output: readonly string[]) => Promise<void>,
+  options: { readonly upstreamIdleMs?: number } = {},
 ): Promise<void> => {
   const upstream = http.createServer(respond);
   try {
     const upstreamUrl = await listen(upstream);
     const output: string[] = [];
-    const recorder = createGeminiRecorderServer({ upstream: upstreamUrl, output: (line) => output.push(line) });
+    const recorder = createGeminiRecorderServer({ ...options, upstream: upstreamUrl, output: (line) => output.push(line) });
     try {
       await run(await listen(recorder), output);
     } finally {
@@ -70,6 +72,18 @@ const waitForLine = async (output: readonly string[], pattern: RegExp): Promise<
   for (let tries = 0; tries < TIMEOUT_MS / 10 && !output.some((line) => pattern.test(line)); tries++) await delay(10);
 };
 
+// The bound timers do not hold the process open after a race ends; the test servers keep it open during a race.
+/** Resolve true when the event comes within the bound, else false. */
+const within = (event: Promise<unknown>, boundMs: number): Promise<boolean> =>
+  Promise.race([event.then(() => true), delay(boundMs, false, { ref: false })]);
+
+/** Report how one client reply ends within 1 s: a clean end, an error, or no end. */
+const replyOutcome = (base: string, path: string): Promise<"end" | "error" | "no-end"> =>
+  Promise.race([
+    send(base, { path }).then(() => "end" as const, () => "error" as const),
+    delay(1_000, "no-end" as const, { ref: false }),
+  ]);
+
 it("relays the Gemini request and split SSE bytes but prints only permitted values", OPTIONS, async () => {
   const token = "fake-bearer-719a";
   const project = "fake-project-38db";
@@ -80,14 +94,18 @@ it("relays the Gemini request and split SSE bytes but prints only permitted valu
   const traceId = "fake-trace-6bea";
   const requestId = "fake-query-and-request-50c2";
   const upstreamHeader = "fake-response-header-800e";
+  const argKey = "fake-file-name-5c1d.txt";
+  const toolStatus = "fake-tool-status-6d2f";
+  const toolType = "fake-tool-type-0a9c";
   const requestBody = Buffer.from(JSON.stringify({
     project,
     model: "gemini-fabricated",
     request: {
       contents: [{ role: "user", parts: [
         { text: prompt },
-        { functionCall: { name: "lookup", args: { model: arg }, id: "fake-call-id-113" } },
+        { functionCall: { name: "lookup", args: { model: arg, [argKey]: 1 }, id: "fake-call-id-113" } },
         { thought: true, thoughtSignature: signature },
+        { functionResponse: { name: "lookup", response: { status: toolStatus, type: toolType } } },
       ] }],
       systemInstruction: { parts: [{ text: "fake system instruction" }] },
       tools: [{ functionDeclarations: [{ name: "lookup" }] }],
@@ -142,8 +160,8 @@ it("relays the Gemini request and split SSE bytes but prints only permitted valu
     assert.equal(result.headers["x-response-hop"], undefined);
     assert.deepEqual(result.body, wire);
     const transcript = output.join("\n");
-    for (const literal of [token, project, prompt, arg, signature, email, traceId, requestId, upstreamHeader,
-      "fake-call-id-113", "fake system instruction", "fake reply", "fake SSE comment", "fake SSE field",
+    for (const literal of [token, project, prompt, arg, argKey, toolStatus, toolType, signature, email, traceId, requestId,
+      upstreamHeader, "fake-call-id-113", "fake system instruction", "fake reply", "fake SSE comment", "fake SSE field",
       "fake request hop", "fake response hop"]) {
       assert.ok(!transcript.includes(literal), `Transcript disclosed a fabricated value: ${literal}`);
     }
@@ -157,8 +175,13 @@ it("relays the Gemini request and split SSE bytes but prints only permitted valu
       '$.model=string(len=17,value="gemini-fabricated")',
       '$.request.contents[0].parts[0].text=string(len=24)',
       '$.request.contents[0].parts[1].functionCall=object',
-      '$.request.contents[0].parts[1].functionCall.args.model=string(len=20)',
+      // Below tool input and tool output, a fixed placeholder takes the place of each key name.
+      '$.request.contents[0].parts[1].functionCall.args.<key>=string(len=20)',
+      '$.request.contents[0].parts[1].functionCall.args.<key>=number ',
       '$.request.contents[0].parts[2].thoughtSignature=<len:',
+      '$.request.contents[0].parts[3].functionResponse.<key>=object',
+      `$.request.contents[0].parts[3].functionResponse.<key>.<key>=string(len=${toolStatus.length})`,
+      `$.request.contents[0].parts[3].functionResponse.<key>.<key>=string(len=${toolType.length})`,
       '$.request.systemInstruction=object',
       '$.request.tools=array(len=1)',
       '#1 RESPONSE status=201',
@@ -247,8 +270,125 @@ it("tears down the upstream when the client disconnects mid-stream", OPTIONS, as
     const closed = await Promise.race([upstreamClosed, delay(1_000, false)]);
     assert.ok(closed, "upstream kept streaming after the client disconnected");
     await waitForLine(output, /kind=aborted/u);
-    assert.ok(output.some((line) => /^#1 TOTAL status=200 requestBytes=0 responseBytes=\d+ kind=aborted$/u.test(line)),
+    assert.ok(output.some((line) => /^#1 TOTAL status=200 requestBytes=0 responseBytes=\d+ kind=aborted cause=client$/u.test(line)),
       output.join("\n"));
+  });
+});
+
+it("ends the client reply with an error when the upstream dies inside a sized body", OPTIONS, async () => {
+  await withRecorder((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json", "content-length": 64 });
+    res.write('{"fake":', () => res.socket?.destroy());
+  }, async (base, output) => {
+    assert.equal(await replyOutcome(base, "/v1internal:generateContent"), "error");
+    await waitForLine(output, /kind=aborted/u);
+    assert.ok(output.includes("#1 TOTAL status=200 requestBytes=0 responseBytes=8 kind=aborted cause=upstream"), output.join("\n"));
+  });
+});
+
+it("ends the client SSE reply with an error, not a clean end, when the upstream dies mid-stream", OPTIONS, async () => {
+  await withRecorder((_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write('data: {"response":{}}\n\n', () => res.socket?.destroy());
+  }, async (base, output) => {
+    assert.equal(await replyOutcome(base, "/v1internal:streamGenerateContent?alt=sse"), "error");
+    await waitForLine(output, /kind=aborted/u);
+    assert.ok(output.some((line) => /^#1 TOTAL status=200 requestBytes=0 responseBytes=\d+ kind=aborted cause=upstream$/u.test(line)),
+      output.join("\n"));
+  });
+});
+
+/** The upstream never replies. The client leaves once the upstream has the request. */
+const leaveBeforeReply = async (options: http.RequestOptions, begin: (request: http.ClientRequest) => void): Promise<string[]> => {
+  let markArrived: () => void = () => undefined;
+  const arrived = new Promise<void>((resolve) => { markArrived = resolve; });
+  let markClosed: () => void = () => undefined;
+  const upstreamClosed = new Promise<void>((resolve) => { markClosed = resolve; });
+  let transcript: string[] = [];
+  await withRecorder((req) => {
+    req.socket.once("close", markClosed);
+    req.resume();
+    markArrived();
+  }, async (base, output) => {
+    const request = http.request(base, options);
+    request.on("error", () => undefined);
+    begin(request);
+    assert.ok(await within(arrived, TIMEOUT_MS), "the upstream did not get the request");
+    request.destroy();
+    assert.ok(await within(upstreamClosed, 1_000), "the upstream socket stayed open after the client left");
+    await waitForLine(output, /kind=aborted/u);
+    transcript = [...output];
+  });
+  return transcript;
+};
+
+it("closes the upstream socket when the client drops a slow upload", OPTIONS, async () => {
+  const output = await leaveBeforeReply({
+    path: "/v1internal:generateContent",
+    method: "POST",
+    headers: { "content-type": "application/json", "transfer-encoding": "chunked" },
+  }, (request) => request.write('{"fake":'));
+  assert.ok(output.includes("#1 TOTAL status=0 requestBytes=8 responseBytes=0 kind=aborted cause=client"), output.join("\n"));
+});
+
+it("closes the upstream socket when the client leaves before the reply headers", OPTIONS, async () => {
+  const output = await leaveBeforeReply({ path: "/v1internal:loadCodeAssist" }, (request) => request.end());
+  assert.ok(output.includes("#1 TOTAL status=0 requestBytes=0 responseBytes=0 kind=aborted cause=client"), output.join("\n"));
+});
+
+it("returns a fixed 502 with the idle cause when the upstream stays silent past the idle bound", OPTIONS, async () => {
+  await withRecorder(() => undefined, async (base, output) => {
+    const response = await send(base, { path: "/v1internal:loadCodeAssist" });
+    assert.equal(response.status, 502);
+    assert.equal(response.body.toString(), "upstream connection error");
+    assert.ok(output.includes("#1 RESPONSE status=502 kind=synthetic cause=upstream-idle"), output.join("\n"));
+  }, { upstreamIdleMs: 100 });
+});
+
+it("refuses an idle bound that is not a whole number of milliseconds in the timer range", OPTIONS, () => {
+  const refusal = { name: "Error", message: "gemini-recorder: upstream idle bound must be an integer from 1 to 2147483647 ms" };
+  for (const upstreamIdleMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+    assert.throws(() => createGeminiRecorderServer({ upstream: "http://127.0.0.1:4143", upstreamIdleMs }), refusal, String(upstreamIdleMs));
+  }
+  for (const upstreamIdleMs of [1, 2_147_483_647]) {
+    assert.doesNotThrow(() => createGeminiRecorderServer({ upstream: "http://127.0.0.1:4143", upstreamIdleMs }), String(upstreamIdleMs));
+  }
+});
+
+it("prints only the cap kind for a JSON body past 4 MiB and relays every byte", OPTIONS, async () => {
+  // The JSON frame around the value is 11 bytes.
+  const jsonOfSize = (bytes: number): Buffer => Buffer.from(`{"fake":"${"x".repeat(bytes - 11)}"}`);
+  const bodies = [jsonOfSize(4 * 1024 * 1024), jsonOfSize(4 * 1024 * 1024 + 1)];
+  const received: number[] = [];
+  await withRecorder((req, res) => {
+    let bytes = 0;
+    req.on("data", (chunk: Buffer) => { bytes += chunk.length; });
+    req.once("end", () => {
+      received.push(bytes);
+      res.end();
+    });
+  }, async (base, output) => {
+    for (const body of bodies) {
+      await send(base, {
+        path: "/v1internal:generateContent",
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": body.length },
+      }, body);
+    }
+    assert.deepEqual(received, bodies.map((body) => body.length));
+    assert.ok(output.includes(`#1 REQUEST BODY $=object $.fake=string(len=${4 * 1024 * 1024 - 11})`), output.join("\n"));
+    assert.ok(output.includes("#2 REQUEST BODY kind=body-cap"), output.join("\n"));
+  });
+});
+
+it("prints at most 200 SSE detail lines and still counts every event", OPTIONS, async () => {
+  const body = Buffer.from('data: {"response":{}}\n\n'.repeat(201));
+  await withRecorder((_req, res) => res.writeHead(200, { "content-type": "text/event-stream" }).end(body), async (base, output) => {
+    const response = await send(base, { path: "/v1internal:streamGenerateContent?alt=sse" });
+    assert.deepEqual(response.body, body);
+    assert.equal(output.filter((line) => /^#1 SSE (?!TOTAL )/u.test(line)).length, 200);
+    assert.ok(output.includes("#1 SSE event=200 bytes=21 $=object $.response=object"));
+    assert.ok(output.includes("#1 SSE TOTAL events=201"), output.filter((line) => line.includes("TOTAL")).join("\n"));
   });
 });
 
@@ -302,6 +442,36 @@ it("walks a body breadth first so a deep first field does not hide the later fie
       "$.userAgent=string(len=20)",
     ]) assert.ok(transcript.includes(shape), `Missing transcript shape: ${shape}`);
     assert.ok(!transcript.includes(sessionId) && !transcript.includes(userAgent));
+  });
+});
+
+it("keys body fingerprints per recorder run and does not print a numeric project id", OPTIONS, async () => {
+  const email = "fake-5a0e@example.invalid";
+  const project = "fake-project-c3b7";
+  const projectNumber = 918_273_645_501;
+  const body = Buffer.from(JSON.stringify({ project, userEmail: email, projectNumber, usageMetadata: { totalTokenCount: 77 } }));
+  await withRecorder((req, res) => {
+    req.resume();
+    req.once("end", () => res.end());
+  }, async (base, output) => {
+    for (let request = 0; request < 2; request++) {
+      await send(base, {
+        path: "/v1internal:loadCodeAssist",
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": body.length },
+      }, body);
+    }
+    const transcript = output.join("\n");
+    const unkeyed = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex").slice(0, 8);
+    for (const value of [email, project, String(projectNumber)]) {
+      assert.ok(!transcript.includes(value), `Transcript disclosed a fabricated value: ${value}`);
+      assert.ok(!transcript.includes(unkeyed(value)), `Transcript has the unkeyed digest of: ${value}`);
+    }
+    assert.ok(transcript.includes("$.usageMetadata.totalTokenCount=number(77)"), transcript);
+    const fingerprints = (id: number): string[] =>
+      output.find((line) => line.startsWith(`#${id} REQUEST BODY `))?.match(/\$\.\w+=<len:[^>]*>/gu) ?? [];
+    assert.deepEqual(fingerprints(1).map((field) => field.split("=")[0]), ["$.project", "$.userEmail", "$.projectNumber"]);
+    assert.deepEqual(fingerprints(2), fingerprints(1));
   });
 });
 
