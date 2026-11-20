@@ -31,7 +31,7 @@ const OTHER_PROVIDER = otherProviderName as ProviderId;
  * different slice than production does.
  */
 const codexDepsFrom = (config: Config) => ({
-  providerId: "codex" as ProviderId,
+  providerId: "codex" as const,
   provider: config.providers.codex,
   pingIntervalMs: config.limits.pingIntervalMs,
   loginCommand: codexCredentialFor(config.providers.codex).loginCommand,
@@ -563,17 +563,15 @@ const TARGET_HEADER_ORDER = [
   "user-agent",
 ] as const;
 
-/** Minimal two-header credential that matches what CodexAuthManager emits. */
-const makeStandardAuth = (): ProviderAuth<"codex"> => ({
+/** Minimal two-header credential that matches what CodexAuthManager emits, branded for `provider`. */
+const standardAuthFor = <P extends ProviderId>(provider: P): ProviderAuth<P> => ({
   refreshable: false,
   getCredentials: async () =>
-    ok({
-      provider: "codex" as const,
-      authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" },
-    }),
+    ok({ provider, authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" } }),
   forceRefresh: async () =>
-    ok({ provider: "codex" as const, authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" } }),
+    ok({ provider, authHeaders: { authorization: "Bearer tok", "chatgpt-account-id": "acct_x" } }),
 });
+const makeStandardAuth = (): ProviderAuth<"codex"> => standardAuthFor("codex");
 
 /** Run the handler far enough to call fetchImpl, then return the captured headers. */
 const captureOutgoingHeaders = async (
@@ -710,7 +708,7 @@ describe("buildHeaders — auth-first header order with owned-name guard (avoids
 describe("upstream 401 names the provider loginCommand in the client-visible message", () => {
   /**
    * U2.1: providerId: OTHER_PROVIDER, loginCommand: "not-a-provider auth login".
-   * auth is makeStandardAuth() — refreshable: false — exercising the non-refreshable path.
+   * auth is standardAuthFor(OTHER_PROVIDER) — refreshable: false — exercising the non-refreshable path.
    * Assert message ends with "not-a-provider auth login" and does NOT match
    * /not-a-provider login/.
    *
@@ -733,7 +731,7 @@ describe("upstream 401 names the provider loginCommand in the client-visible mes
       providerId: OTHER_PROVIDER,
       loginCommand: "not-a-provider auth login",
       logger: noopLogger,
-      auth: makeStandardAuth(),
+      auth: standardAuthFor(OTHER_PROVIDER),
       cache: new ReasoningCache(4, 1024),
       fetchImpl: always401,
     });

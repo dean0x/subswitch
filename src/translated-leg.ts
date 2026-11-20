@@ -44,7 +44,7 @@ export interface TranslatedLegOptions<C> {
   readonly auth: {
     readonly refreshable: boolean;
     readonly getCredentials: (signal: AbortSignal) => Promise<Result<C, ProxyError>>;
-    readonly forceRefresh: () => Promise<Result<C, ProxyError>>;
+    readonly forceRefresh: (signal: AbortSignal, failed: C) => Promise<Result<C, ProxyError>>;
   };
   readonly fetchImpl: typeof fetch;
   readonly buildHeaders: (credential: C) => Record<string, string>;
@@ -61,25 +61,38 @@ export interface TranslatedLegOptions<C> {
 type ReplyError = (error: ProxyError) => void;
 type FramePipeline = readonly [Readable, Transform, Transform];
 
-/** Return the upstream response, or end the request here if no response is available. */
-const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, signal: AbortSignal,
-  replyError: ReplyError): Promise<Response | undefined> => {
-  const { auth, events, fetchImpl, logger, model, name } = options;
-  // Bound the wait even when a credential source does not observe cancellation.
-  const initial = await abortable(auth.getCredentials(signal), signal).catch((cause: unknown): Result<C, ProxyError> => {
+const timeoutError = (name: string): ProxyError => ({ kind: "timeout", message: `${name} request timed out` });
+
+/**
+ * Return the credential, or reply here and return undefined.
+ * The wait ends at the abort even when the credential source does not observe cancellation.
+ */
+const waitForCredential = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>,
+  pending: Promise<Result<C, ProxyError>>, signal: AbortSignal, replyError: ReplyError): Promise<{ readonly value: C } | undefined> => {
+  const { events, logger, model, name } = options;
+  const result = await abortable(pending, signal).catch((cause: unknown): Result<C, ProxyError> => {
     // A cancelled wait gets the timeout reply below. Log only the cause name: the message can hold a credential.
     if (!signal.aborted) logger.log("error", events.credentialLoadFailed, { model, errorCode: cause instanceof Error ? cause.name : "unknown" });
     return { ok: false, error: { kind: "upstream", status: 500, message: `${name} credential load failed` } };
   });
-  if (res.destroyed || res.writableEnded) return;
+  if (res.destroyed || res.writableEnded) return undefined;
   if (signal.aborted) {
-    replyError({ kind: "timeout", message: `${name} request timed out` });
-    return;
+    replyError(timeoutError(name));
+    return undefined;
   }
-  if (!initial.ok) {
-    replyError(initial.error);
-    return;
+  if (!result.ok) {
+    replyError(result.error);
+    return undefined;
   }
+  return result;
+};
+
+/** Return the upstream response, or end the request here if no response is available. */
+const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, signal: AbortSignal,
+  replyError: ReplyError): Promise<Response | undefined> => {
+  const { auth, events, fetchImpl, logger, model, name } = options;
+  const initial = await waitForCredential(res, options, auth.getCredentials(signal), signal, replyError);
+  if (initial === undefined) return;
   let credential = initial.value;
   const maxAttempts = auth.refreshable ? 2 : 1;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -104,11 +117,9 @@ const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOpt
     if (response.status !== 401 || attempt + 1 === maxAttempts) return response;
     logger.log("warn", events.upstream401Refreshing, { model });
     await response.body?.cancel().catch(() => undefined);
-    const refreshed = await auth.forceRefresh();
-    if (!refreshed.ok) {
-      replyError(refreshed.error);
-      return;
-    }
+    // The refresh gets the request signal for its waits only, so a sent refresh still completes and is saved.
+    const refreshed = await waitForCredential(res, options, auth.forceRefresh(signal, credential), signal, replyError);
+    if (refreshed === undefined) return;
     credential = refreshed.value;
   }
   // The last attempt must return a response or report an error.
@@ -118,8 +129,6 @@ const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOpt
 
 const peekErrorBody = async (response: Response, signal: AbortSignal): Promise<string> =>
   (await readBoundedBody(response.body, ERROR_BODY_PEEK_BYTES, signal).catch(() => undefined))?.text ?? "";
-
-const timeoutError = (name: string): ProxyError => ({ kind: "timeout", message: `${name} request timed out` });
 
 const relayUpstreamError = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, upstream: Response,
   signal: AbortSignal, replyError: ReplyError): Promise<void> => {
