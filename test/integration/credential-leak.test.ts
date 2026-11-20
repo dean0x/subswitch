@@ -241,7 +241,7 @@ const startLeakMatrix = async (togetherKeyReader: TogetherKeyReaderDeps) => {
     providers: { codex: { baseUrl: codex.url, authFile }, together: { baseUrl: `${together.url}/v1` } },
   }, {
     logger: { log: (level, event, fields) => records.push(`${level} ${event} ${JSON.stringify(fields ?? {})}`) },
-    togetherKeyReader,
+    providerDeps: { together: togetherKeyReader },
   });
   cleanups.push(subswitch.close, together.close, anthropic.close, codex.close, () => rm(dir, { recursive: true, force: true }));
   const post = async (model: string) => {

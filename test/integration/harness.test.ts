@@ -13,17 +13,20 @@
  * result.  The H1 codex_upstream_error assertion goes RED; request_complete
  * (emitted by the request loop, not the handler) stays green.
  */
-import { describe, it, after } from "node:test";
+import { describe, it, after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LogLevel, LogFields } from "../../src/logger.js";
+import { TOGETHER_API_KEY_ENV } from "../../src/together-auth.js";
+import { lateToolNames } from "../fixtures/together/streams.js";
 import {
   startSubswitch,
   startFakeUpstream,
   makeAuthFileContent,
   makeAccessToken,
+  sseHandler,
 } from "./fake-upstreams.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -100,5 +103,63 @@ describe("startSubswitch logger injection", () => {
 
     const response = await fetch(`${subswitch.url}/__subswitch/health`);
     assert.equal(response.status, 200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider deps: a test that injects no deps for a provider gets a fake that
+// refuses every store call, never the live reader.
+// ---------------------------------------------------------------------------
+
+const PROCESS_KEY = "FAKE-TOGETHER-KEY-process-env";
+
+/**
+ * Start a proxy with a Together route to a fake upstream. A marked fake key is put in the
+ * process env first: if startSubswitch used the live deps, the live reader would find that
+ * key before any Keychain call and send it upstream, so the test can not reach a real store.
+ */
+const togetherRig = async (t: TestContext, options: Parameters<typeof startSubswitch>[1] = {}) => {
+  const previous = process.env[TOGETHER_API_KEY_ENV];
+  process.env[TOGETHER_API_KEY_ENV] = PROCESS_KEY;
+  t.after(() => {
+    if (previous === undefined) delete process.env[TOGETHER_API_KEY_ENV];
+    else process.env[TOGETHER_API_KEY_ENV] = previous;
+  });
+  const together = await startFakeUpstream(sseHandler(lateToolNames));
+  t.after(together.close);
+  const subswitch = await startSubswitch({ providers: { together: { baseUrl: `${together.url}/v1` } } }, options);
+  t.after(subswitch.close);
+  const response = await fetch(`${subswitch.url}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({ model: "together:fixture/model", messages: [{ role: "user", content: "hi" }], max_tokens: 16 }),
+  });
+  return { together, subswitch, status: response.status, body: await response.text() };
+};
+
+describe("startSubswitch provider deps", () => {
+  it("refuses the Together Keychain call when a test injects no Together deps", async (t) => {
+    const { together, subswitch, status, body } = await togetherRig(t);
+    assert.equal(status, 401);
+    assert.match(body, /Together key is missing/);
+    assert.equal(together.requests.length, 0, "the live reader must not find the process env key");
+    // The darwin fake reaches the Keychain call, so this list proves that the fake refused it.
+    assert.deepEqual(subswitch.refusedStoreCalls, ["together.exec"]);
+  });
+
+  it("uses injected Together deps in place of the refusing fake", async (t) => {
+    const injected = "FAKE-TOGETHER-KEY-injected";
+    const { together, subswitch, status } = await togetherRig(t, {
+      providerDeps: {
+        together: {
+          env: { [TOGETHER_API_KEY_ENV]: injected }, platform: "darwin", setTimer: () => () => {},
+          exec: async () => { throw new Error("The env key must be used before the Keychain"); },
+        },
+      },
+    });
+    assert.equal(status, 200);
+    assert.equal(together.requests.length, 1);
+    assert.equal(together.requests[0]?.headers.authorization, `Bearer ${injected}`);
+    assert.deepEqual(subswitch.refusedStoreCalls, []);
   });
 });

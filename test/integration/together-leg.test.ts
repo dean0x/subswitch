@@ -35,7 +35,7 @@ const fixture = async (t: TestContext, handler: UpstreamHandler, key: string | n
   const exec = t.mock.fn(async () => ({ stdout: "" }));
   const proxy = await startSubswitch({ ...overrides, providers: { together: { baseUrl: `${together.url}/v1`, ...options } },
     anthropic: { baseUrl: fallback.url } }, {
-    togetherKeyReader: { env: key === null ? {} : { [TOGETHER_API_KEY_ENV]: key }, platform, exec, setTimer: () => () => {} },
+    providerDeps: { together: { env: key === null ? {} : { [TOGETHER_API_KEY_ENV]: key }, platform, exec, setTimer: () => () => {} } },
     logger: { log: (_level, event, fields) => logs.push({ event, fields }) },
   });
   t.after(proxy.close);

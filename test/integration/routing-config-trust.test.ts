@@ -103,7 +103,7 @@ describe("Together configuration and host trust", () => {
     t.after(anthropic.close);
     const exec = t.mock.fn(async (): Promise<{ stdout: string }> => { throw new Error("item not found"); });
     const proxy = await startSubswitch({ anthropic: { baseUrl: anthropic.url }, providers: { together: { baseUrl: `${together.url}/v1` } } },
-      { togetherKeyReader: { env: {}, platform: "darwin", exec, setTimer: () => () => {} } });
+      { providerDeps: { together: { env: {}, platform: "darwin", exec, setTimer: () => () => {} } } });
     t.after(proxy.close);
     const body = Buffer.from(JSON.stringify({ model: "together:fixture/model", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }));
     const send = (headers: string[]) => rawHttpRequest(`${proxy.url}/v1/messages`, {

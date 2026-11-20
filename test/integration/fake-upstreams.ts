@@ -2,9 +2,8 @@ import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { loadConfig } from "../../src/config.js";
-import { buildDeps, createProxyServer } from "../../src/server.js";
+import { buildDeps, createProxyServer, type ProviderDeps, type ProviderDepsById } from "../../src/server.js";
 import type { Logger } from "../../src/logger.js";
-import type { TogetherKeyReaderDeps } from "../../src/together-auth.js";
 import type { ModelResolution } from "../../src/models.js";
 
 export interface RecordedRequest {
@@ -69,8 +68,28 @@ export const sseHandler = (sseText: string): UpstreamHandler => (_req, res) => {
 
 export interface SubswitchInstance {
   readonly url: string;
+  /** Each store call that a refusing default fake got, in order. */
+  readonly refusedStoreCalls: readonly string[];
   close(): Promise<void>;
 }
+
+/**
+ * The provider deps that startSubswitch gives each provider that a test does not inject.
+ * Each fake refuses every store call: it records the call in `refused` and throws. The
+ * Together fake says darwin, because on another platform the reader stops before the
+ * Keychain call and the refusal could not be seen. The return type has every provider id,
+ * so a new provider with store deps must add its refusing fake here.
+ */
+const refusingProviderDeps = (refused: string[]): ProviderDepsById => ({
+  codex: undefined,
+  together: {
+    env: {}, platform: "darwin", setTimer: () => () => {},
+    exec: async () => {
+      refused.push("together.exec");
+      throw new Error("Unexpected Keychain call: inject the Together deps");
+    },
+  },
+});
 
 /**
  * Start a subswitch proxy for integration testing.
@@ -82,6 +101,8 @@ export interface SubswitchInstance {
  * @param options.resolve - Optional resolver override. When provided, replaces the
  *   registry-built resolver with a synthetic one — used in tests that need to
  *   simulate ambiguous or unknown-provider scenarios (F7).
+ * @param options.providerDeps - Provider deps by provider id. Each provider without an
+ *   entry gets a fake that refuses every store call (see refusingProviderDeps).
  *
  * Usage:
  *   const captured: Array<{ event: string }> = [];
@@ -91,7 +112,7 @@ export interface SubswitchInstance {
  */
 export const startSubswitch = async (
   overrides: Record<string, unknown>,
-  options: { logger?: Logger; resolve?: (name: string) => ModelResolution; togetherKeyReader?: TogetherKeyReaderDeps } = {},
+  options: { logger?: Logger; resolve?: (name: string) => ModelResolution; providerDeps?: ProviderDeps } = {},
 ): Promise<SubswitchInstance> => {
   const configResult = loadConfig({
     configPath: "inline-test-config.json",
@@ -102,11 +123,9 @@ export const startSubswitch = async (
   // constructed inside buildDeps and close over whichever logger it was given, so spreading
   // one onto the result afterwards would replace the request loop's logger only and leave
   // every handler record uncaptured.
+  const refusedStoreCalls: string[] = [];
   const depsResult = buildDeps(configResult.value.config, options.logger, {
-    togetherKeyReader: options.togetherKeyReader ?? {
-      env: {}, platform: "linux", exec: async () => { throw new Error("Unexpected Keychain call"); },
-      setTimer: () => () => {},
-    },
+    providerDeps: { ...refusingProviderDeps(refusedStoreCalls), ...options.providerDeps },
   });
   if (!depsResult.ok) throw new Error(`buildDeps rejected config: ${depsResult.error}`);
   const deps = depsResult.value;
@@ -119,6 +138,7 @@ export const startSubswitch = async (
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
+    refusedStoreCalls,
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();

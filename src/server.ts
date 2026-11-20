@@ -92,6 +92,20 @@ const createCodexProvider = (config: Config, logger: Logger, auth: ProviderAuth<
   });
 };
 
+/**
+ * The deps of each provider that read a credential store, run a program or read the
+ * environment. Every provider id needs an entry, so a new provider must state its deps.
+ * Codex has none: its store reads the authFile path from the configuration.
+ */
+export interface ProviderDepsById {
+  readonly codex: undefined;
+  readonly together: TogetherKeyReaderDeps;
+}
+
+/** Injected provider deps, by provider id. buildDeps uses the live deps for a missing entry. */
+export type ProviderDeps = { readonly [K in ProviderId]?: ProviderDepsById[K] };
+
+/** Only this file defines live deps factories. The CLI and run-action may call them. */
 export const liveTogetherKeyReaderDeps = (): TogetherKeyReaderDeps => ({
   env: process.env,
   platform: process.platform,
@@ -148,7 +162,7 @@ const CREDENTIAL_URLS: CredentialKindTable<readonly CredentialUrl[]> = {
  * do not call `buildDeps` and are unaffected.
  */
 export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel),
-  routingOptions: { fetchImpl?: typeof fetch; togetherKeyReader?: TogetherKeyReaderDeps } = {}): Result<ServerDeps, string> => {
+  routingOptions: { fetchImpl?: typeof fetch; providerDeps?: ProviderDeps } = {}): Result<ServerDeps, string> => {
 
   if (config.codexIngress.enabled && config.codexIngress.claude.enabled && !hasNativeDecoders())
     return err("Codex → Claude routing requires native zstd support. Use Node 22.15 or newer; forward routing remains available.");
@@ -208,7 +222,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
 
   const resolveClaude = claudeResolver(config.codexIngress.claude.aliases);
   if (resolveClaude.rejectedAliases.length) return err(`Invalid Claude aliases: ${resolveClaude.rejectedAliases.join(", ")}`);
-  const keyReaderDeps = routingOptions.togetherKeyReader ?? liveTogetherKeyReaderDeps();
+  const keyReaderDeps = routingOptions.providerDeps?.together ?? liveTogetherKeyReaderDeps();
   const codexAuth = createCodexAuth(config, logger);
   const sharedRouting = new SharedRouting(config, logger, undefined, routingOptions.fetchImpl);
 
