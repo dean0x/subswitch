@@ -40,6 +40,9 @@ const isAtOrInside = (folder: string, path: string): boolean => {
   return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 };
 
+/** True while a report runs, so the file calls of `onCall` itself are not reported. */
+let reporting = false;
+
 /** Replace `name` on `target` with a function that reports a call inside `folder`. Returns the undo. */
 const wrap = (target: Module, name: string, label: string, folder: string,
   onCall: (call: string, path: string) => void): (() => void) => {
@@ -48,7 +51,14 @@ const wrap = (target: Module, name: string, label: string, folder: string,
   const call = original as Callable;
   const recorded = function (this: unknown, ...args: unknown[]): unknown {
     const text = pathText(args[0]);
-    if (text !== undefined && isAtOrInside(folder, resolve(text))) onCall(label, resolve(text));
+    if (!reporting && text !== undefined && isAtOrInside(folder, resolve(text))) {
+      reporting = true;
+      try {
+        onCall(label, resolve(text));
+      } finally {
+        reporting = false;
+      }
+    }
     return call.apply(this, args);
   };
   // Keep the added members, such as realpathSync.native and the promisify form of exists.

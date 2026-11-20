@@ -13,12 +13,19 @@
  * and execFileSync can start this Node binary (process.execPath) with those exact arguments.
  * The preload logs each such call as "allowed <function> <file>". It refuses all other
  * calls to the seven replacements.
+ *
+ * If SUBSWITCH_TEST_FS_WATCH names a folder, the preload also logs each call of the file
+ * functions in fs-path-recorder.ts at or inside that folder as "<module>.<function> <path>".
+ * It does not refuse these calls, and it does not see other file functions.
  */
 import { appendFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
+import { recordFsPaths } from "./fs-path-recorder.js";
 
 const log = process.env["SUBSWITCH_TEST_EXEC_LOG"];
 if (log === undefined) throw new Error("SUBSWITCH_TEST_EXEC_LOG must name the exec log file");
+const watch = process.env["SUBSWITCH_TEST_FS_WATCH"];
+if (watch !== undefined) recordFsPaths(watch, (call, path) => appendFileSync(log, `${call} ${path}\n`));
 
 const parseAllowArgs = (value: string): readonly string[] => {
   const parsed: unknown = JSON.parse(value);
