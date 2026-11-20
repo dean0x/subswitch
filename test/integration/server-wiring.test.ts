@@ -13,7 +13,8 @@ import net from "node:net";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { loadConfig, type Config } from "../../src/config.js";
-import { buildDeps, createProxyServer } from "../../src/server.js";
+import { createProxyServer } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { SERVER_TUNING } from "../../src/inbound-policy.js";
 import type { Logger, LogLevel, LogFields } from "../../src/logger.js";
 import { startFakeUpstream } from "./fake-upstreams.js";
@@ -130,9 +131,9 @@ describe("makeMinimalConfig — non-vacuity guard", () => {
 });
 
 /** Capture stderr lines AND the Result from buildDeps in one shot. */
-const buildAndCapture = (config: Config): { result: ReturnType<typeof buildDeps>; lines: string[] } => {
-  let result!: ReturnType<typeof buildDeps>;
-  const lines = captureStderr(() => { result = buildDeps(config); });
+const buildAndCapture = (config: Config): { result: ReturnType<typeof buildTestDeps>; lines: string[] } => {
+  let result!: ReturnType<typeof buildTestDeps>;
+  const lines = captureStderr(() => { result = buildTestDeps(config); });
   return { result, lines };
 };
 
@@ -492,7 +493,7 @@ describe("SERVER_TUNING — applied to constructed http.Server (B1)", () => {
       readFile: () => JSON.stringify({ logLevel: "error" }),
     });
     assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
-    const depsResult = buildDeps(configResult.value.config);
+    const depsResult = buildTestDeps(configResult.value.config);
     assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
 
     const server = createProxyServer(depsResult.value);
@@ -554,7 +555,7 @@ describe("SERVER_TUNING — Keep-Alive header on response (B2)", () => {
       readFile: () => JSON.stringify({ logLevel: "error", anthropic: { baseUrl: upstream.url } }),
     });
     assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
-    const depsResult = buildDeps(configResult.value.config);
+    const depsResult = buildTestDeps(configResult.value.config);
     assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
 
     const server = createProxyServer(depsResult.value);
@@ -609,7 +610,7 @@ describe("SERVER_TUNING — idle socket reuse after 6.5 s (B3)", () => {
       readFile: () => JSON.stringify({ logLevel: "error", anthropic: { baseUrl: upstream.url } }),
     });
     assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
-    const depsResult = buildDeps(configResult.value.config);
+    const depsResult = buildTestDeps(configResult.value.config);
     assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
 
     let proxyConnections = 0;
@@ -679,7 +680,7 @@ describe("applyInboundPolicy — Anthropic-shaped 431 on header overflow (B4)", 
       readFile: () => JSON.stringify({ logLevel: "error" }),
     });
     assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
-    const depsResult = buildDeps(configResult.value.config);
+    const depsResult = buildTestDeps(configResult.value.config);
     assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
 
     const server = createProxyServer(depsResult.value);
@@ -761,7 +762,7 @@ describe("applyInboundPolicy — inbound timeout keeps 408, never 400 (B4b)", ()
       readFile: () => JSON.stringify({ logLevel: "error" }),
     });
     assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
-    const depsResult = buildDeps(configResult.value.config);
+    const depsResult = buildTestDeps(configResult.value.config);
     assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
 
     const server = createProxyServer(depsResult.value);
@@ -839,7 +840,7 @@ describe("applyInboundPolicy — Anthropic-shaped 400 on a malformed request (B4
       readFile: () => JSON.stringify({ logLevel: "error" }),
     });
     assert.ok(configResult.ok, `config must load: ${!configResult.ok ? configResult.error.message : ""}`);
-    const depsResult = buildDeps(configResult.value.config);
+    const depsResult = buildTestDeps(configResult.value.config);
     assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
 
     const server = createProxyServer(depsResult.value);
@@ -1014,7 +1015,7 @@ const startWithCompletedRequest = async (
     log(level, event, fields) { records.push({ level, event, status: fields?.status }); },
   };
 
-  const depsResult = buildDeps(configResult.value.config, capturingLogger);
+  const depsResult = buildTestDeps(configResult.value.config, capturingLogger);
   assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
 
   const server = createProxyServer(depsResult.value);
@@ -1143,7 +1144,7 @@ describe("inbound policy — Anthropic-shaped 408 on a REUSED keep-alive connect
 
 it("checks Together URLs at startup before it constructs a handler", () => {
   const config = defaultConfig();
-  const withUrl = (baseUrl: string, allowInsecureBaseUrl: boolean) => buildDeps({
+  const withUrl = (baseUrl: string, allowInsecureBaseUrl: boolean) => buildTestDeps({
     ...config, providers: { ...config.providers, together: { ...config.providers.together, baseUrl, allowInsecureBaseUrl } },
   }, { log() {} });
   for (const baseUrl of ["https://api.together.xyz/v1", "https://other.invalid/v1", "https://api.together.ai:8443/v1",

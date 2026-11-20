@@ -10,6 +10,8 @@ export const vetCredentialUrl = (options: {
   allowOverride: boolean;
   logger: Logger;
   refreshToken?: boolean;
+  /** Refuse a plain http URL that is not loopback, even when allowOverride is set. */
+  requireHttps?: boolean;
   together?: true;
   events: { insecureBaseUrlScheme: string; baseUrlHostRejected: string; baseUrlOverrideDetected: string };
 }): Result<void, string> => {
@@ -29,7 +31,13 @@ export const vetCredentialUrl = (options: {
   }
   if (!url) return err(`${path} is not a valid URL.`);
   if (isLoopbackHost(url.hostname)) return ok(undefined);
-  if (url.protocol !== "https:") logger.log("warn", events.insecureBaseUrlScheme);
+  if (url.protocol !== "https:") {
+    if (options.requireHttps) {
+      logger.log("error", events.insecureBaseUrlScheme, { path });
+      return err(`${path} must use https. Plain http is allowed only for a loopback address.`);
+    }
+    logger.log("warn", events.insecureBaseUrlScheme);
+  }
   if (url.hostname === options.expectedHost && (!url.port || url.port === "443")) return ok(undefined);
   if (!options.allowOverride) {
     logger.log("error", events.baseUrlHostRejected, { path });

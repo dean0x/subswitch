@@ -34,7 +34,6 @@
 import { createCodexHandler } from "../../src/codex-handler.js";
 import type { ProviderAuth, ProviderCredential } from "../../src/provider-auth.js";
 import type { ProviderId } from "../../src/models.js";
-import type { DestinationProviderId } from "../../src/routing/routing-types.js";
 import type { CodexProviderConfig } from "../../src/config.js";
 import type { Logger } from "../../src/logger.js";
 import type { ReasoningCache } from "../../src/reasoning-cache.js";
@@ -93,18 +92,31 @@ const credentialsAreNotInterchangeable = (): void => {
 };
 void credentialsAreNotInterchangeable;
 
-/** A shared auth seam must accept credentials from either provider set. */
-const wideningToTheUnionIsAllowed = <P extends ProviderId | DestinationProviderId>(ownAuth: ProviderAuth<P>): void => {
-  const anyProvidersAuth: ProviderAuth<ProviderId | DestinationProviderId> = ownAuth;
-  void anyProvidersAuth;
+/**
+ * `forceRefresh` takes the refused credential with its brand. Thus an auth for one provider
+ * does not widen to `ProviderAuth<ProviderId | DestinationProviderId>`, because that type
+ * would accept another provider's credential as `failed`. Key a table of auths by provider id.
+ */
+const refreshTakesOnlyItsOwnFailedCredential = (codexAuth: ProviderAuth<"codex">, signal: AbortSignal): void => {
+  // @ts-expect-error A Claude credential cannot be the refused Codex credential.
+  void codexAuth.forceRefresh(signal, anyValue<ProviderCredential<"claude">>());
 };
-void wideningToTheUnionIsAllowed;
+void refreshTakesOnlyItsOwnFailedCredential;
 
 const credentialLoadAcceptsAnOptionalSignal = (auth: ProviderAuth<ProviderId>, signal: AbortSignal): void => {
   void auth.getCredentials();
   void auth.getCredentials(signal);
 };
 void credentialLoadAcceptsAnOptionalSignal;
+
+/** Callers that pass no arguments, or only the signal, need no change. */
+const refreshAcceptsOptionalArguments = (auth: ProviderAuth<"codex">, signal: AbortSignal,
+  failed: ProviderCredential<"codex">): void => {
+  void auth.forceRefresh();
+  void auth.forceRefresh(signal);
+  void auth.forceRefresh(signal, failed);
+};
+void refreshAcceptsOptionalArguments;
 
 /** Stand-in for a value of an arbitrary type, so the cases above need no fixtures. */
 declare function anyValue<T>(): T;

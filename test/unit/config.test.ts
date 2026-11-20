@@ -745,8 +745,8 @@ describe("detectUnknownProviderKeys", () => {
 
   it("reports unknown keys alongside known ones, in file order", () => {
     assert.deepEqual(
-      detectUnknownProviderKeys({ providers: { kimi: {}, codex: {}, openai: {} } }),
-      ["kimi", "openai"],
+      detectUnknownProviderKeys({ providers: { "not-a-provider": {}, codex: {}, openai: {} } }),
+      ["not-a-provider", "openai"],
     );
   });
 

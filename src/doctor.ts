@@ -3,31 +3,112 @@ import { readdir, readFile as fsReadFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
-import { aliasesByProvider, providerConfigFor, withCredential, type Config, type CredentialKindTable } from "./config.js";
-import { inspectAuthFile } from "./codex-auth.js";
+import {
+  aliasesByProvider, codexCredentialFor, providerConfigFor, withCredential,
+  type CodexProviderConfig, type Config, type CredentialKindTable, type ProviderConfigs, type TogetherProviderConfig,
+} from "./config.js";
+import { inspectAuthFile, type AuthInspection } from "./codex-auth.js";
 import { isPlainObject } from "./plain-object.js";
 import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
+import { err, ok, type Result } from "./result.js";
 import { createTogetherKeyReader, togetherKeyHintFor, type TogetherKeyReaderDeps } from "./together-auth.js";
 import { checkAgentModels } from "./agent-scan.js";
+import { redactCredentials } from "./errors.js";
+
+// ---------------------------------------------------------------------------
+// Per-provider auth inspection: neutral row types
+// ---------------------------------------------------------------------------
+
+/** One label and value line of a doctor auth row. */
+export interface DoctorAuthField {
+  readonly label: string;
+  readonly value: string;
+  /** Show the value in the pass colour. */
+  readonly pass?: true;
+}
+
+/**
+ * A readable sign-in in no provider's file format: the access-token expiry, plus
+ * label and value lines. Doctor writes `identity`, then the expiry line, then `renewal`.
+ */
+export interface DoctorAuthRow {
+  /** Lines before the expiry line, for example the sign-in mode and the account. */
+  readonly identity: readonly DoctorAuthField[];
+  /** ISO time; undefined when the access token has no expiry claim. */
+  readonly expiresAt: string | undefined;
+  /** Lines after the expiry line, for example the last refresh. */
+  readonly renewal: readonly DoctorAuthField[];
+}
+
+/** Why an oauth-file inspector has no row. */
+export type OauthFileFault =
+  /** The credential was read but can not be used: a failure even without a provider block. */
+  | { readonly kind: "invalid"; readonly message: string }
+  /** The credential can not be read; `missing` is true when it does not exist. */
+  | { readonly kind: "unreadable"; readonly missing: boolean };
+
+/** What one provider's inspector found. Doctor writes the rows and decides the severity. */
+export type DoctorAuthInspection =
+  | {
+      readonly kind: "oauth-file";
+      readonly authFile: string;
+      readonly loginCommand: string;
+      readonly result: Result<DoctorAuthRow, OauthFileFault>;
+    }
+  | {
+      readonly kind: "api-key";
+      readonly key: { readonly kind: "present"; readonly source: string } | { readonly kind: "missing" | "malformed" | "aborted" };
+    };
+
+/** The Codex summary as a neutral row. inspectAuthFile and AuthInspection stay Codex's own. */
+const codexAuthRow = (info: AuthInspection): DoctorAuthRow => ({
+  identity: [
+    { label: "codex auth mode:", value: info.authMode, pass: true },
+    { label: "codex account:", value: info.accountIdSuffix },
+  ],
+  expiresAt: info.accessTokenExpiresAt,
+  renewal: [{ label: "last refresh:", value: info.lastRefresh ?? "(unknown)" }],
+});
+
+const isEnoent = (e: unknown): boolean =>
+  e instanceof Error && ((e as NodeJS.ErrnoException).code === "ENOENT" || e.message.includes("ENOENT"));
+
+const inspectCodexAuth = async (slice: CodexProviderConfig, io: DoctorIO): Promise<DoctorAuthInspection> => {
+  const { authFile, loginCommand } = codexCredentialFor(slice);
+  let raw: string;
+  try {
+    raw = await io.readAuthFile(authFile);
+  } catch (e) {
+    return { kind: "oauth-file", authFile, loginCommand, result: err({ kind: "unreadable", missing: isEnoent(e) }) };
+  }
+  const inspection = inspectAuthFile(raw);
+  return {
+    kind: "oauth-file", authFile, loginCommand,
+    result: inspection.ok ? ok(codexAuthRow(inspection.value)) : err({ kind: "invalid", message: inspection.error.message }),
+  };
+};
+
+const inspectTogetherKey = async (_slice: TogetherProviderConfig, io: DoctorIO): Promise<DoctorAuthInspection> => {
+  if (io.togetherKeyReader === undefined) return { kind: "api-key", key: { kind: "missing" } };
+  const result = await createTogetherKeyReader(io.togetherKeyReader).readKey(new AbortController().signal);
+  return { kind: "api-key", key: result.ok ? { kind: "present", source: result.value.source } : { kind: result.error } };
+};
 
 // ---------------------------------------------------------------------------
 // Per-provider auth inspector registry (totality anchor)
 //
-// Every ProviderId must have a corresponding inspector. Adding a ProviderId
-// without an entry here is a tsc error — the Record<ProviderId, …> annotation
-// requires all keys. Use the record in checkOneProvider instead of calling
-// inspectAuthFile directly so the same completeness check guards every future
-// provider.
+// One inspector per ProviderId, keyed by id: a ProviderId without an entry is a
+// tsc error. Each inspector takes its own provider's config slice and the doctor
+// io, and does its own credential read, so each provider applies its own store
+// checks. runDoctor calls every inspector through this record, by id.
 // ---------------------------------------------------------------------------
 
-export const PROVIDER_AUTH_INSPECTORS = {
-  codex: inspectAuthFile,
-  together: async (deps: TogetherKeyReaderDeps | undefined) => {
-    if (deps === undefined) return { kind: "missing" } as const;
-    const result = await createTogetherKeyReader(deps).readKey(new AbortController().signal);
-    return result.ok ? { kind: "present", source: result.value.source } as const : { kind: result.error };
-  },
-} satisfies Record<ProviderId, unknown>;
+export const PROVIDER_AUTH_INSPECTORS: {
+  readonly [K in ProviderId]: (slice: ProviderConfigs[K], io: DoctorIO) => Promise<DoctorAuthInspection>;
+} = {
+  codex: inspectCodexAuth,
+  together: inspectTogetherKey,
+};
 
 // ---------------------------------------------------------------------------
 // Discriminated-union result types
@@ -289,59 +370,56 @@ export const runDoctor = async (
     readonly credentialUsable: boolean;
   }
 
-  const checkOneProvider = (id: ProviderId): Promise<ProviderCheck> => {
-    const credential = providerConfigFor(config, id);
-    const checks: CredentialKindTable<Promise<ProviderCheck>> = {
-      "oauth-file": async ({ authFile, loginCommand }) => {
-        const optedIn = configuredProviderIds.has(id);
-        const lines: string[] = [row(`${id}.authFile:`, authFile)];
+  const fieldRow = ({ label, value, pass }: DoctorAuthField): string => row(label, pass === true ? passStr(value) : value);
 
-        try {
-          const raw = await io.readAuthFile(authFile);
-          const inspection = PROVIDER_AUTH_INSPECTORS.codex(raw);
-          if (!inspection.ok) {
-            // A malformed credential file causes a failure even without a provider block.
-            lines.push(row(`${id} auth:`, failStr(`INVALID (${inspection.error.message})`)));
-            return { lines, failed: true, credentialUsable: false };
-          }
-          const info = inspection.value;
-          lines.push(row(`${id} auth mode:`, passStr(info.authMode)));
-          lines.push(row(`${id} account:`, info.accountIdSuffix));
-          lines.push(row("token expires:", info.accessTokenExpiresAt ?? "(no exp claim)"));
-          lines.push(row("last refresh:", info.lastRefresh ?? "(unknown)"));
-          return { lines, failed: false, credentialUsable: true };
-        } catch (e) {
-          const isEnoent =
-            (e instanceof Error && (e as NodeJS.ErrnoException).code === "ENOENT") ||
-            (e instanceof Error && e.message.includes("ENOENT"));
+  const oauthFileCheck = (
+    id: ProviderId, { authFile, loginCommand, result }: Extract<DoctorAuthInspection, { kind: "oauth-file" }>, optedIn: boolean,
+  ): ProviderCheck => {
+    const lines: string[] = [row(`${id}.authFile:`, authFile)];
+    if (result.ok) {
+      const { identity, expiresAt, renewal } = result.value;
+      lines.push(...identity.map(fieldRow), row("token expires:", expiresAt ?? "(no exp claim)"), ...renewal.map(fieldRow));
+      return { lines, failed: false, credentialUsable: true };
+    }
+    if (result.error.kind === "invalid") {
+      // A malformed credential file causes a failure even without a provider block.
+      lines.push(row(`${id} auth:`, failStr(`INVALID (${result.error.message})`)));
+      return { lines, failed: true, credentialUsable: false };
+    }
+    if (!optedIn) {
+      lines.push(row(`${id} auth:`, pc.dim("unconfigured") + ` (run \`${loginCommand}\` to enable ${id} routing)`));
+      return { lines, failed: false, credentialUsable: false };
+    }
+    const detail = result.error.missing ? "no auth file" : "cannot read auth file";
+    lines.push(row(`${id} auth:`, failStr("UNAVAILABLE") + ` (${detail} — run \`${loginCommand}\`)`));
+    lines.push(`  note: the Anthropic leg works without ${id} auth; only ${id} models are affected`);
+    return { lines, failed: true, credentialUsable: false };
+  };
 
-          if (!optedIn) {
-            lines.push(
-              row(`${id} auth:`, pc.dim("unconfigured") + ` (run \`${loginCommand}\` to enable ${id} routing)`),
-            );
-            return { lines, failed: false, credentialUsable: false };
-          }
+  const apiKeyCheck = (
+    id: ProviderId, { key }: Extract<DoctorAuthInspection, { kind: "api-key" }>, optedIn: boolean,
+  ): ProviderCheck => {
+    // Name the key source only, never the value.
+    if (key.kind === "present") {
+      return { lines: [row(`${id} auth:`, passStr(`OK (${key.source})`))], failed: false, credentialUsable: true };
+    }
+    const status = optedIn ? failStr("UNAVAILABLE") : pc.dim("unconfigured");
+    const reason = key.kind === "malformed" ? " (key is malformed)" : "";
+    const hint = togetherKeyHintFor(io.togetherKeyReader?.platform ?? process.platform);
+    return { lines: [row(`${id} auth:`, `${status}${reason} (${hint})`)], failed: optedIn, credentialUsable: false };
+  };
 
-          const detail = isEnoent ? "no auth file" : "cannot read auth file";
-          lines.push(row(`${id} auth:`, failStr("UNAVAILABLE") + ` (${detail} — run \`${loginCommand}\`)`));
-          lines.push(`  note: the Anthropic leg works without ${id} auth; only ${id} models are affected`);
-          return { lines, failed: true, credentialUsable: false };
-        }
-      },
-      "api-key": async () => {
-        const inspection = await PROVIDER_AUTH_INSPECTORS.together(io.togetherKeyReader);
-        // Name the key source only, never the value.
-        if (inspection.kind === "present") {
-          return { lines: [row(`${id} auth:`, passStr(`OK (${inspection.source})`))], failed: false, credentialUsable: true };
-        }
-        const failed = configuredProviderIds.has(id);
-        const status = failed ? failStr("UNAVAILABLE") : pc.dim("unconfigured");
-        const reason = inspection.kind === "malformed" ? " (key is malformed)" : "";
-        const hint = togetherKeyHintFor(io.togetherKeyReader?.platform ?? process.platform);
-        return { lines: [row(`${id} auth:`, `${status}${reason} (${hint})`)], failed, credentialUsable: false };
-      },
-    };
-    return withCredential(credential, checks);
+  // Dispatch by id: the generic key keeps each inspector paired with its own config slice.
+  const inspectProvider = <K extends ProviderId>(id: K): Promise<DoctorAuthInspection> =>
+    PROVIDER_AUTH_INSPECTORS[id](config.providers[id], io);
+
+  const checkOneProvider = async (id: ProviderId): Promise<ProviderCheck> => {
+    const inspection = await inspectProvider(id);
+    const optedIn = configuredProviderIds.has(id);
+    switch (inspection.kind) {
+      case "oauth-file": return oauthFileCheck(id, inspection, optedIn);
+      case "api-key": return apiKeyCheck(id, inspection, optedIn);
+    }
   };
 
   // Run subswitch probe, anthropic TLS, per-provider TLS, and per-provider auth
@@ -377,7 +455,7 @@ export const runDoctor = async (
   for (const [i, id] of PROVIDER_IDS.entries()) {
     const result = providerResults[i];
     if (result === undefined) continue;
-    for (const line of result.lines) io.write(line);
+    for (const line of result.lines) io.write(redactCredentials(line));
     if (result.failed) failures++;
     if (result.credentialUsable) providersWithCredentials.add(id);
   }

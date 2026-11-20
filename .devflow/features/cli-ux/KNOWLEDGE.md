@@ -5,7 +5,7 @@ description: "Use when changing the CLI, init wizard, doctor, logger output, log
 category: architecture
 directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/codex-doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts, src/provider-transport.ts]
 created: 2026-07-23
-updated: 2026-11-19
+updated: 2026-11-20
 ---
 
 # CLI / init command / terminal UX
@@ -13,6 +13,7 @@ updated: 2026-11-19
 ## Rules
 - **KB-INV-1** A new provider log event goes into the `ProviderEvents<P>` type and the `scopedEvents` table in `src/provider-events.ts`; the type pins the table, so do not quote a field count.
 - **KB-INV-2** `subswitch doctor` lists a Together agent pin only when no usable key is found; with a key, a workspace `together:` pin routes to Together and spends the user's balance.
+- **KB-INV-3** `src/doctor.ts` writes each provider auth line through `redactCredentials` at the write site, so a credential in an inspector line never reaches the terminal.
 - The Rules list starts with this refresh. Older rules stay in `## Anti-Patterns` and `## Gotchas` below.
 
 ## Overview
@@ -188,7 +189,9 @@ Per-command flag validation walks `parseArgs` **tokens**, not `values`. The main
 
 ### src/errors.ts
 
-`ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed — upstream 5xx incl. 529 → `api_error`); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` exported as single chokepoint for `x-subswitch-synthesized`; `redactCredentials` inside `toAnthropicErrorBody` (ADR-008). The same render site also replaces each exact value in a bounded set; `server.ts` registers the loaded Together key there through `registerExactCredential`.
+`ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed — upstream 5xx incl. 529 → `api_error`); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` exported as single chokepoint for `x-subswitch-synthesized`; `redactCredentials` inside `toAnthropicErrorBody` (ADR-008).
+
+The scrub matches exact values only if a caller registers them. It keeps one current and one previous value per provider ID. In production, only `src/server.ts` registers a value: the Together key. If registration fails, the server treats the key as malformed. The scrub also matches Bearer and JWT patterns.
 
 ### src/init.ts — Functional-core / imperative-shell
 
@@ -204,7 +207,7 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 
 `runDoctor(config, configPath, fileFound, io, configuredProviderIds)`. The fifth parameter is `ReadonlySet<ProviderId>` defaulting to `new Set<ProviderId>()`.
 
-**`PROVIDER_AUTH_INSPECTORS`** is now an **exported** `Readonly<Record<ProviderId, AuthInspector>>` — adding a `ProviderId` without an inspector entry is a `tsc` error.
+**`PROVIDER_AUTH_INSPECTORS`** is an **exported** record keyed by `ProviderId`. A `ProviderId` without an entry is a `tsc` error. Each inspector takes its own provider's config slice (`config.providers[id]`) and the doctor io, does its own credential read, and returns a `DoctorAuthInspection`. `runDoctor` calls each inspector by id. An `oauth-file` inspection carries a neutral `DoctorAuthRow`: the `identity` lines, the `token expires:` line, then the `renewal` lines. The Codex adapter `codexAuthRow` in doctor.ts maps `AuthInspection` to this row, so the Codex text does not change.
 
 **N-provider auth check severity (PF-006 rules):**
 - Provider absent from config file → informational.
@@ -286,6 +289,8 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 - **Calling `req.destroy()` after a rejection response** — use `drainRejectedUpload(req)` instead. `req.destroy()` causes the kernel to send RST, which may cause the client to discard the already-sent response before reading it.
 
 ## Gotchas
+
+**KB-INV-3 — The doctor auth line is filtered where it is written.** The loop over `PROVIDER_IDS` in `src/doctor.ts` calls `io.write(redactCredentials(line))` for every provider auth result line. The inspectors do not filter their own lines. The filter matches the same exact values and Bearer and JWT patterns as the error render site (see the scrub scope above).
 
 **The byte-budget admission gate is gone. Any text describing a concurrency cap, byte-based admission, queueing, or a 503/529 from the relay is now false.** `"overloaded_error"` was removed from `AnthropicErrorType` — upstream 5xx including 529 maps to `"api_error"` via `upstreamStatusToAnthropicError`.
 

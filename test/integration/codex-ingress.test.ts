@@ -7,7 +7,7 @@ import { gzipSync, brotliCompressSync, deflateSync } from "node:zlib";
 import type { AddressInfo } from "node:net";
 import { codexIngressRoute } from "../../src/codex-ingress.js";
 import { loadConfig } from "../../src/config.js";
-import { buildDeps } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { startFakeUpstream, startSubswitch, rawHttpRequest } from "./fake-upstreams.js";
 
 const cleanups: (() => Promise<unknown>)[] = [];
@@ -231,10 +231,10 @@ describe("Codex namespace and raw HTTP ingress", () => {
     for (const url of ["https://foreign.example/v1", "https://api.openai.com:444/v1"]) {
       const result = parse({ enabled: true, apiBaseUrl: url });
       assert.ok(result.ok);
-      assert.equal(buildDeps(result.value.config).ok, false);
+      assert.equal(buildTestDeps(result.value.config).ok, false);
       const explicit = parse({ enabled: true, apiBaseUrl: url, allowInsecureBaseUrl: true });
       assert.ok(explicit.ok);
-      const deps = buildDeps(explicit.value.config);
+      const deps = buildTestDeps(explicit.value.config);
       assert.ok(deps.ok);
       deps.value.forwardOpenai?.close();
     }

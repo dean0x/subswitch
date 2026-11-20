@@ -536,6 +536,8 @@ export type Credential =
       readonly defaultOauthHost: string;
       /** Opt-in to a non-default host on either credential-bearing URL. */
       readonly allowInsecureBaseUrl: boolean;
+      /** Refuse a plain http credential URL that is not loopback. Startup fails on it. */
+      readonly requireHttps: boolean;
     }
   | {
       readonly kind: "api-key";
@@ -576,6 +578,7 @@ export const codexCredentialFor = (
   oauthTokenUrl: provider.oauthTokenUrl,
   defaultOauthHost: "auth.openai.com",
   allowInsecureBaseUrl: provider.allowInsecureBaseUrl,
+  requireHttps: false,
 });
 
 /**
@@ -886,15 +889,20 @@ export interface LoadConfigOptions {
 }
 
 /**
- * The user configuration path. XDG_CONFIG_HOME counts only when it is an absolute path:
- * the XDG Base Directory spec says that a relative value is invalid and must be ignored,
- * and that an empty value means unset. A relative value would otherwise resolve against
- * the current folder. Every reader of the user configuration path calls this function.
+ * An XDG base folder: the value of an XDG variable when it is an absolute path, else
+ * `fallback`. The XDG Base Directory spec says that a relative value is invalid and must
+ * be ignored, and that an empty value means unset. A relative value would otherwise
+ * resolve against the current folder. The caller reads the variable by its quoted name.
+ */
+export const xdgBaseDir = (value: string | undefined, fallback: string): string =>
+  value !== undefined && isAbsolute(value) ? value : fallback;
+
+/**
+ * The user configuration path, under XDG_CONFIG_HOME when that is an absolute path (see
+ * xdgBaseDir). Every reader of the user configuration path calls this function.
  */
 export const userConfigPath = (env: Record<string, string | undefined> = process.env, homeDir = env["HOME"] ?? homedir()): string => {
-  const xdgConfigHome = env["XDG_CONFIG_HOME"];
-  const configHome = xdgConfigHome !== undefined && isAbsolute(xdgConfigHome) ? xdgConfigHome : join(homeDir, ".config");
-  return join(configHome, "subswitch", "config.json");
+  return join(xdgBaseDir(env["XDG_CONFIG_HOME"], join(homeDir, ".config")), "subswitch", "config.json");
 };
 
 /** Own properties only; arrays and scalars replace, nested configuration objects merge. */

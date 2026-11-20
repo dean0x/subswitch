@@ -30,16 +30,16 @@ interface TranslateRun {
 /**
  * SYNTHETIC-PROVIDER CAST — the single sanctioned cast in this file.
  *
- * `providerId` is now required and typed as the closed `ProviderId` union, which is
- * `"codex"` alone today. A test that can only ever pass `"codex"` cannot distinguish a
- * threaded provider id from a hardcoded literal, so every assertion about
- * parameterization would be vacuous. Casting through `string` (not a direct
- * `as ProviderId`, which TypeScript rejects outright) buys a second value to test with.
+ * `providerId` is now required and typed as the closed `ProviderId` union. A test that
+ * can only ever pass `"codex"` cannot distinguish a threaded provider id from a hardcoded
+ * literal, so every assertion about parameterization would be vacuous. Casting through
+ * `string` (not a direct `as ProviderId`, which TypeScript rejects outright) buys a
+ * second value to test with.
  *
- * Remove this helper and all its callers when a second real provider lands and
- * PROVIDER_IDS expands. (mirrors test/unit/routing-table.test.ts)
+ * The second value is "not-a-provider", an id that is never real, so a new provider id
+ * can not change what these tests prove. (mirrors test/unit/routing-table.test.ts)
  */
-const otherProviderName: string = "kimi";
+const otherProviderName: string = "not-a-provider";
 const OTHER_PROVIDER = otherProviderName as ProviderId;
 
 const translate = async (sse: string, options: { readonly providerId?: ProviderId } = {}): Promise<TranslateRun> => {
@@ -861,7 +861,7 @@ describe("provider-id parameterization", () => {
     // The fallback id is the one provider-derived value with no other observable
     // effect, so without this pair it can be re-hardcoded to "msg_codex" silently.
     const { frames } = await translate(noUpstreamIdSse, { providerId: OTHER_PROVIDER });
-    assert.equal(messageStartId(frames), "msg_kimi");
+    assert.equal(messageStartId(frames), "msg_not-a-provider");
   });
 
   it("keeps the Codex leg's fallback message id byte-identical", async () => {
@@ -882,7 +882,7 @@ describe("provider-id parameterization", () => {
 
   it("names a second provider when all content deltas matched no block", async () => {
     const { frames } = await translate(loadSse("delta-id-mismatch.sse"), { providerId: OTHER_PROVIDER });
-    assert.equal(errorFrameMessage(frames), "kimi stream dropped content deltas that matched no content block");
+    assert.equal(errorFrameMessage(frames), "not-a-provider stream dropped content deltas that matched no content block");
   });
 
   // --- (2) flush(): truncated stream with no recoverable content ---
@@ -898,7 +898,7 @@ describe("provider-id parameterization", () => {
 
   it("names a second provider when the stream ends with no terminal event or content", async () => {
     const { frames } = await translate(truncatedNoContentSse, { providerId: OTHER_PROVIDER });
-    assert.equal(errorFrameMessage(frames), "kimi stream ended without a terminal event or recoverable content");
+    assert.equal(errorFrameMessage(frames), "not-a-provider stream ended without a terminal event or recoverable content");
   });
 
   // --- (3) aggregateFrames: unparseable tool_use arguments ---
@@ -916,7 +916,7 @@ describe("provider-id parameterization", () => {
   it("names a second provider when tool_use arguments are unparseable", () => {
     const result = aggregateFrames(unparseableToolUseFrames, OTHER_PROVIDER);
     assert.ok(!result.ok);
-    assert.equal(result.error.message, "kimi stream ended with unparseable tool_use arguments");
+    assert.equal(result.error.message, "not-a-provider stream ended with unparseable tool_use arguments");
   });
 
   // --- (4) aggregateFrames: unclosed content blocks that carry content ---
@@ -934,6 +934,6 @@ describe("provider-id parameterization", () => {
   it("names a second provider when a content block carrying text was never closed", () => {
     const result = aggregateFrames(unclosedBlockFrames, OTHER_PROVIDER);
     assert.ok(!result.ok);
-    assert.equal(result.error.message, "kimi stream ended with 1 unclosed content block(s)");
+    assert.equal(result.error.message, "not-a-provider stream ended with 1 unclosed content block(s)");
   });
 });

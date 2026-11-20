@@ -1,11 +1,10 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { cliChildFolders, readExecLog, runCliChild } from "../helpers/cli-child.js";
 import { startSubswitch, startFakeUpstream, sseHandler, makeAccessToken, makeAuthFileContent, type RecordedRequest } from "./fake-upstreams.js";
 import type { Logger, LogFields, LogLevel } from "../../src/logger.js";
 import {
@@ -241,7 +240,7 @@ const startLeakMatrix = async (togetherKeyReader: TogetherKeyReaderDeps) => {
     providers: { codex: { baseUrl: codex.url, authFile }, together: { baseUrl: `${together.url}/v1` } },
   }, {
     logger: { log: (level, event, fields) => records.push(`${level} ${event} ${JSON.stringify(fields ?? {})}`) },
-    togetherKeyReader,
+    providerDeps: { together: togetherKeyReader },
   });
   cleanups.push(subswitch.close, together.close, anthropic.close, codex.close, () => rm(dir, { recursive: true, force: true }));
   const post = async (model: string) => {
@@ -318,26 +317,18 @@ describe("Together credential leak matrix", () => {
   }
 
   it("keeps models and models --json away from the key reader and the key", { timeout: 30_000 }, async () => {
-    const home = await mkdtemp(join(tmpdir(), "cred-leak-models-"));
-    cleanups.push(() => rm(home, { recursive: true, force: true }));
-    const cli = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
-    const preload = new URL("../helpers/deny-exec-file.ts", import.meta.url).href;
     const runs = [[["models", "--json"], TOGETHER_KEY], [["models", "--json"], undefined], [["models"], undefined]] as const;
-    for (const [index, [args, key]] of runs.entries()) {
-      const log = join(home, `exec-${index}.log`);
-      const env = {
-        PATH: process.env["PATH"], TMPDIR: process.env["TMPDIR"], HOME: home, XDG_CONFIG_HOME: join(home, "config"),
-        NO_COLOR: "1", SUBSWITCH_TEST_EXEC_LOG: log, ...(key === undefined ? {} : { [TOGETHER_API_KEY_ENV]: key }),
-      };
-      const result = await new Promise<{ code: number | string | null; output: string }>((resolve) => {
-        execFile(process.execPath, ["--import", import.meta.resolve("tsx"), "--import", preload, cli, ...args],
-          { cwd: home, env, timeout: 10_000, maxBuffer: 1024 * 1024 },
-          (error, stdout, stderr) => resolve({ code: error === null ? 0 : error.code ?? null, output: stdout + stderr }));
+    for (const [args, key] of runs) {
+      const folders = await cliChildFolders();
+      cleanups.push(() => rm(folders.home, { recursive: true, force: true }));
+      const result = await runCliChild(folders, args, {
+        env: { NO_COLOR: "1", ...(key === undefined ? {} : { [TOGETHER_API_KEY_ENV]: key }) },
       });
       const command = args.join(" ");
-      assert.equal(result.code, 0, result.output);
-      assert.equal(result.output.includes(KEY_MARKER), false, `${command} must not print the key`);
-      assert.equal(await readFile(log, "utf8"), "preload\n", `${command} must not start a child process`);
+      const output = result.stdout + result.stderr;
+      assert.equal(result.code, 0, output);
+      assert.equal(output.includes(KEY_MARKER), false, `${command} must not print the key`);
+      assert.deepEqual(await readExecLog(folders), ["preload"], `${command} must not start a child process`);
     }
   });
 });

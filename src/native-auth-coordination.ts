@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import type { ProviderId } from "./models.js";
 
 /** Resolve the physical persistence target, retaining directory aliases for a new file. */
 export function nativeAuthFilePath(path: string): string {
@@ -27,7 +28,7 @@ const flights = new Map<string, RefreshFlight>();
  * Callers retain their own cancellation/deadline; one waiter cannot cancel another.
  */
 export function coordinateNativeRefresh<T>(
-  provider: "codex" | "claude",
+  provider: ProviderId | "claude",
   storage: string | undefined,
   owner: string,
   operation: () => Promise<T>,

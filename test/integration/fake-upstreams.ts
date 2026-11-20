@@ -1,11 +1,15 @@
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { loadConfig } from "../../src/config.js";
-import { buildDeps, createProxyServer } from "../../src/server.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadConfig, mergeConfigObjects, type Config } from "../../src/config.js";
+import { createProxyServer, listenServer, type ProviderDeps } from "../../src/server.js";
 import type { Logger } from "../../src/logger.js";
-import type { TogetherKeyReaderDeps } from "../../src/together-auth.js";
 import type { ModelResolution } from "../../src/models.js";
+import { isPlainObject } from "../../src/plain-object.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 
 export interface RecordedRequest {
   readonly method: string;
@@ -69,19 +73,20 @@ export const sseHandler = (sseText: string): UpstreamHandler => (_req, res) => {
 
 export interface SubswitchInstance {
   readonly url: string;
+  /** Each store call that a refusing default fake got, in order. */
+  readonly refusedStoreCalls: readonly string[];
   close(): Promise<void>;
 }
 
 /**
- * Start a subswitch proxy for integration testing.
+ * Start a Subswitch proxy for integration tests.
  *
- * @param overrides - Config fields merged over `{ logLevel: "error" }`.
- * @param options.logger - Optional logger spliced over ServerDeps. The default
- *   deps use `logLevel: "error"` which swallows routing logs; inject a logger
- *   here to observe `request_complete` and other routing events in tests.
- * @param options.resolve - Optional resolver override. When provided, replaces the
- *   registry-built resolver with a synthetic one — used in tests that need to
- *   simulate ambiguous or unknown-provider scenarios (F7).
+ * @param overrides - Config fields. The defaults set logLevel to "error" and use
+ *   absent Codex and Claude auth files in a private folder.
+ * @param options.logger - Send logs from the server and its handlers to this logger.
+ * @param options.resolve - Use this resolver instead of the registry resolver.
+ * @param options.providerDeps - Supply explicit provider deps. The default fake refuses Together store calls.
+ * @param options.checkConfig - Check resolved config before the stores use it.
  *
  * Usage:
  *   const captured: Array<{ event: string }> = [];
@@ -91,40 +96,63 @@ export interface SubswitchInstance {
  */
 export const startSubswitch = async (
   overrides: Record<string, unknown>,
-  options: { logger?: Logger; resolve?: (name: string) => ModelResolution; togetherKeyReader?: TogetherKeyReaderDeps } = {},
+  options: {
+    logger?: Logger;
+    resolve?: (name: string) => ModelResolution;
+    providerDeps?: ProviderDeps;
+    checkConfig?: (config: Config) => void;
+  } = {},
 ): Promise<SubswitchInstance> => {
-  const configResult = loadConfig({
-    configPath: "inline-test-config.json",
-    readFile: () => JSON.stringify({ logLevel: "error", ...overrides }),
-  });
-  if (!configResult.ok) throw new Error(configResult.error.message);
-  // The logger goes through buildDeps, not over the top of it: the provider handlers are
-  // constructed inside buildDeps and close over whichever logger it was given, so spreading
-  // one onto the result afterwards would replace the request loop's logger only and leave
-  // every handler record uncaptured.
-  const depsResult = buildDeps(configResult.value.config, options.logger, {
-    togetherKeyReader: options.togetherKeyReader ?? {
-      env: {}, platform: "linux", exec: async () => { throw new Error("Unexpected Keychain call"); },
-      setTimer: () => () => {},
-    },
-  });
-  if (!depsResult.ok) throw new Error(`buildDeps rejected config: ${depsResult.error}`);
-  const deps = depsResult.value;
-  const finalDeps = {
-    ...deps,
-    ...(options.resolve !== undefined ? { resolve: options.resolve } : {}),
-  };
-  const server = createProxyServer(finalDeps);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as AddressInfo;
-  return {
-    url: `http://127.0.0.1:${port}`,
-    close: () =>
-      new Promise((resolve) => {
-        server.closeAllConnections();
-        server.close(() => resolve());
-      }),
-  };
+  const authDir = await mkdtemp(join(tmpdir(), "subswitch-test-auth-"));
+  const removeAuthDir = () => rm(authDir, { recursive: true, force: true });
+  try {
+    const defaults = {
+      logLevel: "error",
+      providers: { codex: { authFile: join(authDir, "codex.json") } },
+      codexIngress: { claude: { authFile: join(authDir, "claude.json") } },
+    };
+    // Omit undefined override values before the merge.
+    const input: unknown = JSON.parse(JSON.stringify(overrides));
+    if (!isPlainObject(input)) throw new Error("Test config must be an object");
+    const configResult = loadConfig({
+      configPath: "inline-test-config.json",
+      globalConfigPath: false,
+      env: {},
+      readFile: () => JSON.stringify(mergeConfigObjects(defaults, input)),
+    });
+    if (!configResult.ok) throw new Error(configResult.error.message);
+    options.checkConfig?.(configResult.value.config);
+    const refusedStoreCalls: string[] = [];
+    const depsResult = buildTestDeps(configResult.value.config, options.logger, {
+      refusedStoreCalls,
+      ...(options.providerDeps === undefined ? {} : { providerDeps: options.providerDeps }),
+    });
+    if (!depsResult.ok) throw new Error(`buildDeps rejected config: ${depsResult.error}`);
+    const server = createProxyServer({
+      ...depsResult.value,
+      ...(options.resolve === undefined ? {} : { resolve: options.resolve }),
+    });
+    const listen = await listenServer(server, 0, "127.0.0.1");
+    if (!listen.ok) throw new Error(`listenServer failed: ${listen.error.message}`);
+    const { port } = server.address() as AddressInfo;
+    return {
+      url: `http://127.0.0.1:${port}`,
+      refusedStoreCalls,
+      async close() {
+        try {
+          await new Promise<void>((resolve) => {
+            server.close(() => resolve());
+            server.closeAllConnections();
+          });
+        } finally {
+          await removeAuthDir();
+        }
+      },
+    };
+  } catch (error) {
+    await removeAuthDir();
+    throw error;
+  }
 };
 
 // ---------------------------------------------------------------------------

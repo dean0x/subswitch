@@ -5,10 +5,10 @@ import assert from "node:assert/strict";
 import { WebSocket } from "ws";
 import { loadConfig } from "../../src/config.js";
 import {
-  buildDeps,
   createProxyServer,
   listenServer,
 } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { SharedRouting } from "../../src/routing/shared-routing.js";
 import { noopLogger } from "../../src/logger.js";
 import type { Item } from "../../src/routing/routing-types.js";
@@ -165,7 +165,7 @@ function messagesConfig() {
 describe("Messages mid-conversation system capability refusal (synthetic)", () => {
   it("rejects before dispatch with a fixed envelope and accepts caller-owned compatible history", async () => {
     const calls: Item[] = [], logs: unknown[] = [];
-    const deps = buildDeps(messagesConfig(), { log: (_level, event, fields) => { logs.push({ event, fields }); } }, {
+    const deps = buildTestDeps(messagesConfig(), { log: (_level, event, fields) => { logs.push({ event, fields }); } }, {
       fetchImpl: async (_url, init) => {
         calls.push(JSON.parse(String(init?.body)));
         return sse(message());
@@ -215,7 +215,7 @@ describe("Messages mid-conversation system capability refusal (synthetic)", () =
 
   it("keeps mixed unowned thinking and later system history at409 without primary or fallback dispatch", async () => {
     let calls = 0;
-    const deps = buildDeps(messagesConfig(), noopLogger, {
+    const deps = buildTestDeps(messagesConfig(), noopLogger, {
       fetchImpl: async () => { calls++; return sse(message()); },
     });
     if (!deps.ok) throw new Error(deps.error);
@@ -250,7 +250,7 @@ describe("Messages mid-conversation system capability refusal (synthetic)", () =
 
   it("does not turn provider400 wording into local capability negotiation", async () => {
     let calls = 0;
-    const deps = buildDeps(messagesConfig(), noopLogger, {
+    const deps = buildTestDeps(messagesConfig(), noopLogger, {
       fetchImpl: async () => {
         calls++;
         return new Response(JSON.stringify({ error: { type: "invalid_request_error", message: "capability_rejected: mid_conv_system" } }), { status: 400 });
@@ -279,7 +279,7 @@ describe("Messages mid-conversation system capability refusal (synthetic)", () =
 describe("Wave 1 production ingress (synthetic)", () => {
   it("routes HTTP for both clients, strips the action prefix and isolates outbound credentials", async () => {
     const calls: { url: string; headers: Headers; body: Item }[] = [];
-    const deps = buildDeps(config(), noopLogger, {
+    const deps = buildTestDeps(config(), noopLogger, {
       fetchImpl: async (url, init) => {
         calls.push({
           url: String(url),
@@ -347,7 +347,7 @@ describe("Wave 1 production ingress (synthetic)", () => {
   });
   it("bridges routed WS to HTTP without an OpenAI connection or incoming key", async () => {
     let calls = 0;
-    const deps = buildDeps(config(), noopLogger, {
+    const deps = buildTestDeps(config(), noopLogger, {
       fetchImpl: async () => {
         calls++;
         return sse(completed());
@@ -396,7 +396,7 @@ describe("Wave 1 production ingress (synthetic)", () => {
   });
   it("preserves the final classified failure over routed WebSocket", async () => {
     let calls = 0;
-    const deps = buildDeps(config(), noopLogger, {
+    const deps = buildTestDeps(config(), noopLogger, {
       fetchImpl: async () => {
         calls++;
         return new Response(
@@ -565,7 +565,7 @@ describe("Wave 1 production ingress (synthetic)", () => {
     router.close();
   });
   it("rejects unauthenticated control calls and closes admission with a valid capability", async () => {
-    const deps = buildDeps(config(), noopLogger);
+    const deps = buildTestDeps(config(), noopLogger);
     if (!deps.ok) throw new Error(deps.error);
     const server = createProxyServer(deps.value);
     await listenServer(server, 0, "127.0.0.1");

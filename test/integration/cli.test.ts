@@ -1,31 +1,24 @@
 /**
  * Integration tests for the CLI entry point.
  *
- * Each test spawns `node --import tsx src/cli.ts` and checks exit
+ * Each test starts the CLI through the shared CLI-child helper and checks exit
  * code + stdout/stderr. Tests are bounded with a 10 s timeout. [F9/F26]
  *
  * Important constraints:
  * - Spawned processes have no TTY (piped I/O), so init without --yes triggers
  *   the fail-closed "refuse" path — this is what we test.
  * - We never assert that doctor exits 0 (avoids PF-006 pattern).
+ * - Each child gets fresh HOME and XDG folders and the exec-deny preload. These tests
+ *   check the project and user files, so SUBSWITCH_CONFIG is empty: the user file is
+ *   in the fresh folder.
  */
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, readdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-// Resolve repo root from test/integration/ (two levels up)
-const repoRoot = resolve(__dirname, "../..");
-
-// Use the same loader as the test runner; the tsx CLI's IPC socket needlessly
-// depends on the length and availability of the caller's temporary directory.
-const tsxLoader = import.meta.resolve("tsx");
-const cliEntry = join(repoRoot, "src", "cli.ts");
+import { join } from "node:path";
+import { cliChildCommand, cliChildFolders, type CliChildFolders } from "../helpers/cli-child.js";
 
 interface SpawnResult {
   exitCode: number;
@@ -33,61 +26,52 @@ interface SpawnResult {
   stderr: string;
 }
 
-/**
- * Compute a compact, stable cache key for a user-supplied env option.
- *
- * We record only the DELTA from `process.env` so the key stays small even when the
- * caller spreads the entire environment. The common case (no env override) serialises
- * to an empty string. Tests that pass a different env object (e.g. FORCE_COLOR) always
- * get a non-empty key that is distinct from the default. (Fixes TEST-04 / TEST-12.)
- */
-const envDeltaKey = (env: NodeJS.ProcessEnv | undefined): string => {
-  if (env === undefined || env === process.env) return "";
-  const delta: [string, string | undefined][] = [];
-  for (const k of Object.keys(env)) {
-    if (env[k] !== process.env[k]) delta.push([k, env[k]]);
-  }
-  for (const k of Object.keys(process.env)) {
-    if (!(k in env)) delta.push([k, undefined]);
-  }
-  delta.sort((a, b) => a[0].localeCompare(b[0]));
-  return JSON.stringify(delta);
-};
+/** One fresh folder set for the runs that bring no folders of their own. */
+let sharedFolders: Promise<CliChildFolders> | undefined;
+after(async () => {
+  if (sharedFolders !== undefined) await rm((await sharedFolders).home, { recursive: true, force: true });
+});
 
 /**
- * Module-level cache: collapsed (args, cwd, env-delta) tuples → their single spawn.
+ * Module-level cache: collapsed (args, cwd, env, folders) tuples → their single spawn.
  *
- * Tests that use unique mkdtemp directories or non-default env objects always get
+ * Tests that use unique mkdtemp directories or other env values always get
  * distinct keys, so they are never aliased to a previous result. Parallel suites
  * therefore share at most one live process per unique invocation tuple.
  */
 const runCliCache = new Map<string, Promise<SpawnResult>>();
 
 /**
- * Spawn the CLI with the given args. `cwd` defaults to a caller-supplied temp
- * dir. Bounced by a 10 s timeout so a hanging serve never blocks the suite.
+ * Spawn the CLI with the given args. `cwd` defaults to the fresh home folder, and `env`
+ * holds only the variables to add for the child. Bounded by a 10 s timeout so a hanging
+ * serve never blocks the suite.
  *
- * Identical invocations (same args, cwd, env) are memoised to a single spawn so
+ * Identical invocations (same args, cwd, env, folders) are memoised to a single spawn so
  * repeated `it()` blocks over the same command do not each pay a tsx start-up cost.
  */
 const runCli = async (
   args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+  options: {
+    cwd?: string;
+    env?: Readonly<Record<string, string | undefined>>;
+    folders?: CliChildFolders;
+    timeoutMs?: number;
+  } = {},
 ): Promise<SpawnResult> => {
-  const { cwd = repoRoot, env = process.env, timeoutMs = 10_000 } = options;
+  const { timeoutMs = 10_000 } = options;
+  const folders = options.folders ?? (await (sharedFolders ??= cliChildFolders()));
+  // NO_COLOR defaults to "1" (colour off) but caller-supplied env wins,
+  // including an explicit NO_COLOR: undefined (i.e. unsetting it).
+  const env = { NO_COLOR: "1", SUBSWITCH_CONFIG: "", ...options.env };
+  const command = cliChildCommand(folders, args, { ...(options.cwd === undefined ? {} : { cwd: options.cwd }), env });
 
-  const key = JSON.stringify([args, cwd, envDeltaKey(options.env)]);
+  const key = JSON.stringify([args, command.cwd, Object.entries(env).sort(([a], [b]) => a.localeCompare(b)), folders.home]);
   const cached = runCliCache.get(key);
   if (cached !== undefined) return cached;
 
   const promise = new Promise<SpawnResult>((resolve, reject) => {
-    const proc = spawn(process.execPath, ["--import", tsxLoader, cliEntry, ...args], {
-      cwd,
-      // NO_COLOR defaults to "1" (colour off) but caller-supplied env wins,
-      // including an explicit NO_COLOR: undefined (i.e. unsetting it).
-      env: { NO_COLOR: "1", ...env },
-      // Do NOT pass stdio: "inherit" — we need to capture stdout/stderr
-    });
+    // Do NOT pass stdio: "inherit" — we need to capture stdout/stderr
+    const proc = spawn(command.file, command.args, { cwd: command.cwd, env: command.env });
 
     let stdout = "";
     let stderr = "";
@@ -169,7 +153,7 @@ describe("CLI --help", () => {
     assert.equal(
       result.stdout.trimEnd(),
       readmeBlock,
-      "src/cli.ts USAGE and the README CLI reference block must stay byte-identical",
+      "the CLI USAGE text and the README CLI reference block must stay byte-identical",
     );
   });
 });
@@ -333,18 +317,16 @@ describe("CLI init --dry-run", () => {
 
 describe("CLI models", () => {
   it("ends the list with the Together pass-through line and the configured output cap", async () => {
-    const home = await mkdtemp(join(tmpdir(), "subswitch-models-together-"));
+    const folders = await cliChildFolders();
     try {
-      const configDir = join(home, "config", "subswitch");
+      const configDir = join(folders.configHome, "subswitch");
       await mkdir(configDir, { recursive: true });
       await writeFile(join(configDir, "config.json"), JSON.stringify({ providers: { together: { outputCap: 1024 } } }), "utf8");
-      const result = await runCli(["models"], {
-        cwd: home, env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, "config"), SUBSWITCH_CONFIG: undefined },
-      });
+      const result = await runCli(["models"], { folders });
       assert.equal(result.exitCode, 0, result.stderr);
       assert.match(result.stdout, /\n  together:<model-id>  →  any Together AI model \(pass-through; output cap 1024 tokens\)\n$/);
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(folders.home, { recursive: true, force: true });
     }
   });
 
@@ -575,7 +557,7 @@ describe("CLI models --json", () => {
   it("FORCE_COLOR=1 does NOT bleed ANSI codes into JSON output (structural: JSON branch exits early)", async () => {
     // Force color on for the non-JSON branch (FORCE_COLOR beats NO_COLOR).
     // Passing NO_COLOR: undefined unsets it so FORCE_COLOR dominates.
-    const forcedEnv = { ...process.env, FORCE_COLOR: "1", NO_COLOR: undefined };
+    const forcedEnv = { FORCE_COLOR: "1", NO_COLOR: undefined };
 
     const humanResult = await runCli(["models"], { env: forcedEnv });
     const jsonResult = await runCli(["models", "--json"], { env: forcedEnv });

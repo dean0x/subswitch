@@ -1,28 +1,21 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { cliChildFolders, readExecLog, runCliChild, type CliChildFolders, type CliChildOptions } from "../helpers/cli-child.js";
 import { rawHttpRequest, sseHandler, startFakeUpstream, startSubswitch } from "./fake-upstreams.js";
 import { lateToolNames } from "../fixtures/together/streams.js";
 
-const cli = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
-const tsx = fileURLToPath(new URL("../../node_modules/.bin/tsx", import.meta.url));
-
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "routing-config-trust-"));
-  const userPath = join(root, "config", "subswitch", "config.json");
+  const folders = await cliChildFolders();
+  const userPath = join(folders.configHome, "subswitch", "config.json");
   await mkdir(join(userPath, ".."), { recursive: true });
-  return { root, userPath, env: { PATH: process.env.PATH, HOME: root, XDG_CONFIG_HOME: join(root, "config") } };
+  return { root: folders.home, userPath, folders };
 }
 
-function run(root: string, env: NodeJS.ProcessEnv, args: string[]) {
-  return new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
-    execFile(tsx, [cli, ...args], { cwd: root, env, timeout: 10_000, maxBuffer: 64 * 1024 },
-      (error, stdout, stderr) => resolve({ code: error ? Number(error.code) || 1 : 0, stdout, stderr }));
-  });
+/** These tests read the user or the project file, so SUBSWITCH_CONFIG is empty unless a test sets it. */
+function run(folders: CliChildFolders, args: string[], options: CliChildOptions = {}) {
+  return runCliChild(folders, args, { ...options, env: { SUBSWITCH_CONFIG: "", ...options.env } });
 }
 
 async function writeControl(root: string, port: number, value: unknown) {
@@ -42,7 +35,7 @@ describe("CLI routing configuration sources", () => {
         await writeFile(join(f.root, "subswitch.config.json"), '{"port":65534}');
         // Invalid metadata pins the selected port and must stop the native command.
         await writeControl(f.root, 65533, {});
-        const result = await run(f.root, { ...f.env, ...(source === "explicit" ? { SUBSWITCH_CONFIG: f.userPath } : {}) }, native);
+        const result = await run(f.folders, native, source === "explicit" ? { env: { SUBSWITCH_CONFIG: f.userPath } } : {});
         assert.equal(result.code, 1);
         assert.match(result.stderr, /invalid_action_control_file/);
         assert.equal(result.stdout, "");
@@ -55,9 +48,11 @@ describe("CLI routing configuration sources", () => {
     try {
       await writeFile(join(f.root, "subswitch.config.json"), '{"port":65534}');
       await writeControl(f.root, 65534, {});
-      const result = await run(f.root, f.env, native);
+      // run-action must start its client command here, so the preload allows only that command.
+      const result = await run(f.folders, native, { allowNodeArgs: ["--version"] });
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /v\d+\./);
+      assert.deepEqual(await readExecLog(f.folders), ["preload", `allowed spawn ${process.execPath}`]);
     } finally { await rm(f.root, { recursive: true, force: true }); }
   });
 
@@ -65,7 +60,7 @@ describe("CLI routing configuration sources", () => {
     const f = await fixture();
     try {
       await writeFile(join(f.root, "subswitch.config.json"), '{"routes":{}}');
-      const result = await run(f.root, f.env, native);
+      const result = await run(f.folders, native);
       assert.equal(result.code, 1);
       assert.match(result.stderr, /routes.*not allowed in project configuration/);
       assert.equal(result.stdout, "");
@@ -88,7 +83,7 @@ describe("Together configuration and host trust", () => {
       const f = await fixture();
       try {
         await writeFile(file === "user" ? f.userPath : join(f.root, "subswitch.config.json"), JSON.stringify(config));
-        const result = await run(f.root, f.env, native);
+        const result = await run(f.folders, native);
         assert.equal(result.code, 1);
         assert.match(result.stderr, error);
         assert.equal(result.stdout, "");
@@ -103,7 +98,7 @@ describe("Together configuration and host trust", () => {
     t.after(anthropic.close);
     const exec = t.mock.fn(async (): Promise<{ stdout: string }> => { throw new Error("item not found"); });
     const proxy = await startSubswitch({ anthropic: { baseUrl: anthropic.url }, providers: { together: { baseUrl: `${together.url}/v1` } } },
-      { togetherKeyReader: { env: {}, platform: "darwin", exec, setTimer: () => () => {} } });
+      { providerDeps: { together: { env: {}, platform: "darwin", exec, setTimer: () => () => {} } } });
     t.after(proxy.close);
     const body = Buffer.from(JSON.stringify({ model: "together:fixture/model", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }));
     const send = (headers: string[]) => rawHttpRequest(`${proxy.url}/v1/messages`, {

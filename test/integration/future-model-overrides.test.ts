@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
 import { loadConfig } from "../../src/config.js";
-import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
+import { createProxyServer, listenServer } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { noopLogger } from "../../src/logger.js";
 import { makeAccessToken, makeAuthFileContent, startFakeUpstream } from "./fake-upstreams.js";
 
@@ -56,7 +57,7 @@ async function rig(rejectModel = false) {
       assert.equal(new URL(endpoint).origin, origin.url);
     for (const path of [config.providers.codex.authFile, config.codexIngress.claude.authFile!, config.codexIngress.claude.configDir!])
       assert.ok(path.startsWith(`${root}/`));
-    const deps = buildDeps(loaded.value.config, noopLogger);
+    const deps = buildTestDeps(loaded.value.config, noopLogger);
     assert.ok(deps.ok);
     const proxy = createProxyServer(deps.value);
     const listening = await listenServer(proxy, 0, "127.0.0.1");

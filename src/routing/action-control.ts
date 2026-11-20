@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { RoutingError } from "./routing-types.js";
+import { isPrivateFolder } from "./state-dir.js";
 
 export const actionControlPath = (
   port: number,
@@ -16,13 +17,7 @@ export async function publishActionControl(
   const path = actionControlPath(port, actionsDirectory),
     directory = join(path, "..");
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const stat = await lstat(directory);
-  if (
-    !stat.isDirectory() ||
-    stat.isSymbolicLink() ||
-    (stat.mode & 0o077) !== 0 ||
-    (process.getuid && stat.uid !== process.getuid())
-  )
+  if (!isPrivateFolder(await lstat(directory)))
     throw new RoutingError("action_control_directory_not_private", 503);
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { z } from "zod";
 import { it, type TestContext } from "node:test";
-import { toAnthropicErrorBody } from "../../src/errors.js";
+import { registerExactCredential, toAnthropicErrorBody } from "../../src/errors.js";
+import { PROVIDER_IDS } from "../../src/models.js";
 import { TOGETHER_API_KEY_ENV } from "../../src/together-auth.js";
 import { TOGETHER_MODELS } from "../../src/together-models.js";
 import { lateToolNames, repeatedToolIds } from "../fixtures/together/streams.js";
@@ -35,7 +36,7 @@ const fixture = async (t: TestContext, handler: UpstreamHandler, key: string | n
   const exec = t.mock.fn(async () => ({ stdout: "" }));
   const proxy = await startSubswitch({ ...overrides, providers: { together: { baseUrl: `${together.url}/v1`, ...options } },
     anthropic: { baseUrl: fallback.url } }, {
-    togetherKeyReader: { env: key === null ? {} : { [TOGETHER_API_KEY_ENV]: key }, platform, exec, setTimer: () => () => {} },
+    providerDeps: { together: { env: key === null ? {} : { [TOGETHER_API_KEY_ENV]: key }, platform, exec, setTimer: () => () => {} } },
     logger: { log: (_level, event, fields) => logs.push({ event, fields }) },
   });
   t.after(proxy.close);
@@ -159,6 +160,18 @@ it("scrubs the loaded exact key at the shared error renderer", async (t) => {
   const { post } = await fixture(t, sseHandler(lateToolNames));
   assert.equal((await post()).status, 200);
   assert.equal(JSON.parse(toAnthropicErrorBody("api_error", `A ${KEY} B`)).error.message, "A <redacted> B");
+});
+
+it("keeps the loaded key redacted when every other credential source rotates", async (t) => {
+  const key = "FAKE-TOGETHER-KEY-own-scrub-slot";
+  const { post } = await fixture(t, sseHandler(lateToolNames), key);
+  assert.equal((await post()).status, 200);
+  // Two new values fill the current and the previous slot of each other source. The key
+  // stays redacted only when the Together reader registers it under its own source.
+  for (const source of PROVIDER_IDS.filter((id) => id !== "together")) {
+    for (const rotation of [1, 2]) assert.ok(registerExactCredential(source, `FAKE-OTHER-SOURCE-${source}-rotation-${rotation}`));
+  }
+  assert.equal(JSON.parse(toAnthropicErrorBody("api_error", `A ${key} B`)).error.message, "A <redacted> B");
 });
 
 for (const [status, code, retryAfter, expectedStatus, expectedBody, noRetry] of [
