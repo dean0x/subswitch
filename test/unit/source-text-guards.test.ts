@@ -161,6 +161,7 @@ describe("source-text guards", () => {
 //
 // SOURCE-TEXT GUARD: only server.ts can define a live<Thing>Deps factory.
 // cli.ts and run-action.ts can call it. Only the named files can import child_process.
+// Only server.ts names the Kimi file store maker outside its module.
 // This check does not find every function that opens a real store.
 // ---------------------------------------------------------------------------
 
@@ -178,6 +179,9 @@ const CHILD_PROCESS_FILES: ReadonlyMap<string, string> = new Map([
   ["run-action.ts", "run-action starts the client command that the user names"],
 ]);
 const CHILD_PROCESS_MODULE = /["'](?:node:)?child_process["']/;
+/** The Kimi file store module, and the name of its maker. Only the live Kimi factory may name it. */
+const KIMI_STORE_MODULE = "kimi-native-store.ts";
+const KIMI_STORE_MAKER = /\bcreateKimiNativeStore\b/;
 
 const liveFactoryViolations = (file: string, source: string): string[] => {
   if (file === LIVE_FACTORY_HOME) return [];
@@ -238,9 +242,22 @@ describe("source-text guards: live deps factories", () => {
       assert.ok(files.includes(file), `The source list must include ${file}`);
     }
     assert.match(readSrc(LIVE_FACTORY_HOME), /export const liveTogetherKeyReaderDeps = /);
+    assert.match(readSrc(LIVE_FACTORY_HOME), /export const liveKimiStoreDeps = /);
     for (const file of files) {
       assert.deepEqual(liveFactoryViolations(file, readSrc(file)), [], `Move the live factory to src/${LIVE_FACTORY_HOME}`);
     }
+  });
+
+  it("G2: only server.ts names the Kimi file store maker outside its own module", () => {
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
+    assert.ok(files.includes(KIMI_STORE_MODULE), `The source list must include ${KIMI_STORE_MODULE}`);
+    assert.match(readSrc(KIMI_STORE_MODULE), KIMI_STORE_MAKER);
+    assert.match(readSrc(LIVE_FACTORY_HOME), KIMI_STORE_MAKER);
+    for (const file of files) {
+      if (file === LIVE_FACTORY_HOME || file === KIMI_STORE_MODULE) continue;
+      assert.doesNotMatch(readSrc(file), KIMI_STORE_MAKER, `Make the Kimi file store only in the live factory of src/${LIVE_FACTORY_HOME}`);
+    }
+    assert.match('import { createKimiNativeStore } from "./kimi-native-store.js";', KIMI_STORE_MAKER);
   });
 
   it("G2: the guard catches each way to define a live factory or a runner outside server.ts", () => {
