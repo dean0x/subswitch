@@ -85,7 +85,7 @@ export interface SubswitchInstance {
  *   absent Codex and Claude auth files in a private folder.
  * @param options.logger - Send logs from the server and its handlers to this logger.
  * @param options.resolve - Use this resolver instead of the registry resolver.
- * @param options.providerDeps - Supply explicit provider deps. The default fake refuses Together store calls.
+ * @param options.providerDeps - Supply explicit provider deps. The default fakes refuse Together and Kimi store calls.
  * @param options.checkConfig - Check resolved config before the stores use it.
  *
  * Usage:

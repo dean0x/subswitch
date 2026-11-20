@@ -611,6 +611,8 @@ export type Credential =
       readonly defaultOauthHost: string;
       /** Opt-in to a non-default host on either credential-bearing URL. */
       readonly allowInsecureBaseUrl: boolean;
+      /** True when the block has an allowInsecureBaseUrl key. A startup host error names the key only then. */
+      readonly hostOptIn: boolean;
       /** Refuse a plain http credential URL that is not loopback. Startup fails on it. */
       readonly requireHttps: boolean;
     }
@@ -640,6 +642,11 @@ export const withCredential = <R>(credential: Credential, table: CredentialKindT
 export type ProviderRuntimeConfig = Credential & {
   /** Human-facing name for CLI and JSON output (e.g. "Codex"). */
   readonly displayName: string;
+  /**
+   * False when the provider needs its block and the block is absent. Then doctor and
+   * health do not read or stat its credential and do not probe its host.
+   */
+  readonly active: boolean;
 };
 
 export const codexCredentialFor = (
@@ -653,19 +660,24 @@ export const codexCredentialFor = (
   oauthTokenUrl: provider.oauthTokenUrl,
   defaultOauthHost: "auth.openai.com",
   allowInsecureBaseUrl: provider.allowInsecureBaseUrl,
+  hostOptIn: true,
   requireHttps: false,
 });
 
-/** Kimi has no host opt-in: each URL must be on its region's own host, over https. */
+/**
+ * Kimi has no host opt-in: each URL must be on its region's own host, over https. The
+ * sign-in hint is plain `kimi login`, with the region flag only for mainland-cn.
+ */
 export const kimiCredentialFor = (provider: KimiProviderConfig): Extract<Credential, { kind: "oauth-file" }> => ({
   kind: "oauth-file",
   authFile: provider.authFile,
-  loginCommand: `kimi login --region ${provider.region}`,
+  loginCommand: provider.region === "mainland-cn" ? "kimi login --region mainland-cn" : "kimi login",
   baseUrl: provider.baseUrl,
   defaultHost: KIMI_REGION_TABLE[provider.region].apiHost,
   oauthTokenUrl: provider.oauthTokenUrl,
   defaultOauthHost: KIMI_REGION_TABLE[provider.region].oauthHost,
   allowInsecureBaseUrl: false,
+  hostOptIn: false,
   requireHttps: true,
 });
 
@@ -680,10 +692,12 @@ export const kimiCredentialFor = (provider: KimiProviderConfig): Extract<Credent
 const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) => ProviderRuntimeConfig>> = {
   codex: (config) => ({
     displayName: "Codex",
+    active: true,
     ...codexCredentialFor(config.providers.codex),
   }),
   together: ({ providers: { together } }) => ({
     displayName: "Together",
+    active: true,
     kind: "api-key",
     baseUrl: together.baseUrl,
     defaultHost: TOGETHER_DEFAULT_HOST,
@@ -693,6 +707,7 @@ const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) =>
   }),
   kimi: (config) => ({
     displayName: "Kimi",
+    active: config.providers.kimi.optedIn,
     ...kimiCredentialFor(config.providers.kimi),
   }),
 };
@@ -742,6 +757,8 @@ export type RoutingDestination =
       readonly routing: "registry";
       readonly id: ProviderId;
       readonly displayName: string;
+      /** See ProviderRuntimeConfig.active. */
+      readonly active: boolean;
       readonly credential: Credential;
     };
 
@@ -757,8 +774,8 @@ export type RoutingDestination =
 export const enumerateDestinations = (config: Config): readonly RoutingDestination[] => [
   { routing: "passthrough", id: "anthropic", displayName: "Anthropic" },
   ...PROVIDER_IDS.map((id): RoutingDestination => {
-    const { displayName, ...credential } = providerConfigFor(config, id);
-    return { routing: "registry", id, displayName, credential };
+    const { displayName, active, ...credential } = providerConfigFor(config, id);
+    return { routing: "registry", id, displayName, active, credential };
   }),
 ];
 

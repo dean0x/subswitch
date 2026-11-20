@@ -114,7 +114,10 @@ describe("Kimi config block", () => {
     assert.equal(kimi.authFile, join(homedir(), ".kimi-code", "credentials", "kimi-code.json"));
   });
 
-  for (const [region, apiHost, authHost] of [["global", "api.kimi.ai", "auth.kimi.ai"], ["mainland-cn", "api.kimi.com", "auth.kimi.com"]] as const) {
+  for (const [region, apiHost, authHost, login] of [
+    ["global", "api.kimi.ai", "auth.kimi.ai", "kimi login"],
+    ["mainland-cn", "api.kimi.com", "auth.kimi.com", "kimi login --region mainland-cn"],
+  ] as const) {
     it(`gives the ${region} credential its exact hosts, https only, with no host opt-in`, () => {
       const result = loadKimi({ region });
       assert.ok(result.ok, !result.ok ? result.error.message : undefined);
@@ -125,7 +128,8 @@ describe("Kimi config block", () => {
       assert.equal(credential.defaultOauthHost, authHost);
       assert.equal(credential.requireHttps, true);
       assert.equal(credential.allowInsecureBaseUrl, false);
-      assert.equal(credential.loginCommand, `kimi login --region ${region}`);
+      assert.equal(credential.hostOptIn, false);
+      assert.equal(credential.loginCommand, login);
     });
   }
 

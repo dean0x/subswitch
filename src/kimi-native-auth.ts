@@ -72,6 +72,17 @@ export interface KimiAuthDeps {
   readonly deadline?: (ms: number) => AbortSignal;
 }
 
+/**
+ * The Kimi deps that reach the sign-in file, the network or the clock. Only server.ts builds
+ * the live ones; a test gives fakes.
+ */
+export interface KimiStoreDeps {
+  /** Make the store of one Kimi CLI sign-in file. Making it reads, stats and writes nothing. */
+  readonly openStore: (authFile: string) => KimiNativeStore;
+  readonly fetch: typeof fetch;
+  readonly now: () => number;
+}
+
 export interface KimiAuth extends ProviderAuth<"kimi"> {
   /** The random device id of this manager in the Kimi identity headers. */
   readonly deviceId: string;
