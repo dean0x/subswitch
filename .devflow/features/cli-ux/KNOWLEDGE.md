@@ -204,7 +204,7 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 
 `runDoctor(config, configPath, fileFound, io, configuredProviderIds)`. The fifth parameter is `ReadonlySet<ProviderId>` defaulting to `new Set<ProviderId>()`.
 
-**`PROVIDER_AUTH_INSPECTORS`** is now an **exported** `Readonly<Record<ProviderId, AuthInspector>>` — adding a `ProviderId` without an inspector entry is a `tsc` error.
+**`PROVIDER_AUTH_INSPECTORS`** is an **exported** record keyed by `ProviderId`. A `ProviderId` without an entry is a `tsc` error. Each inspector takes its own provider's config slice (`config.providers[id]`) and the doctor io, does its own credential read, and returns a `DoctorAuthInspection`. `runDoctor` calls each inspector by id. An `oauth-file` inspection carries a neutral `DoctorAuthRow`: the `identity` lines, the `token expires:` line, then the `renewal` lines. The Codex adapter `codexAuthRow` in doctor.ts maps `AuthInspection` to this row, so the Codex text does not change.
 
 **N-provider auth check severity (PF-006 rules):**
 - Provider absent from config file → informational.
