@@ -63,7 +63,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   request does not go to Anthropic or to another provider.
 - The serve banner shows `(not turned on)` and no host for a provider without its
   block. `doctor` shows `not turned on` for the Kimi sign-in without the block, and
-  with it shows only the expiry and whether a renewal is due.
+  with it shows the configured file path, the expiry and whether a renewal is due.
 - `npm run probe:kimi` runs the Kimi live check. `--dry-run` uses only fakes and the
   loopback host. `--live` is for the owner: it needs a terminal and a typed phrase, and
   it caps every request.

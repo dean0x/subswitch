@@ -223,8 +223,9 @@ Any other state gives a local 401 with a fixed text and no upstream request.
 `authorization: Bearer <token>`. Requests to Kimi carry only fixed headers; client
 headers and client credentials never reach Kimi. Redirects from Kimi are refused. Error
 bodies replace the exact loaded token value, and the token is not in logs, `doctor`
-output, `models --json` or the health endpoint. `doctor` shows only the expiry and
-whether a renewal is due, and it never renews.
+output, `models --json` or the health endpoint. From the file, `doctor` shows only the
+expiry and whether a renewal is due. It also shows the configured file path, and it
+never renews.
 
 **Configuration trust.** The whole `providers.kimi` block loads only from the user
 configuration or an explicit `SUBSWITCH_CONFIG` file. A project `subswitch.config.json`
