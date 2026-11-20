@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import { globSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../src");
 
@@ -316,4 +317,75 @@ it("uses execFile with no shell for the Together Keychain read", () => {
     assert.doesNotMatch(source, /import\s*\{[^}]*\bexec\b[^}]*\}\s*from\s*["']node:child_process["']/);
     assert.doesNotMatch(source, /\bshell\s*:/);
   }
+});
+
+// G5: the Kimi live check never sets the Claude Code base URL or sign-in variables.
+// `run-action` sets the base URL for its own child, so the check needs neither name, and
+// the live run must use the sign-in that Claude Code already has.
+const REPO_DIR = join(SRC_DIR, "..");
+const LIVE_CHECK = "e2e/gates/kimi-live-check.ts";
+const CLIENT_VARIABLE = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN)\b/;
+/** An object key, a property or index assignment, or a shell prefix that sets either name. */
+const CLIENT_VARIABLE_SET = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN)["'`]?\]?\s*(?::|=(?!=))/;
+const readRepo = (name: string): string => readFileSync(join(REPO_DIR, name), "utf8");
+
+describe("source-text guards: the Kimi live check", () => {
+  it("G5: the live check names neither Claude Code variable, and no Kimi live file sets one", () => {
+    assert.doesNotMatch(readRepo(LIVE_CHECK), CLIENT_VARIABLE);
+    const files = globSync("e2e/gates/kimi-live-*", { cwd: REPO_DIR });
+    assert.ok(files.includes(LIVE_CHECK) && files.length > 1, "The search must find the live check and its fake client");
+    assert.deepEqual(files.filter((file) => CLIENT_VARIABLE_SET.test(readRepo(file))), []);
+  });
+
+  it("G5 positive control: the pattern finds each way to set a variable, and not a read", () => {
+    assert.match(readRepo("e2e/gates/native-claude.ts"), CLIENT_VARIABLE_SET, "A gate that sets the variables must match");
+    for (const text of ["env: { ANTHROPIC_BASE_URL: base }", 'process.env["CLAUDE_CODE_OAUTH_TOKEN"] = token',
+      "env.ANTHROPIC_BASE_URL = base", "ANTHROPIC_BASE_URL=http://127.0.0.1:1 claude", "{ 'CLAUDE_CODE_OAUTH_TOKEN': token }"]) {
+      assert.match(text, CLIENT_VARIABLE_SET, text);
+    }
+    for (const text of ["const base = process.env.ANTHROPIC_BASE_URL;", "if (env.ANTHROPIC_BASE_URL === base) {}"]) {
+      assert.doesNotMatch(text, CLIENT_VARIABLE_SET, text);
+    }
+  });
+});
+
+// G6: the public docs, the source and the Kimi check files hold no local text: no home
+// folder path, no workspace id and no path of a private planning folder. The paths of this
+// machine (its home folder and the folder that holds this repo) are checked as values too.
+const PUBLIC_TEXT = ["*.md", "e2e/**/*.md", "src/**/*.{ts,mts,cts,js,mjs,cjs}", "e2e/gates/kimi-*"];
+const PRIVATE_SHAPES: readonly RegExp[] = [
+  /\/(?:Users|home)\/[A-Za-z0-9._-]+\//,
+  /\b[A-Za-z]:\\{1,2}Users\\{1,2}[A-Za-z0-9._-]+/,
+  /\bwrkspc_[A-Za-z0-9]/,
+  /\.devflow\/docs\/lanes\//,
+  /\.orchestrator\b/,
+];
+/** A machine path with at least two segments, so that a short home such as "/root" is not a word search. */
+const machinePaths = (): readonly string[] =>
+  [homedir(), dirname(REPO_DIR)].filter((path) => path.split("/").filter(Boolean).length >= 2);
+const privateText = (text: string, paths: readonly string[] = machinePaths()): boolean =>
+  PRIVATE_SHAPES.some((shape) => shape.test(text)) || paths.some((path) => text.includes(path));
+
+describe("source-text guards: public text", () => {
+  it("G6: no public doc, source file or Kimi check file holds local text", () => {
+    const files = globSync(PUBLIC_TEXT, { cwd: REPO_DIR });
+    for (const name of ["README.md", "SECURITY.md", "CHANGELOG.md", "src/kimi-native-auth.ts", LIVE_CHECK]) {
+      assert.ok(files.includes(name), `The search must find ${name}`);
+    }
+    assert.deepEqual(files.filter((file) => privateText(readRepo(file))), [], "Remove the local text from these files");
+  });
+
+  it("G6 positive control: each shape and each machine path is found", () => {
+    for (const text of ["see /Users/someone/project", "in /home/someone/repo", "C:\\Users\\someone", "wrkspc_01ABC",
+      "notes in .devflow/docs/lanes/plan.md", "the .orchestrator folder", `${homedir()}/project`, `${dirname(REPO_DIR)}/other`]) {
+      assert.equal(privateText(text), true, text);
+    }
+    for (const text of ["~/.kimi-code/credentials", ".devflow/docs/usability/run/", "$HOME/.config/subswitch/config.json", "/home/<user>/.cache"]) {
+      assert.equal(privateText(text), false, text);
+    }
+    // A machine path that no shape matches is found only through the machine path values.
+    assert.equal(privateText("built in /srv/build/work/x", ["/srv/build"]), true);
+    assert.equal(privateText("built in /srv/build/work/x", []), false);
+    assert.ok(machinePaths().includes(dirname(REPO_DIR)) || dirname(REPO_DIR).split("/").filter(Boolean).length < 2);
+  });
 });
