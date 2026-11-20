@@ -15,14 +15,19 @@ const PRELOAD = new URL("../helpers/deny-exec-file.ts", import.meta.url).href;
 const ATTEMPTS = fileURLToPath(new URL("../fixtures/child-process-attempts.ts", import.meta.url));
 const DENIED = ["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync", "fork"] as const;
 
-/** Run the attempts fixture, with or without the preload, and return its results and the preload log. */
-const runAttempts = async (t: TestContext, preload: boolean) => {
+/**
+ * Run the attempts fixture, with or without the preload, and return its results and the
+ * preload log. With `allowArgs` the preload runs in allow-list mode for those arguments.
+ */
+const runAttempts = async (t: TestContext, preload: boolean, allowArgs?: readonly string[]) => {
   const folder = await mkdtemp(join(tmpdir(), "subswitch-deny-preload-"));
   t.after(() => rm(folder, { recursive: true, force: true }));
   const log = join(folder, "exec.log");
+  const allow = allowArgs === undefined ? {} : { SUBSWITCH_TEST_EXEC_ALLOW: JSON.stringify(allowArgs) };
+  const mode = allowArgs === undefined ? [] : ["allow-list"];
   const stdout = await new Promise<string>((resolve, reject) => {
-    execFile(process.execPath, ["--import", import.meta.resolve("tsx"), ...(preload ? ["--import", PRELOAD] : []), ATTEMPTS],
-      { cwd: folder, env: { PATH: process.env["PATH"], SUBSWITCH_TEST_EXEC_LOG: log }, timeout: 20_000 },
+    execFile(process.execPath, ["--import", import.meta.resolve("tsx"), ...(preload ? ["--import", PRELOAD] : []), ATTEMPTS, ...mode],
+      { cwd: folder, env: { PATH: process.env["PATH"], SUBSWITCH_TEST_EXEC_LOG: log, ...allow }, timeout: 20_000 },
       (error, out) => (error === null ? resolve(out) : reject(error)));
   });
   const results: unknown = JSON.parse(stdout);
@@ -57,11 +62,20 @@ describe("CLI child helper", () => {
     assert.deepEqual(command.args.slice(0, 4), ["--import", import.meta.resolve("tsx"), "--import", PRELOAD]);
     assert.equal(command.args.at(-1), "models");
     assert.equal(command.env["SUBSWITCH_TEST_EXEC_LOG"], folders.execLog);
+    assert.equal(command.env["SUBSWITCH_TEST_EXEC_ALLOW"], undefined);
+  });
+
+  it("keeps the preload and names the one allowed command in allow-list mode", async (t) => {
+    const folders = await freshFolders(t);
+    const command = cliChildCommand(folders, ["models"], { allowNodeArgs: ["--version"] });
+    assert.deepEqual(command.args.slice(0, 4), ["--import", import.meta.resolve("tsx"), "--import", PRELOAD]);
+    assert.equal(command.env["SUBSWITCH_TEST_EXEC_LOG"], folders.execLog);
+    assert.equal(command.env["SUBSWITCH_TEST_EXEC_ALLOW"], '["--version"]');
   });
 
   it("refuses a test env that sets a folder variable or a config file outside the folder", async (t) => {
     const folders = await freshFolders(t);
-    for (const name of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "SUBSWITCH_TEST_EXEC_LOG"]) {
+    for (const name of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "SUBSWITCH_TEST_EXEC_LOG", "SUBSWITCH_TEST_EXEC_ALLOW"]) {
       assert.throws(() => cliChildCommand(folders, ["models"], { env: { [name]: folders.home } }), new RegExp(name));
     }
     assert.throws(() => cliChildCommand(folders, ["models"], { env: { SUBSWITCH_CONFIG: join(tmpdir(), "config.json") } }),
@@ -97,6 +111,20 @@ describe("exec-deny preload", () => {
     const lines = log.split("\n").filter((line) => line !== "");
     // "preload" first is the positive control that the preload ran in the child.
     assert.deepEqual(lines.map((line) => line.split(" ")[0]), ["preload", ...DENIED]);
+  });
+
+  it("in allow-list mode starts only this Node binary with the named arguments, and refuses and logs the rest", { timeout: 30_000 }, async (t) => {
+    const { results, log } = await runAttempts(t, true, ["--version"]);
+    assert.deepEqual(results, {
+      spawn: "started", spawnSync: "started", execFile: "started", execFileSync: "started",
+      exec: "refused", execSync: "refused", fork: "refused", "spawn other arguments": "refused", "spawn other program": "refused",
+    });
+    const node = process.execPath;
+    assert.deepEqual(log.split("\n").filter((line) => line !== ""), [
+      "preload",
+      `allowed spawn ${node}`, `allowed spawnSync ${node}`, `allowed execFile ${node}`, `allowed execFileSync ${node}`,
+      `exec "${node}" --version`, `execSync "${node}" --version`, `fork ${ATTEMPTS}`, `spawn ${node}`, "spawn /bin/sh",
+    ]);
   });
 
   it("lets the same calls start a program without the preload (positive control)", { timeout: 30_000 }, async (t) => {

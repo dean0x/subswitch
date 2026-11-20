@@ -7,7 +7,8 @@
  * read the real user configuration, credentials or state. The child env does not copy the
  * parent env: it has PATH, TMPDIR, the folder variables and the variables that the test
  * names. The exec-deny preload also runs in the child, so the child can not start a
- * program. Only a run-action test that must start its client command turns it off.
+ * program. A run-action test that must start its client command names it with
+ * allowNodeArgs: the preload then starts only that command and refuses all other attempts.
  */
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -20,7 +21,9 @@ const TSX = import.meta.resolve("tsx");
 const DENY_PRELOAD = new URL("./deny-exec-file.ts", import.meta.url).href;
 
 /** The variables that only the helper sets. */
-const HELPER_VARIABLES = ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "SUBSWITCH_TEST_EXEC_LOG"] as const;
+const HELPER_VARIABLES = [
+  "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "SUBSWITCH_TEST_EXEC_LOG", "SUBSWITCH_TEST_EXEC_ALLOW",
+] as const;
 
 export interface CliChildFolders {
   /** HOME: a fresh folder from mkdtemp. The test removes it. */
@@ -43,8 +46,11 @@ export interface CliChildOptions {
    * may be "" (no explicit file) or a path in the home folder.
    */
   readonly env?: Readonly<Record<string, string | undefined>>;
-  /** Only for a run-action test that must start its client command. */
-  readonly allowChildProcesses?: true;
+  /**
+   * Allow-list mode of the exec-deny preload, for a run-action test that must start its client
+   * command: the exact arguments of the one process.execPath command that the child may start.
+   */
+  readonly allowNodeArgs?: readonly string[];
 }
 
 export interface CliChildCommand {
@@ -89,15 +95,15 @@ export const cliChildCommand = (
   if (config !== "" && !isInside(folders.home, config)) {
     throw new Error("SUBSWITCH_CONFIG must be empty or name a file in the CLI child home folder");
   }
-  const denyChildProcesses = options.allowChildProcesses !== true;
+  const allow = options.allowNodeArgs === undefined ? {} : { SUBSWITCH_TEST_EXEC_ALLOW: JSON.stringify(options.allowNodeArgs) };
   return {
     file: process.execPath,
-    args: ["--import", TSX, ...(denyChildProcesses ? ["--import", DENY_PRELOAD] : []), CLI_ENTRY, ...cliArgs],
+    args: ["--import", TSX, "--import", DENY_PRELOAD, CLI_ENTRY, ...cliArgs],
     cwd: options.cwd ?? folders.home,
     env: {
       PATH: process.env["PATH"], TMPDIR: process.env["TMPDIR"], ...extra, SUBSWITCH_CONFIG: config,
       HOME: folders.home, XDG_CONFIG_HOME: folders.configHome, XDG_CACHE_HOME: folders.cacheHome,
-      ...(denyChildProcesses ? { SUBSWITCH_TEST_EXEC_LOG: folders.execLog } : {}),
+      SUBSWITCH_TEST_EXEC_LOG: folders.execLog, ...allow,
     },
   };
 };

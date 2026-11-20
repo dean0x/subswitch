@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { cliChildFolders, runCliChild, type CliChildFolders, type CliChildOptions } from "../helpers/cli-child.js";
+import { cliChildFolders, readExecLog, runCliChild, type CliChildFolders, type CliChildOptions } from "../helpers/cli-child.js";
 import { rawHttpRequest, sseHandler, startFakeUpstream, startSubswitch } from "./fake-upstreams.js";
 import { lateToolNames } from "../fixtures/together/streams.js";
 
@@ -48,10 +48,11 @@ describe("CLI routing configuration sources", () => {
     try {
       await writeFile(join(f.root, "subswitch.config.json"), '{"port":65534}');
       await writeControl(f.root, 65534, {});
-      // run-action must start its client command here, so this child runs without the preload.
-      const result = await run(f.folders, native, { allowChildProcesses: true });
+      // run-action must start its client command here, so the preload allows only that command.
+      const result = await run(f.folders, native, { allowNodeArgs: ["--version"] });
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /v\d+\./);
+      assert.deepEqual(await readExecLog(f.folders), ["preload", `allowed spawn ${process.execPath}`]);
     } finally { await rm(f.root, { recursive: true, force: true }); }
   });
 

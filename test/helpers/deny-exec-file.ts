@@ -6,6 +6,11 @@
  * the child can never start a program, for example the macOS Keychain tool. The log file
  * named by SUBSWITCH_TEST_EXEC_LOG gets "preload" when this file runs, which is the positive
  * control that the preload ran, and one "<function> <file or command>" line for each attempt.
+ *
+ * Allow-list mode: when SUBSWITCH_TEST_EXEC_ALLOW holds a JSON array of strings, spawn,
+ * spawnSync, execFile and execFileSync may start this Node binary (process.execPath) with
+ * exactly those arguments. The log gets "allowed <function> <file>" for that start. Every
+ * other attempt is still refused and logged.
  */
 import { appendFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
@@ -13,12 +18,34 @@ import { createRequire, syncBuiltinESMExports } from "node:module";
 const log = process.env["SUBSWITCH_TEST_EXEC_LOG"];
 if (log === undefined) throw new Error("SUBSWITCH_TEST_EXEC_LOG must name the exec log file");
 
+const parseAllowArgs = (value: string): readonly string[] => {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed) || !parsed.every((arg) => typeof arg === "string")) {
+    throw new Error("SUBSWITCH_TEST_EXEC_ALLOW must be a JSON array of strings");
+  }
+  return parsed;
+};
+const allowValue = process.env["SUBSWITCH_TEST_EXEC_ALLOW"];
+const allowArgs = allowValue === undefined ? undefined : parseAllowArgs(allowValue);
+
 const DENIED = ["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync", "fork"] as const;
 type Denied = (typeof DENIED)[number];
+/** The functions that take a program file and an argument array. Only these can be allowed. */
+const ALLOWABLE: ReadonlySet<Denied> = new Set(["spawn", "spawnSync", "execFile", "execFileSync"]);
 
-const childProcess: Record<Denied, (file: unknown) => never> = createRequire(import.meta.url)("node:child_process");
+const isAllowed = (name: Denied, file: unknown, args: unknown): boolean =>
+  allowArgs !== undefined && ALLOWABLE.has(name) && file === process.execPath && Array.isArray(args) &&
+  args.length === allowArgs.length && args.every((arg, index) => arg === allowArgs[index]);
+
+type Starter = (file: unknown, args?: unknown, ...rest: unknown[]) => unknown;
+const childProcess: Record<Denied, Starter> = createRequire(import.meta.url)("node:child_process");
 for (const name of DENIED) {
-  childProcess[name] = (file) => {
+  const original = childProcess[name];
+  childProcess[name] = (file, args, ...rest) => {
+    if (isAllowed(name, file, args)) {
+      appendFileSync(log, `allowed ${name} ${String(file)}\n`);
+      return original(file, args, ...rest);
+    }
     appendFileSync(log, `${name} ${String(file)}\n`);
     throw new Error(`${name} is disabled in this test process`);
   };

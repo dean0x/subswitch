@@ -4,6 +4,8 @@
  * and prints one JSON object: each function name with "started" or "refused".
  *
  * With the argument "child" it exits at once: that is the program that fork starts.
+ * With the argument "allow-list" it also starts this Node binary with other arguments, and
+ * another program with the same arguments, for the allow-list mode of the preload.
  */
 import { exec, execFile, execFileSync, execSync, fork, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -43,5 +45,9 @@ await attempt("execFileSync", () => execFileSync(target, ["--version"]));
 await attempt("exec", () => callback((done) => exec(`"${target}" --version`, done)));
 await attempt("execSync", () => execSync(`"${target}" --version`));
 await attempt("fork", () => exited(fork(fileURLToPath(import.meta.url), ["child"], { stdio: "ignore" })));
+if (process.argv[2] === "allow-list") {
+  await attempt("spawn other arguments", () => exited(spawn(target, ["--print", "0"], { stdio: "ignore" })));
+  await attempt("spawn other program", () => exited(spawn("/bin/sh", ["--version"], { stdio: "ignore" })));
+}
 
 process.stdout.write(JSON.stringify(results));
