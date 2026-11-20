@@ -157,12 +157,11 @@ describe("source-text guards", () => {
 });
 
 // ---------------------------------------------------------------------------
-// G2 — only server.ts defines live deps factories
+// G2 — check live factory names and child_process imports
 //
-// SOURCE-TEXT GUARD: a live factory builds the real readers, stores and runners. Only
-// server.ts defines one, so a test that injects fakes can not meet a second, unseen copy.
-// cli.ts and run-action.ts may call one. A runner needs node:child_process, so only the
-// named files may load that module.
+// SOURCE-TEXT GUARD: only server.ts can define a live<Thing>Deps factory.
+// cli.ts and run-action.ts can call it. Only the named files can import child_process.
+// This check does not find every function that opens a real store.
 // ---------------------------------------------------------------------------
 
 const LIVE_FACTORY_HOME = "server.ts";
@@ -193,44 +192,42 @@ const liveFactoryViolations = (file: string, source: string): string[] => {
 };
 
 // ---------------------------------------------------------------------------
-// G3 — every CLI child in test/ starts through the shared CLI-child helper
+// G3 — only the CLI-child helper and this guard can name the CLI entry file in test/
 //
-// SOURCE-TEXT GUARD: the helper gives the child a fresh HOME, XDG_CONFIG_HOME,
-// XDG_CACHE_HOME and SUBSWITCH_CONFIG, and the exec-deny preload. A test that names the
-// CLI entry file itself could start a child that reads the user's real stores.
+// SOURCE-TEXT GUARD: this check matches literal file names. It does not detect
+// computed file names or starts through the package bin.
 // ---------------------------------------------------------------------------
 
 const TEST_DIR = join(SRC_DIR, "../test");
 const CLI_CHILD_HELPER = "helpers/cli-child.ts";
-/**
- * A path to the source or the built CLI entry file: the folder (src or dist) and the file
- * name on one line. A bare file name, as in the G2 file lists, is data and not a path.
- */
-const CLI_ENTRY_FILE = /\bsrc\b[^\n]*\bcli\.ts\b|\bdist\b[^\n]*\bcli\.js\b/;
+const CLI_ENTRY_NAMED_BY: ReadonlySet<string> = new Set([CLI_CHILD_HELPER, "unit/source-text-guards.test.ts"]);
+const CLI_ENTRY_FILE = /\bcli\.[cm]?[jt]s\b/;
 
 describe("source-text guards: CLI child processes", () => {
-  it("G3: only the CLI-child helper names the CLI entry file in test/", () => {
+  it("G3: only the helper and this guard name the CLI entry file in test/", () => {
     const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: TEST_DIR });
-    assert.ok(files.includes(CLI_CHILD_HELPER) && files.includes("integration/cli.test.ts"),
-      "The test file list must include the helper and the CLI tests");
+    assert.ok([...CLI_ENTRY_NAMED_BY, "integration/cli.test.ts"].every((file) => files.includes(file)),
+      "The test file list must include the helper, the guard and the CLI tests");
     assert.match(readFileSync(join(TEST_DIR, CLI_CHILD_HELPER), "utf8"), CLI_ENTRY_FILE);
     for (const file of files) {
-      if (file === CLI_CHILD_HELPER) continue;
+      if (CLI_ENTRY_NAMED_BY.has(file)) continue;
       assert.doesNotMatch(readFileSync(join(TEST_DIR, file), "utf8"), CLI_ENTRY_FILE,
         `Start the CLI child in test/${file} through test/${CLI_CHILD_HELPER}`);
     }
   });
 
-  it("G3: the entry pattern catches each way to name the CLI entry file", () => {
-    // Built from parts, so this file does not name the entry file itself.
-    const entry = "cli" + ".ts", built = "cli" + ".js";
-    for (const text of [`join(repoRoot, "src", "${entry}")`, `resolve("src/${entry}")`, `new URL("../../src/${entry}", import.meta.url)`,
-      `join(root, "dist", "${built}")`]) {
-      assert.match(text, CLI_ENTRY_FILE, `The pattern must catch ${text}`);
-    }
-    for (const text of ['import { cliChildCommand } from "../helpers/cli-child.js";', `new Set(["${entry}", "run-action.ts"])`]) {
-      assert.doesNotMatch(text, CLI_ENTRY_FILE, `The pattern must allow ${text}`);
-    }
+  it("G3: the entry pattern catches literal CLI entry names", () => {
+    const paths = [
+      'join(repoRoot, "src", "cli.ts")',
+      'resolve("src/cli.ts")',
+      'new URL("../../src/cli.ts", import.meta.url)',
+      'join(root, "dist", "cli.js")',
+      'resolve("src/cli.js")',
+      'join(root, "src",\n  "cli.ts")',
+      'join(srcDir, "cli.ts")',
+    ];
+    assert.deepEqual(paths.filter((text) => !CLI_ENTRY_FILE.test(text)), [], "The pattern must catch each CLI path");
+    assert.doesNotMatch('import { cliChildCommand } from "../helpers/cli-child.js";', CLI_ENTRY_FILE);
   });
 });
 
