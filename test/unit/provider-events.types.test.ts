@@ -53,7 +53,7 @@ const eventNamesAreTiedToTheProviderTheyName = <P extends ProviderId>(providerId
   // name cannot be reassigned to a different provider's — and, inside `providerEvents`
   // itself, a hardcoded `"codex_upstream_error"` is not assignable to `${P}_upstream_error`.
   // That is what makes re-hardcoding any single event name a `tsc` failure rather than a
-  // silent regression that stays green while PROVIDER_IDS has one member.
+  // silent regression that a runtime test of one provider would not catch.
   const upstreamError: `${P}_upstream_error` = events.upstreamError;
   void upstreamError;
 

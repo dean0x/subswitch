@@ -2,7 +2,7 @@
  * Source-text guards — static assertions about prohibited patterns in src/.
  *
  * These tests are NOT behavioral coverage.  They encode structural obligations
- * that cannot be exercised at runtime while PROVIDER_IDS has only one member.
+ * that a runtime test cannot check for every provider id and every source file.
  * Each guard is clearly labelled so nobody mistakes it for a behavioral test.
  *
  * G1: no file in src/ reads PROVIDER_IDS at index 0.
