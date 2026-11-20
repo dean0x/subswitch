@@ -15,6 +15,7 @@
 import * as http from "node:http";
 import * as https from "node:https";
 import { pathToFileURL } from "node:url";
+import * as zlib from "node:zlib";
 import { BoundedCapture } from "../../src/bounded-capture.js";
 import { isLoopbackHost } from "../../src/config.js";
 import { isPlainObject } from "../../src/plain-object.js";
@@ -31,6 +32,8 @@ const UPSTREAM_IDLE_MS = 120_000;
 const MAX_LINE_CHARS = 8_192;
 const MAX_VALUE_CHARS = 64;
 const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
+/** A small gzip body can decode to a very large one; the view stops decoding past this cap. */
+const MAX_DECODED_BYTES = 64 * 1024 * 1024;
 const MAX_SSE_DETAIL_LINES = 200;
 const MAX_DEPTH = 10;
 const MAX_FIELDS = 100;
@@ -256,6 +259,52 @@ const sseCapture = (emit: RecorderOutput): BodyCapture => {
   };
 };
 
+const isGzip = (encoding: string | undefined): boolean => encoding?.trim().toLowerCase() === "gzip";
+
+/**
+ * Decode a gzip body for the view only. The relay still forwards the wire
+ * bytes and the content-encoding header unchanged. A decode failure or the
+ * decode cap prints a fixed kind, never the decoder message or the bytes.
+ */
+const gunzipView = (label: string, capture: BodyCapture, emit: RecorderOutput): BodyCapture => {
+  const decoder = zlib.createGunzip();
+  let written = false;
+  let decoded = 0;
+  let stopped = false;
+  const stop = (kind: string): void => {
+    if (stopped) return;
+    stopped = true;
+    emit(`${label} kind=${kind}`);
+    decoder.destroy();
+  };
+  decoder.on("data", (chunk: Buffer) => {
+    if (stopped) return;
+    decoded += chunk.length;
+    if (decoded > MAX_DECODED_BYTES) stop("decode-cap");
+    else capture.add(chunk);
+  });
+  decoder.once("end", () => {
+    if (!stopped) capture.end();
+  });
+  decoder.on("error", () => stop("invalid-gzip"));
+  return {
+    add: (chunk) => {
+      if (stopped || chunk.length === 0) return;
+      written = true;
+      decoder.write(chunk);
+    },
+    end: () => {
+      if (stopped) return;
+      // An empty body is not a gzip stream; give the view the same empty end as an identity body.
+      if (!written) capture.end();
+      else decoder.end();
+    },
+  };
+};
+
+const bodyView = (encoding: string | undefined, label: string, capture: BodyCapture, emit: RecorderOutput): BodyCapture =>
+  isGzip(encoding) ? gunzipView(label, capture, emit) : capture;
+
 const observeBody = (source: http.IncomingMessage, capture: BodyCapture, count: (bytes: number) => void): void => {
   source.on("data", (chunk: Buffer) => {
     count(chunk.length);
@@ -313,7 +362,9 @@ const relay = (req: http.IncomingMessage, res: http.ServerResponse, upstream: UR
     res.writeHead(status, reply.statusMessage, filterRawHeaders(reply.rawHeaders, HOP_BY_HOP));
     res.flushHeaders();
     const mime = reply.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
-    const capture = mime === "text/event-stream" ? sseCapture(emit) : jsonCapture("RESPONSE", emit);
+    const sse = mime === "text/event-stream";
+    const capture = bodyView(reply.headers["content-encoding"], sse ? "SSE" : "RESPONSE BODY",
+      sse ? sseCapture(emit) : jsonCapture("RESPONSE", emit), emit);
     observeBody(reply, capture, (bytes) => { responseBytes += bytes; });
     reply.pipe(res);
   };
@@ -327,7 +378,8 @@ const relay = (req: http.IncomingMessage, res: http.ServerResponse, upstream: UR
       // Regenerate HTTP framing, including for methods Node does not chunk by default.
       outgoing.setHeader("transfer-encoding", "chunked");
     }
-    observeBody(req, jsonCapture("REQUEST", emit), (bytes) => { requestBytes += bytes; });
+    observeBody(req, bodyView(req.headers["content-encoding"], "REQUEST BODY", jsonCapture("REQUEST", emit), emit),
+      (bytes) => { requestBytes += bytes; });
     req.pipe(outgoing);
   } catch {
     outgoing?.destroy();

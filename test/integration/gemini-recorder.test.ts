@@ -3,7 +3,9 @@ import { spawnSync } from "node:child_process";
 import { once } from "node:events";
 import * as http from "node:http";
 import { it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 import { createGeminiRecorderServer } from "../../e2e/capture/gemini-recorder.js";
 
 const TIMEOUT_MS = 5_000;
@@ -61,6 +63,11 @@ const send = (
     req.once("error", reject);
     req.end(body);
   });
+
+/** A decoded view can print after the relay ends; wait a bounded time for its line. */
+const waitForLine = async (output: readonly string[], pattern: RegExp): Promise<void> => {
+  for (let tries = 0; tries < TIMEOUT_MS / 10 && !output.some((line) => pattern.test(line)); tries++) await delay(10);
+};
 
 it("relays the Gemini request and split SSE bytes but prints only permitted values", OPTIONS, async () => {
   const token = "fake-bearer-719a";
@@ -259,6 +266,83 @@ it("walks a body breadth first so a deep first field does not hide the later fie
       "$.userAgent=string(len=20)",
     ]) assert.ok(transcript.includes(shape), `Missing transcript shape: ${shape}`);
     assert.ok(!transcript.includes(sessionId) && !transcript.includes(userAgent));
+  });
+});
+
+it("decodes gzip bodies in the view only and relays the compressed bytes", OPTIONS, async () => {
+  const requestProject = "fake-gz-project-a41c";
+  const prompt = "fake gz prompt 9b0e";
+  const responseProject = "fake-gz-project-77d2";
+  const requestBody = gzipSync(JSON.stringify({
+    project: requestProject,
+    model: "gemini-fabricated",
+    request: { contents: [{ role: "user", parts: [{ text: prompt }] }] },
+  }));
+  const responseBody = gzipSync(JSON.stringify({ currentTier: { id: "g1-pro-tier" }, cloudaicompanionProject: responseProject }));
+  let received: { encoding: string | undefined; body: Buffer } | undefined;
+  await withRecorder((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      received = { encoding: req.headers["content-encoding"], body: Buffer.concat(chunks) };
+      res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip", "content-length": responseBody.length });
+      res.end(responseBody);
+    });
+  }, async (base, output) => {
+    const response = await send(base, {
+      path: "/v1internal:loadCodeAssist",
+      method: "POST",
+      headers: { "content-type": "application/json", "content-encoding": "gzip", "content-length": requestBody.length },
+    }, requestBody);
+    assert.equal(received?.encoding, "gzip");
+    assert.deepEqual(received.body, requestBody);
+    assert.equal(response.headers["content-encoding"], "gzip");
+    assert.deepEqual(response.body, responseBody);
+    await waitForLine(output, /^#1 REQUEST BODY /u);
+    await waitForLine(output, /^#1 RESPONSE BODY /u);
+    const transcript = output.join("\n");
+    for (const shape of [
+      '#1 REQUEST BODY $=object',
+      '$.model=string(len=17,value="gemini-fabricated")',
+      "$.request.contents[0].parts[0].text=string(len=19)",
+      "$.project=<len:",
+      '#1 RESPONSE BODY $=object',
+      '$.currentTier.id=string(len=11,value="g1-pro-tier")',
+      "$.cloudaicompanionProject=<len:",
+    ]) assert.ok(transcript.includes(shape), `Missing transcript shape: ${shape}`);
+    for (const literal of [requestProject, prompt, responseProject]) {
+      assert.ok(!transcript.includes(literal), `Transcript disclosed a fabricated value: ${literal}`);
+    }
+  });
+});
+
+it("prints only the kind of an invalid gzip body and relays its bytes", OPTIONS, async () => {
+  const body = Buffer.from("fake not gzip 4d1a");
+  await withRecorder((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip" }).end(body);
+  }, async (base, output) => {
+    const response = await send(base, { path: "/v1internal:fetchAvailableModels" });
+    assert.deepEqual(response.body, body);
+    await waitForLine(output, /^#1 RESPONSE BODY /u);
+    const transcript = output.join("\n");
+    assert.ok(transcript.includes("#1 RESPONSE BODY kind=invalid-gzip"), transcript);
+    assert.doesNotMatch(transcript, /fake not gzip/u);
+  });
+});
+
+it("stops the gzip view past the decode cap and still relays every byte", OPTIONS, async () => {
+  const line = `data: ${"x".repeat(1024 * 1024)}\n`;
+  const body = gzipSync(line.repeat(65));
+  await withRecorder((_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream", "content-encoding": "gzip" }).end(body);
+  }, async (base, output) => {
+    const response = await send(base, { path: "/v1internal:streamGenerateContent?alt=sse" });
+    assert.deepEqual(response.body, body);
+    await waitForLine(output, /^#1 SSE (?:TOTAL|kind=decode-cap)/u);
+    const transcript = output.join("\n");
+    assert.match(transcript, /#1 SSE kind=invalid-json/u);
+    assert.match(transcript, /#1 SSE kind=decode-cap/u);
+    assert.doesNotMatch(transcript, /SSE TOTAL/u);
   });
 });
 
