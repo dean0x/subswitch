@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, withCredential, type CredentialKindTable, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
-import { liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";
+import { liveKimiStoreDeps, liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
   runInitInteractive,
@@ -379,6 +379,8 @@ const doctor = async (result: LoadConfigResult, client: Client): Promise<void> =
     process.stdout.isTTY === true,
   );
 
+  // Doctor gets the Kimi store maker and the clock, not the fetch, so it can not renew a sign-in.
+  const { openStore, now } = liveKimiStoreDeps();
   process.exitCode = client === "codex" ? 0 : await runDoctor(
     result.config,
     result.configPaths.length ? result.configPaths.join(" + ") : result.configPath,
@@ -387,6 +389,7 @@ const doctor = async (result: LoadConfigResult, client: Client): Promise<void> =
       write: out,
       readAuthFile: (path) => readFile(path, "utf8"),
       togetherKeyReader: liveTogetherKeyReaderDeps(),
+      kimiStore: { openStore, now },
       httpGet: makeLiveHttpGet(),
       tlsConnect: makeLiveTlsConnect(),
       color,

@@ -1,20 +1,23 @@
 /**
- * Kimi wiring: the opt-in gate, the startup checks, the refusing test defaults and health.
- * Each Kimi home is a fabricated mkdtemp folder through realpath. No test reads a real home,
- * sign-in file or store, and no test sends a request to a Kimi host: every fetch is a fake.
+ * Kimi wiring: the opt-in gate, the startup checks, the refusing test defaults, health,
+ * and the agreement of doctor and buildDeps. Each Kimi home is a fabricated mkdtemp folder
+ * through realpath. No test reads a real home, sign-in file or store, and no test sends a
+ * request to a Kimi host: every fetch is a fake.
  */
 import { describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AddressInfo } from "node:net";
 import { loadConfig, type Config } from "../../src/config.js";
+import { runDoctor, type DoctorIO, type TlsStatus } from "../../src/doctor.js";
 import { KIMI_REGION_TABLE } from "../../src/kimi-constants.js";
 import { toKimiProxyError } from "../../src/kimi-errors.js";
 import type { KimiStoreDeps } from "../../src/kimi-native-auth.js";
 import { createKimiNativeStore, type KimiNativeStore, type KimiTokenRecord } from "../../src/kimi-native-store.js";
 import type { Logger } from "../../src/logger.js";
-import { buildDeps } from "../../src/server.js";
+import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
 import { buildTestDeps, refusingProviderDeps } from "../helpers/server-deps.js";
 import { recordFsPaths } from "../helpers/fs-path-recorder.js";
 import { startSubswitch } from "./fake-upstreams.js";
@@ -253,4 +256,42 @@ describe("Kimi wiring: health", () => {
     assert.equal(kimi?.configured, true);
     assert.deepEqual(seen, [`fs.existsSync ${authFile}`]);
   });
+});
+
+describe("Kimi wiring: doctor and buildDeps agree", () => {
+  const doctorIO = (kimi: KimiStoreDeps, hosts: string[]): DoctorIO => ({
+    write: () => undefined,
+    readAuthFile: async () => { throw Object.assign(new Error("ENOENT: fixture"), { code: "ENOENT" }); },
+    httpGet: async () => ({ ok: false, connectionRefused: true }),
+    tlsConnect: async (host): Promise<TlsStatus> => { hosts.push(host); return { kind: "reachable" }; },
+    color: false,
+    listAgentFiles: async () => [],
+    readTextFile: async () => "",
+    kimiStore: { openStore: kimi.openStore, now: kimi.now },
+  });
+
+  for (const withBlock of [false, true]) {
+    it(`${withBlock ? "with" : "without"} the block, doctor reads the Kimi store only when the leg does`, async (t) => {
+      const { home, authFile } = await kimiHome(t);
+      const loaded = loadFixture(home, withBlock ? { providers: { kimi: { authFile } } } : {});
+      const doctor = recordingKimiDeps();
+      const hosts: string[] = [];
+      await runDoctor(loaded.config, "kimi-fixture.json", true, doctorIO(doctor.deps, hosts), loaded.configuredProviders);
+      const leg = recordingKimiDeps();
+      const deps = buildTestDeps(loaded.config, silent, { providerDeps: { kimi: leg.deps } });
+      assert.ok(deps.ok, deps.ok ? undefined : deps.error);
+      const server = createProxyServer(deps.value);
+      const listening = await listenServer(server, 0, "127.0.0.1");
+      assert.ok(listening.ok);
+      t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+      const { port } = server.address() as AddressInfo;
+      await (await postKimi(`http://127.0.0.1:${port}`)).arrayBuffer();
+      const doctorRead = doctor.calls.includes("read");
+      const legRead = leg.calls.includes("read");
+      assert.equal(doctorRead, legRead, "doctor and the leg must agree on the block");
+      assert.equal(legRead, withBlock);
+      assert.equal(hosts.includes("api.kimi.ai"), withBlock, "doctor probes the Kimi host only with the block");
+      assert.deepEqual(doctor.calls.filter((call) => call !== "read"), [], "doctor never renews or locks");
+    });
+  }
 });
