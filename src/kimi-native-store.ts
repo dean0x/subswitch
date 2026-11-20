@@ -100,6 +100,8 @@ export interface KimiStoreHooks {
 }
 
 export interface KimiNativeStore {
+  /** The same key for each store of one sign-in file, so their renewals share one queue. Never print it. */
+  readonly coordinationKey: string;
   /** Read and check the sign-in record. It makes no file, folder or lock. */
   readonly read: (signal: AbortSignal) => Promise<KimiSnapshot>;
   /** Read the renewal marker without the lock, or undefined when there is none. It makes nothing. */
@@ -554,6 +556,7 @@ export const createKimiNativeStore = (authFile: string, hooks: KimiStoreHooks = 
     return paths;
   };
   return {
+    coordinationKey: `file:${authFile}`,
     read: (signal) => guarded(signal, "credential_missing", () => readSnapshot(checkedPaths(), signal)),
     readMarker: (signal) => guarded(signal, "unavailable", () => readMarkerFile(checkedPaths(), signal)),
     withLease: (signal, operation) => guarded(signal, "unavailable", () => runLease(checkedPaths(), signal, operation, hooks)),

@@ -1,6 +1,21 @@
 // Fixed facts of the Kimi Code CLI sign-in, checked against the public Kimi Code CLI
 // source, versions 0.38.0 to 2.7.2. None of them is a config key.
 import { createHash } from "node:crypto";
+import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
+
+/** The public OAuth client id of the Kimi Code CLI. Each refresh grant names it. */
+export const KIMI_OAUTH_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098";
+
+/**
+ * The identity headers of a Kimi request. They name Subswitch and its version, not the
+ * Kimi CLI. `deviceId` is a random id that Subswitch makes once for each process.
+ */
+export const kimiIdentityHeaders = (deviceId: string): Readonly<Record<string, string>> => ({
+  "user-agent": `${SUBSWITCH_NAME}/${SUBSWITCH_VERSION}`,
+  "x-msh-platform": SUBSWITCH_NAME,
+  "x-msh-version": SUBSWITCH_VERSION,
+  "x-msh-device-id": deviceId,
+});
 
 /** The Kimi regions. Each one has its own hosts and its own CLI credential slot. */
 export const KIMI_REGIONS = ["global", "mainland-cn"] as const;
