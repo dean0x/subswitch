@@ -12,6 +12,31 @@ export const KIMI_DEFAULT_HOME = "~/.kimi-code";
 /** The folder under the Kimi CLI home that holds the credential slots. */
 export const KIMI_CREDENTIALS_FOLDER = "credentials";
 
+/**
+ * The folder under the Kimi CLI home that holds the CLI lock: an empty lock target file
+ * `<slot>` and, while a process holds the lock, the lock folder `<slot>.lock`.
+ */
+export const KIMI_OAUTH_FOLDER = "oauth";
+
+/** The Kimi CLI takes a lock folder as stale when its mtime is older than this. */
+export const KIMI_LOCK_STALE_MS = 5000;
+
+/** The Kimi CLI lock holder updates the lock folder mtime at this interval, half the stale bound. */
+export const KIMI_LOCK_HEARTBEAT_MS = 2500;
+
+/**
+ * The fields of a Kimi CLI sign-in record, with their JSON types. The CLI writes all six
+ * in every version from 0.2.0 to 2.7.2. A record may hold more keys; Subswitch keeps them.
+ */
+export const KIMI_RECORD_FIELDS = [
+  ["access_token", "string"],
+  ["refresh_token", "string"],
+  ["expires_at", "number"],
+  ["scope", "string"],
+  ["token_type", "string"],
+  ["expires_in", "number"],
+] as const;
+
 /** The hosts and the credential slot of one region. */
 export interface KimiRegionProfile {
   /** Host of the Kimi coding API. */
