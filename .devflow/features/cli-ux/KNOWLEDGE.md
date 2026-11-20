@@ -5,7 +5,7 @@ description: "Use when changing the CLI, init wizard, doctor, logger output, log
 category: architecture
 directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/codex-doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts, src/provider-transport.ts]
 created: 2026-07-23
-updated: 2026-11-19
+updated: 2026-11-20
 ---
 
 # CLI / init command / terminal UX
@@ -13,6 +13,7 @@ updated: 2026-11-19
 ## Rules
 - **KB-INV-1** A new provider log event goes into the `ProviderEvents<P>` type and the `scopedEvents` table in `src/provider-events.ts`; the type pins the table, so do not quote a field count.
 - **KB-INV-2** `subswitch doctor` lists a Together agent pin only when no usable key is found; with a key, a workspace `together:` pin routes to Together and spends the user's balance.
+- **KB-INV-3** `src/doctor.ts` writes each provider auth line through `redactCredentials` at the write site, so a credential in an inspector line never reaches the terminal.
 - The Rules list starts with this refresh. Older rules stay in `## Anti-Patterns` and `## Gotchas` below.
 
 ## Overview
@@ -288,6 +289,8 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 - **Calling `req.destroy()` after a rejection response** — use `drainRejectedUpload(req)` instead. `req.destroy()` causes the kernel to send RST, which may cause the client to discard the already-sent response before reading it.
 
 ## Gotchas
+
+**KB-INV-3 — The doctor auth line is filtered where it is written.** The loop over `PROVIDER_IDS` in `src/doctor.ts` calls `io.write(redactCredentials(line))` for every provider auth result line. The inspectors do not filter their own lines. The filter matches the same exact values and Bearer and JWT patterns as the error render site (see the scrub scope above).
 
 **The byte-budget admission gate is gone. Any text describing a concurrency cap, byte-based admission, queueing, or a 503/529 from the relay is now false.** `"overloaded_error"` was removed from `AnthropicErrorType` — upstream 5xx including 529 maps to `"api_error"` via `upstreamStatusToAnthropicError`.
 

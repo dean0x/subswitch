@@ -5,7 +5,7 @@ description: "Use when changing the Codex or Together leg, the shared runner, mo
 category: domain-knowledge
 directories: [src]
 created: 2026-07-22
-updated: 2026-11-19
+updated: 2026-11-20
 ---
 
 # Codex Translation Leg (gpt-* → /responses)
@@ -19,6 +19,8 @@ updated: 2026-11-19
 - **KB-INV-4** `childEnvWithoutTogetherKey` drops every env name whose upper-case form equals `TOGETHER_API_KEY_ENV`; `KEY_NAME_CONSTANT_USES` in `test/unit/source-text-guards.test.ts` pins that line.
 - **KB-AP-3** Do not run a "no Keychain read" check on linux: the reader returns before exec there, so a zero-exec check cannot fail. Use platform `"darwin"`, env `{}` and a positive control.
 - **KB-INV-5** A workspace file can name a `together:` model and so spend the user's Together balance; `subswitch doctor` lists such a pin only when no usable key is found.
+- **KB-INV-6** A test that calls `buildDeps` directly uses `buildTestDeps` from `test/helpers/server-deps.ts`, and `startSubswitch` in `test/integration/fake-upstreams.ts` gives each instance absent Codex and Claude auth files in a private folder. Both refuse Together store calls, so a test never reads a real credential store.
+- **KB-INV-7** `forceRefresh` in `src/provider-auth.ts`: the manager bounds its own token request, body read and write-back, and never passes the caller signal to them. The refresh queue waits for the previous operation to settle, write-back included.
 - The Rules list starts with this refresh. Older rules stay in `## Anti-Patterns` and `## Gotchas` below.
 
 ## Overview
@@ -202,6 +204,8 @@ The seven auth events now in `ProviderEvents<P>`: `tokenRefreshed`, `refreshToke
 
 **`forceRefresh()` has a 30-second cooldown** (`FORCE_REFRESH_COOLDOWN_MS = 30_000`). A persistent upstream 401 that survives a freshly-minted token must not trigger a full OAuth round-trip on every concurrent request.
 
+**KB-INV-7 — The `forceRefresh` signal bounds the caller's wait only.** The caller stops its wait when its request signal aborts. The manager may stop its own wait, but it never passes that signal to the token request, the body read or the write-back. A refresh that is already sent can finish and save its result after the caller stops. The manager sets its own time limit for each of the three steps. The refresh queue waits for the previous operation to settle, write-back included. A manager can ignore both arguments (a static-credential manager does).
+
 **The auth-file temp write self-heals one `EEXIST`.** `writeAtomic` opens the temp file with `O_EXCL` (exclusive create). On `EEXIST` (stale temp from a prior crashed run), it unlinks the stale file and retries once — a bounded single-retry, not a loop.
 
 ## Technical Implementation Patterns
@@ -332,7 +336,9 @@ IncomingMessage (Anthropic wire)
 
 **KB-INV-3 — Runner events have two declarations.** `TranslatedLegOptions.events` in `src/translated-leg.ts` lists the event names that the runner uses. `providerEvents` in `src/provider-events.ts` makes them from the provider id. When you add a runner event, add the field to `ProviderEvents<P>`, to the table in `scopedEvents`, and to `TranslatedLegOptions.events`. The handler passes its provider table to the runner, so the type check finds a missing field.
 
-**KB-INV-4 — The key-name guard pins exact source lines.** `test/unit/source-text-guards.test.ts` lets the Together key-name constant appear outside `src/together-auth.ts` only on the exact trimmed lines in `KEY_NAME_CONSTANT_USES` (an import from the key reader is also permitted). The guard also rejects the literal key name and computed env reads outside the key reader, so the env filter must use the constant. The `src/run-action.ts` entry is the line `if (name.toUpperCase() === TOGETHER_API_KEY_ENV)`. If you change that line, change the guard entry in the same commit.
+**KB-INV-4 — The key-name guard pins exact source lines.** `test/unit/source-text-guards.test.ts` lets the Together key-name constant appear outside `src/together-auth.ts` only on the exact trimmed lines in `KEY_NAME_CONSTANT_USES` (an import from the key reader is also permitted). The guard also rejects the literal key name and computed env reads outside the key reader, so the env filter must use the constant. The `src/run-action.ts` entry is the line `if (name.toUpperCase() === TOGETHER_API_KEY_ENV)`. If you change that line, change the guard entry in the same commit. A related guard (G3 in the same file) lets only `test/helpers/cli-child.ts` and the guard file name the CLI entry file; it matches the file name with a pattern and an allow list, and it does not find computed names or a start through the package bin. The G2 guard header states its scope: only `src/server.ts` defines a live deps factory, and the guard does not find every function that opens a real store.
+
+**KB-INV-6 — Test deps refuse credential stores.** `buildTestDeps` (`test/helpers/server-deps.ts`) calls `buildDeps` with a Together fake that has platform `"darwin"`, an empty env and an `exec` that records `together.exec` in `refusedStoreCalls` and throws. A test can pass its own `providerDeps` to replace it. `startSubswitch` (`test/integration/fake-upstreams.ts`) uses the same fake and sets `providers.codex.authFile` and `codexIngress.claude.authFile` to absent files in a private temp folder for each instance. `ProviderDepsById` in `src/server.ts` needs one entry for each provider id, so a new provider must state its test deps. `test/helpers/cli-child.ts` starts the CLI child with a fresh HOME, separate XDG folders and the preload `test/helpers/deny-exec-file.ts`. That preload intercepts seven named `child_process` functions. It is not a sandbox. The helper rejects on a timeout, a signal, an output overflow or a start failure, and it refuses location variables that point outside the child folders.
 
 **KB-INV-5 — A workspace file can select the Together route.** Only the user config or an explicit `SUBSWITCH_CONFIG` can set the `providers.together` block, the routes and the profiles. But a project `.claude/agents/*.md` file or a project Claude Code setting can name a `together:` model. When a key is available, those requests go to Together and spend the user's balance. `subswitch doctor` lists a Together agent pin only when no usable key is found (`keyRequiredProviders` in `src/doctor.ts`). README and SECURITY.md tell users to check a cloned repository for such names.
 
