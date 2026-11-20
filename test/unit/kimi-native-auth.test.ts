@@ -336,7 +336,6 @@ describe("Kimi sign-in: a request that may have left is never sent again", () =>
     ["a failed name lookup", () => { throw networkError("ENOTFOUND"); }, "refresh_unavailable"],
     ["a refused connection", () => { throw networkError("ECONNREFUSED"); }, "refresh_unavailable"],
     ["a 429 reply", () => reply({ error: "rate_limited" }, 429), "refresh_busy"],
-    ["an invalid_client reply", () => reply({ error: "invalid_client" }, 401), "refresh_rejected"],
   ];
   for (const [name, answer, code] of backoffs) {
     it(`backs off after ${name} with ${code}, then sends the grant again`, async (t) => {
@@ -351,6 +350,26 @@ describe("Kimi sign-in: a request that may have left is never sent again", () =>
       clock.now += 30_001;
       assert.equal(bearer(await auth.getCredentials(signal())), `Bearer ${RENEWED}`);
       assert.equal(calls.length, 2);
+    });
+  }
+
+  const clientRefusals = [["invalid_client", 401], ["invalid_client", 403], ["unauthorized_client", 401], ["unauthorized_client", 403]] as const;
+  for (const [error, status] of clientRefusals) {
+    it(`stops the renewal of the grant after a ${status} ${error} reply, also after a restart and a long wait`, async (t) => {
+      const home = await kimiHome(t, EXPIRED);
+      const raw = await readFile(home.file, "utf8");
+      const { auth, calls, clock } = kimiAuth(home, (_, count) => (count === 1 ? reply({ error }, status) : renewed()));
+      const result = await auth.getCredentials(signal());
+      failsWith(result, "client_rejected");
+      assert.match(messageOf(result), /Update Subswitch, or run the Kimi CLI once/);
+      assert.equal((await readMarker(home))["outcome"], "rejected");
+      clock.now += 3_600_000;
+      const restarted = kimiAuth(home, () => renewed());
+      restarted.clock.now = clock.now;
+      failsWith(await auth.getCredentials(signal()), "client_rejected");
+      failsWith(await restarted.auth.getCredentials(signal()), "client_rejected");
+      assert.equal(calls.length + restarted.calls.length, 1, "Subswitch sends the refused grant once only");
+      assert.equal(await readFile(home.file, "utf8"), raw, "the file is not changed or emptied");
     });
   }
 

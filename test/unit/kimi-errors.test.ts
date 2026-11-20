@@ -29,6 +29,7 @@ const EXPECTED: Readonly<Record<KimiErrorCode, Row>> = {
   refresh_unavailable: ["upstream", 503, "kimi_token_refresh_failed"],
   refresh_recovery_required: ["auth", 401, "kimi_refresh_recovery_required"],
   refresh_rejected: ["auth", 401, "kimi_token_refresh_failed"],
+  client_rejected: ["auth", 401, "kimi_token_refresh_failed"],
   timeout: ["timeout", 504, "kimi_credential_wait_ended"],
 };
 const CODES = Object.keys(EXPECTED) as KimiErrorCode[];
@@ -70,6 +71,10 @@ describe("Kimi error table", () => {
     for (const code of ["credential_missing", "invalid_record", "reauthorization_required", "refresh_rejected"] as const) {
       assert.match(KIMI_ERRORS[code].hint, /`kimi login`/, code);
     }
+  });
+
+  it("tells the user to update Subswitch or run the Kimi CLI when Kimi refuses the client", () => {
+    assert.match(KIMI_ERRORS.client_rejected.hint, /^Update Subswitch, or run the Kimi CLI once\b/);
   });
 });
 

@@ -97,6 +97,11 @@ export const KIMI_ERRORS = {
     kind: "auth", status: 401, event: KIMI_EVENTS.tokenRefreshFailed,
     text: "The Kimi sign-in service refused the renewal.", hint: SIGN_IN,
   },
+  client_rejected: {
+    kind: "auth", status: 401, event: KIMI_EVENTS.tokenRefreshFailed,
+    text: "The Kimi sign-in service refused the Subswitch client, so Subswitch does not send this renewal again.",
+    hint: "Update Subswitch, or run the Kimi CLI once in your own Terminal, then retry.",
+  },
   timeout: {
     kind: "timeout", status: 504, event: KIMI_EVENTS.credentialWaitEnded,
     text: "The Kimi sign-in renewal did not complete in time.", hint: RETRY,

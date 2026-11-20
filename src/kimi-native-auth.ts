@@ -8,8 +8,9 @@
  * request, and the new record is written back atomically with every key of the file.
  *
  * A renewal whose request may have reached Kimi is never sent again, because Kimi can have
- * rotated the grant. Only a connect failure that proves that no request left, a 429, or a
- * refused client gives a backoff, after which a new request can go.
+ * rotated the grant. Only a connect failure that proves that no request left, or a 429,
+ * gives a backoff, after which a new request can go. A refused grant or a refused client
+ * stops each later renewal of that grant.
  *
  * A caller signal ends only the wait of that caller. The token request, the body read and
  * the write-back run to their end under the renewal deadline, so a sent renewal is saved.
@@ -195,6 +196,7 @@ export const createKimiAuth = (deps: KimiAuthDeps): KimiAuth => {
     const prior = await lease.readMarker();
     const same = prior !== undefined && prior.grant === grant ? prior : undefined;
     if (same?.outcome === "denied") return err("reauthorization_required");
+    if (same?.outcome === "rejected") return err("client_rejected");
     if (same?.outcome === "pending") return err("refresh_recovery_required");
     if (same !== undefined && same.retryAt > deps.now()) return err("refresh_busy");
     const attempt: RenewalAttempt = {
@@ -253,15 +255,15 @@ export const createKimiAuth = (deps: KimiAuthDeps): KimiAuth => {
       await lease.writeMarker(grant, "denied", 0, failures);
       return err("reauthorization_required");
     }
-    if (!response.ok) {
-      if (response.status === 429) return err("refresh_busy");
-      const clientRefused = (response.status === 401 || response.status === 403) && whole &&
-        (reply?.["error"] === "invalid_client" || reply?.["error"] === "unauthorized_client") &&
-        reply["access_token"] === undefined && reply["refresh_token"] === undefined;
-      if (!clientRefused) return err("refresh_recovery_required");
-      await backoff(attempt);
-      return err("refresh_rejected");
+    const clientRefused = (response.status === 401 || response.status === 403) && whole &&
+      (reply?.["error"] === "invalid_client" || reply?.["error"] === "unauthorized_client") &&
+      reply["access_token"] === undefined && reply["refresh_token"] === undefined;
+    // A refused client is refused again on each request, so the grant is never sent again.
+    if (clientRefused) {
+      await lease.writeMarker(grant, "rejected", 0, failures);
+      return err("client_rejected");
     }
+    if (!response.ok) return err(response.status === 429 ? "refresh_busy" : "refresh_recovery_required");
     const next = response.status === 200 && whole && reply !== undefined ? renewedRecord(current.record, reply, deps.now()) : undefined;
     if (next === undefined) return err("refresh_recovery_required");
     // replace() is false when the file changed after the last read: that record wins.

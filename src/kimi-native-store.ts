@@ -44,7 +44,8 @@ const MAX_FAILURES = 5;
 const LATEST_EXPIRY_SECONDS = 253_402_300_799;
 const TOKEN = /^[!-~]{1,8192}$/;
 const FINGERPRINT = /^[a-f0-9]{64}$/;
-const MARKER_OUTCOMES = ["prepared", "pending", "denied", "busy"] as const;
+/** A denied grant ended the sign-in. Kimi refused the Subswitch client for a rejected grant. */
+const MARKER_OUTCOMES = ["prepared", "pending", "denied", "rejected", "busy"] as const;
 
 export type MarkerOutcome = (typeof MARKER_OUTCOMES)[number];
 
