@@ -38,9 +38,9 @@ const onlyProviderIdsCanBecomeEventNames = (): void => {
   // every payload — `\r`, `=`, whitespace — not just the newline case spelled here.
   providerEvents("codex\nlevel=error event=fake");
 
-  // @ts-expect-error a plausible-looking id that is not in PROVIDER_IDS is still rejected;
-  // the union is the allow-list.
-  providerEvents("kimi");
+  // @ts-expect-error an id that is not in PROVIDER_IDS is still rejected; the union is
+  // the allow-list. The id is never a real one, so a new provider id can not disarm it.
+  providerEvents("not-a-provider");
 };
 void onlyProviderIdsCanBecomeEventNames;
 

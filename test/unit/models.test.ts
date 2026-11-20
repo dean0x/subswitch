@@ -14,12 +14,13 @@ import {
   type ModelEntry,
   type ModelResolution,
 } from "../../src/models.js";
+import { emptyAliases } from "../helpers/provider-aliases.js";
 
 describe("Together registry guards", () => {
   const vetted = { id: "fixture/vetted", provider: "together", family: "fixture-family", gen: [1] } satisfies ModelEntry;
 
   it("requires the catalog families to have one provider and no reserved names", () => {
-    const build = buildRoutingTable([...MODEL_REGISTRY, vetted], { codex: {}, together: {} });
+    const build = buildRoutingTable([...MODEL_REGISTRY, vetted], emptyAliases());
     assert.deepEqual(build.ambiguousFamilies, []);
     assert.deepEqual(build.reservedNameEntries, []);
     assert.deepEqual(build.table.byFamily.get(vetted.family), {
@@ -28,7 +29,7 @@ describe("Together registry guards", () => {
   });
 
   it("lists a vetted Together model with its provider", () => {
-    assert.deepEqual(formatModelsReport({ registry: [vetted], aliasesByProvider: { codex: {}, together: {} } }), [
+    assert.deepEqual(formatModelsReport({ registry: [vetted], aliasesByProvider: emptyAliases() }), [
       "fixture-family  →  fixture/vetted  together  gen:1  enabled  (derived)",
     ]);
   });
@@ -37,7 +38,7 @@ describe("Together registry guards", () => {
     const reserved = { ...vetted, id: "fixture/reserved", family: "sonnet" };
     const build = buildRoutingTable([
       vetted, reserved, { ...vetted, id: "fixture/codex", provider: "codex" },
-    ], { codex: {}, together: { opus: vetted.id, "fixture-pin": "claude-test" } });
+    ], { ...emptyAliases(), together: { opus: vetted.id, "fixture-pin": "claude-test" } });
     assert.deepEqual(build.ambiguousFamilies, [{ family: vetted.family, providers: ["together", "codex"] }]);
     assert.deepEqual(build.reservedNameEntries, [reserved.id]);
     assert.deepEqual(build.rejectedAliases, [
@@ -143,7 +144,7 @@ describe("isReservedAnthropicName", () => {
 
 describe("formatModelsReport", () => {
   it("returns an array of strings", () => {
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { together: {}, codex: {} } });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: emptyAliases() });
     assert.ok(Array.isArray(result));
     for (const line of result) {
       assert.equal(typeof line, "string");
@@ -151,21 +152,21 @@ describe("formatModelsReport", () => {
   });
 
   it("includes derived family alias names and canonicals in output", () => {
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { together: {}, codex: {} } });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: emptyAliases() });
     const text = result.join("\n");
     assert.ok(text.includes("sol"), "should mention 'sol' alias");
     assert.ok(text.includes("gpt-6.2-sol"), "should mention 'gpt-6.2-sol' canonical");
   });
 
   it("marks alias as 'enabled' for non-retired models", () => {
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { together: {}, codex: {} } });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: emptyAliases() });
     const solLine = result.find((l) => l.includes("sol") && l.includes("gpt-6.2-sol"));
     assert.ok(solLine !== undefined, "should have a line covering the sol alias");
     assert.ok(solLine.includes("enabled"), "sol alias should be marked enabled");
   });
 
   it("includes a provider column in every row", () => {
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { together: {}, codex: {} } });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: emptyAliases() });
     // Every row should contain "codex" since all registry entries are codex-provider.
     for (const line of result) {
       assert.ok(line.includes("codex"), `row must include provider column: ${line}`);
@@ -173,7 +174,7 @@ describe("formatModelsReport", () => {
   });
 
   it("labels derived registry aliases as '(derived)'", () => {
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { together: {}, codex: {} } });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: emptyAliases() });
     const text = result.join("\n");
     assert.ok(text.includes("(derived)"), "should label registry aliases as derived");
   });
@@ -181,7 +182,7 @@ describe("formatModelsReport", () => {
   it("labels config override aliases as '(config)' and registry aliases as '(derived)'", () => {
     const result = formatModelsReport({
       registry: MODEL_REGISTRY,
-      aliasesByProvider: { together: {}, codex: { "fast": "gpt-5.6-sol" } },
+      aliasesByProvider: { ...emptyAliases(), codex: { "fast": "gpt-5.6-sol" } },
     });
     const text = result.join("\n");
     // Should have at least one "(config)" line for the override
@@ -196,7 +197,7 @@ describe("formatModelsReport", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-9-plain", provider: "codex", gen: [9] },
     ];
-    const result = formatModelsReport({ registry: reg, aliasesByProvider: { together: {}, codex: {} } });
+    const result = formatModelsReport({ registry: reg, aliasesByProvider: emptyAliases() });
     const directLine = result.find((l) => l.includes("gpt-9-plain") && l.includes("(direct)"));
     assert.ok(directLine !== undefined, "a family-less live model must appear as a (direct) row");
     assert.ok(directLine.includes("enabled"), "the direct row must be marked enabled");
@@ -205,13 +206,13 @@ describe("formatModelsReport", () => {
   it("omits the retired gpt-5.5 from the human-readable table", () => {
     // gpt-5.5 leaves ChatGPT/Codex on 2026-10-14. It is marked retired rather than deleted,
     // so it stays routable by exact id but is no longer advertised as an option.
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { together: {}, codex: {} } });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: emptyAliases() });
     assert.equal(result.some((l) => l.includes("gpt-5.5")), false, "retired gpt-5.5 must not be listed");
   });
 
   it("does not emit a '(direct)' row for an id already covered as a canonical of an alias row", () => {
     // gpt-6.2-sol is the canonical of the 'sol' derived alias row — no double-listing.
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { together: {}, codex: {} } });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: emptyAliases() });
     const solDirectLines = result.filter((l) => l.includes("gpt-6.2-sol") && l.includes("(direct)"));
     assert.equal(solDirectLines.length, 0, "gpt-6.2-sol is already the canonical of the sol alias row — no extra (direct) row");
   });
@@ -219,7 +220,7 @@ describe("formatModelsReport", () => {
   it("keeps a superseded family member visible as a '(direct)' row", () => {
     // gpt-5.6-sol lost the 'sol' alias to gpt-6.2-sol but is still served and routable by
     // exact id, so the table must still list it — otherwise a pinned agent's model vanishes.
-    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: { together: {}, codex: {} } });
+    const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: emptyAliases() });
     const directLine = result.find((l) => l.includes("gpt-5.6-sol") && l.includes("(direct)"));
     assert.ok(directLine !== undefined, "gpt-5.6-sol must appear as a (direct) row once GPT-6 holds 'sol'");
     assert.ok(directLine.includes("enabled"), "gpt-5.6-sol direct row must be marked enabled");
@@ -230,7 +231,7 @@ describe("formatModelsReport", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-old", provider: "codex", family: "sol", gen: [5, 0], retired: true },
     ];
-    const result = formatModelsReport({ registry: reg, aliasesByProvider: { together: {}, codex: {} } });
+    const result = formatModelsReport({ registry: reg, aliasesByProvider: emptyAliases() });
     const text = result.join("\n");
     assert.ok(!text.includes("gpt-old"), "retired model must not appear in report");
   });
@@ -244,8 +245,8 @@ describe("buildAliasRows and buildModelRows — parity", () => {
   it("every non-direct AliasTableRow has a matching ModelRow alias entry (and vice versa)", () => {
     // Use a realistic scenario with both derived and config aliases.
     const overrides = { "fast": "gpt-5.6-sol" };
-    const aliasRows = buildAliasRows(MODEL_REGISTRY, { together: {}, codex: overrides });
-    const modelRows = buildModelRows(MODEL_REGISTRY, { together: {}, codex: overrides });
+    const aliasRows = buildAliasRows(MODEL_REGISTRY, { ...emptyAliases(), codex: overrides });
+    const modelRows = buildModelRows(MODEL_REGISTRY, { ...emptyAliases(), codex: overrides });
 
     // Forward check: every non-direct alias row corresponds to a ModelRow alias entry.
     // (Parity invariant applies only to aliases with registry-present targets.)
@@ -286,7 +287,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
     // A dangling alias target (e.g. future model id) is routed by the router (forward-compat)
     // so the display must agree: enabled=true, not disabled.
     const overrides = { myalias: "gpt-9.9-nonexistent" };
-    const aliasRows = buildAliasRows(MODEL_REGISTRY, { together: {}, codex: overrides });
+    const aliasRows = buildAliasRows(MODEL_REGISTRY, { ...emptyAliases(), codex: overrides });
     const danglingRow = aliasRows.find((r) => r.alias === "myalias");
     assert.ok(danglingRow !== undefined, "dangling alias must appear in AliasTableRows");
     assert.equal(danglingRow.canonical, "gpt-9.9-nonexistent");
@@ -301,7 +302,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
 
   it("dangling alias target — buildRoutingTable reports it in danglingAliases", () => {
     const overrides: Record<string, string> = { myalias: "gpt-9.9-nonexistent" };
-    const { danglingAliases } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: overrides });
+    const { danglingAliases } = buildRoutingTable(MODEL_REGISTRY, { ...emptyAliases(), codex: overrides });
     assert.equal(danglingAliases.length, 1, "dangling alias must appear in danglingAliases");
     assert.equal(danglingAliases[0]?.alias, "myalias");
     assert.equal(danglingAliases[0]?.target, "gpt-9.9-nonexistent");
@@ -312,7 +313,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
     // Rule 1 (byId) always fires first, so "gpt-5.5" routes to itself, not to "gpt-5.6-sol".
     // The alias IS in byAlias but is unreachable via resolveModel.
     const overrides: Record<string, string> = { "gpt-5.5": "gpt-5.6-sol" };
-    const { table } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: overrides });
+    const { table } = buildRoutingTable(MODEL_REGISTRY, { ...emptyAliases(), codex: overrides });
     const resolution = resolveModel(table, "gpt-5.5");
     assert.equal(resolution.kind, "resolved");
     assert.equal(
@@ -323,7 +324,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
   });
 
   it("buildModelRows sets routable=true for non-retired entries", () => {
-    const rows = buildModelRows(MODEL_REGISTRY, { together: {}, codex: {} });
+    const rows = buildModelRows(MODEL_REGISTRY, emptyAliases());
     for (const row of rows) {
       if (!row.retired) {
         assert.equal(row.routable, true, `${row.id} must be routable if not retired`);
@@ -336,7 +337,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-old", provider: "codex", gen: [5, 0], retired: true },
     ];
-    const rows = buildModelRows(reg, { together: {}, codex: {} });
+    const rows = buildModelRows(reg, emptyAliases());
     const oldRow = rows.find((r) => r.id === "gpt-old");
     assert.ok(oldRow !== undefined);
     assert.equal(oldRow.retired, true);
@@ -348,7 +349,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-preview", provider: "codex", family: "sol", gen: [5, 7], preview: true },
     ];
-    const rows = buildModelRows(reg, { together: {}, codex: {} });
+    const rows = buildModelRows(reg, emptyAliases());
     const previewRow = rows.find((r) => r.id === "gpt-preview");
     assert.ok(previewRow !== undefined);
     assert.equal(previewRow.preview, true);
@@ -359,13 +360,13 @@ describe("buildAliasRows and buildModelRows — parity", () => {
     const reg: readonly ModelEntry[] = [
       { id: "gpt-unknown-gen", provider: "codex", gen: [] },
     ];
-    const rows = buildModelRows(reg, { together: {}, codex: {} });
+    const rows = buildModelRows(reg, emptyAliases());
     const r = rows[0]!;
     assert.ok(!("gen" in r), "gen must be absent when tuple is empty");
   });
 
   it("buildModelRows omits family field when ModelEntry has no family key", () => {
-    const rows = buildModelRows(MODEL_REGISTRY, { together: {}, codex: {} });
+    const rows = buildModelRows(MODEL_REGISTRY, emptyAliases());
     // gpt-5.5 has no family
     const gpt55 = rows.find((r) => r.id === "gpt-5.5");
     assert.ok(gpt55 !== undefined);
@@ -373,7 +374,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
   });
 
   it("buildModelRows includes provider field for all entries", () => {
-    const rows = buildModelRows(MODEL_REGISTRY, { together: {}, codex: {} });
+    const rows = buildModelRows(MODEL_REGISTRY, emptyAliases());
     for (const row of rows) {
       assert.equal(row.provider, "codex");
       assert.equal(row.source, "registry");
@@ -393,7 +394,7 @@ describe("Preview exclusion from family alias derivation", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-5.7-sol-preview", provider: "codex", family: "sol", gen: [5, 7], preview: true },
     ];
-    const { table } = buildRoutingTable(reg, { together: {}, codex: {} });
+    const { table } = buildRoutingTable(reg, emptyAliases());
 
     // Bare 'sol' must resolve to the older non-preview model
     const bare = resolveModel(table, "sol");
@@ -420,7 +421,7 @@ describe("Preview exclusion from family alias derivation", () => {
       { id: "gpt-5.6-sol", provider: "codex", family: "sol", gen: [5, 6] },
       { id: "gpt-5.7-sol-preview", provider: "codex", family: "sol", gen: [5, 7], preview: true },
     ];
-    const { table } = buildRoutingTable(reg, { together: {}, codex: {} });
+    const { table } = buildRoutingTable(reg, emptyAliases());
     const resolution = resolveModel(table, "sol");
     assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.id, "gpt-5.6-sol");
   });
@@ -467,7 +468,7 @@ describe("buildRoutingTable — reasoningEfforts self-check", () => {
     const reg: readonly ModelEntry[] = [
       { id: "gpt-9-typo", provider: "codex", family: "typo", gen: [9], reasoningEfforts: ["xhig"] },
     ];
-    const build = buildRoutingTable(reg, { together: {}, codex: {} });
+    const build = buildRoutingTable(reg, emptyAliases());
     assert.deepEqual(build.unknownReasoningEfforts, [{ id: "gpt-9-typo", efforts: ["xhig"] }]);
     // TOTAL: a typo is reported as data, never thrown, and the entry still routes.
     assert.equal(build.table.byId.get("gpt-9-typo"), "codex");
@@ -477,7 +478,7 @@ describe("buildRoutingTable — reasoningEfforts self-check", () => {
     const reg: readonly ModelEntry[] = [
       { id: "gpt-9-mixed", provider: "codex", gen: [9], reasoningEfforts: ["low", "xhig", "maxx"] },
     ];
-    assert.deepEqual(buildRoutingTable(reg, { together: {}, codex: {} }).unknownReasoningEfforts, [
+    assert.deepEqual(buildRoutingTable(reg, emptyAliases()).unknownReasoningEfforts, [
       { id: "gpt-9-mixed", efforts: ["xhig", "maxx"] },
     ]);
   });
@@ -487,11 +488,11 @@ describe("buildRoutingTable — reasoningEfforts self-check", () => {
       { id: "gpt-9-narrow", provider: "codex", gen: [9], reasoningEfforts: ["low", "high"] },
       { id: "gpt-9-plain", provider: "codex", gen: [9] },
     ];
-    assert.deepEqual(buildRoutingTable(reg, { together: {}, codex: {} }).unknownReasoningEfforts, []);
+    assert.deepEqual(buildRoutingTable(reg, emptyAliases()).unknownReasoningEfforts, []);
   });
 
   it("reports nothing for the live registry", () => {
-    assert.deepEqual(buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: {} }).unknownReasoningEfforts, []);
+    assert.deepEqual(buildRoutingTable(MODEL_REGISTRY, emptyAliases()).unknownReasoningEfforts, []);
   });
 });
 
@@ -504,7 +505,7 @@ describe("buildRoutingTable — reasoningEfforts self-check", () => {
 // ---------------------------------------------------------------------------
 
 describe("canary — current generation resolution via routing table (update when registry bumps)", () => {
-  const { table } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: {} });
+  const { table } = buildRoutingTable(MODEL_REGISTRY, emptyAliases());
 
   const resolvedId = (name: string): string | undefined => {
     const resolution = resolveModel(table, name);
@@ -532,7 +533,7 @@ describe("canary — current generation resolution via routing table (update whe
   });
 
   it("lets a Sol config override pin GPT-6 while Sol 6.1 stays directly routable", () => {
-    const { table: pinned } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: { sol: "gpt-6-sol" } });
+    const { table: pinned } = buildRoutingTable(MODEL_REGISTRY, { ...emptyAliases(), codex: { sol: "gpt-6-sol" } });
     for (const [name, id] of [["sol", "gpt-6-sol"], ["gpt-6.1-sol", "gpt-6.1-sol"]] as const) {
       const resolution = resolveModel(pinned, name);
       assert.equal(resolution.kind, "resolved");
@@ -548,7 +549,7 @@ describe("canary — current generation resolution via routing table (update whe
   });
 
   it("gpt-5.5 is marked retired and not routable in the model rows", () => {
-    const row = buildModelRows(MODEL_REGISTRY, { together: {}, codex: {} }).find((r) => r.id === "gpt-5.5");
+    const row = buildModelRows(MODEL_REGISTRY, emptyAliases()).find((r) => r.id === "gpt-5.5");
     assert.ok(row !== undefined, "gpt-5.5 must stay in the registry — never delete, mark retired");
     assert.equal(row.retired, true);
     assert.equal(row.routable, false);
@@ -556,7 +557,7 @@ describe("canary — current generation resolution via routing table (update whe
   });
 
   it("every live gpt-5.6 entry stays routable (only gpt-5.5 is retired)", () => {
-    const rows = buildModelRows(MODEL_REGISTRY, { together: {}, codex: {} });
+    const rows = buildModelRows(MODEL_REGISTRY, emptyAliases());
     for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
       assert.equal(rows.find((r) => r.id === id)?.routable, true, `${id} must remain routable`);
     }

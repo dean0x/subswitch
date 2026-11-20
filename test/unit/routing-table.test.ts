@@ -18,6 +18,7 @@ import {
   type ProviderId,
   type ModelResolution,
 } from "../../src/models.js";
+import { emptyAliases } from "../helpers/provider-aliases.js";
 
 // ---------------------------------------------------------------------------
 // Synthetic-registry helpers
@@ -39,8 +40,9 @@ const entry = (
 
 /**
  * SYNTHETIC-PROVIDER CAST — used ONLY for multi-provider collision tests.
- * Remove this helper and all callers when a second real provider lands and
- * PROVIDER_IDS expands beyond ["codex"]. The single cast is here; nowhere else.
+ * The second provider in these tests is "not-a-provider", an id that is never real,
+ * so a new provider id can not change what these tests prove. The single cast is
+ * here; nowhere else.
  */
 const foreignEntry = (
   id: string,
@@ -54,13 +56,13 @@ const foreignEntry = (
 });
 
 /** A no-aliases record for every provider. Many tests share it, so its type is readonly. */
-const NO_ALIASES: AliasesByProvider = { together: {}, codex: {} };
+const NO_ALIASES: AliasesByProvider = emptyAliases();
 
 /** Shorthand: build a table with just codex aliases. */
 const buildTable = (
   registry: readonly ModelEntry[],
   codexAliases: Readonly<Record<string, string>> = {},
-) => buildRoutingTable(registry, { together: {}, codex: codexAliases });
+) => buildRoutingTable(registry, { ...emptyAliases(), codex: codexAliases });
 
 // ---------------------------------------------------------------------------
 // F2 — family alias resolves to newest non-preview, non-retired member
@@ -621,7 +623,7 @@ describe("Contested family — qualified resolution (P0-1)", () => {
   it("codex:pro resolves to codex's pro-family winner even when 'pro' is contested", () => {
     const reg: readonly ModelEntry[] = [
       entry("gpt-pro-1", { family: "pro", gen: [5, 6] }),
-      foreignEntry("kimi-pro-1", "kimi", { family: "pro", gen: [5, 6] }),
+      foreignEntry("other-pro-1", "not-a-provider", { family: "pro", gen: [5, 6] }),
     ];
     const aliasesByProvider = NO_ALIASES;
     const { table } = buildRoutingTable(reg, aliasesByProvider);
@@ -637,25 +639,32 @@ describe("Contested family — qualified resolution (P0-1)", () => {
     assert.equal((codexQualified as Extract<ModelResolution, { kind: "resolved" }>).target.provider, "codex" as ProviderId);
   });
 
-  it("kimi:pro returns unknown_qualifier — 'kimi' is in byQualified but NOT in PROVIDER_IDS", () => {
-    // byQualified is populated for ALL provider:family entries (including kimi:pro from the
-    // synthetic registry), but resolveModel only checks byQualified when the qualifier prefix
-    // is a member of PROVIDER_IDS. Since "kimi" is not in PROVIDER_IDS,
-    // resolveModel returns unknown_qualifier before reaching the byQualified lookup.
+  it("not-a-provider:pro returns unknown_qualifier — 'not-a-provider' is in byQualified but NOT in PROVIDER_IDS", () => {
+    // byQualified is populated for ALL provider:family entries (including not-a-provider:pro
+    // from the synthetic registry), but resolveModel only checks byQualified when the
+    // qualifier prefix is a member of PROVIDER_IDS. "not-a-provider" is never a real id,
+    // so resolveModel returns unknown_qualifier before it reaches the byQualified lookup.
     //
     // The remediation advice in 400 responses only mentions REGISTERED provider qualifiers
     // — the fix for P0-1 benefits "codex:pro" (registered), not hypothetical unregistered ones.
     const reg: readonly ModelEntry[] = [
       entry("gpt-pro-1", { family: "pro", gen: [5, 6] }),
-      foreignEntry("kimi-pro-1", "kimi", { family: "pro", gen: [5, 6] }),
+      foreignEntry("other-pro-1", "not-a-provider", { family: "pro", gen: [5, 6] }),
     ];
     const aliasesByProvider = NO_ALIASES;
     const { table } = buildRoutingTable(reg, aliasesByProvider);
 
-    const kimiQualified = resolveModel(table, "kimi:pro");
-    // kimi is not in PROVIDER_IDS → unknown_qualifier (not resolved, not unresolved).
-    assert.equal(kimiQualified.kind, "unknown_qualifier", "kimi:pro returns unknown_qualifier because kimi is not in PROVIDER_IDS");
-    assert.equal((kimiQualified as Extract<ModelResolution, { kind: "unknown_qualifier" }>).qualifier, "kimi");
+    const unregisteredQualified = resolveModel(table, "not-a-provider:pro");
+    // not-a-provider is not in PROVIDER_IDS → unknown_qualifier (not resolved, not unresolved).
+    assert.equal(
+      unregisteredQualified.kind,
+      "unknown_qualifier",
+      "not-a-provider:pro returns unknown_qualifier because not-a-provider is not in PROVIDER_IDS",
+    );
+    assert.equal(
+      (unregisteredQualified as Extract<ModelResolution, { kind: "unknown_qualifier" }>).qualifier,
+      "not-a-provider",
+    );
   });
 
   it("qualified resolve picks the per-provider family winner (newest non-preview non-retired)", () => {
@@ -663,7 +672,7 @@ describe("Contested family — qualified resolution (P0-1)", () => {
       entry("gpt-pro-1.0", { family: "pro", gen: [5, 4] }),
       entry("gpt-pro-1.1", { family: "pro", gen: [5, 6] }), // newest active for codex
       entry("gpt-pro-preview", { family: "pro", gen: [5, 7], preview: true }), // preview: excluded
-      foreignEntry("kimi-pro-1", "kimi", { family: "pro", gen: [6, 0] }),
+      foreignEntry("other-pro-1", "not-a-provider", { family: "pro", gen: [6, 0] }),
     ];
     const aliasesByProvider = NO_ALIASES;
     const { table } = buildRoutingTable(reg, aliasesByProvider);
@@ -683,7 +692,7 @@ describe("Contested family — qualified resolution (P0-1)", () => {
     // If 'sol' were contested between two providers, 'codex:sol' must resolve — not dead-end.
     const reg: readonly ModelEntry[] = [
       entry("gpt-5.6-sol", { family: "sol", gen: [5, 6] }),
-      foreignEntry("kimi-sol-1", "kimi", { family: "sol", gen: [5, 6] }),
+      foreignEntry("other-sol-1", "not-a-provider", { family: "sol", gen: [5, 6] }),
     ];
     const aliasesByProvider = NO_ALIASES;
     const { table } = buildRoutingTable(reg, aliasesByProvider);
@@ -873,6 +882,18 @@ describe("PROVIDER_IDS coverage sanity", () => {
       "codex must be in PROVIDER_IDS",
     );
   });
+
+  it("PROVIDER_IDS keeps codex first, so a new provider id goes after it", () => {
+    assert.equal(PROVIDER_IDS[0], "codex", "codex must stay the first entry in PROVIDER_IDS");
+  });
+
+  it("emptyAliases has an empty alias record for each provider id and no other key", () => {
+    const aliases = emptyAliases();
+    assert.deepEqual(Object.keys(aliases).sort(), [...PROVIDER_IDS].sort(), "one key for each provider id");
+    for (const id of PROVIDER_IDS) {
+      assert.deepEqual(aliases[id], {}, `the ${id} alias record must be empty`);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -968,7 +989,7 @@ describe("D-T1 — the router and the display never disagree about a family", ()
     // Two providers so contested families actually occur — under a single
     // provider this property is trivially true and proves nothing.
     const families = ["sol", "terra", "luna", "nova"];
-    const providers = ["codex", "kimi"];
+    const providers = ["codex", "not-a-provider"];
     const rand = mulberry32(0x5eed);
     const ITERATIONS = 200; // explicit bound
 
@@ -1012,7 +1033,7 @@ describe("D-T1 — the router and the display never disagree about a family", ()
     // claiming one provider owns it, but the models themselves are still listed.
     const reg = [
       entry("codex-pro", { family: "pro", gen: [5, 6] }),
-      foreignEntry("kimi-pro", "kimi", { family: "pro", gen: [5, 6] }),
+      foreignEntry("other-pro", "not-a-provider", { family: "pro", gen: [5, 6] }),
     ];
     const resolution = resolveModel(buildTable(reg).table, "pro");
     assert.equal(resolution.kind, "ambiguous", "two providers claiming 'pro' must be ambiguous");
@@ -1021,7 +1042,7 @@ describe("D-T1 — the router and the display never disagree about a family", ()
     assert.equal(rows.filter((r) => r.alias === "pro").length, 0, "a contested family must not produce an alias row");
     assert.deepEqual(
       rows.filter((r) => r.source === "direct").map((r) => r.canonical).sort(),
-      ["codex-pro", "kimi-pro"],
+      ["codex-pro", "other-pro"],
       "both contested members must still appear as direct rows",
     );
   });
@@ -1042,10 +1063,10 @@ describe("D-T4 — an alias row's provider comes from the target when known, els
     // second provider ships, not as coverage.
     //
     // The rule is still the right one — an out-of-tree probe with PROVIDER_IDS patched
-    // to ["codex","kimi"] shows the old code attributing a kimi-declared alias to codex.
+    // to add a second id shows the old code attributing that provider's declared alias to codex.
     // When a second id lands, promote that probe here as D-T4c and this becomes
     // discriminating for free. D-T4b below covers the half that IS testable today.
-    const rows = buildAliasRows(MODEL_REGISTRY, { together: {}, codex: { myalias: "gpt-9.9-nonexistent" } });
+    const rows = buildAliasRows(MODEL_REGISTRY, { ...emptyAliases(), codex: { myalias: "gpt-9.9-nonexistent" } });
     const dangling = rows.find((r) => r.alias === "myalias");
     assert.ok(dangling !== undefined, "dangling alias must appear as a row");
     assert.equal(dangling.provider, "codex", "a dangling target belongs to the provider that declared the alias");
@@ -1055,15 +1076,15 @@ describe("D-T4 — an alias row's provider comes from the target when known, els
     // The discriminating half that is testable while PROVIDER_IDS is ["codex"]:
     // the target's own provider must win over the declaring provider, matching
     // the router's `byId.get(target) ?? provider`.
-    const reg = [foreignEntry("kimi-k2", "kimi", { gen: [2, 0] })];
-    const rows = buildAliasRows(reg, { together: {}, codex: { k2: "kimi-k2" } });
+    const reg = [foreignEntry("other-k2", "not-a-provider", { gen: [2, 0] })];
+    const rows = buildAliasRows(reg, { ...emptyAliases(), codex: { k2: "other-k2" } });
     const aliasRow = rows.find((r) => r.alias === "k2");
     assert.ok(aliasRow !== undefined, "alias row must exist");
-    assert.equal(aliasRow.provider, "kimi", "the target's provider must win over the declaring provider");
+    assert.equal(aliasRow.provider, "not-a-provider", "the target's provider must win over the declaring provider");
 
     // The router agrees — same rule, same answer.
-    const resolution = resolveModel(buildRoutingTable(reg, { together: {}, codex: { k2: "kimi-k2" } }).table, "k2");
+    const resolution = resolveModel(buildRoutingTable(reg, { ...emptyAliases(), codex: { k2: "other-k2" } }).table, "k2");
     assert.equal(resolution.kind, "resolved");
-    assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.provider, "kimi");
+    assert.equal((resolution as Extract<ModelResolution, { kind: "resolved" }>).target.provider, "not-a-provider");
   });
 });
