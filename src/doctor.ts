@@ -13,6 +13,7 @@ import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, ty
 import { err, ok, type Result } from "./result.js";
 import { createTogetherKeyReader, togetherKeyHintFor, type TogetherKeyReaderDeps } from "./together-auth.js";
 import { checkAgentModels } from "./agent-scan.js";
+import { redactCredentials } from "./errors.js";
 
 // ---------------------------------------------------------------------------
 // Per-provider auth inspection: neutral row types
@@ -454,7 +455,7 @@ export const runDoctor = async (
   for (const [i, id] of PROVIDER_IDS.entries()) {
     const result = providerResults[i];
     if (result === undefined) continue;
-    for (const line of result.lines) io.write(line);
+    for (const line of result.lines) io.write(redactCredentials(line));
     if (result.failed) failures++;
     if (result.credentialUsable) providersWithCredentials.add(id);
   }

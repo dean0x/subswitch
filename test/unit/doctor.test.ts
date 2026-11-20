@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import {
   probeSubswitch,
   probeTlsReachable,
@@ -14,7 +15,8 @@ import {
   type TlsStatus,
   type DoctorIO,
 } from "../../src/doctor.js";
-import { ok } from "../../src/result.js";
+import { err, ok } from "../../src/result.js";
+import { registerExactCredential } from "../../src/errors.js";
 import { loadConfig, type Config } from "../../src/config.js";
 import { PROVIDER_IDS, type ProviderId, type RoutingTable } from "../../src/models.js";
 import { checkAgentModels } from "../../src/agent-scan.js";
@@ -575,6 +577,40 @@ describe("doctor auth inspector dispatch", () => {
     ]);
     assert.match(lines[start + 4] ?? "", /^ {2}together auth:/, "the Codex rows end after the renewal lines");
     assert.equal(exitCode, 0);
+  });
+
+  const fakeJwt = `eyJfixture.${randomUUID()}.fakesignature`;
+
+  it("scrubs the label and value of a neutral auth field", async (t) => {
+    const fakeExact = `FAKE-TOGETHER-KEY-${randomUUID()}`;
+    assert.equal(registerExactCredential("together", fakeExact), true);
+    t.mock.method(PROVIDER_AUTH_INSPECTORS, "codex", async (): Promise<DoctorAuthInspection> => ({
+      ...neutralInspection,
+      result: ok({
+        identity: [{ label: `fixture account ${fakeJwt}:`, value: fakeExact, pass: true }],
+        expiresAt: undefined,
+        renewal: [],
+      }),
+    }));
+    const lines: string[] = [];
+    const exitCode = await runDoctor(defaultConfig(), "fixture", true, allPassIO(lines));
+    const line = lines.find((text) => text.startsWith("  fixture account ")) ?? "";
+    assert.equal(line.includes(fakeJwt) || line.includes(fakeExact), false, "Doctor must scrub both auth field parts");
+    assert.match(line, /^ {2}fixture account <redacted-jwt>:\s*<redacted>$/);
+    assert.equal(exitCode, 0);
+  });
+
+  it("scrubs the invalid auth message and keeps exit code 1", async (t) => {
+    t.mock.method(PROVIDER_AUTH_INSPECTORS, "codex", async (): Promise<DoctorAuthInspection> => ({
+      ...neutralInspection,
+      result: err({ kind: "invalid", message: `fixture error for ${fakeJwt}` }),
+    }));
+    const lines: string[] = [];
+    const exitCode = await runDoctor(defaultConfig(), "fixture", true, allPassIO(lines));
+    const line = lines.find((text) => text.startsWith("  codex auth:")) ?? "";
+    assert.equal(line.includes(fakeJwt), false, "Doctor must scrub the invalid auth message");
+    assert.match(line, /^ {2}codex auth:\s+INVALID \(fixture error for <redacted-jwt>\)$/);
+    assert.equal(exitCode, 1);
   });
 });
 
