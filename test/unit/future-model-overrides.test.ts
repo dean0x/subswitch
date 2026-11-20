@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../../src/config.js";
-import { buildDeps } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { runDoctor, type DoctorIO } from "../../src/doctor.js";
 import { noopLogger } from "../../src/logger.js";
 import { MODEL_REGISTRY, buildRoutingTable, resolveModel } from "../../src/models.js";
@@ -58,7 +58,7 @@ describe("explicit future Codex model overrides", () => {
     it(`loads and selects the explicitly configured future target for ${requested}`, t => {
       const { config } = fixture(t);
       assert.equal(config.providers.codex.aliases.sol, future);
-      const deps = buildDeps(config, noopLogger);
+      const deps = buildTestDeps(config, noopLogger);
       assert.ok(deps.ok);
       try {
         assert.deepEqual(deps.value.resolve(requested), { kind: "resolved", target: { id: future, provider: "codex" } });

@@ -24,7 +24,8 @@ import {
   makeAccessToken,
 } from "./fake-upstreams.js";
 import { loadConfig } from "../../src/config.js";
-import { buildDeps, createProxyServer } from "../../src/server.js";
+import { createProxyServer } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import type { ModelResolution } from "../../src/models.js";
 
 // ---------------------------------------------------------------------------
@@ -426,7 +427,7 @@ describe("routing — table built once via ownKeys trap (P2)", () => {
       ...config,
       providers: { ...config.providers, codex: { ...config.providers.codex, aliases: aliasesProxy } },
     };
-    const depsResult = buildDeps(modifiedConfig);
+    const depsResult = buildTestDeps(modifiedConfig);
     assert.ok(depsResult.ok, `buildDeps must succeed for default config: ${!depsResult.ok ? depsResult.error : ""}`);
     const deps = depsResult.value;
     const server = createProxyServer(deps);

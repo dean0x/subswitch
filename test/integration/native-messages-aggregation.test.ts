@@ -7,7 +7,8 @@ import { describe, it } from "node:test";
 import { loadConfig } from "../../src/config.js";
 import { noopLogger } from "../../src/logger.js";
 import type { Item } from "../../src/routing/routing-types.js";
-import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
+import { createProxyServer, listenServer } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { invalidSignedCases, invalidSignedEvents, messageFrames, nativeContent, nativeEvents } from "../fixtures/native-messages.js";
 import { nativeCredential } from "../fixtures/native-profile.js";
 
@@ -37,7 +38,7 @@ async function fixture(
   assert.ok(loaded.ok);
   const requests: Item[] = [];
   const upstreams: string[] = [];
-  const deps = buildDeps(loaded.value.config, noopLogger, { fetchImpl: async (url, init) => {
+  const deps = buildTestDeps(loaded.value.config, noopLogger, { fetchImpl: async (url, init) => {
     assert.ok(["https://api.anthropic.com/v1/messages",
       ...(destination === "anthropic" ? [] : [`${origin}/native/v1/messages`, `${origin}/other/v1/messages`])].includes(String(url)),
       "unexpected upstream blocked before any socket");

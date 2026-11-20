@@ -7,10 +7,10 @@ import { describe, it, mock } from "node:test";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadConfig } from "../../src/config.js";
 import {
-  buildDeps,
   createProxyServer,
   listenServer,
 } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { CodexGateway } from "../../src/codex-gateway.js";
 import { noopLogger } from "../../src/logger.js";
 import type {
@@ -152,7 +152,7 @@ async function fixture(
       }),
   });
   if (!loaded.ok) throw new Error(loaded.error.message);
-  const built = buildDeps(
+  const built = buildTestDeps(
     loaded.value.config,
     noopLogger,
     options.routed

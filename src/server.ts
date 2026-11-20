@@ -95,7 +95,8 @@ const createCodexProvider = (config: Config, logger: Logger, auth: ProviderAuth<
 /**
  * The deps of each provider that read a credential store, run a program or read the
  * environment. Every provider id needs an entry, so a new provider must state its deps.
- * Codex has none: its store reads the authFile path from the configuration.
+ * The integration test harness uses absent auth files for Codex and Claude by default.
+ * The default test fake refuses Together store calls.
  */
 export interface ProviderDepsById {
   readonly codex: undefined;

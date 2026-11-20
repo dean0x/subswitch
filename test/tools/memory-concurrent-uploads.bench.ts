@@ -96,7 +96,8 @@ import type { AddressInfo } from "node:net";
 import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { type Result, ok, err } from "../../src/result.js";
-import { createProxyServer, listenServer, buildDeps } from "../../src/server.js";
+import { createProxyServer, listenServer } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { loadConfig } from "../../src/config.js";
 
 const MIB = 1024 * 1024;
@@ -260,7 +261,7 @@ const runProxyChild = async (): Promise<void> => {
   }
   const { config } = configResult.value;
 
-  const depsResult = buildDeps(config);
+  const depsResult = buildTestDeps(config);
   if (!depsResult.ok) {
     fatal(`buildDeps failed: ${depsResult.error}`);
     return;

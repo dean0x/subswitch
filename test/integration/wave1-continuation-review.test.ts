@@ -6,10 +6,10 @@ import { createHash } from "node:crypto";
 import { WebSocket } from "ws";
 import { loadConfig } from "../../src/config.js";
 import {
-  buildDeps,
   createProxyServer,
   listenServer,
 } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { noopLogger } from "../../src/logger.js";
 import { SharedRouting } from "../../src/routing/shared-routing.js";
 import { RoutingError, type Item } from "../../src/routing/routing-types.js";
@@ -126,7 +126,7 @@ describe("reviewed local continuation isolation", () => {
   });
   it("continues bare single-target HTTP history using the returned actual model and a model-less follow-up", async () => {
     const requests: Item[] = [];
-    const deps = buildDeps(config(), noopLogger, {
+    const deps = buildTestDeps(config(), noopLogger, {
       fetchImpl: async (_url, init) => {
         requests.push(JSON.parse(String(init?.body)));
         return response();
@@ -171,7 +171,7 @@ describe("reviewed local continuation isolation", () => {
 
   it("continues bare WebSocket responses without native authentication or action scope", async () => {
     const requests: Item[] = [];
-    const deps = buildDeps(config(), noopLogger, {
+    const deps = buildTestDeps(config(), noopLogger, {
       fetchImpl: async (_url, init) => {
         requests.push(JSON.parse(String(init?.body)));
         return response();
