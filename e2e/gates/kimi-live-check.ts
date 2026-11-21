@@ -31,12 +31,10 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
-import { copyFile, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, normalize } from "node:path";
-import { createInterface } from "node:readline";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AnthropicForwarder, ForwardedBody } from "../../src/anthropic-passthrough.js";
@@ -53,6 +51,10 @@ import { actionControlPath, publishActionControl } from "../../src/routing/actio
 import { buildDeps, createProxyServer, listenServer, liveKimiStoreDeps, type ServerDeps } from "../../src/server.js";
 import type { TogetherKeyReaderDeps } from "../../src/together-auth.js";
 import { closeWithCompletion, nativeProcess } from "./native-process.js";
+import { actionsDirectory, askLine, confirmLive, dryConfigEnv, freePort, parseArguments, prepareClientFolder, privateFolder,
+  type GateIO, type LiveArguments, type Mode } from "./live-check-common.js";
+
+export { parseArguments, type GateCode, type GateIO, type LiveArguments, type Mode } from "./live-check-common.js";
 
 // The owner-approved caps of one run.
 export const MAX_KIMI_ATTEMPTS = 18;
@@ -80,11 +82,7 @@ const CANCEL_WAIT_MS = 5_000;
 const HELD_STREAM_MS = 10_000;
 const ATTACH_TIMEOUT_MS = 90_000;
 const LIVE_SESSION_MS = 15 * 60_000;
-const PHRASE_WAIT_MS = 120_000;
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-
-export type Mode = "dry-run" | "live";
-export interface LiveArguments { readonly mode: Mode; readonly evidenceRoot: string }
 
 const cooldownFor = (mode: Mode): number => mode === "live" ? COOLDOWN_MS : 0;
 
@@ -114,40 +112,7 @@ type Phase = "probe" | "session";
 // Arguments and the live gate
 // ---------------------------------------------------------------------------
 
-const PRIVATE_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".kimi-code", ".kimi", ".ssh", ".gnupg"]);
-const plainAbsolute = (path: string): boolean => isAbsolute(path) && normalize(path) === path &&
-  !/[\x00-\x1f\x7f]/.test(path) && !path.split("/").some((part) => PRIVATE_SEGMENTS.has(part));
-const MODE_FLAGS: ReadonlyMap<string, Mode> = new Map([["--dry-run", "dry-run"], ["--live", "live"]]);
-
-/** Exactly one mode flag and `--evidence-root <absolute folder>`. Nothing is read here. */
-export function parseArguments(args: readonly string[]): LiveArguments | undefined {
-  if (args.length !== 3) return undefined;
-  const at = args.indexOf("--evidence-root");
-  const evidenceRoot = at < 0 ? undefined : args[at + 1];
-  const flags = args.filter((_, index) => index !== at && index !== at + 1);
-  const mode = flags.length === 1 ? MODE_FLAGS.get(flags[0] ?? "") : undefined;
-  if (mode === undefined || evidenceRoot === undefined || evidenceRoot.startsWith("--") || !plainAbsolute(evidenceRoot)) return undefined;
-  return { mode, evidenceRoot };
-}
-
-export type GateCode = "ci" | "no_tty" | "phrase_mismatch";
-export interface GateIO {
-  readonly env: Readonly<Record<string, string | undefined>>;
-  readonly stdinIsTTY: boolean;
-  readonly stdoutIsTTY: boolean;
-  /** Show the prompt and return one typed line, or undefined when no line comes. */
-  ask(prompt: string): Promise<string | undefined>;
-}
-
-const CI_VARIABLES = ["CI", "GITHUB_ACTIONS"] as const;
-
-/** The live gate: no CI, a TTY on stdin and stdout, and the typed phrase that names the caps. */
-export async function liveGate(io: GateIO): Promise<Result<void, GateCode>> {
-  if (CI_VARIABLES.some((name) => name in io.env)) return err("ci");
-  if (!io.stdinIsTTY || !io.stdoutIsTTY) return err("no_tty");
-  const answer = await io.ask(`Type this line to start the live check with its caps:\n  ${LIVE_PHRASE}\n> `);
-  return answer?.trim() === LIVE_PHRASE ? ok(undefined) : err("phrase_mismatch");
-}
+export const liveGate = (io: GateIO) => confirmLive(LIVE_PHRASE, io);
 
 export interface MainIO extends GateIO {
   out(line: string): void;
@@ -446,16 +411,6 @@ const shellWord = (word: string): string => /^[\w@%+=:,./-]+$/.test(word) ? word
 const renderCommand = (folder: string, argv: readonly string[]): string =>
   `(cd ${shellWord(folder)} && ${[...Object.entries(CLIENT_ENV).map(([name, value]) => `${name}=${value}`), ...argv.map(shellWord)].join(" ")})`;
 
-const prepareClientFolder = async (scratch: string): Promise<Result<string, FailureCode>> => {
-  try {
-    const folder = await mkdtemp(join(scratch, "client-"));
-    await copyFile(join(REPO_ROOT, "package.json"), join(folder, "package.json"));
-    return ok(folder);
-  } catch {
-    return err("client_folder_failed");
-  }
-};
-
 // ---------------------------------------------------------------------------
 // Sites: the live home, or a fabricated one with fake upstreams
 // ---------------------------------------------------------------------------
@@ -537,15 +492,6 @@ const fakeClaudeForwarder: AnthropicForwarder = (_req, res) => respondJson(res, 
   stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 9, output_tokens: 1 },
 }));
 
-const freePort = (): Promise<number> => new Promise((resolve, reject) => {
-  const probe = createServer();
-  probe.once("error", reject);
-  probe.listen(0, "127.0.0.1", () => {
-    const address = probe.address();
-    probe.close(() => (typeof address === "object" && address !== null ? resolve(address.port) : reject(new Error("no_port"))));
-  });
-});
-
 /** Run the dry-run command: `run-action` attaches to the check proxy and starts the fake client. */
 const runAttach = async (folder: string, env: Readonly<Record<string, string>>, signal: AbortSignal, out: (line: string) => void): Promise<boolean> => {
   const result = await nativeProcess(process.execPath, DRY_RUN_COMMAND.slice(1),
@@ -564,11 +510,7 @@ async function openDrySite(scratch: string): Promise<Site> {
   await writeFile(kimiAuthFile, JSON.stringify({ access_token: fabricated("access"), refresh_token: fabricated("refresh"),
     expires_at: Math.floor(Date.now() / 1000) + 240, scope: "kimi-code", token_type: "Bearer", expires_in: 3600 }),
   { mode: 0o600, flag: "wx" });
-  const configFolder = join(home, ".config", "subswitch");
-  await mkdir(configFolder, { recursive: true, mode: 0o700 });
-  await writeFile(join(configFolder, "config.json"), JSON.stringify({ port: await freePort() }), { mode: 0o600, flag: "wx" });
-  const env = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: home, XDG_CONFIG_HOME: join(home, ".config"),
-    XDG_CACHE_HOME: join(home, ".cache"), TMPDIR: temp, LANG: "C" };
+  const env = await dryConfigEnv(scratch, home, temp, await freePort());
   return { mode: "dry-run", home, env, kimiAuthFile, scratch, renewalExpected: true, kimiTransport: fakeKimiTransport,
     claudeForwarder: fakeClaudeForwarder, sessionTimeoutMs: ATTACH_TIMEOUT_MS + 10_000,
     attach: (folder, signal, out) => runAttach(folder, env, signal, out) };
@@ -581,8 +523,6 @@ function openLiveSite(scratch: string): Site {
     attach: async () => true };
 }
 
-const actionsDirectory = (home: string): string => join(home, ".cache", "subswitch", "actions");
-
 // ---------------------------------------------------------------------------
 // Preflight
 // ---------------------------------------------------------------------------
@@ -591,17 +531,6 @@ interface Start { readonly port: number; readonly evidenceDir: string; readonly 
 
 const sameRealPath = async (left: string, right: string): Promise<boolean> => {
   try { return await realpath(left) === await realpath(right); } catch { return false; }
-};
-
-/** A real folder of this user that only this user can write. */
-const privateFolder = async (path: string): Promise<boolean> => {
-  try {
-    if (await realpath(path) !== path) return false;
-    const stat = await lstat(path);
-    return stat.isDirectory() && (stat.mode & 0o022) === 0 && (typeof process.getuid !== "function" || stat.uid === process.getuid());
-  } catch {
-    return false;
-  }
 };
 
 async function preflight(args: LiveArguments, site: Site, startedAt: string): Promise<Result<Start, FailureCode>> {
@@ -838,7 +767,7 @@ async function exercise(site: Site, start: Start, ledger: CapLedger, out: (line:
               .catch(() => { ledger.fail("control_failed"); return undefined; });
           }
           if (ledger.failure === undefined) {
-            const folder = await prepareClientFolder(site.scratch);
+            const folder = await prepareClientFolder(site.scratch, REPO_ROOT);
             if (!folder.ok) ledger.fail(folder.error);
             else if (ledger.failure === undefined) {
               out(`Client folder: ${folder.value}`);
@@ -1006,23 +935,6 @@ export async function runCheck(args: LiveArguments, out: (line: string) => void)
   out(JSON.stringify({ success: evidence.success && written, failure: evidence.failure, evidence: start.evidenceDir }));
   return evidence.success && written;
 }
-
-/** One line from the terminal, or undefined when none comes within the wait. */
-const askLine = (prompt: string): Promise<string | undefined> => new Promise((resolve) => {
-  const terminal = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-  let answered = false;
-  const timer = setTimeout(() => terminal.close(), PHRASE_WAIT_MS);
-  terminal.question(prompt, (answer) => {
-    answered = true;
-    clearTimeout(timer);
-    terminal.close();
-    resolve(answer.slice(0, 512));
-  });
-  terminal.once("close", () => {
-    clearTimeout(timer);
-    if (!answered) resolve(undefined);
-  });
-});
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.exitCode = await main(process.argv.slice(2), {

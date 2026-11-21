@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, realpathSync, renameSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync, renameSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -68,7 +68,11 @@ const readReport = async (root: string): Promise<Record<string, unknown>> => {
 
 it("runs the dry check with only loopback traffic and writes evidence of Kimi use", async (t) => {
   const root = await evidenceRoot(t);
-  const { code, evidence, lines } = await runDry(t, root);
+  const { code, evidence, lines } = await runDry(t, root, (folder) => {
+    const scratch = join(folder, "..");
+    assert.throws(() => lstatSync(join(scratch, "home", ".config", "subswitch", "config.json")), { code: "ENOENT" },
+      "TP-47: the dry run must attach without a user config");
+  });
   assert.equal(code, 0, lines.at(-1));
   const report = await readReport(evidence);
   assert.equal(report["success"], true);
