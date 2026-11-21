@@ -7,7 +7,8 @@ import type { LogLevel } from "../../src/logger.js";
 import { createAnthropicForwarder } from "../../src/anthropic-passthrough.js";
 import { startSubswitch, startFakeUpstream, rawHttpRequest, type SubswitchInstance, type FakeUpstream } from "./fake-upstreams.js";
 import { loadConfig } from "../../src/config.js";
-import { buildDeps, createProxyServer } from "../../src/server.js";
+import { createProxyServer } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import type { AnthropicForwarder } from "../../src/anthropic-passthrough.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -889,7 +890,7 @@ describe("anthropic passthrough", () => {
       },
     };
 
-    const depsResult = buildDeps(configResult.value.config, capturedLogger);
+    const depsResult = buildTestDeps(configResult.value.config, capturedLogger);
     assert.ok(depsResult.ok, `buildDeps must succeed: ${!depsResult.ok ? depsResult.error : ""}`);
 
     // Override forwardAnthropic to throw synchronously — simulates an unexpected
@@ -2215,7 +2216,7 @@ describe("server body ingestion — dispatch rejection drains paused over-window
       }),
     });
     if (!config.ok) throw new Error(`config load failed: ${config.error.message}`);
-    const depsResult = buildDeps(config.value.config);
+    const depsResult = buildTestDeps(config.value.config);
     if (!depsResult.ok) throw new Error(`buildDeps failed: ${depsResult.error}`);
     const throwingForwardAnthropic: AnthropicForwarder = () => {
       throw new Error("injected failure — testing dispatch().catch drain");

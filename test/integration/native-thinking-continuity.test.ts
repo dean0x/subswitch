@@ -11,7 +11,8 @@ import { loadConfig } from "../../src/config.js";
 import { noopLogger } from "../../src/logger.js";
 import { SharedRouting } from "../../src/routing/shared-routing.js";
 import type { AccessProfile, Item, RoutePolicy } from "../../src/routing/routing-types.js";
-import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
+import { createProxyServer, listenServer } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { messageFrames, nativeEvents } from "../fixtures/native-messages.js";
 import { nativeCredential } from "../fixtures/native-profile.js";
 
@@ -165,7 +166,7 @@ describe("native Claude full-history continuity (offline)", () => {
       assert.equal(calls, 0);
       await allowed("https://api.anthropic.com/v1/messages", { redirect: "error" });
       assert.equal(calls, 1);
-      const deps = buildDeps(fixture, noopLogger, { fetchImpl: allowed });
+      const deps = buildTestDeps(fixture, noopLogger, { fetchImpl: allowed });
       assert.ok(deps.ok);
       deps.value.sharedRouting?.close();
       deps.value.forwardOpenai?.close();
@@ -368,7 +369,7 @@ describe("native Claude full-history continuity (offline)", () => {
       const originUrl = `http://127.0.0.1:${address.port}`;
       try {
         for (let restart = 0; restart < 2; restart++) {
-          const deps = buildDeps(config(root, originUrl), noopLogger, {
+          const deps = buildTestDeps(config(root, originUrl), noopLogger, {
             // Assert the first-party destination, then use only the owned loopback transport.
             fetchImpl: restrictedFetch((_url, init) => fetch(`${originUrl}/native/v1/messages`, init)),
           });
@@ -440,7 +441,7 @@ it("keeps custom Claude HTTP replay in its original scope without claiming owner
   const requests: Item[] = [];
   const cache = new ClaudeCache();
   const content = [thought, hiddenThought, { type: "text", text: "Fabricated custom answer" }];
-  const deps = buildDeps(configured, noopLogger, { fetchImpl: async (url, init) => {
+  const deps = buildTestDeps(configured, noopLogger, { fetchImpl: async (url, init) => {
     requests.push(JSON.parse(String(init?.body)));
     assert.equal(String(url), "https://claude.example.test/gateway/v1/messages");
     assert.equal(init?.redirect, "error");

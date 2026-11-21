@@ -8,12 +8,13 @@ import {
   type ModelResolution,
   type ProviderId,
 } from "../../src/models.js";
+import { emptyAliases } from "../helpers/provider-aliases.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const { table } = buildRoutingTable(MODEL_REGISTRY, { together: {}, codex: {} });
+const { table } = buildRoutingTable(MODEL_REGISTRY, emptyAliases());
 
 const resolve = (name: string): ModelResolution => resolveModel(table, name);
 
@@ -140,13 +141,13 @@ describe("decideRoute — ambiguous family (F7)", () => {
     const resolution: ModelResolution = {
       kind: "ambiguous",
       name: "fast",
-      providers: ["codex" as ProviderId, "kimi" as unknown as ProviderId],
+      providers: ["codex" as ProviderId, "not-a-provider" as unknown as ProviderId],
     };
     const result = decideRoute("POST", "/v1/messages", resolution);
     assert.equal(result.kind, "ambiguous");
     if (result.kind === "ambiguous") {
       assert.equal(result.name, "fast");
-      assert.deepEqual([...result.providers], ["codex", "kimi"]);
+      assert.deepEqual([...result.providers], ["codex", "not-a-provider"]);
     }
   });
 

@@ -110,7 +110,7 @@ function sha8(value: string): string {
 }
 
 /** Redact a sensitive value: emit length + sha256 prefix for cross-request stability. */
-function redactedValue(value: string): string {
+export function redactedValue(value: string): string {
   return `<len:${value.length},sha8:${sha8(value)}>`;
 }
 
@@ -355,10 +355,10 @@ const MAX_CAPTURE_TOKEN_CHARS = 128;
  * control range keeps a crafted value on one line; the length cap keeps a
  * megabyte-long value from burying the capture around it.
  */
-const renderCaptureToken = (value: string): string => {
+export const renderCaptureToken = (value: string, maxChars = MAX_CAPTURE_TOKEN_CHARS): string => {
   const safe = value.replace(CAPTURE_CONTROL_CHARS, "");
-  return safe.length > MAX_CAPTURE_TOKEN_CHARS
-    ? `${safe.slice(0, MAX_CAPTURE_TOKEN_CHARS)}…`
+  return safe.length > maxChars
+    ? `${safe.slice(0, maxChars)}…`
     : safe;
 };
 

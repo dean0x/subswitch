@@ -4,7 +4,8 @@ import { it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig } from "../../src/config.js";
 import { noopLogger } from "../../src/logger.js";
-import { buildDeps, createProxyServer, listenServer } from "../../src/server.js";
+import { createProxyServer, listenServer } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { nativeCredential } from "../fixtures/native-profile.js";
 
 const loopback = "127.0.0.1";
@@ -37,7 +38,7 @@ function proxyDeps(upstream: string) {
     routes: { work: { clients: ["codex", "claude-code"], primary: { profile: "fixture", model, effort: "high" } } },
   }) });
   assert.ok(result.ok, result.ok ? undefined : result.error.message);
-  const deps = buildDeps(result.value.config, noopLogger, {
+  const deps = buildTestDeps(result.value.config, noopLogger, {
     fetchImpl: (url, init) => {
       assert.equal(String(url), "https://chatgpt.com/backend-api/codex/responses");
       return fetch(`${upstream}/responses`, init);

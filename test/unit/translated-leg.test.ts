@@ -259,6 +259,62 @@ it("sends the refresh error after an upstream 401 and makes no second request", 
   assert.equal(fetchImpl.mock.callCount(), 1);
 });
 
+it("ends a forced refresh wait on client close with the timeout reply", async (t) => {
+  const res = response();
+  const fetchImpl = t.mock.fn(async () => new Response("denied", { status: 401 }));
+  const logs: unknown[] = [];
+  let refreshArgs: { signal: AbortSignal; failed: string } | undefined;
+  let refreshStarted = (): void => undefined;
+  const started = new Promise<void>((resolve) => { refreshStarted = resolve; });
+  const run = runTranslatedLeg(res, options({
+    auth: {
+      ...options().auth,
+      refreshable: true,
+      forceRefresh: (signal, failed) => {
+        refreshArgs = { signal, failed };
+        refreshStarted();
+        return new Promise(() => {});
+      },
+    },
+    logger: { log: (level, event, fields) => logs.push({ level, event, fields }) },
+    fetchImpl,
+  }));
+  await started;
+  res.emit("close");
+  const settled = await Promise.race([run.then(() => true), new Promise<boolean>((resolve) => setImmediate(resolve, false))]);
+
+  assert.equal(settled, true, "the runner must not wait for the refresh after close");
+  assert.equal(res.statusCode, 504);
+  assert.equal(fetchImpl.mock.callCount(), 1);
+  assert.ok(refreshArgs?.signal instanceof AbortSignal, "the refresh gets the request signal");
+  assert.equal(refreshArgs.signal.aborted, true);
+  assert.equal(refreshArgs.failed, "initial", "the refresh gets the credential that the upstream refused");
+  assert.deepEqual(logs, [
+    { level: "warn", event: "fixture_upstream_401_refreshing", fields: { model: "fixture-model" } },
+  ], "a cancelled refresh wait is not a fault");
+});
+
+it("logs the cause name and returns a 500 when the forced refresh throws", async (t) => {
+  const res = response();
+  const end = t.mock.method(res, "end");
+  const fetchImpl = t.mock.fn(async () => new Response("denied", { status: 401 }));
+  const logs: unknown[] = [];
+  await runTranslatedLeg(res, options({
+    auth: { ...options().auth, refreshable: true, forceRefresh: async () => { throw new Error("fixture refresh source detail"); } },
+    logger: { log: (level, event, fields) => logs.push({ level, event, fields }) },
+    fetchImpl,
+  }));
+
+  assert.equal(res.statusCode, 500);
+  assert.equal(end.mock.calls[0]?.arguments[0],
+    '{"type":"error","error":{"type":"api_error","message":"fixture credential load failed"}}');
+  assert.equal(fetchImpl.mock.callCount(), 1);
+  assert.deepEqual(logs, [
+    { level: "warn", event: "fixture_upstream_401_refreshing", fields: { model: "fixture-model" } },
+    { level: "error", event: "fixture_credential_load_failed", fields: { model: "fixture-model", errorCode: "Error" } },
+  ]);
+});
+
 it("returns a 502 when the upstream sends a 200 with no body", async (t) => {
   const res = response();
   const end = t.mock.method(res, "end");

@@ -40,9 +40,9 @@ const codexSlice: CodexProviderConfig = {
   allowInsecureBaseUrl: false,
 };
 
-const providerConfigsIsTotalOverProviderId = (together: ProviderConfigs["together"]): void => {
+const providerConfigsIsTotalOverProviderId = (together: ProviderConfigs["together"], kimi: ProviderConfigs["kimi"]): void => {
   // A record covering every ProviderId is the only accepted shape.
-  const complete: ProviderConfigs = { codex: codexSlice, together };
+  const complete: ProviderConfigs = { codex: codexSlice, together, kimi };
   void complete;
 
   // @ts-expect-error a ProviderId with no slice must not compile.
@@ -52,7 +52,7 @@ const providerConfigsIsTotalOverProviderId = (together: ProviderConfigs["togethe
   // @ts-expect-error a key that is not a ProviderId must not compile either — excess-property
   // checking is what stops a slice being wired under a misspelled id, and it is what an
   // index signature on `ProviderConfigs` would silently give away.
-  const excessProvider: ProviderConfigs = { ...complete, kimi: codexSlice };
+  const excessProvider: ProviderConfigs = { ...complete, "not-a-provider": codexSlice };
   void excessProvider;
 
   // These assertions require both slices and reject extra keys. A new provider ID

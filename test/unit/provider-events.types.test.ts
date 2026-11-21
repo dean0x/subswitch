@@ -14,7 +14,7 @@
  * `@ts-expect-error` fails in both directions: it errors if the line below it compiles
  * (the guarantee was lost) and the line itself errors if the annotation is removed.
  */
-import { providerEvents } from "../../src/provider-events.js";
+import { KIMI_EVENTS, providerEvents } from "../../src/provider-events.js";
 import type { ProviderId } from "../../src/models.js";
 
 const onlyProviderIdsCanBecomeEventNames = (): void => {
@@ -38,9 +38,9 @@ const onlyProviderIdsCanBecomeEventNames = (): void => {
   // every payload — `\r`, `=`, whitespace — not just the newline case spelled here.
   providerEvents("codex\nlevel=error event=fake");
 
-  // @ts-expect-error a plausible-looking id that is not in PROVIDER_IDS is still rejected;
-  // the union is the allow-list.
-  providerEvents("kimi");
+  // @ts-expect-error an id that is not in PROVIDER_IDS is still rejected; the union is
+  // the allow-list. The id is never a real one, so a new provider id can not disarm it.
+  providerEvents("not-a-provider");
 };
 void onlyProviderIdsCanBecomeEventNames;
 
@@ -53,7 +53,7 @@ const eventNamesAreTiedToTheProviderTheyName = <P extends ProviderId>(providerId
   // name cannot be reassigned to a different provider's — and, inside `providerEvents`
   // itself, a hardcoded `"codex_upstream_error"` is not assignable to `${P}_upstream_error`.
   // That is what makes re-hardcoding any single event name a `tsc` failure rather than a
-  // silent regression that stays green while PROVIDER_IDS has one member.
+  // silent regression that a runtime test of one provider would not catch.
   const upstreamError: `${P}_upstream_error` = events.upstreamError;
   void upstreamError;
 
@@ -89,3 +89,16 @@ const eventNamesAreTiedToTheProviderTheyName = <P extends ProviderId>(providerId
   void authFileUnreadableAfterRefresh;
 };
 void eventNamesAreTiedToTheProviderTheyName;
+
+const kimiEventsKeepTheKimiPrefix = (): void => {
+  // The Kimi table spreads the provider table, so its names stay typed over "kimi".
+  const loadFailed: "kimi_credential_load_failed" = KIMI_EVENTS.credentialLoadFailed;
+  void loadFailed;
+  const lockLost: "kimi_lock_lost" = KIMI_EVENTS.lockLost;
+  void lockLost;
+
+  // @ts-expect-error a Kimi event name is not the name of the same event for another provider.
+  const codexName: "codex_credential_load_failed" = KIMI_EVENTS.credentialLoadFailed;
+  void codexName;
+};
+void kimiEventsKeepTheKimiPrefix;

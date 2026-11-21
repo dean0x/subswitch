@@ -2,26 +2,26 @@
  * Source-text guards — static assertions about prohibited patterns in src/.
  *
  * These tests are NOT behavioral coverage.  They encode structural obligations
- * that cannot be exercised at runtime while PROVIDER_IDS has only one member.
+ * that a runtime test cannot check for every provider id and every source file.
  * Each guard is clearly labelled so nobody mistakes it for a behavioral test.
  *
- * G1: PROVIDER_IDS[0] must not appear in src/models.ts or src/server.ts.
+ * G1: no file in src/ reads PROVIDER_IDS at index 0.
  *
  *   Background: `collectAliasDeclarations` iterates PROVIDER_IDS and carries
- *   the declaring provider alongside each alias declaration.  Falling back to
- *   PROVIDER_IDS[0] when the declaring provider is already in hand is correct
- *   only by coincidence while PROVIDER_IDS.length === 1.  A runtime test
- *   cannot distinguish the two cases until a second provider is wired, so a
- *   source-text guard is the only preventive control.
+ *   the declaring provider alongside each alias declaration.  Code that takes
+ *   PROVIDER_IDS[0] as "the provider" is correct only for the provider that is
+ *   first (codex; routing-table.test.ts keeps it first), so the mistake shows
+ *   only on a request for another provider.  This guard checks every source file.
  *
- *   Mutation that proves it: insert `PROVIDER_IDS[0]` anywhere in models.ts or
- *   server.ts and this test goes RED.  Remove it and it returns GREEN.
+ *   Mutation that proves it: insert `PROVIDER_IDS[0]` in any file under src/
+ *   and this test goes RED.  Remove it and it returns GREEN.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { globSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
+import { homedir } from "node:os";
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../src");
 
@@ -73,28 +73,34 @@ const keyAccessViolations = (file: string, source: string): string[] => {
 };
 
 // ---------------------------------------------------------------------------
-// G1 — PROVIDER_IDS[0] must not appear in models.ts or server.ts
+// G1 — no source file reads PROVIDER_IDS at index 0
 //
 // SOURCE-TEXT GUARD: this assertion checks code structure, not runtime behavior.
 // ---------------------------------------------------------------------------
 
+/**
+ * `PROVIDER_IDS[0]`, `PROVIDER_IDS.at(0)` and the cast form `(PROVIDER_IDS as T)[0]`.
+ * Whitespace is allowed at each joint, so a reformat can not hide a match.
+ */
+const FIRST_PROVIDER_ID_READ = /\bPROVIDER_IDS(?:\s+as\s+[^)]*\))?\s*(?:\[\s*0\s*\]|\.\s*at\s*\(\s*0\s*\))/;
+
 describe("source-text guards", () => {
-  it("G1: models and server must not assume the first entry in PROVIDER_IDS is the intended provider", () => {
-    const modelsTs = readSrc("models.ts");
-    const serverTs = readSrc("server.ts");
+  it("G1: no source file assumes the first entry in PROVIDER_IDS is the intended provider", () => {
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
+    assert.ok(files.includes("models.ts") && files.includes("server.ts"), "The source list must include models.ts and server.ts");
+    for (const file of files) {
+      assert.ok(
+        !FIRST_PROVIDER_ID_READ.test(readSrc(file)),
+        `src/${file} reads PROVIDER_IDS at index 0 — the declaring provider must always be in hand (see KNOWLEDGE.md anti-patterns)`,
+      );
+    }
+  });
 
-    // The forbidden pattern as a literal — searching for the exact characters
-    // so the guard cannot be fooled by whitespace or reformatting.
-    const forbidden = "PROVIDER_IDS[0]";
-
-    assert.ok(
-      !modelsTs.includes(forbidden),
-      `src/models.ts contains "${forbidden}" — the declaring provider must always be in hand (see KNOWLEDGE.md anti-patterns); PROVIDER_IDS[0] is valid only by coincidence while PROVIDER_IDS.length === 1`,
-    );
-    assert.ok(
-      !serverTs.includes(forbidden),
-      `src/server.ts contains "${forbidden}" — the declaring provider must always be in hand (see KNOWLEDGE.md anti-patterns); PROVIDER_IDS[0] is valid only by coincidence while PROVIDER_IDS.length === 1`,
-    );
+  it("G1: the first-entry pattern catches each form of the read", () => {
+    for (const read of ["PROVIDER_IDS[0]", "PROVIDER_IDS [ 0 ]", "PROVIDER_IDS.at(0)", "(PROVIDER_IDS as readonly string[])[0]"]) {
+      assert.ok(FIRST_PROVIDER_ID_READ.test(`const id = ${read};`), `the pattern must catch ${read}`);
+    }
+    assert.ok(!FIRST_PROVIDER_ID_READ.test("for (const id of PROVIDER_IDS) {}"), "a loop over the ids is not a first-entry read");
   });
 
   it("keeps direct Together key env access in the key reader, including for health", () => {
@@ -151,6 +157,170 @@ describe("source-text guards", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// G2 — check live factory names and child_process imports
+//
+// SOURCE-TEXT GUARD: only server.ts can define a live<Thing>Deps factory.
+// cli.ts and run-action.ts can call it. Only the named files can import child_process.
+// Only server.ts names the Kimi file store maker outside its module.
+// This check does not find every function that opens a real store.
+// ---------------------------------------------------------------------------
+
+const LIVE_FACTORY_HOME = "server.ts";
+const LIVE_FACTORY_CALLERS: ReadonlySet<string> = new Set(["cli.ts", "run-action.ts"]);
+/** A live factory name: live<Thing>Deps. */
+const LIVE_FACTORY_NAME = /\blive[A-Z][\w$]*Deps\b/;
+/** A declaration, a rename by `as`, an assignment, a property key or a method of that name. */
+const LIVE_FACTORY_DEFINITION =
+  /(?:\b(?:function\s*\*?|const|let|var|class)\s+|\bas\s+)live[A-Z][\w$]*Deps\b|\blive[A-Z][\w$]*Deps\s*(?:[:=](?!=)|\([^)]*\)\s*(?::[^{;]*)?\{)/;
+/** The files that may load node:child_process, each with its reason. */
+const CHILD_PROCESS_FILES: ReadonlyMap<string, string> = new Map([
+  ["server.ts", "the live deps factories build the program runners"],
+  ["claude-auth.ts", "the Claude client-ingress store runs the macOS Keychain tool"],
+  ["run-action.ts", "run-action starts the client command that the user names"],
+]);
+const CHILD_PROCESS_MODULE = /["'](?:node:)?child_process["']/;
+/** The Kimi file store module, and the name of its maker. Only the live Kimi factory may name it. */
+const KIMI_STORE_MODULE = "kimi-native-store.ts";
+const KIMI_STORE_MAKER = /\bcreateKimiNativeStore\b/;
+
+const liveFactoryViolations = (file: string, source: string): string[] => {
+  if (file === LIVE_FACTORY_HOME) return [];
+  const violations: string[] = [];
+  if (CHILD_PROCESS_MODULE.test(source) && !CHILD_PROCESS_FILES.has(file)) violations.push("loads node:child_process");
+  for (const line of source.split("\n").map((text) => text.trim())) {
+    if (!LIVE_FACTORY_NAME.test(line)) continue;
+    if (LIVE_FACTORY_DEFINITION.test(line)) violations.push(`defines a live factory: ${line}`);
+    else if (!LIVE_FACTORY_CALLERS.has(file)) violations.push(`uses a live factory: ${line}`);
+  }
+  return violations;
+};
+
+// ---------------------------------------------------------------------------
+// G3 — only the CLI-child helper and this guard can name the CLI entry file in test/
+//
+// SOURCE-TEXT GUARD: this check matches literal file names. It does not detect
+// computed file names or starts through the package bin.
+// ---------------------------------------------------------------------------
+
+const TEST_DIR = join(SRC_DIR, "../test");
+const CLI_CHILD_HELPER = "helpers/cli-child.ts";
+const CLI_ENTRY_NAMED_BY: ReadonlySet<string> = new Set([CLI_CHILD_HELPER, "unit/source-text-guards.test.ts"]);
+const CLI_ENTRY_FILE = /\bcli\.[cm]?[jt]s\b/;
+
+describe("source-text guards: CLI child processes", () => {
+  it("G3: only the helper and this guard name the CLI entry file in test/", () => {
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: TEST_DIR });
+    assert.ok([...CLI_ENTRY_NAMED_BY, "integration/cli.test.ts"].every((file) => files.includes(file)),
+      "The test file list must include the helper, the guard and the CLI tests");
+    assert.match(readFileSync(join(TEST_DIR, CLI_CHILD_HELPER), "utf8"), CLI_ENTRY_FILE);
+    for (const file of files) {
+      if (CLI_ENTRY_NAMED_BY.has(file)) continue;
+      assert.doesNotMatch(readFileSync(join(TEST_DIR, file), "utf8"), CLI_ENTRY_FILE,
+        `Start the CLI child in test/${file} through test/${CLI_CHILD_HELPER}`);
+    }
+  });
+
+  it("G3: the entry pattern catches literal CLI entry names", () => {
+    const paths = [
+      'join(repoRoot, "src", "cli.ts")',
+      'resolve("src/cli.ts")',
+      'new URL("../../src/cli.ts", import.meta.url)',
+      'join(root, "dist", "cli.js")',
+      'resolve("src/cli.js")',
+      'join(root, "src",\n  "cli.ts")',
+      'join(srcDir, "cli.ts")',
+    ];
+    assert.deepEqual(paths.filter((text) => !CLI_ENTRY_FILE.test(text)), [], "The pattern must catch each CLI path");
+    assert.doesNotMatch('import { cliChildCommand } from "../helpers/cli-child.js";', CLI_ENTRY_FILE);
+  });
+});
+
+describe("source-text guards: live deps factories", () => {
+  it("G2: only server.ts defines a live factory, and only cli.ts and run-action.ts call one", () => {
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
+    for (const file of [LIVE_FACTORY_HOME, ...LIVE_FACTORY_CALLERS, ...CHILD_PROCESS_FILES.keys()]) {
+      assert.ok(files.includes(file), `The source list must include ${file}`);
+    }
+    assert.match(readSrc(LIVE_FACTORY_HOME), /export const liveTogetherKeyReaderDeps = /);
+    assert.match(readSrc(LIVE_FACTORY_HOME), /export const liveKimiStoreDeps = /);
+    for (const file of files) {
+      assert.deepEqual(liveFactoryViolations(file, readSrc(file)), [], `Move the live factory to src/${LIVE_FACTORY_HOME}`);
+    }
+  });
+
+  it("G2: only server.ts names the Kimi file store maker outside its own module", () => {
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
+    assert.ok(files.includes(KIMI_STORE_MODULE), `The source list must include ${KIMI_STORE_MODULE}`);
+    assert.match(readSrc(KIMI_STORE_MODULE), KIMI_STORE_MAKER);
+    assert.match(readSrc(LIVE_FACTORY_HOME), KIMI_STORE_MAKER);
+    for (const file of files) {
+      if (file === LIVE_FACTORY_HOME || file === KIMI_STORE_MODULE) continue;
+      assert.doesNotMatch(readSrc(file), KIMI_STORE_MAKER, `Make the Kimi file store only in the live factory of src/${LIVE_FACTORY_HOME}`);
+    }
+    assert.match('import { createKimiNativeStore } from "./kimi-native-store.js";', KIMI_STORE_MAKER);
+  });
+
+  it("G2: the guard catches each way to define a live factory or a runner outside server.ts", () => {
+    const definitions = [
+      "export const liveKimiStoreDeps = () => ({",
+      "function liveGeminiDeps() {",
+      "export function* liveFooDeps() {",
+      "let liveFooDeps;",
+      "export { build as liveFooDeps };",
+      "const deps = { liveFooDeps: () => ({}) };",
+      "liveFooDeps(): FooDeps {",
+      "liveFooDeps = () => ({});",
+    ];
+    for (const line of definitions) {
+      assert.notDeepEqual(liveFactoryViolations("cli.ts", line), [], `The guard must catch: ${line}`);
+    }
+    const runners = ['import { spawn } from "node:child_process";', "const { execFile } = await import('child_process');"];
+    for (const line of runners) assert.notDeepEqual(liveFactoryViolations("gemini-renewal.ts", line), [], `The guard must catch: ${line}`);
+    assert.notDeepEqual(liveFactoryViolations("doctor.ts", "togetherKeyReader: liveTogetherKeyReaderDeps(),"), [],
+      "a file that is not a named caller must not call a live factory");
+    const calls = [
+      'import { liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";',
+      "togetherKeyReader: liveTogetherKeyReaderDeps(),",
+      "const deps = cond === liveFooDeps() ? a : b;",
+    ];
+    for (const line of calls) assert.deepEqual(liveFactoryViolations("cli.ts", line), [], `A named caller may call: ${line}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G4 — Kimi fixtures stay in Kimi-named test files
+//
+// SOURCE-TEXT GUARD: shared tests use Claude or Codex fixtures, so the removal of a
+// provider can not take a shared test with it. This check finds only the Kimi fixtures
+// that carry the FAKE-KIMI marker, in any letter case.
+// ---------------------------------------------------------------------------
+
+const KIMI_FIXTURE_MARKER = /FAKE-KIMI/i;
+const KIMI_TEST_FILE = /(?:^|\/)kimi-[^/]*\.ts$/;
+const THIS_GUARD = "unit/source-text-guards.test.ts";
+
+describe("source-text guards: provider fixtures", () => {
+  it("G4: only Kimi-named test files hold a marked Kimi fixture", () => {
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs,json,sse}", { cwd: TEST_DIR });
+    const marked = files.filter((file) => file !== THIS_GUARD && KIMI_FIXTURE_MARKER.test(readFileSync(join(TEST_DIR, file), "utf8")));
+    assert.ok(marked.includes("integration/kimi-leg.test.ts"), "The marker search must find the Kimi leg fixtures");
+    assert.deepEqual(marked.filter((file) => !KIMI_TEST_FILE.test(file)), [], "Move each Kimi fixture to a Kimi-named test file");
+  });
+
+  for (const file of ["integration/kimi-leg.test.ts", "unit/kimi-native-auth.test.ts"]) {
+    it(`G4 control: accepts ${file}`, () => {
+      assert.match(file, KIMI_TEST_FILE);
+    });
+  }
+
+  for (const file of ["integration/together-leg.test.ts", "helpers/server-deps.ts", "unit/akimi-x.test.ts", "kimi/shared.test.ts"]) {
+    it(`G4 control: refuses ${file}`, () => {
+      assert.doesNotMatch(file, KIMI_TEST_FILE);
+    });
+  }
+});
+
 it("uses execFile with no shell for the Together Keychain read", () => {
   const reader = readSrc("together-auth.ts");
   const factory = readSrc("server.ts");
@@ -159,4 +329,82 @@ it("uses execFile with no shell for the Together Keychain read", () => {
     assert.doesNotMatch(source, /import\s*\{[^}]*\bexec\b[^}]*\}\s*from\s*["']node:child_process["']/);
     assert.doesNotMatch(source, /\bshell\s*:/);
   }
+});
+
+// G5: the Kimi live check never sets the Claude Code base URL or sign-in variables.
+// `run-action` sets the base URL for its own child. The live run uses the sign-in
+// that Claude Code already has.
+const REPO_DIR = join(SRC_DIR, "..");
+const LIVE_CHECK = "e2e/gates/kimi-live-check.ts";
+const CLIENT_VARIABLE = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)\b/;
+/** An object key, a property or index assignment, or a shell prefix that sets one of these variables. */
+const CLIENT_VARIABLE_SET = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)["'`]?\]?\s*(?::|=(?!=))/;
+const readRepo = (name: string): string => readFileSync(join(REPO_DIR, name), "utf8");
+
+describe("source-text guards: the Kimi live check", () => {
+  it("G5: the live check names no Claude Code override variable, and no Kimi live file sets one", () => {
+    assert.doesNotMatch(readRepo(LIVE_CHECK), CLIENT_VARIABLE);
+    const files = globSync("e2e/gates/kimi-live-*", { cwd: REPO_DIR });
+    assert.ok(files.includes(LIVE_CHECK) && files.length > 1, "The search must find the live check and its fake client");
+    assert.deepEqual(files.filter((file) => CLIENT_VARIABLE_SET.test(readRepo(file))), []);
+  });
+
+  it("G5 positive control: the pattern finds each way to set a variable, and not a read", () => {
+    assert.match(readRepo("e2e/gates/native-claude.ts"), CLIENT_VARIABLE_SET, "A gate that sets the variables must match");
+    for (const text of ["env: { ANTHROPIC_BASE_URL: base }", 'process.env["CLAUDE_CODE_OAUTH_TOKEN"] = token',
+      "env.ANTHROPIC_BASE_URL = base", "ANTHROPIC_BASE_URL=http://127.0.0.1:1 claude", "{ 'CLAUDE_CODE_OAUTH_TOKEN': token }"]) {
+      assert.match(text, CLIENT_VARIABLE_SET, text);
+    }
+    for (const text of ["const base = process.env.ANTHROPIC_BASE_URL;", "if (env.ANTHROPIC_BASE_URL === base) {}"]) {
+      assert.doesNotMatch(text, CLIENT_VARIABLE_SET, text);
+    }
+  });
+
+  for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) {
+    it(`G5 positive control: the patterns find a read and a write to ${name}`, () => {
+      assert.match(`const value = process.env.${name};`, CLIENT_VARIABLE);
+      assert.match(`env: { ${name}: value }`, CLIENT_VARIABLE_SET);
+    });
+  }
+});
+
+// G6: the public docs, the source and the Kimi check files hold no local text: no home
+// folder path, no workspace id and no path of a private planning folder. The paths of this
+// machine (its home folder and the folder that holds this repo) are checked as values too.
+const PUBLIC_TEXT = ["*.md", "e2e/**/*.md", "src/**/*.{ts,mts,cts,js,mjs,cjs}", "e2e/gates/kimi-*"];
+const PRIVATE_SHAPES: readonly RegExp[] = [
+  /\/(?:Users|home)\/[A-Za-z0-9._-]+\//,
+  /\b[A-Za-z]:\\{1,2}Users\\{1,2}[A-Za-z0-9._-]+/,
+  /\bwrkspc_[A-Za-z0-9]/,
+  /\.devflow\/docs\/lanes\//,
+  /\.orchestrator\b/,
+];
+/** A machine path with at least two segments, so that a short home such as "/root" is not a word search. */
+const machinePaths = (): readonly string[] =>
+  [homedir(), dirname(REPO_DIR)].filter((path) => path.split("/").filter(Boolean).length >= 2);
+const privateText = (text: string, paths: readonly string[] = machinePaths()): boolean =>
+  PRIVATE_SHAPES.some((shape) => shape.test(text)) || paths.some((path) => text.includes(path));
+
+describe("source-text guards: public text", () => {
+  it("G6: no public doc, source file or Kimi check file holds local text", () => {
+    const files = globSync(PUBLIC_TEXT, { cwd: REPO_DIR });
+    for (const name of ["README.md", "SECURITY.md", "CHANGELOG.md", "src/kimi-native-auth.ts", LIVE_CHECK]) {
+      assert.ok(files.includes(name), `The search must find ${name}`);
+    }
+    assert.deepEqual(files.filter((file) => privateText(readRepo(file))), [], "Remove the local text from these files");
+  });
+
+  it("G6 positive control: each shape and each machine path is found", () => {
+    for (const text of ["see /Users/someone/project", "in /home/someone/repo", "C:\\Users\\someone", "wrkspc_01ABC",
+      "notes in .devflow/docs/lanes/plan.md", "the .orchestrator folder", `${homedir()}/project`, `${dirname(REPO_DIR)}/other`]) {
+      assert.equal(privateText(text), true, text);
+    }
+    for (const text of ["~/.kimi-code/credentials", ".devflow/docs/usability/run/", "$HOME/.config/subswitch/config.json", "/home/<user>/.cache"]) {
+      assert.equal(privateText(text), false, text);
+    }
+    // A machine path that no shape matches is found only through the machine path values.
+    assert.equal(privateText("built in /srv/build/work/x", ["/srv/build"]), true);
+    assert.equal(privateText("built in /srv/build/work/x", []), false);
+    assert.ok(machinePaths().includes(dirname(REPO_DIR)) || dirname(REPO_DIR).split("/").filter(Boolean).length < 2);
+  });
 });

@@ -3,16 +3,20 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import {
   probeSubswitch,
   probeTlsReachable,
   runDoctor,
   makeLiveListAgentFiles,
   PROVIDER_AUTH_INSPECTORS,
+  type DoctorAuthInspection,
   type HttpGetResult,
   type TlsStatus,
   type DoctorIO,
 } from "../../src/doctor.js";
+import { err, ok } from "../../src/result.js";
+import { registerExactCredential } from "../../src/errors.js";
 import { loadConfig, type Config } from "../../src/config.js";
 import { PROVIDER_IDS, type ProviderId, type RoutingTable } from "../../src/models.js";
 import { checkAgentModels } from "../../src/agent-scan.js";
@@ -439,9 +443,9 @@ describe("runDoctor — agent model scan", () => {
   // ---------------------------------------------------------------------------
 
   it("unknown_provider finding alone does NOT cause exit code 1 (ADR-010: relay cannot honestly call this a failure)", async () => {
-    // "kimi:k2-ultra" has an unknown_qualifier resolution — the prefix "kimi" is not in
-    // PROVIDER_IDS. subswitch forwards it to Anthropic unchanged, so flagging it as a
-    // failure would be a lie (ADR-010). The finding must be severity "info" → exit 0.
+    // "not-a-provider:other-model" has an unknown_qualifier resolution — the prefix
+    // "not-a-provider" is not in PROVIDER_IDS and never will be. subswitch forwards it to
+    // Anthropic unchanged, so flagging it as a failure would be a lie (ADR-010). The finding must be severity "info" → exit 0.
     //
     // Mutation that MUST turn this RED: change `severity: "info"` back to `severity: "fail"`
     // in the unknown_qualifier arm of checkAgentModels → exitCode becomes 1 → assertion fails.
@@ -449,7 +453,7 @@ describe("runDoctor — agent model scan", () => {
     const exitCode = await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       listAgentFiles: async () => ["/project/.claude/agents/exotic.md"],
-      readTextFile: async () => "---\nmodel: kimi:k2-ultra\n---\n",
+      readTextFile: async () => "---\nmodel: not-a-provider:other-model\n---\n",
     });
     assert.equal(exitCode, 0, "unknown_provider finding must not cause exit code 1 — it is informational (ADR-010)");
   });
@@ -461,13 +465,13 @@ describe("runDoctor — agent model scan", () => {
     await runDoctor(defaultConfig(), "/path/subswitch.config.json", true, {
       ...allPassIO(lines),
       listAgentFiles: async () => ["/project/.claude/agents/exotic.md"],
-      readTextFile: async () => "---\nmodel: kimi:k2-ultra\n---\n",
+      readTextFile: async () => "---\nmodel: not-a-provider:other-model\n---\n",
     });
     const output = lines.join("\n");
-    assert.ok(output.includes("kimi:k2-ultra"), "output must mention the model name");
-    assert.ok(output.includes("kimi"), "output must mention the unknown qualifier");
+    assert.ok(output.includes("not-a-provider:other-model"), "output must mention the model name");
+    assert.ok(output.includes("not-a-provider"), "output must mention the unknown qualifier");
     // Must NOT emit a FAIL row for unknown_provider (it is info).
-    const findingLine = lines.find((l) => l.includes("kimi:k2-ultra"));
+    const findingLine = lines.find((l) => l.includes("not-a-provider:other-model"));
     assert.ok(findingLine !== undefined, "must have a line for the unknown_provider finding");
     assert.ok(
       !findingLine.includes("FAIL"),
@@ -530,6 +534,83 @@ describe("PROVIDER_AUTH_INSPECTORS", () => {
         `PROVIDER_AUTH_INSPECTORS must have an inspector function for provider "${id}"`,
       );
     }
+  });
+});
+
+describe("doctor auth inspector dispatch", () => {
+  const neutralInspection: DoctorAuthInspection = {
+    kind: "oauth-file",
+    authFile: "/fixture/other/credential.json",
+    loginCommand: "fixture login",
+    result: ok({
+      identity: [{ label: "fixture identity:", value: "first", pass: true }],
+      expiresAt: "2031-02-03T04:05:06.000Z",
+      renewal: [{ label: "fixture renewal:", value: "due" }],
+    }),
+  };
+  const presentKey: DoctorAuthInspection = { kind: "api-key", key: { kind: "present", source: "env" } };
+
+  it("calls each provider's own inspector once with that provider's config slice and the doctor io", async (t) => {
+    const config = defaultConfig();
+    const io = allPassIO([]);
+    const codex = t.mock.method(PROVIDER_AUTH_INSPECTORS, "codex", async () => neutralInspection);
+    const together = t.mock.method(PROVIDER_AUTH_INSPECTORS, "together", async () => presentKey);
+    await runDoctor(config, "fixture", true, io);
+    assert.deepEqual(codex.mock.calls.map((call) => call.arguments.length), [2]);
+    assert.equal(codex.mock.calls[0]?.arguments[0], config.providers.codex);
+    assert.equal(codex.mock.calls[0]?.arguments[1], io);
+    assert.deepEqual(together.mock.calls.map((call) => call.arguments.length), [2]);
+    assert.equal(together.mock.calls[0]?.arguments[0], config.providers.together);
+    assert.equal(together.mock.calls[0]?.arguments[1], io);
+  });
+
+  it("writes an oauth-file row from the neutral row: its lines, the expiry line, then its renewal lines", async (t) => {
+    const lines: string[] = [];
+    t.mock.method(PROVIDER_AUTH_INSPECTORS, "codex", async () => neutralInspection);
+    const exitCode = await runDoctor(defaultConfig(), "fixture", true, allPassIO(lines), new Set<ProviderId>(["codex"]));
+    const start = lines.findIndex((line) => line.startsWith("  codex.authFile:"));
+    assert.deepEqual(lines.slice(start, start + 4), [
+      `${"  codex.authFile:".padEnd(22)}/fixture/other/credential.json`,
+      `${"  fixture identity:".padEnd(22)}first`,
+      `${"  token expires:".padEnd(22)}2031-02-03T04:05:06.000Z`,
+      `${"  fixture renewal:".padEnd(22)}due`,
+    ]);
+    assert.match(lines[start + 4] ?? "", /^ {2}together auth:/, "the Codex rows end after the renewal lines");
+    assert.equal(exitCode, 0);
+  });
+
+  const fakeJwt = `eyJfixture.${randomUUID()}.fakesignature`;
+
+  it("scrubs the label and value of a neutral auth field", async (t) => {
+    const fakeExact = `FAKE-TOGETHER-KEY-${randomUUID()}`;
+    assert.equal(registerExactCredential("together", fakeExact), true);
+    t.mock.method(PROVIDER_AUTH_INSPECTORS, "codex", async (): Promise<DoctorAuthInspection> => ({
+      ...neutralInspection,
+      result: ok({
+        identity: [{ label: `fixture account ${fakeJwt}:`, value: fakeExact, pass: true }],
+        expiresAt: undefined,
+        renewal: [],
+      }),
+    }));
+    const lines: string[] = [];
+    const exitCode = await runDoctor(defaultConfig(), "fixture", true, allPassIO(lines));
+    const line = lines.find((text) => text.startsWith("  fixture account ")) ?? "";
+    assert.equal(line.includes(fakeJwt) || line.includes(fakeExact), false, "Doctor must scrub both auth field parts");
+    assert.match(line, /^ {2}fixture account <redacted-jwt>:\s*<redacted>$/);
+    assert.equal(exitCode, 0);
+  });
+
+  it("scrubs the invalid auth message and keeps exit code 1", async (t) => {
+    t.mock.method(PROVIDER_AUTH_INSPECTORS, "codex", async (): Promise<DoctorAuthInspection> => ({
+      ...neutralInspection,
+      result: err({ kind: "invalid", message: `fixture error for ${fakeJwt}` }),
+    }));
+    const lines: string[] = [];
+    const exitCode = await runDoctor(defaultConfig(), "fixture", true, allPassIO(lines));
+    const line = lines.find((text) => text.startsWith("  codex auth:")) ?? "";
+    assert.equal(line.includes(fakeJwt), false, "Doctor must scrub the invalid auth message");
+    assert.match(line, /^ {2}codex auth:\s+INVALID \(fixture error for <redacted-jwt>\)$/);
+    assert.equal(exitCode, 1);
   });
 });
 
@@ -615,6 +696,94 @@ it("doctor checks Together once through its injected Keychain seam and reports o
   assert.equal(exitCode, 0);
   assert.match(lines.join("\n"), /together auth:\s+OK \(keychain\)$/m);
   assert.ok(!lines.join("\n").includes(key));
+});
+
+// ---------------------------------------------------------------------------
+// Codex auth row text — byte-for-byte pin, colour on
+// ---------------------------------------------------------------------------
+// The doctor auth seam must leave every Codex row exactly as it was: the same
+// labels, padding, colour codes, order, hints and exit codes.
+
+describe("doctor Codex auth row text", () => {
+  const authFilePath = "/fixture/codex/auth.json";
+  const jwt = (claims: Record<string, unknown>): string =>
+    `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
+  const fullToken = jwt({ exp: 1_893_456_000, "https://api.openai.com/auth": { chatgpt_account_id: "acct-fixture-123456" } });
+  const fullFile = JSON.stringify({
+    auth_mode: "chatgpt", last_refresh: "2026-01-02T03:04:05Z", tokens: { access_token: fullToken, refresh_token: "ref" },
+  });
+  const bareFile = JSON.stringify({ tokens: { access_token: jwt({ sub: "fixture" }), refresh_token: "ref" } });
+  const failure = (message: string, code?: string): Error => Object.assign(new Error(message), code === undefined ? {} : { code });
+  const label = (text: string): string => `  ${text}`.padEnd(22);
+  const green = (text: string): string => `\u001b[32m${text}\u001b[39m`;
+  const red = (text: string): string => `\u001b[31m${text}\u001b[39m`;
+  const dim = (text: string): string => `\u001b[2m${text}\u001b[22m`;
+  const fileRow = `${label("codex.authFile:")}${authFilePath}`;
+  interface CodexRowCase {
+    readonly name: string;
+    readonly read: () => Promise<string>;
+    readonly optedIn: boolean;
+    readonly exit: number;
+    readonly lines: readonly string[];
+  }
+  const rows: readonly CodexRowCase[] = [
+    {
+      name: "a full auth file", read: async () => fullFile, optedIn: false, exit: 0,
+      lines: [fileRow, `${label("codex auth mode:")}${green("chatgpt")}`, `${label("codex account:")}…123456`,
+        `${label("token expires:")}2030-01-01T00:00:00.000Z`, `${label("last refresh:")}2026-01-02T03:04:05Z`],
+    },
+    {
+      name: "an auth file with no mode, account, expiry or refresh time", read: async () => bareFile, optedIn: true, exit: 0,
+      lines: [fileRow, `${label("codex auth mode:")}${green("unknown")}`, `${label("codex account:")}(none)`,
+        `${label("token expires:")}(no exp claim)`, `${label("last refresh:")}(unknown)`],
+    },
+    {
+      name: "an auth file that does not parse", read: async () => "not json", optedIn: false, exit: 1,
+      lines: [fileRow, `${label("codex auth:")}${red("INVALID (codex auth file is not valid JSON — run `codex login`)")}`],
+    },
+    {
+      name: "an unreadable auth file and no codex block", read: async () => { throw failure("EACCES: permission denied", "EACCES"); },
+      optedIn: false, exit: 0,
+      lines: [fileRow, `${label("codex auth:")}${dim("unconfigured")} (run \`codex login\` to enable codex routing)`],
+    },
+    {
+      name: "a missing auth file and a codex block", read: async () => { throw failure("ENOENT: no such file", "ENOENT"); },
+      optedIn: true, exit: 1,
+      lines: [fileRow, `${label("codex auth:")}${red("UNAVAILABLE")} (no auth file — run \`codex login\`)`,
+        "  note: the Anthropic leg works without codex auth; only codex models are affected"],
+    },
+    {
+      name: "a missing auth file named only in the error message and a codex block",
+      read: async () => { throw failure("ENOENT: no such file"); }, optedIn: true, exit: 1,
+      lines: [fileRow, `${label("codex auth:")}${red("UNAVAILABLE")} (no auth file — run \`codex login\`)`,
+        "  note: the Anthropic leg works without codex auth; only codex models are affected"],
+    },
+    {
+      name: "an unreadable auth file and a codex block", read: async () => { throw failure("EACCES: permission denied", "EACCES"); },
+      optedIn: true, exit: 1,
+      lines: [fileRow, `${label("codex auth:")}${red("UNAVAILABLE")} (cannot read auth file — run \`codex login\`)`,
+        "  note: the Anthropic leg works without codex auth; only codex models are affected"],
+    },
+  ];
+
+  for (const row of rows) {
+    it(`writes the same Codex rows and exit code for ${row.name}`, async (t) => {
+      const loaded = loadConfig({ configPath: "fixture", env: {},
+        readFile: () => JSON.stringify({ providers: { codex: { authFile: authFilePath } } }) });
+      assert.ok(loaded.ok);
+      const lines: string[] = [];
+      const readAuthFile = t.mock.fn(row.read);
+      const exitCode = await runDoctor(loaded.value.config, "fixture", true,
+        { ...allPassIO(lines), color: true, readAuthFile },
+        new Set<ProviderId>(row.optedIn ? ["codex"] : []));
+      const start = lines.indexOf(fileRow);
+      const end = lines.findIndex((line, index) => index > start && line.startsWith("  together"));
+      assert.ok(start >= 0 && end > start, lines.join("\n"));
+      assert.deepEqual(lines.slice(start, end), row.lines);
+      assert.equal(exitCode, row.exit);
+      assert.deepEqual(readAuthFile.mock.calls.map((call) => call.arguments), [[authFilePath]]);
+    });
+  }
 });
 
 describe("doctor Together key severity matrix", () => {

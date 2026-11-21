@@ -20,6 +20,10 @@ permissions, and execution loop.
   Together Chat Completions and billed to your own Together API key.
   Claude Code is the only supported client for this route; the Codex client integration
   does not route to Together. See [Together AI (paid API key)](#together-ai-paid-api-key).
+- **Claude Code → Kimi Code (opt-in):** with a `providers.kimi` block in your user
+  configuration, Kimi model names go to the Kimi coding Messages API with the sign-in of
+  your Kimi CLI. Claude Code is the only supported client for this route; the Codex
+  client integration does not route to Kimi. See [Kimi Code](#kimi-code-kimi-cli-sign-in).
 - **Codex → Claude:** registered Claude models and aliases are translated to
   Messages. OpenAI models continue to OpenAI. Reverse-enabled sessions adapt the
   collaboration namespace so cross-provider task messages are readable.
@@ -32,6 +36,8 @@ settings and client binaries are not patched or downgraded.
 
 ```
 Claude Code ──► SubSwitch ──► OpenAI for selected OpenAI models
+                         ├─► Together for together: models (your paid key)
+                         ├─► Kimi for Kimi models (with the opt-in block)
                          └─► Anthropic for other requests
 
 Codex ───────► SubSwitch ──► Anthropic for selected Claude models
@@ -449,6 +455,104 @@ command, the bounds and the worst-case cost.
 The live check has not run yet. Until it runs, the prices, the image support and the max
 output of the [registered Together models](#together-models) stay UNCONFIRMED.
 
+## Kimi Code (Kimi CLI sign-in)
+
+> **The Kimi route is off by default.** SubSwitch sends a request to Kimi only when your
+> user configuration has a `providers.kimi` block and the request names a Kimi model.
+> Without the block, a Kimi model name gets a local 400 (`Kimi is not turned on. ...`),
+> and SubSwitch reads no Kimi file and sends nothing.
+
+Claude Code is the only supported client for this route. The Codex client integration
+does not route to Kimi. The Kimi route works on macOS and Linux. This section describes
+the configured behavior. The tests use simulated Kimi servers only; a live check against
+Kimi is not done yet.
+
+1. Sign in with `kimi login` in your own Terminal. For the mainland China region, use
+   `kimi login --region mainland-cn`. SubSwitch supports the files of Kimi CLI versions
+   0.38.0 to 2.7.2.
+2. Add the block to your user configuration (`~/.config/subswitch/config.json`), then
+   restart `subswitch serve`:
+
+   ```json
+   {
+     "providers": {
+       "kimi": {}
+     }
+   }
+   ```
+
+3. Set the model of a Claude Code subagent to a Kimi model, for example
+   `model: kimi-for-coding`.
+
+Without the block, the `kimi` row of the serve banner ends in `(not turned on)`, and the
+`kimi auth:` row of `subswitch doctor` shows `not turned on`. With the block, the banner
+row shows the Kimi host.
+
+### Kimi sign-in
+
+- SubSwitch never runs the Kimi CLI and never starts a sign-in. It reads the sign-in file
+  that the Kimi CLI writes for the region, under `~/.kimi-code/credentials/`.
+- SubSwitch renews the sign-in when the Kimi CLI does: when less than 300 s, or less than
+  half of the token life, is left. It also renews once after Kimi refuses an access token
+  (401), then sends the request once more. Each renewal runs under the Kimi CLI lock in
+  `~/.kimi-code/oauth/`, and SubSwitch writes the new sign-in back to the same file, with
+  every key of the file. So the Kimi CLI and SubSwitch can share one sign-in.
+- SubSwitch keeps a small renewal record beside the lock (a file that ends in
+  `.subswitch-renewal.json`). A renewal that may have reached Kimi is not sent again. When
+  the sign-in ends, SubSwitch returns a local 401 that tells you to run `kimi login`.
+- The sign-in file and its folders must be private to your user: mode 0700 on the folders,
+  mode 0600 on the file, owned by you, with no links. A folder above them must not be open
+  to writes by other users. Otherwise SubSwitch refuses the file with a local 401.
+- SubSwitch does not read `KIMI_CODE_HOME`. If you set it for the Kimi CLI, set
+  `providers.kimi.authFile` to the sign-in file in that folder.
+- The Kimi token goes only to the Kimi hosts of the region. Client headers and client
+  credentials never go to Kimi. Kimi gets the name and version of SubSwitch and a random
+  device id that is new for each process. Redirects from Kimi are refused. The token is
+  not in logs, error bodies, `doctor` output, `models --json` or the health endpoint.
+- `subswitch doctor` reads the file with the same checks and shows the expiry and whether a
+  renewal is due. It never renews and takes no lock.
+
+### Kimi models
+
+- The Kimi models are `k3.1-pro`, `k3.1-pro-highspeed`, `k3`, `k3-256k`,
+  `kimi-for-coding` and `kimi-for-coding-highspeed`. The Kimi Code docs list these models.
+  They are not live-verified on this route.
+- A Kimi model routes by its exact id, by `kimi:<id>`, or by a `providers.kimi.aliases`
+  entry. Kimi models have no family alias.
+- SubSwitch sends the request to `<baseUrl>/messages?beta=true`. `count_tokens` gets a
+  local estimate and makes no Kimi call.
+- Thinking blocks in the client history are not sent to Kimi, because their signatures
+  belong to another service. Kimi thinking is not shown to the client. SubSwitch keeps the
+  Kimi thinking of a tool turn in process memory and sends it back only to Kimi.
+
+### Kimi failures (no fallback)
+
+A Kimi failure gives a fixed local error: an error status from Kimi, an error in the
+stream, a refused connection or a sign-in problem. SubSwitch does not send the request to
+Anthropic or to another provider, and it does not retry, except for the one renewal after
+a 401.
+
+### Kimi data
+
+Each Kimi request sends the conversation to Kimi: the system prompt, the messages, the tool
+definitions, the tool results (which can hold the contents of files that tools read) and
+images. Kimi's terms and data policies apply to this data.
+
+### Kimi configuration
+
+The whole `providers.kimi` block loads only from the user configuration or from the file
+that `SUBSWITCH_CONFIG` names. A project `subswitch.config.json` that sets
+`providers.kimi`, even to `{}` or `null`, fails at load.
+
+- `providers.kimi.region` is `global` (the default: `api.kimi.ai` and `auth.kimi.ai`) or
+  `mainland-cn` (`api.kimi.com` and `auth.kimi.com`). The region selects the Kimi hosts
+  and the Kimi CLI sign-in file.
+- `baseUrl` and `oauthTokenUrl` must use the HTTPS host of the region on the default port.
+  `authFile` must end in `credentials/<file of the region>`. Any other value fails at load.
+  The Kimi block has no `allowInsecureBaseUrl` key. A loopback URL loads, but it stops
+  `subswitch serve` at startup.
+- The [config reference](#config-reference) lists every `providers.kimi` key.
+
 ## Codex → Claude
 
 Sign in normally with both clients, then enable the reverse path:
@@ -615,8 +719,8 @@ An explicit `SUBSWITCH_CONFIG` file is authoritative and is not merged with the 
 Explicit config paths passed by callers of `loadConfig` also bypass the merge.
 `doctor` displays every loaded source, and errors identify source paths.
 
-`accessProfiles`, `routes` and the whole `providers.together` block load only from the
-user configuration or an explicit file.
+`accessProfiles`, `routes`, and the whole `providers.together` and `providers.kimi` blocks
+load only from the user configuration or an explicit file.
 This rule includes each profile's `allowInsecureBaseUrl` value.
 A project file that declares any of these keys fails with an error, even for an empty value.
 Move those keys to the user file, or select the file with `SUBSWITCH_CONFIG`.
@@ -648,8 +752,9 @@ offending key and exits 1 rather than starting:
    rejected with a message naming exactly where each key moved.
 2. **Unknown provider ids.** A `providers.<id>` block whose id this build does not ship —
    a typo like `providers.codexx`, or a provider from a future release — is rejected, and
-   the message lists the ids that *are* known. Today those are `codex` and `together`, so
-   `providers.codex` and `providers.together` are the only valid blocks.
+   the message lists the ids that *are* known. Today those are `codex`, `together` and
+   `kimi`, so `providers.codex`, `providers.together` and `providers.kimi` are the only
+   valid blocks.
 
 This is deliberate, and the reason is the same in both cases: the config schema **strips**
 keys it does not recognise instead of reporting them, so the only alternative to failing
@@ -663,7 +768,9 @@ to run on the raw file first and why a refusal to start is the better failure.
 
 The routable set is the **built-in model registry**:
 `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`,
-`gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Routing follows
+`gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`, plus the six
+[Kimi models](#kimi-models). A Kimi model name routes to Kimi only with a `providers.kimi`
+block; without it, the name gets a local 400 and does not go to Anthropic. Routing follows
 the registry so a new model becomes available on upgrade with no config edit, and
 unconfigured names outside it pass through to Anthropic. The registry itself is not
 configurable; to reach a Codex model before subswitch registers it, point a
@@ -776,7 +883,20 @@ All keys and their defaults:
 | `providers.together.streamIdleTimeoutMs` | `300000` (5 min) | Together stream idle timeout — resets on each SSE chunk |
 | `providers.together.maxSseEventBytes` | `4194304` (4 MiB) | Maximum bytes per individual SSE event from Together |
 | `providers.together.maxAggregateBytes` | `67108864` (64 MiB) | Maximum total accumulated frame bytes for non-streaming response aggregation; exceeding this returns 502 |
-| `limits.maxBufferedBodyBytes` | `33554432` (32 MiB) | Maximum request body bytes the relay buffers. A larger body is streamed to Anthropic unmodified; on a translated (Codex or Together) route it is answered `413 request_too_large`. |
+| `providers.kimi` | not set | **Opt-in block.** Without it, Kimi model names get a local 400 and SubSwitch reads no Kimi file. **User config or `SUBSWITCH_CONFIG` only** — a project file that sets any `providers.kimi` key fails at load. |
+| `providers.kimi.region` | `"global"` | `global` (`api.kimi.ai`, `auth.kimi.ai`) or `mainland-cn` (`api.kimi.com`, `auth.kimi.com`). Selects the Kimi hosts and the Kimi CLI sign-in file. |
+| `providers.kimi.baseUrl` | `"https://api.kimi.ai/coding/v1"` (global), `"https://api.kimi.com/coding/v1"` (mainland-cn) | Kimi coding API base URL; requests go to `<baseUrl>/messages?beta=true`. Must use the HTTPS host of the region on the default port. |
+| `providers.kimi.oauthTokenUrl` | `"https://auth.kimi.ai/api/oauth/token"` (global), `"https://auth.kimi.com/api/oauth/token"` (mainland-cn) | Kimi sign-in renewal endpoint. Must use the HTTPS sign-in host of the region on the default port. |
+| `providers.kimi.authFile` | `"~/.kimi-code/credentials/kimi-code-env-0e4f99c69cc27850.json"` (global), `"~/.kimi-code/credentials/kimi-code.json"` (mainland-cn) | The Kimi CLI sign-in file. Must be an absolute or `~` path that ends in `credentials/` and the file name of the region. Set it when the Kimi CLI uses `KIMI_CODE_HOME`. |
+| `providers.kimi.aliases` | `{}` | Custom aliases — map a short name to a Kimi model id. Exact registry ids win over an alias. |
+| `providers.kimi.reasoningCache.maxEntries` | `1024` | Maximum LRU entries in the Kimi thinking cache |
+| `providers.kimi.reasoningCache.maxBytes` | `16777216` (16 MiB) | Maximum total byte footprint of the Kimi thinking cache |
+| `providers.kimi.reasoningCache.maxTurnBytes` | `1048576` (1 MiB) | Maximum thinking bytes kept for one turn (at most 1 MiB); larger thinking is not kept |
+| `providers.kimi.requestTimeoutMs` | `600000` (10 min) | Wall-clock time limit per Kimi request |
+| `providers.kimi.streamIdleTimeoutMs` | `300000` (5 min) | Kimi stream idle timeout — resets on each SSE chunk |
+| `providers.kimi.maxSseEventBytes` | `4194304` (4 MiB) | Maximum bytes per individual SSE event from Kimi |
+| `providers.kimi.maxAggregateBytes` | `67108864` (64 MiB) | Maximum total accumulated frame bytes for non-streaming response aggregation; exceeding this returns 502 |
+| `limits.maxBufferedBodyBytes` | `33554432` (32 MiB) | Maximum request body bytes the relay buffers. A larger body is streamed to Anthropic unmodified; on a translated (Codex, Together or Kimi) route it is answered `413 request_too_large`. |
 | `limits.pingIntervalMs` | `15000` (15 s) | Interval between SSE ping frames sent to clients during long Codex streams |
 | `codexIngress.enabled` | `false` | Enable the reserved native Codex ingress endpoints. |
 | `codexIngress.subscriptionBaseUrl` | `"https://chatgpt.com/backend-api/codex"` | Native Codex subscription upstream. |
@@ -846,7 +966,7 @@ subswitch configures its inbound `http.Server` with the following fixed values:
 | `maxHeaderSize` | `65 536` bytes (64 KiB) | Anthropic's own limit; subswitch returns a `431 Request Header Fields Too Large` (Anthropic-shaped) when exceeded |
 
 When a client sends a body larger than `limits.maxBufferedBodyBytes` to a translated
-(Codex or Together) route, subswitch returns 413 and then **drains the remaining upload bytes** before
+(Codex, Together or Kimi) route, subswitch returns 413 and then **drains the remaining upload bytes** before
 closing the connection. This lets the client read the 413 response; without the drain, the
 TCP write-buffer fills and the client's `recv()` never sees the 413 body. For
 Anthropic-bound bodies above the window, subswitch streams the body verbatim and Anthropic
@@ -886,7 +1006,8 @@ subswitch models --json | jq .models[].id
   "providers": [
     { "id": "anthropic", "displayName": "Anthropic", "routing": "passthrough" },
     { "id": "codex", "displayName": "Codex", "routing": "registry" },
-    { "id": "together", "displayName": "Together", "routing": "registry" }
+    { "id": "together", "displayName": "Together", "routing": "registry" },
+    { "id": "kimi", "displayName": "Kimi", "routing": "registry" }
   ],
   "models": [
     {
@@ -1024,6 +1145,7 @@ how the request was dispatched. Valid values:
 | `anthropic:fallback` | Fail-open forward: colon-qualified name whose prefix is not a registered provider; relay forwards to Anthropic and emits `unknown_provider_qualifier` warn |
 | `codex:{endpoint}:{model}` | Request routed to the Codex provider leg (e.g. `codex:messages:gpt-5.6-sol`, `codex:count_tokens:gpt-5.6-sol`) |
 | `together:{endpoint}:{model}` | Request routed to the paid Together AI leg; `{model}` is the full id of the registered row, or for an unlisted model the id after the `together:` prefix |
+| `kimi:{endpoint}:{model}` | Request routed to the Kimi leg (e.g. `kimi:messages:kimi-for-coding`). Without a `providers.kimi` block, the relay returned a synthesized 400 and sent nothing upstream |
 | `invalid_qualified` | Malformed model id after the `together:` prefix; relay returned a synthesized 400 and sent nothing upstream |
 | `host_rejected` | Request refused by the loopback `Host`/`Origin` gate before routing; relay returned a synthesized 403 |
 | `codex_ingress:subscription:passthrough` | Subscription-mode Codex ingress; the gateway may translate a resolved Claude request. |
@@ -1067,6 +1189,8 @@ This header is present on:
   responses, and on all codex-leg error responses.
 - **Together-leg responses**: the same rule applies to the Together leg, which
   translates Together Chat Completions → Anthropic Messages.
+- **Kimi-leg responses**: the same rule applies to the Kimi leg, which rebuilds the
+  Kimi Messages stream before it reaches the client.
 - **Relay management endpoints**: `/__subswitch/health` (200 OK), and any
   unrecognized `/__subswitch/*` path (404 — fixed body, path not reflected).
 
@@ -1110,6 +1234,24 @@ End-to-end verification against the real CLI and real upstreams:
 - The wire recorder is HTTP-only. It inspects explicit SSE responses and successful
   streamed `POST .../responses` requests whose upstream omits `Content-Type`; other
   missing-header responses remain transparent pass-through.
+- The Kimi route is not live-verified. The tests use simulated Kimi servers. A live
+  renewal of the Kimi sign-in is also not verified: under the caps of the live check, the
+  sign-in may not be due, so that result can stay unknown.
+- SubSwitch supports the sign-in files of Kimi CLI versions 0.38.0 to 2.7.2. It refuses
+  other file layouts.
+- One SubSwitch process supports one Kimi account. The error-text scrub keeps only the
+  current and the previous Kimi token.
+- SubSwitch cannot detect `KIMI_DISABLE_OAUTH_LOCK` in the Kimi CLI environment. Do not
+  set it while SubSwitch uses the same sign-in, because both can then renew at the same
+  time and end the sign-in.
+- A Kimi home folder made under umask 002 is open to group writes, so SubSwitch refuses
+  its sign-in file. Run `chmod g-w` on the folder, or use umask 022 before `kimi login`.
+- The Kimi device id is new for each SubSwitch process.
+- Kimi has no `accessProfiles` (configVersion 2) routes. Kimi models route only through
+  the model registry.
+- The Kimi route has no failover, also after the first turn of a conversation. A Kimi
+  failure goes back to the client.
+- Kimi gets no `anthropic-beta` value. A value is added only after a live check on Kimi.
 
 ## Contributing
 
@@ -1122,8 +1264,11 @@ commit conventions. By participating you agree to the
 subswitch is a loopback-only proxy that handles subscription credentials and, for the
 Together AI route, a paid API key. It has no local token, so any local process can send
 requests that spend the Together key; keep the Together balance small (see
-[Together local access](#together-local-access)). Report vulnerabilities privately —
-see [SECURITY.md](SECURITY.md). Do not open a public issue for security reports.
+[Together local access](#together-local-access)). With a `providers.kimi` block,
+SubSwitch also reads and renews the sign-in file of your Kimi CLI (see
+[Kimi sign-in](#kimi-sign-in)), and any local process can send Kimi requests that use
+your Kimi plan. Report vulnerabilities privately — see [SECURITY.md](SECURITY.md). Do not
+open a public issue for security reports.
 
 ### Loopback `Host`/`Origin` gate
 

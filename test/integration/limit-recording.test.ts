@@ -21,6 +21,7 @@ import {
   withLimitRecorder,
 } from "../../src/limit-recorder.js";
 import { nativeProcess } from "../../e2e/gates/native-process.js";
+import { cliChildCommand, cliChildFolders } from "../helpers/cli-child.js";
 import type {
   LimitObservation,
   LimitContext,
@@ -271,7 +272,8 @@ describe("production native limit observation", () => {
 });
 describe("explicit route observations and inspection", () => {
   it("automatically records a naturally arriving failure in the serve entrypoint", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "subswitch-limit-serve-"));
+    const folders = await cliChildFolders();
+    const dir = folders.home;
     const backend = http.createServer((_req, res) => {
       res.writeHead(429, { "retry-after": "60" });
       res.end(error);
@@ -290,25 +292,18 @@ describe("explicit route observations and inspection", () => {
           anthropic: { baseUrl: upstream },
         }),
       );
-      child = spawn(
-        process.execPath,
-        [
-          "--import",
-          import.meta.resolve("tsx"),
-          join(process.cwd(), "src/cli.ts"),
-          "serve",
-        ],
-        {
-          cwd: dir,
-          env: {
-            ...process.env,
-            SUBSWITCH_CONFIG: join(dir, "subswitch.config.json"),
-            SUBSWITCH_LIMIT_RECORDING: "1",
-            SUBSWITCH_LIMIT_DIR: join(dir, "limits"),
-          },
-          stdio: ["ignore", "pipe", "pipe"],
+      const command = cliChildCommand(folders, ["serve"], {
+        env: {
+          SUBSWITCH_CONFIG: join(dir, "subswitch.config.json"),
+          SUBSWITCH_LIMIT_RECORDING: "1",
+          SUBSWITCH_LIMIT_DIR: join(dir, "limits"),
         },
-      );
+      });
+      child = spawn(command.file, command.args, {
+        cwd: command.cwd,
+        env: command.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
       let stderr = "";
       child.stderr!.on("data", (chunk) => {
         stderr += String(chunk);
@@ -521,6 +516,7 @@ describe("explicit route observations and inspection", () => {
   });
   it("reads records through the CLI without authentication or valid routing configuration", async () => {
     const dir = await mkdtemp(join(tmpdir(), "subswitch-limit-cli-private-"));
+    const folders = await cliChildFolders();
     try {
       const records: LimitObservation[] = [];
       const recorder = new LimitRecorder(join(dir, "12345"), { log() {} });
@@ -557,23 +553,14 @@ describe("explicit route observations and inspection", () => {
         router.close();
       }
       await recorder.flush();
-      const result = await nativeProcess(
-        process.execPath,
-        [
-          "--import",
-          "tsx",
-          "src/cli.ts",
-          "limits",
-          "--json",
-          "--port",
-          "12345",
-        ],
-        {
-          cwd: process.cwd(),
-          env: { ...process.env, SUBSWITCH_LIMIT_DIR: dir },
-          timeoutMs: 10000,
-        },
-      );
+      const command = cliChildCommand(folders, ["limits", "--json", "--port", "12345"], {
+        env: { SUBSWITCH_LIMIT_DIR: dir },
+      });
+      const result = await nativeProcess(command.file, command.args, {
+        cwd: command.cwd,
+        env: command.env,
+        timeoutMs: 10000,
+      });
       assert.equal(result.code, 0);
       assert.equal(result.failure, undefined);
       const report = JSON.parse(result.stdout);
@@ -584,6 +571,7 @@ describe("explicit route observations and inspection", () => {
       assert.ok(!JSON.stringify(report.records).includes("private"));
     } finally {
       await rm(dir, { recursive: true, force: true });
+      await rm(folders.home, { recursive: true, force: true });
     }
   });
 });

@@ -24,7 +24,8 @@ import {
   makeAccessToken,
 } from "./fake-upstreams.js";
 import { loadConfig } from "../../src/config.js";
-import { buildDeps, createProxyServer } from "../../src/server.js";
+import { createProxyServer } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import type { ModelResolution } from "../../src/models.js";
 
 // ---------------------------------------------------------------------------
@@ -46,7 +47,7 @@ describe("routing — ambiguous family forwards to Anthropic (F7)", () => {
     // A synthetic resolver that always reports "fast" as ambiguous between two providers.
     const resolve = (name: string): ModelResolution =>
       name === "fast"
-        ? { kind: "ambiguous", name: "fast", providers: ["codex", "kimi"] as never[] }
+        ? { kind: "ambiguous", name: "fast", providers: ["codex", "not-a-provider"] as never[] }
         : { kind: "unresolved" };
 
     const anthropic = await startFakeUpstream((_req, res) => {
@@ -97,7 +98,7 @@ describe("routing — ambiguous family forwards to Anthropic (F7)", () => {
       assert.ok(warnLog !== undefined, "ambiguous_model_name warn must be logged");
       assert.ok((warnLog.fields.model as string | undefined)?.includes("fast"), "warn log model field must include the ambiguous name");
       assert.ok((warnLog.fields.model as string | undefined)?.includes("codex"), "warn log model field must include first provider");
-      assert.ok((warnLog.fields.model as string | undefined)?.includes("kimi"), "warn log model field must include second provider");
+      assert.ok((warnLog.fields.model as string | undefined)?.includes("not-a-provider"), "warn log model field must include second provider");
 
       // C1 (I-022): request_complete.route must identify fail-open ambiguous forwards as distinct
       // from intended Anthropic routes so operators can filter them separately (applies ADR-010, avoids PF-023).
@@ -426,7 +427,7 @@ describe("routing — table built once via ownKeys trap (P2)", () => {
       ...config,
       providers: { ...config.providers, codex: { ...config.providers.codex, aliases: aliasesProxy } },
     };
-    const depsResult = buildDeps(modifiedConfig);
+    const depsResult = buildTestDeps(modifiedConfig);
     assert.ok(depsResult.ok, `buildDeps must succeed for default config: ${!depsResult.ok ? depsResult.error : ""}`);
     const deps = depsResult.value;
     const server = createProxyServer(deps);

@@ -5,13 +5,19 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createTogetherAuth, createTogetherKeyReader, envKeyPresent, type TogetherKeyReaderDeps } from "./together-auth.js";
 import { createTogetherHandler } from "./together-handler.js";
+import { createKimiAuth, type KimiStoreDeps } from "./kimi-native-auth.js";
+import { createKimiNativeStore } from "./kimi-native-store.js";
+import { createKimiHandler } from "./kimi-handler.js";
 import http from "node:http";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, Server } from "node:http";
 import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
 import { applyInboundPolicy, hostGateVerdict, SERVER_TUNING } from "./inbound-policy.js";
 import { type Result, ok, err } from "./result.js";
-import { aliasesByProvider, enumerateDestinations, providerConfigFor, withCredential, codexCredentialFor, type Config, type CredentialKindTable } from "./config.js";
+import {
+  aliasesByProvider, enumerateDestinations, providerConfigFor, withCredential, codexCredentialFor, isLoopbackHost,
+  type Config, type CredentialKindTable,
+} from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
 import { CLAUDE_EVENTS, OPENAI_EVENTS, ANTHROPIC_EVENTS, providerEvents } from "./provider-events.js";
 import { decideRoute } from "./router.js";
@@ -34,6 +40,7 @@ import {
 } from "./models.js";
 import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 import type { ProviderHandler } from "./provider-handler.js";
+import { notOptedInHandler } from "./provider-opt-in.js";
 import { codexIngressRoute } from "./codex-ingress.js";
 import { rejectCodexUpgrade, type CodexIngressEntry } from "./openai-passthrough.js";
 import { CodexGateway } from "./codex-gateway.js";
@@ -92,6 +99,22 @@ const createCodexProvider = (config: Config, logger: Logger, auth: ProviderAuth<
   });
 };
 
+/**
+ * The deps of each provider that read a credential store, run a program or read the
+ * environment. Every provider id needs an entry, so a new provider must state its deps.
+ * The integration test harness uses absent auth files for Codex and Claude by default.
+ * The default test fakes refuse Together and Kimi store calls.
+ */
+export interface ProviderDepsById {
+  readonly codex: undefined;
+  readonly together: TogetherKeyReaderDeps;
+  readonly kimi: KimiStoreDeps;
+}
+
+/** Injected provider deps, by provider id. buildDeps uses the live deps for a missing entry. */
+export type ProviderDeps = { readonly [K in ProviderId]?: ProviderDepsById[K] };
+
+/** Only this file defines live deps factories. The CLI and run-action may call them. */
 export const liveTogetherKeyReaderDeps = (): TogetherKeyReaderDeps => ({
   env: process.env,
   platform: process.platform,
@@ -102,12 +125,41 @@ export const liveTogetherKeyReaderDeps = (): TogetherKeyReaderDeps => ({
   },
 });
 
+/** The Kimi CLI sign-in file store, the network and the clock. Calling it reads nothing. */
+export const liveKimiStoreDeps = (): KimiStoreDeps => ({
+  openStore: (authFile) => createKimiNativeStore(authFile),
+  fetch,
+  now: Date.now,
+});
+
+/** The Kimi leg. buildDeps calls it only when the Kimi block is in the user config or SUBSWITCH_CONFIG. */
+const createKimiProvider = (config: Config, logger: Logger, deps: KimiStoreDeps): ProviderHandler => {
+  const provider = config.providers.kimi;
+  const { maxEntries, maxBytes } = provider.reasoningCache;
+  return createKimiHandler({
+    provider, logger, fetchImpl: deps.fetch,
+    auth: createKimiAuth({ store: deps.openStore(provider.authFile), oauthTokenUrl: provider.oauthTokenUrl, fetch: deps.fetch,
+      now: deps.now, logger }),
+    cache: new ReasoningCache(maxEntries, maxBytes, true),
+  });
+};
+
+/**
+ * The first Kimi URL key on a loopback address. Only injected test deps can serve one:
+ * the live store pairs only with the region hosts.
+ */
+const loopbackKimiKey = ({ baseUrl, oauthTokenUrl }: Config["providers"]["kimi"]): "baseUrl" | "oauthTokenUrl" | undefined => {
+  const urls = { baseUrl, oauthTokenUrl };
+  return (["baseUrl", "oauthTokenUrl"] as const).find((key) => URL.canParse(urls[key]) && isLoopbackHost(new URL(urls[key]).hostname));
+};
+
 const createTogetherProvider = (config: Config, logger: Logger, keyReaderDeps: TogetherKeyReaderDeps,
   fetchImpl: typeof fetch = fetch): ProviderHandler => {
   const provider = config.providers.together;
   const { maxEntries, maxBytes } = provider.reasoningCache;
   const cache = new ReasoningCache(maxEntries, maxBytes, true);
-  const reader = createTogetherKeyReader({ ...keyReaderDeps, onKeyLoaded: registerExactCredential });
+  // A key that the error scrub can not hold is refused with the fixed "malformed" error.
+  const reader = createTogetherKeyReader({ ...keyReaderDeps, onKeyLoaded: (key) => registerExactCredential("together", key) });
   return createTogetherHandler({
     provider, logger, fetchImpl, auth: createTogetherAuth(reader),
     putReasoning: (key, text) => cache.put(key, [text]),
@@ -118,17 +170,22 @@ const createTogetherProvider = (config: Config, logger: Logger, keyReaderDeps: T
   });
 };
 
-type CredentialUrl = Pick<Parameters<typeof vetCredentialUrl>[0], "url" | "expectedHost" | "allowOverride" | "refreshToken" | "together"> & {
+type CredentialUrl = Pick<Parameters<typeof vetCredentialUrl>[0],
+  "url" | "expectedHost" | "allowOverride" | "refreshToken" | "requireHttps" | "together"> & {
   readonly key: string;
+  /** The block has an allowInsecureBaseUrl key, so the host error can name it. */
+  readonly hostOptIn: boolean;
 };
 
 const CREDENTIAL_URLS: CredentialKindTable<readonly CredentialUrl[]> = {
-  "oauth-file": ({ baseUrl, defaultHost, oauthTokenUrl, defaultOauthHost, allowInsecureBaseUrl }) => [
-    { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: allowInsecureBaseUrl, refreshToken: false },
-    { url: oauthTokenUrl, expectedHost: defaultOauthHost, key: "oauthTokenUrl", allowOverride: allowInsecureBaseUrl, refreshToken: true },
+  "oauth-file": ({ baseUrl, defaultHost, oauthTokenUrl, defaultOauthHost, allowInsecureBaseUrl, hostOptIn, requireHttps }) => [
+    { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: allowInsecureBaseUrl, hostOptIn, refreshToken: false,
+      requireHttps },
+    { url: oauthTokenUrl, expectedHost: defaultOauthHost, key: "oauthTokenUrl", allowOverride: allowInsecureBaseUrl, hostOptIn,
+      refreshToken: true, requireHttps },
   ],
   "api-key": ({ baseUrl, defaultHost, allowInsecureBaseUrl }) => [
-    { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: allowInsecureBaseUrl, together: true },
+    { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: allowInsecureBaseUrl, hostOptIn: true, together: true },
   ],
 };
 
@@ -148,7 +205,7 @@ const CREDENTIAL_URLS: CredentialKindTable<readonly CredentialUrl[]> = {
  * do not call `buildDeps` and are unaffected.
  */
 export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel),
-  routingOptions: { fetchImpl?: typeof fetch; togetherKeyReader?: TogetherKeyReaderDeps } = {}): Result<ServerDeps, string> => {
+  routingOptions: { fetchImpl?: typeof fetch; providerDeps?: ProviderDeps } = {}): Result<ServerDeps, string> => {
 
   if (config.codexIngress.enabled && config.codexIngress.claude.enabled && !hasNativeDecoders())
     return err("Codex → Claude routing requires native zstd support. Use Node 22.15 or newer; forward routing remains available.");
@@ -168,11 +225,20 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
   }
   for (const id of PROVIDER_IDS) {
     const credential = providerConfigFor(config, id);
-    for (const url of withCredential(credential, CREDENTIAL_URLS)) {
-      const result = vetCredentialUrl({ ...url, path: `providers.${id}.${url.key}`, optInKey: `providers.${id}.allowInsecureBaseUrl`,
-        logger, events: providerEvents(id) });
+    for (const { hostOptIn, ...url } of withCredential(credential, CREDENTIAL_URLS)) {
+      const result = vetCredentialUrl({ ...url, path: `providers.${id}.${url.key}`,
+        ...(hostOptIn ? { optInKey: `providers.${id}.allowInsecureBaseUrl` } : {}), logger, events: providerEvents(id) });
       if (!result.ok) return result;
     }
+  }
+  // Without injected deps, buildDeps uses the live Kimi store, which never pairs with a loopback URL.
+  const kimiDeps = routingOptions.providerDeps?.kimi;
+  const kimiLoopback = kimiDeps === undefined ? loopbackKimiKey(config.providers.kimi) : undefined;
+  if (kimiLoopback !== undefined) {
+    const path = `providers.kimi.${kimiLoopback}`;
+    logger.log("error", providerEvents("kimi").baseUrlHostRejected, { path });
+    return err(`${path} points at a loopback address, which only test deps can serve. ` +
+      `Remove the key to use the ${config.providers.kimi.region} region host.`);
   }
   const anthropic = vetCredentialUrl({ url: config.anthropic.baseUrl, path: "anthropic.baseUrl", expectedHost: "api.anthropic.com",
     optInKey: "anthropic.allowInsecureBaseUrl", allowOverride: config.anthropic.allowInsecureBaseUrl, logger, events: ANTHROPIC_EVENTS });
@@ -208,7 +274,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
 
   const resolveClaude = claudeResolver(config.codexIngress.claude.aliases);
   if (resolveClaude.rejectedAliases.length) return err(`Invalid Claude aliases: ${resolveClaude.rejectedAliases.join(", ")}`);
-  const keyReaderDeps = routingOptions.togetherKeyReader ?? liveTogetherKeyReaderDeps();
+  const keyReaderDeps = routingOptions.providerDeps?.together ?? liveTogetherKeyReaderDeps();
   const codexAuth = createCodexAuth(config, logger);
   const sharedRouting = new SharedRouting(config, logger, undefined, routingOptions.fetchImpl);
 
@@ -229,6 +295,9 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
     providers: {
       codex: createCodexProvider(config, logger, codexAuth),
       together: createTogetherProvider(config, logger, keyReaderDeps, routingOptions.fetchImpl),
+      // Without the block, the fixed local error makes no store and reads no credential, file or network.
+      kimi: config.providers.kimi.optedIn ? createKimiProvider(config, logger, kimiDeps ?? liveKimiStoreDeps())
+        : notOptedInHandler("Kimi", "kimi"),
     },
     togetherEnv: keyReaderDeps.env,
     resolve: (name) => resolveModelFromTable(table, name),
@@ -281,13 +350,14 @@ const buildHealthBody = (config: Config, env: Readonly<NodeJS.ProcessEnv>): stri
       const { credential } = d;
       return {
         id: d.id,
-        ...withCredential<{ configured: boolean; keySource?: "env" | null }>(credential, {
+        // A provider without its block is not configured, and health does not stat its file.
+        ...(d.active ? withCredential<{ configured: boolean; keySource?: "env" | null }>(credential, {
           "oauth-file": ({ authFile }) => ({ configured: existsSync(authFile) }),
           "api-key": () => {
             const configured = envKeyPresent(env);
             return { configured, keySource: configured ? "env" : null };
           },
-        }),
+        }) : { configured: false }),
         modelCount: routableModelCount(MODEL_REGISTRY, d.id),
       };
     }),

@@ -7,7 +7,8 @@ import { gzipSync, brotliCompressSync, deflateSync } from "node:zlib";
 import type { AddressInfo } from "node:net";
 import { codexIngressRoute } from "../../src/codex-ingress.js";
 import { loadConfig } from "../../src/config.js";
-import { buildDeps } from "../../src/server.js";
+import { MODEL_REGISTRY, PROVIDER_IDS } from "../../src/models.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 import { startFakeUpstream, startSubswitch, rawHttpRequest } from "./fake-upstreams.js";
 
 const cleanups: (() => Promise<unknown>)[] = [];
@@ -110,6 +111,31 @@ describe("Codex namespace and raw HTTP ingress", () => {
     await root.text();
     assert.equal(api.requests.at(-1)?.url, "/v1?probe=1", "do not invent a trailing slash at the base path");
   });
+
+  for (const claude of [false, true]) {
+    it(`sends a model of each other registry provider to the OpenAI upstream only, with Claude translation ${claude ? "on" : "off"}`,
+      async () => {
+        const { proxy, api, subscription, anthropic } = await setup((_req, res) => {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end('{"error":{"message":"The model does not exist","code":"model_not_found"}}');
+        }, { claude: { enabled: claude } });
+        const names = PROVIDER_IDS.filter((id) => id !== "codex").flatMap((id) => {
+          const entry = MODEL_REGISTRY.find((model) => model.provider === id);
+          // A provider with no registry entry routes only by its qualifier.
+          return entry === undefined ? [`${id}:fixture/model`] : [entry.id, `${id}:${entry.id}`];
+        });
+        for (const model of names) {
+          const body = JSON.stringify({ model, stream: false, input: "untouched" });
+          const response = await fetch(`${proxy.url}/codex/v1/responses`, { method: "POST", headers: { "content-type": "application/json" }, body });
+          assert.equal(response.status, 400, `the OpenAI upstream answers ${model}`);
+          await response.text();
+          assert.equal(api.requests.at(-1)?.body.toString(), body);
+        }
+        assert.equal(api.requests.length, names.length);
+        assert.equal(subscription.requests.length + anthropic.requests.length, 0);
+        assert.deepEqual(proxy.refusedStoreCalls, [], "no provider credential store is used");
+      });
+  }
 
   it("does not parse, decompress, impose the translation body bound, or replace models", async () => {
     const { proxy, api } = await setup((_req, res) => res.end("ok"));
@@ -231,10 +257,10 @@ describe("Codex namespace and raw HTTP ingress", () => {
     for (const url of ["https://foreign.example/v1", "https://api.openai.com:444/v1"]) {
       const result = parse({ enabled: true, apiBaseUrl: url });
       assert.ok(result.ok);
-      assert.equal(buildDeps(result.value.config).ok, false);
+      assert.equal(buildTestDeps(result.value.config).ok, false);
       const explicit = parse({ enabled: true, apiBaseUrl: url, allowInsecureBaseUrl: true });
       assert.ok(explicit.ok);
-      const deps = buildDeps(explicit.value.config);
+      const deps = buildTestDeps(explicit.value.config);
       assert.ok(deps.ok);
       deps.value.forwardOpenai?.close();
     }

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CodexAuthManager, createFsAuthFileStore, inspectAuthFile, type AuthFileStore } from "../../src/codex-auth.js";
 import { noopLogger } from "../../src/logger.js";
+import type { ProviderAuth } from "../../src/provider-auth.js";
 import { providerEvents } from "../../src/provider-events.js";
 import { ok, err } from "../../src/result.js";
 
@@ -294,6 +295,37 @@ describe("CodexAuthManager", () => {
       endpoint.calls.length > callsAfterFirst,
       "forceRefresh after the cooldown window must call the token endpoint",
     );
+  });
+
+  /**
+   * The runner stops its wait for a forced refresh when the client closes. A token request
+   * that was already sent must still complete and be saved, because the token endpoint may
+   * already have used the refresh grant.
+   *
+   * Mutation that MUST turn this RED: pass the caller signal into the token request.
+   */
+  it("completes and saves a forced refresh after the caller signal aborts", async () => {
+    const store = memoryStore(authFile(accessToken(3_600_000)));
+    const caller = new AbortController();
+    const renewed = accessToken(7_200_000);
+    const auth: ProviderAuth<"codex"> = manager(store, {
+      calls: [],
+      fetchImpl: async (_url, init) => {
+        caller.abort(); // The client closes while the token request is in flight.
+        init?.signal?.throwIfAborted();
+        return tokenResponse(renewed, "refresh-2");
+      },
+    });
+    const failed = await auth.getCredentials();
+    assert.ok(failed.ok);
+
+    const result = await auth.forceRefresh(caller.signal, failed.value);
+
+    assert.ok(caller.signal.aborted, "the token request must start");
+    assert.ok(result.ok, "the sent refresh must complete");
+    assert.equal(result.value.authHeaders["authorization"], `Bearer ${renewed}`);
+    assert.equal(store.writes.length, 1, "the renewed tokens must be saved");
+    assert.equal((JSON.parse(store.content) as { tokens: { refresh_token: string } }).tokens.refresh_token, "refresh-2");
   });
 
   // -------------------------------------------------------------------------

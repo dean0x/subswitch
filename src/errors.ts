@@ -1,3 +1,5 @@
+import type { ProviderId } from "./models.js";
+
 /**
  * Match a Bearer token (token value may be any base64url-safe chars plus common extras).
  * Applied BEFORE the JWT pattern so that a `Bearer eyJ….….…` is consumed whole and
@@ -27,21 +29,33 @@ const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9\-._~+/]{12,}=*/gi;
  */
 const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g;
 
-const MAX_EXACT_CREDENTIALS = 32;
-const exactCredentials = new Set<string>();
+const MIN_EXACT_CREDENTIAL_LENGTH = 16;
+const MAX_EXACT_CREDENTIAL_LENGTH = 8192;
+
+interface ExactCredentialSlots {
+  readonly current: string;
+  readonly previous: string | undefined;
+}
+
+/** One entry per provider id, so the scrub holds at most two values per provider. */
+const exactCredentials = new Map<ProviderId, ExactCredentialSlots>();
 
 /**
- * Add one exact credential value (the loaded Together key) to the scrub set of
- * {@link redactCredentials}. The set holds at most MAX_EXACT_CREDENTIALS values and
- * drops the oldest value first. A value outside the key length bounds is ignored.
+ * Add the exact value of a loaded credential to the scrub of {@link redactCredentials}.
+ *
+ * Each source has one current and one previous slot. A new value moves the current
+ * value to the previous slot and drops the older one, so an error from a request that
+ * used the previous value is still redacted. A rotation of one source never drops the
+ * value of another source.
+ *
+ * Returns false for a value outside 16 to 8192 characters. The scrub does not hold that
+ * value, so the caller must refuse the credential.
  */
-export const registerExactCredential = (key: string): void => {
-  if (key.length < 16 || key.length > 512 || exactCredentials.has(key)) return;
-  if (exactCredentials.size === MAX_EXACT_CREDENTIALS) {
-    const oldest = exactCredentials.values().next();
-    if (!oldest.done) exactCredentials.delete(oldest.value);
-  }
-  exactCredentials.add(key);
+export const registerExactCredential = (source: ProviderId, value: string): boolean => {
+  if (value.length < MIN_EXACT_CREDENTIAL_LENGTH || value.length > MAX_EXACT_CREDENTIAL_LENGTH) return false;
+  const slots = exactCredentials.get(source);
+  if (slots?.current !== value) exactCredentials.set(source, { current: value, previous: slots?.current });
+  return true;
 };
 
 /**
@@ -59,7 +73,10 @@ export const registerExactCredential = (key: string): void => {
  * recorder's header-name-driven hashing helper (different threat model / different job).
  */
 export const redactCredentials = (text: string): string => {
-  for (const key of exactCredentials) text = text.replaceAll(key, "<redacted>");
+  for (const { current, previous } of exactCredentials.values()) {
+    text = text.replaceAll(current, "<redacted>");
+    if (previous !== undefined) text = text.replaceAll(previous, "<redacted>");
+  }
   return text.replace(BEARER_PATTERN, "Bearer <redacted>").replace(JWT_PATTERN, "<redacted-jwt>");
 };
 

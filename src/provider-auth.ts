@@ -73,5 +73,15 @@ export interface ProviderAuth<P extends ProviderId | DestinationProviderId> {
    */
   readonly refreshable: boolean;
   readonly getCredentials: (signal?: AbortSignal) => Promise<Result<ProviderCredential<P>, ProxyError>>;
-  readonly forceRefresh: () => Promise<Result<ProviderCredential<P>, ProxyError>>;
+  /**
+   * Renew the credential after the upstream refused `failed` with a 401.
+   *
+   * `signal` is the caller's request signal. The caller stops its wait if the signal aborts.
+   * The manager may also stop its wait, but it never passes that signal to the token request,
+   * the body read or the write-back. A refresh that the manager already sent can complete
+   * and save its result after the caller stops its wait. The manager must set its own time
+   * limits for all three steps. The refresh queue waits for the previous operation to settle,
+   * which includes any write-back. A manager may ignore both arguments.
+   */
+  readonly forceRefresh: (signal?: AbortSignal, failed?: ProviderCredential<P>) => Promise<Result<ProviderCredential<P>, ProxyError>>;
 }

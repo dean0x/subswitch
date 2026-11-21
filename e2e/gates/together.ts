@@ -472,7 +472,7 @@ const startProxy = async (configPath: string, key: string, events: Set<string>):
   const config = loadConfig({ env: { SUBSWITCH_CONFIG: configPath }, globalConfigPath: false });
   if (!config.ok) throw new ProbeStop("config_rejected");
   const deps = buildDeps(config.value.config, { log: (_level, event) => { if (events.size < 64) events.add(event); } },
-    { togetherKeyReader: keySeam(key) });
+    { providerDeps: { together: keySeam(key) } });
   if (!deps.ok) throw new ProbeStop("proxy_rejected");
   const server = createProxyServer(deps.value);
   const listening = await listenServer(server, 0, "127.0.0.1");

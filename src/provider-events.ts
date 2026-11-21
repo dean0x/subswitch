@@ -156,3 +156,18 @@ export const OPENAI_EVENTS = {
   compatOverWindowPassthrough: "codex_compat_over_window_passthrough", upstreamTimeout: "openai_upstream_timeout",
 } as const;
 export const ANTHROPIC_EVENTS = scopedEvents("anthropic");
+/**
+ * Kimi leg events: the provider table, plus the events of the Kimi sign-in store and its
+ * renewal. The type pins each added name to the `kimi_` prefix.
+ */
+export const KIMI_EVENTS = {
+  ...providerEvents("kimi"),
+  /** Another process held the Kimi CLI lock for the whole lock wait. */
+  lockBusy: "kimi_lock_busy",
+  /** Subswitch lost its Kimi CLI lock before the renewal was saved. */
+  lockLost: "kimi_lock_lost",
+  /** A renewal that may have reached Kimi has no known result, so it is not sent again. */
+  refreshRecoveryRequired: "kimi_refresh_recovery_required",
+  /** The credential wait ended before a credential was ready: the request ended, or the wait timed out. */
+  credentialWaitEnded: "kimi_credential_wait_ended",
+} as const satisfies Readonly<Record<string, `kimi_${string}`>>;

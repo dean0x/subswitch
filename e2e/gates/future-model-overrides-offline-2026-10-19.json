@@ -52,7 +52,7 @@
       "note": "Focused baseline/model/doctor suites passed before the final collision guard; the final full check covers all later changes."
     },
     {
-      "command": "/usr/bin/lockf -t 0 /Users/dean/Sandbox/.devflow/locks/heavy-tests.lock npm run check",
+      "command": "/usr/bin/lockf -t 0 <shared-test-lock> npm run check",
       "exitCode": 0,
       "tests": 973,
       "passed": 973,
