@@ -29,10 +29,7 @@ subswitch is a **loopback-only development proxy**. It binds `127.0.0.1` and its
 only clients are the developer's own tools on the same machine. It sits between
 Claude Code and its upstreams — `api.anthropic.com`, the Codex backend, only for
 requests that name a `together:` model the paid Together AI API, and only with a
-`providers.kimi` block the Kimi coding API — all reached over TLS. On macOS, a
-`providers.gemini` block permits a Code Assist bootstrap request with the `agy`
-sign-in. Subswitch reads the Gemini Keychain item but does not change it or run
-`agy`. The current build cannot send a live generate request.
+`providers.kimi` block the Kimi coding API — all reached over TLS.
 
 Defense-in-depth controls built into the proxy:
 
