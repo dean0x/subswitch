@@ -5,6 +5,7 @@
  * client id, the lock layout and the marker name are spelled here, apart from the code.
  */
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +13,7 @@ import { describe, it, type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { toAnthropicErrorBody, type ProxyError } from "../../src/errors.js";
 import { KIMI_ERRORS, toKimiProxyError, type KimiErrorCode } from "../../src/kimi-errors.js";
-import { createKimiAuth, type KimiAuthDeps } from "../../src/kimi-native-auth.js";
+import { createKimiAuth, kimiGrantOf, type KimiAuthDeps } from "../../src/kimi-native-auth.js";
 import { createKimiNativeStore, type KimiNativeStore, type KimiStoreHooks, type KimiTokenRecord } from "../../src/kimi-native-store.js";
 import type { LogFields, LogLevel, Logger } from "../../src/logger.js";
 import type { ProviderCredential } from "../../src/provider-auth.js";
@@ -22,9 +23,9 @@ const SLOT = "kimi-code";
 /** A token URL that the code can not make up: only the config value leads here. */
 const TOKEN_URL = "http://127.0.0.1:9/fake-kimi-oauth/api/oauth/token";
 const CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098";
-const ACCESS = "FAKE-kimi-access-0001";
+const ACCESS = `FAKE-kimi-access-${randomUUID()}`;
 const REFRESH = "FAKE-kimi-refresh-0001";
-const RENEWED = "FAKE-kimi-access-0002";
+const RENEWED = `FAKE-kimi-access-${randomUUID()}`;
 const ROTATED = "FAKE-kimi-refresh-0002";
 const PEER = "FAKE-kimi-peer-access-0003";
 /** Seconds of life left: 3600 is fresh, 600 is due but valid (due below 1800 s), -60 is expired. */
@@ -40,8 +41,8 @@ const record = (access = ACCESS, life = FRESH, refresh = REFRESH): KimiTokenReco
 const cliText = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 const reply = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const renewed = (access = RENEWED) =>
-  reply({ access_token: access, refresh_token: ROTATED, token_type: "Bearer", expires_in: 3600, scope: "kimi-code" });
+const renewedBody = { access_token: RENEWED, refresh_token: ROTATED, token_type: "Bearer", expires_in: 3600, scope: "kimi-code" };
+const renewed = (access = RENEWED) => reply({ ...renewedBody, access_token: access });
 const networkError = (code: string) =>
   new TypeError("fetch failed", { cause: Object.assign(new Error(`FAKE-cause ${TOKEN_URL}`), { code }) });
 const deferred = <T>() => {
@@ -173,6 +174,24 @@ describe("Kimi sign-in: renewal when due", () => {
     assert.deepEqual(steps, ["marker:prepared", "marker:pending", "request with marker pending"]);
   });
 
+  it("waits out the hold of a prepared marker after a restart, then renews once", async (t) => {
+    const home = await kimiHome(t, EXPIRED);
+    const retryAt = Date.now() + 30_000;
+    await home.store.withLease(signal(), async (lease) => {
+      const { record } = await lease.read();
+      await lease.writeMarker(kimiGrantOf(record), "prepared", retryAt);
+    });
+    const { auth, calls, clock } = kimiAuth(home, () => renewed());
+
+    clock.now = retryAt - 1;
+    failsWith(await auth.getCredentials(signal()), "refresh_busy");
+    assert.equal(calls.length, 0);
+
+    clock.now = retryAt + 1;
+    assert.equal(bearer(await auth.getCredentials(signal())), `Bearer ${RENEWED}`);
+    assert.equal(calls.length, 1);
+  });
+
   it("saves the new record atomically with mode 0600 and keeps the unknown keys", async (t) => {
     const home = await kimiHome(t, EXPIRED);
     const before = await lstat(home.file);
@@ -187,6 +206,16 @@ describe("Kimi sign-in: renewal when due", () => {
     });
     assert.deepEqual((await readdir(home.oauth)).sort(), [SLOT, `${SLOT}.subswitch-renewal.json`]);
     assert.deepEqual(await readdir(home.credentials), [`${SLOT}.json`]);
+  });
+
+  it("saves the new access token and keeps the refresh token if the reply omits it", async (t) => {
+    const home = await kimiHome(t, EXPIRED);
+    const { auth } = kimiAuth(home, () => reply({ access_token: RENEWED, expires_in: 3600 }));
+
+    assert.equal(bearer(await auth.getCredentials(signal())), `Bearer ${RENEWED}`);
+    const saved = await readRecord(home);
+    assert.equal(saved["access_token"], RENEWED);
+    assert.equal(saved["refresh_token"], REFRESH);
   });
 });
 
@@ -206,6 +235,16 @@ describe("Kimi sign-in: renewal after a 401", () => {
     const first = await auth.getCredentials(signal());
     assert.ok(first.ok);
     assert.equal(bearer(await auth.forceRefresh(signal(), first.value)), `Bearer ${RENEWED}`);
+    assert.equal(calls.length, 1);
+  });
+
+  it("gives refresh_rejected when renewal returns the refused bearer again", async (t) => {
+    const home = await kimiHome(t);
+    const { auth, calls } = kimiAuth(home, () => renewed(ACCESS));
+    const first = await auth.getCredentials(signal());
+    assert.ok(first.ok);
+
+    failsWith(await auth.forceRefresh(signal(), first.value), "refresh_rejected");
     assert.equal(calls.length, 1);
   });
 
@@ -310,15 +349,21 @@ describe("Kimi sign-in: a request that may have left is never sent again", () =>
   }), { status: 200 });
   const outcomes: ReadonlyArray<readonly [string, () => Response]> = [
     ["a connection reset", () => { throw networkError("ECONNRESET"); }],
+    ["an ETIMEDOUT fetch error", () => { throw networkError("ETIMEDOUT"); }],
     ["a 503 reply", () => new Response(`FAKE-busy ${REFRESH}`, { status: 503 })],
     ["a 200 reply that is not JSON", () => new Response(`{"access_token":"FAKE-not-json ${REFRESH}`, { status: 200 })],
     ["a 200 reply with no access token", () => reply({ refresh_token: ROTATED, expires_in: 3600 })],
+    ["a 200 reply with a 30 s token life", () => reply({ ...renewedBody, expires_in: 30 })],
+    ["a 200 reply with a token life above one year", () => reply({ ...renewedBody, expires_in: 86_400 * 366 })],
+    ["a 200 reply with the mac token type", () => reply({ ...renewedBody, token_type: "mac" })],
+    ["a 200 reply with a control character in scope", () => reply({ ...renewedBody, scope: "a\u0001b" })],
     ["a reply body that breaks", brokenBody],
     ["a redirect reply", () => new Response(null, { status: 302, headers: { location: "https://elsewhere.invalid/token" } })],
   ];
   for (const [name, answer] of outcomes) {
     it(`gives refresh_recovery_required after ${name}, also after a restart and a long wait`, async (t) => {
       const home = await kimiHome(t, EXPIRED);
+      const raw = await readFile(home.file);
       const { auth, calls, clock } = kimiAuth(home, (_, count) => (count === 1 ? answer() : renewed()));
       failsWith(await auth.getCredentials(signal()), "refresh_recovery_required");
       assert.equal((await readMarker(home))["outcome"], "pending");
@@ -328,13 +373,15 @@ describe("Kimi sign-in: a request that may have left is never sent again", () =>
       failsWith(await auth.getCredentials(signal()), "refresh_recovery_required");
       failsWith(await restarted.auth.getCredentials(signal()), "refresh_recovery_required");
       assert.equal(calls.length + restarted.calls.length, 1);
-      assert.equal((await readRecord(home))["access_token"], ACCESS);
+      assert.deepEqual(await readFile(home.file), raw);
     });
   }
 
   const backoffs: ReadonlyArray<readonly [string, () => Response, KimiErrorCode]> = [
     ["a failed name lookup", () => { throw networkError("ENOTFOUND"); }, "refresh_unavailable"],
+    ["an EAI_AGAIN name lookup error", () => { throw networkError("EAI_AGAIN"); }, "refresh_unavailable"],
     ["a refused connection", () => { throw networkError("ECONNREFUSED"); }, "refresh_unavailable"],
+    ["an UND_ERR_CONNECT_TIMEOUT fetch error", () => { throw networkError("UND_ERR_CONNECT_TIMEOUT"); }, "refresh_unavailable"],
     ["a 429 reply", () => reply({ error: "rate_limited" }, 429), "refresh_busy"],
   ];
   for (const [name, answer, code] of backoffs) {
