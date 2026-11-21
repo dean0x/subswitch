@@ -306,7 +306,7 @@ const CLI_CHILD_ARRAY = /\b(?:cliChildCommand|runCliChild)\s*\([^,]*,\s*\[([^\]]
 const serveLaunches = (source: string): string[] => [...source.matchAll(CLI_CHILD_ARRAY)]
   .filter(([, args = ""]) => /^\s*(?:$|["'`]-)|(?:^|,)\s*(["'`])serve\1\s*(?:,|$)/.test(args))
   .map(([call]) => call);
-const healthProbe = (source: string): boolean => source.includes("/__subswitch/health") && /\bfetch\s*\(/.test(source);
+const healthProbe = (source: string): boolean => source.includes("/__subswitch/health") && /\b(?:fetch|get|request)\s*\(/.test(source);
 const RELAY_DETACH_SIGNAL = /\.\s*kill\s*\(|\[\s*["'`]kill["'`]\s*\]/;
 
 describe("source-text guards: relay lifecycle", () => {

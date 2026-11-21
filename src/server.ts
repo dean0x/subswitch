@@ -57,6 +57,8 @@ export interface ServerDeps {
   readonly destinations: readonly RoutingDestination[];
   readonly togetherEnv?: Readonly<NodeJS.ProcessEnv>;
   readonly identity?: { readonly pid: number; readonly nonce: string };
+  /** Do not acknowledge a relay until its startup files and signal handlers are ready. */
+  readonly healthReady?: () => boolean;
   /** Privileged default leg — handles everything that is not POST /v1/messages*. */
   readonly forwardAnthropic: AnthropicForwarder;
   readonly forwardOpenai: CodexIngressEntry | undefined;
@@ -606,6 +608,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       // /__subswitch/* namespace: handled locally, never forwarded upstream.
       if (pathname.startsWith("/__subswitch/")) {
         if (req.method === "GET" && pathname === "/__subswitch/health") {
+          if (deps.healthReady?.() === false) { res.destroy(); return; }
           res.writeHead(200, synthesizedHeaders());
           res.end(buildHealthBody(config, deps.destinations, deps.togetherEnv ?? {}, deps.identity));
           return;

@@ -138,7 +138,7 @@ it("warns once on stderr and reports pending drops in the next successful batch"
   await chmod(active, 0o600);
   logger.log("info", "third");
   await flush();
-  assert.deepEqual(await logLines(directory), ["level=warn event=log_lines_dropped count=1", "level=info event=third"]);
+  assert.deepEqual(await logLines(directory), ["level=warn event=log_lines_dropped count=3", "level=info event=third"]);
 });
 
 it("still writes the file when the foreground console throws", async (t) => {

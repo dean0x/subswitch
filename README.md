@@ -1102,6 +1102,7 @@ environment).
 The relay uses `~/.cache/subswitch/relay/<port>/relay.log` for the active log.
 `XDG_CACHE_HOME` does not change this path. The other relay files share this port folder.
 The port folder has mode `0700`. The relay creates its files with mode `0600`.
+Only the owner can have write access to the folders from the home folder to the port folder.
 
 | File | Contents |
 |------|----------|

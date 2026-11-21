@@ -57,7 +57,8 @@ function existing(check: RelayClassification, afterExit = false): Outcome | unde
     case "verified": return { kind: "pid", pid: check.record.pid, otherVersion: check.version !== SUBSWITCH_VERSION };
     case "legacy": return afterExit ? undefined : { kind: "legacy" };
     case "foreign": return problem("port_in_use");
-    case "unverified": case "none": return undefined;
+    case "unverified": return !afterExit && check.reason === "unsafe_path" ? problem(check.reason) : undefined;
+    case "none": return undefined;
     default: return check satisfies never;
   }
 }
@@ -69,6 +70,21 @@ function effectivePort(d: DetachDeps): Result<number, string> {
   }
   const parsed = PortSchema.safeParse(d.port);
   return parsed.success ? ok(parsed.data) : err(`invalid --port "${d.port}": port must be an integer between 1 and 65535`);
+}
+
+function readiness(check: RelayClassification, d: DetachDeps, port: number): Outcome | undefined {
+  switch (check.kind) {
+    case "verified": {
+      const current = d.readRecord(port, d.home);
+      if (!current.ok) return problem(current.error);
+      return current.value?.pid === check.record.pid && current.value.nonce === check.record.nonce
+        ? { kind: "pid", pid: check.record.pid } : problem("identity_mismatch");
+    }
+    case "unverified": return check.reason === "no_answer" ? undefined : problem(check.reason);
+    case "foreign": case "legacy": return problem("identity_mismatch");
+    case "none": return undefined;
+    default: return check satisfies never;
+  }
 }
 
 function waitForRelay(d: DetachDeps, child: SpawnedRelay, port: number): Promise<Outcome> {
@@ -112,19 +128,8 @@ function waitForRelay(d: DetachDeps, child: SpawnedRelay, port: number): Promise
         const done = d.classify(port, { home: d.home, record, signal: controller.signal }).then(check => {
           pending = undefined;
           if (state !== "poll") return;
-          switch (check.kind) {
-            case "verified": {
-              const latest = d.readRecord(port, d.home);
-              if (!latest.ok) finish(problem(latest.error));
-              else if (latest.value?.pid === record.pid && latest.value.nonce === record.nonce) finish({ kind: "pid", pid: record.pid });
-              else finish(problem("identity_mismatch"));
-              break;
-            }
-            case "unverified": if (check.reason !== "no_answer") finish(problem(check.reason)); break;
-            case "foreign": case "legacy": finish(problem("identity_mismatch")); break;
-            case "none": break;
-            default: check satisfies never;
-          }
+          const outcome = readiness(check, d, port);
+          if (outcome !== undefined) finish(outcome);
         });
         pending = { controller, done };
       }

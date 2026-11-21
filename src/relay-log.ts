@@ -57,7 +57,7 @@ export function createRelayLogger(options: RelayLogOptions): RelayLogger {
       const notice = dropped === 0 ? "" : isoLine(`${renderLogLine("warn", "log_lines_dropped")} count=${dropped}`);
       await append(target, notice + batch.join(""));
     } catch {
-      drops += dropped;
+      drops += dropped + batch.length;
       warnOnce();
     }
   };

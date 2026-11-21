@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmodSync, closeSync, fstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, fstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
@@ -53,10 +53,12 @@ function fixture(t: TestContext) {
   const spawn = t.mock.fn<DetachDeps["spawn"]>(() => ok(child));
   const loadConfig = t.mock.fn<DetachDeps["loadConfig"]>(() => ok({ config: { port } }));
   const answers: RelayClassification[] = [];
-  const state: { record?: RelayRecord; fetch: typeof fetch } = { fetch: async () => Response.json(health) };
+  const state: { record?: RelayRecord; requestHealth: NonNullable<Parameters<typeof classifyRelay>[1]["requestHealth"]> } = {
+    requestHealth: async () => Response.json(health),
+  };
   const readRecord = t.mock.fn<DetachDeps["readRecord"]>(() => ok(state.record));
   const classify = t.mock.fn<DetachDeps["classify"]>((p, deps) => deps.record
-    ? classifyRelay(p, { ...deps, fetch: state.fetch }) : Promise.resolve(answers.shift() ?? { kind: "none" }));
+    ? classifyRelay(p, { ...deps, requestHealth: state.requestHealth }) : Promise.resolve(answers.shift() ?? { kind: "none" }));
   const stdout: string[] = [], stderr: string[] = [], errors: string[] = [];
   const deps: DetachDeps = {
     platform: "linux", home, clock, spawn, loadConfig, classify, readRecord,
@@ -79,10 +81,22 @@ it("prints only the verified child pid after the record names that child (TP-1)"
   assert.deepEqual([await done, f.stdout, f.stderr], [0, ["1234"], []]);
 });
 
+it("reuses a relay that publishes its record during the first health check", async t => {
+  const f = fixture(t);
+  const boot = openBootLog(port, f.home);
+  assert.ok(boot.ok);
+  closeSync(boot.value);
+  const classify: DetachDeps["classify"] = (p, deps) => classifyRelay(p, { ...deps, requestHealth: async () => {
+    writeFileSync(join(relayFolder(port, f.home), "relay.json"), JSON.stringify(record), { mode: 0o600 });
+    return Response.json(health);
+  } });
+  assert.deepEqual([await detachRelay({ ...f.deps, classify }), f.stdout, f.stderr, f.spawn.mock.callCount()], [0, [String(record.pid)], [], 0]);
+});
+
 it("does not accept a health answer for a record that has changed (TP-1)", async t => {
   const f = fixture(t);
   f.state.record = record;
-  f.state.fetch = async () => {
+  f.state.requestHealth = async () => {
     f.state.record = { ...record, nonce: "b".repeat(32) };
     return Response.json(health);
   };
@@ -100,11 +114,8 @@ it("polls every 100 ms, with one GET at a time and an 8 s deadline (TP-4/13)", a
     return request.signal;
   });
   f.state.record = record;
-  f.state.fetch = async (url, options) => {
-    assert.equal(url, `http://127.0.0.1:${port}/__subswitch/health`);
-    assert.equal(options?.method, "GET");
-    const signal = options?.signal;
-    assert.ok(signal);
+  f.state.requestHealth = async (requestedPort, signal) => {
+    assert.equal(requestedPort, port);
     requestTimes.push(f.clock.now());
     peak = Math.max(peak, ++active);
     const body = new ReadableStream<Uint8Array>({
@@ -150,6 +161,7 @@ for (const flag of ["verbose", "quiet"] as const) {
 
 for (const [label, first, onExit, code, stdout, stderr] of [
   ["refuses a foreign port", { kind: "foreign" }, undefined, 1, [], ["subswitch: port_in_use"]],
+  ["leaves an unsafe record intact", { kind: "unverified", reason: "unsafe_path" }, undefined, 1, [], ["subswitch: unsafe_path"]],
   ["reports a legacy relay", { kind: "legacy" }, undefined, 0, [], ["subswitch: restart the legacy relay to get its pid"]],
   ["reports a version difference", verified(4567, "old"), undefined, 0, ["4567"], ["subswitch: the relay version differs from this CLI"]],
   ["reuses a verified relay", verified(4567), undefined, 0, ["4567"], []],
@@ -181,8 +193,8 @@ for (const [label, event, withinTail] of [["exit", "exit", true], ["exit with no
     });
     f.state.record = record;
     let canceled = false;
-    f.state.fetch = (_, options) => new Promise((_, reject) => {
-      options?.signal?.addEventListener("abort", () => { canceled = true; reject(); }, { once: true });
+    f.state.requestHealth = (_, signal) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => { canceled = true; reject(); }, { once: true });
     });
     const done = detachRelay(f.deps);
     const settled = t.mock.fn();
@@ -202,7 +214,7 @@ for (const change of [{ pid: 999 }, { nonce: "b".repeat(32) }, { name: "foreign"
   it(`refuses a health ${Object.keys(change)[0]} mismatch (TP-13)`, async t => {
     const f = fixture(t);
     f.state.record = record;
-    f.state.fetch = async () => Response.json({ ...health, ...change });
+    f.state.requestHealth = async () => Response.json({ ...health, ...change });
     assert.deepEqual([await detachRelay(f.deps), f.stdout, f.stderr], [1, [], ["subswitch: identity_mismatch"]]);
   });
 }

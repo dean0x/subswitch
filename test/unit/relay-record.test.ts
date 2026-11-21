@@ -39,12 +39,12 @@ async function recordPath(home: string, port = PORT): Promise<string> {
   return join(path, "relay.json");
 }
 
-async function listen(t: TestContext, handler: RequestListener): Promise<number> {
+async function listen(t: TestContext, handler: RequestListener, port = 0): Promise<number> {
   const server = createServer(handler);
   t.after(() => { server.close(); server.closeAllConnections(); });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
+    server.listen(port, "127.0.0.1", resolve);
   });
   const address = server.address();
   assert.ok(address !== null && typeof address !== "string");
@@ -135,6 +135,18 @@ it("refuses a linked ancestor or a port folder with loose mode", async (t) => {
   assert.deepEqual(readRelayRecord(PORT, other), unsafe);
 });
 
+it("requires owner-only write access from the home to the port folder", async (t) => {
+  const home = await testHome(t);
+  const portDir = value(ensureRelayFolder(PORT, home));
+  for (const parent of [home, join(home, ".cache"), join(portDir, "..", ".."), join(portDir, "..")]) {
+    await chmod(parent, 0o775);
+    assert.deepEqual(ensureRelayFolder(PORT, home), unsafe);
+    assert.deepEqual(openBootLog(PORT, home), unsafe);
+    await chmod(parent, 0o755);
+    assert.equal(value(ensureRelayFolder(PORT, home)), portDir);
+  }
+});
+
 it("clears its temp file after a failed rename and never writes through a symlink", async (t) => {
   const home = await testHome(t);
   const path = await recordPath(home);
@@ -187,6 +199,21 @@ it("classifies legacy, foreign, mismatched and verified health answers", async (
   body = health;
   assert.deepEqual(await classifyRelay(port, deps), { kind: "verified", record, version: "new" });
   assert.deepEqual(requests, Array.from({ length: 8 }, () => `GET ${PATH}`));
+});
+
+it("checks a loopback relay on a port that browser fetch excludes", async (t) => {
+  const home = await testHome(t);
+  for (const port of [10080, 6667, 6000]) {
+    try {
+      await listen(t, (_req, res) => res.end('{"name":"subswitch","version":"old"}'), port);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") continue;
+      throw error;
+    }
+    assert.deepEqual(await classifyRelay(port, { home }), { kind: "legacy" });
+    return;
+  }
+  assert.fail("No free test port");
 });
 
 it("times out after one second and distinguishes no record from no answer", async (t) => {
@@ -274,4 +301,6 @@ it("takes only the last prefixed boot line in the tail, cleans it and caps it", 
   assert.equal(value(readBootTail(PORT, home)), undefined);
   await writeFile(path, `subswitch: first\n\u001bsubswitch: ignore\nsubswitch: a\u001b\u009bz${"x".repeat(300)}\nlast but no prefix\n`);
   assert.equal(value(readBootTail(PORT, home)), `subswitch: az${"x".repeat(187)}`);
+  await writeFile(path, "subswitch: config contains Bearer FAKE-BOOT-VALUE\n");
+  assert.equal(value(readBootTail(PORT, home)), "subswitch: config contains Bearer <redacted>");
 });

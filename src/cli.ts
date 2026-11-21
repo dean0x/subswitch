@@ -290,12 +290,7 @@ const serve = async (
   portStr?: string,
 ): Promise<void> => {
   const { config, configPath, fileFound } = result;
-  const managedBy = process.env["SUBSWITCH_MANAGED_BY"];
-  if (managedBy !== undefined && managedBy !== "detach") {
-    fail("SUBSWITCH_MANAGED_BY must be unset or detach");
-    return;
-  }
-  const detached = managedBy === "detach";
+  const detached = process.env["SUBSWITCH_MANAGED_BY"] === "detach";
 
   // Validate --port if given, with byte-identical wording to init port validation. [F3/F15]
   let effectivePort = config.port;
@@ -335,7 +330,8 @@ const serve = async (
     return;
   }
   const deps = depsResult.value;
-  const server = createProxyServer({ ...deps, identity: { pid, nonce } });
+  let ready = false;
+  const server = createProxyServer({ ...deps, identity: { pid, nonce }, healthReady: () => ready });
   const listenResult = await listenServer(server, effectiveConfig.port, "127.0.0.1");
   if (!listenResult.ok) {
     if (listenResult.error.code === "EADDRINUSE") {
@@ -405,6 +401,7 @@ const serve = async (
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(signal, () => shutdown(signal));
   }
+  ready = true;
 };
 
 // ---------------------------------------------------------------------------
@@ -602,6 +599,11 @@ const main = async (): Promise<void> => {
       return;
 
     case "serve": {
+      const managedBy = process.env["SUBSWITCH_MANAGED_BY"];
+      if (managedBy !== undefined && managedBy !== "detach") {
+        fail("SUBSWITCH_MANAGED_BY must be unset or detach");
+        return;
+      }
       if (command.detach) {
         process.exitCode = await detachRelay({
           platform: process.platform, home: homedir(),

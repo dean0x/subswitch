@@ -1,7 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, unlinkSync } from "node:fs";
+import { closeSync, constants, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, unlinkSync, type Stats } from "node:fs";
 import { open, rename, unlink } from "node:fs/promises";
+import { get } from "node:http";
 import { isAbsolute, join } from "node:path";
+import { Readable } from "node:stream";
+import { redactCredentials } from "./errors.js";
 import { z } from "zod";
 import { CodexIngressHealthSchema } from "./codex-health.js";
 import { CONTROL_CHARS } from "./logger.js";
@@ -60,7 +63,7 @@ export interface ClassifyRelayDeps {
   /** A record from the strict reader that triggered a readiness probe. */
   readonly record?: RelayRecord;
   readonly signal?: AbortSignal;
-  readonly fetch?: typeof fetch;
+  readonly requestHealth?: typeof requestLoopbackHealth;
 }
 
 export function relayFolder(port: number, home: string): string {
@@ -76,8 +79,9 @@ function checkFolder(port: number, home: string, create: boolean): RelayPathResu
   const directory = relayFolder(port, home);
   const uid = process.getuid?.();
   try {
-    const homeStat = lstatSync(home);
-    if (!homeStat.isDirectory() || (uid !== undefined && homeStat.uid !== uid)) return err("unsafe_path");
+    const safeParent = (stat: Stats) => stat.isDirectory() &&
+      (stat.mode & 0o022) === 0 && (uid === undefined || stat.uid === uid);
+    if (!safeParent(lstatSync(home))) return err("unsafe_path");
     for (const path of [join(home, ".cache"), join(directory, "..", ".."), join(directory, ".."), directory]) {
       let stat = lstatSync(path, { throwIfNoEntry: false });
       if (stat === undefined) {
@@ -89,7 +93,7 @@ function checkFolder(port: number, home: string, create: boolean): RelayPathResu
         }
         stat = lstatSync(path);
       }
-      if (!stat.isDirectory() || (uid !== undefined && stat.uid !== uid)) return err("unsafe_path");
+      if (!safeParent(stat)) return err("unsafe_path");
       if (path === directory && (!isPrivateFolder(stat) || (stat.mode & 0o7777) !== DIRECTORY_MODE)) return err("unsafe_path");
     }
     return ok(directory);
@@ -187,14 +191,27 @@ export function removeOwnRelayRecord(port: number, home: string, nonce: string):
 
 type HealthProbe = { readonly answered: false } | { readonly answered: true; readonly health?: RelayHealth };
 
-async function probeHealth(port: number, { signal: cancel, fetch = globalThis.fetch }: ClassifyRelayDeps): Promise<HealthProbe> {
+type HealthResponse = Pick<Response, "status" | "body">;
+
+// Fetch blocks some valid relay ports. Connect directly to the selected loopback socket.
+function requestLoopbackHealth(port: number, signal: AbortSignal): Promise<HealthResponse> {
+  return new Promise((resolve, reject) => {
+    get({ hostname: "127.0.0.1", port, path: "/__subswitch/health", agent: false, signal }, (response) => {
+      const body = Readable.toWeb(response, { strategy: { highWaterMark: HEALTH_BYTES, size: (chunk: Uint8Array) => chunk.byteLength } });
+      resolve({ status: response.statusCode ?? 0, body });
+    }).once("upgrade", (_response, socket) => {
+      socket.destroy();
+      resolve({ status: 101, body: null });
+    }).once("error", reject);
+  });
+}
+
+async function probeHealth(port: number, { signal: cancel, requestHealth = requestLoopbackHealth }: ClassifyRelayDeps): Promise<HealthProbe> {
   const timeout = AbortSignal.timeout(HEALTH_MS);
   const signal = cancel === undefined ? timeout : AbortSignal.any([timeout, cancel]);
-  let response: Response;
+  let response: HealthResponse;
   try {
-    response = await fetch(`http://127.0.0.1:${port}/__subswitch/health`, {
-      method: "GET", redirect: "manual", signal,
-    });
+    response = await requestHealth(port, signal);
   } catch {
     return { answered: false };
   }
@@ -227,9 +244,12 @@ async function probeHealth(port: number, { signal: cancel, fetch = globalThis.fe
 export async function classifyRelay(port: number, deps: ClassifyRelayDeps): Promise<RelayClassification> {
   const current = deps.record === undefined ? readRelayRecord(port, deps.home) : ok(deps.record);
   if (!current.ok) return { kind: "unverified", reason: current.error };
-  const record = current.value;
   const probe = await probeHealth(port, deps);
-  if (!probe.answered) return record === undefined ? { kind: "none" } : { kind: "unverified", reason: "no_answer", record };
+  if (!probe.answered) return current.value === undefined ? { kind: "none" } : { kind: "unverified", reason: "no_answer", record: current.value };
+  // A relay can publish or replace the record while the health request is in flight.
+  const latest = deps.record === undefined ? readRelayRecord(port, deps.home) : current;
+  if (!latest.ok) return { kind: "unverified", reason: latest.error };
+  const record = latest.value;
   const health = probe.health;
   if (record === undefined) return { kind: health === undefined ? "foreign" : "legacy" };
   if (health?.pid !== record.pid || health.nonce !== record.nonce) return { kind: "unverified", reason: "identity_mismatch", record };
@@ -270,6 +290,6 @@ export function readBootTail(port: number, home: string): RelayPathResult<string
     const lines = tail.subarray(guard, bytes).toString("utf8").split("\n");
     if (guard === 1 && tail[0] !== 0x0a) lines.shift();
     const line = lines.findLast((entry) => entry.startsWith("subswitch: "));
-    return ok(line?.replace(CONTROL_CHARS, "").slice(0, BOOT_LINE_CHARS));
+    return ok(line === undefined ? undefined : redactCredentials(line.replace(CONTROL_CHARS, "")).slice(0, BOOT_LINE_CHARS));
   });
 }

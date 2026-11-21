@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { access, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { createConnection, Server } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +12,7 @@ import { classifyRelay, ensureRelayFolder, readRelayRecord } from "../../src/rel
 import { SUBSWITCH_VERSION } from "../../src/version.js";
 import { startRelayChild, type RelayChild, type RelayChildOptions } from "../helpers/relay-child.js";
 
-async function launch(t: TestContext, options: Pick<RelayChildOptions, "detach" | "portFromConfig" | "extraImport" | "prepare"> & { readonly env?: NodeJS.ProcessEnv } = {}) {
+async function launch(t: TestContext, options: Pick<RelayChildOptions, "detach" | "portFromConfig" | "extraImport" | "prepare" | "config"> & { readonly env?: NodeJS.ProcessEnv } = {}) {
   const relay = await startRelayChild({
     ...options, env: { NO_COLOR: "1", SUBSWITCH_LIMIT_RECORDING: "0", ...options.env },
   });
@@ -64,12 +65,35 @@ for (const mode of ["foreground", "detach"] as const) {
 
 for (const value of ["launchd", "unknown"]) {
   it(`refuses managed-by ${value} before listen`, async (t) => {
-    const relay = await launch(t, { env: { SUBSWITCH_MANAGED_BY: value } });
+    const relay = await launch(t, { detach: value === "launchd", env: { SUBSWITCH_MANAGED_BY: value } });
     assert.deepEqual(await beforeReady(relay), [1, null]);
     assert.match(relay.stderr, /SUBSWITCH_MANAGED_BY/);
     await assert.rejects(access(join(state(relay), "relay.json")), { code: "ENOENT" });
   });
 }
+
+it("answers health only after the action control file is ready", async (t) => {
+  const relay = await launch(t, { config: { configVersion: 2 }, extraImport: `data:text/javascript,${encodeURIComponent(`
+    import fs from "node:fs/promises";
+    import { syncBuiltinESMExports } from "node:module";
+    const rename = fs.rename;
+    fs.rename = async (source, target) => {
+      if (target.endsWith("/control.json")) await new Promise(done => {
+        const timer = setTimeout(done, 5000);
+        process.once("SIGUSR2", () => { clearTimeout(timer); done(); });
+        process.stderr.write("wait for action control\\n");
+      });
+      return rename(source, target);
+    };
+    syncBuiltinESMExports();
+  `)}` });
+  await relay.waitFor("wait for action control");
+  const health = `http://127.0.0.1:${relay.port}/__subswitch/health`;
+  await assert.rejects(fetch(health, { signal: AbortSignal.timeout(2000) }), TypeError);
+  assert.ok(relay.child.kill("SIGUSR2"));
+  await relay.waitFor("subswitch ready");
+  assert.equal((await classifyRelay(relay.port, { home: relay.folders.home })).kind, "verified");
+});
 
 it("does not publish a record or log a stop if listen fails", async (t) => {
   const relay = await launch(t, { extraImport: `data:text/javascript,${encodeURIComponent(`
@@ -220,12 +244,15 @@ for (const matches of [true, false]) {
       if (signal !== 0) signals.push(signal);
       return true;
     });
-    t.mock.method(globalThis, "fetch", async () => Response.json({
-      name: "subswitch", version: "0.8.0", pid, nonce: matches ? nonce : "cd".repeat(16),
-    }));
     const relay = await startRelayChild({ detach: true, extraImport: "data:text/javascript,process.exit(0)" });
     t.after(() => relay.cleanup().catch(() => undefined));
     await relay.exited;
+    const health = createServer((_req, res) => res.end(JSON.stringify({
+      name: "subswitch", version: "0.8.0", pid, nonce: matches ? nonce : "cd".repeat(16),
+    })));
+    t.after(() => { health.close(); health.closeAllConnections(); });
+    health.listen(relay.port, "127.0.0.1");
+    await once(health, "listening");
     const folder = ensureRelayFolder(relay.port, relay.folders.home);
     assert.ok(folder.ok);
     await writeFile(join(folder.value, "relay.json"), JSON.stringify({
