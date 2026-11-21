@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { homedir, userInfo } from "node:os";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULT_PORT, userConfigPath } from "../../src/config.js";
 import { classifyRelay, readRelayRecord } from "../../src/relay-record.js";
@@ -33,7 +33,7 @@ export interface RelayChild {
   readonly cleanup: () => Promise<void>;
 }
 
-const STOP_MS = 5_000;
+const STOP_MS = 7_000;
 const DETACH_LAUNCH_MS = 12_000;
 const OUTPUT_CAP = 256 * 1024;
 
@@ -46,7 +46,6 @@ async function reservePort(): Promise<number> {
   const address = server.address();
   await new Promise<void>((done, fail) => server.close((error) => error ? fail(error) : done()));
   assert.ok(address && typeof address !== "string");
-  assert.ok(address.port !== 4141 && address.port !== DEFAULT_PORT, "Reserved relay test port");
   return address.port;
 }
 
@@ -69,29 +68,81 @@ function signalPid(pid: number, signal: NodeJS.Signals | 0): boolean {
   }
 }
 
-async function stopDetached(port: number, home: string): Promise<void> {
-  const saved = readRelayRecord(port, home);
+export interface DetachedStopDeps {
+  readonly readRecord: typeof readRelayRecord;
+  readonly classify: typeof classifyRelay;
+  readonly signal: typeof signalPid;
+  readonly wait: typeof waitUntil;
+  readonly now: () => number;
+  readonly pidAgeMs: (pid: number) => number | undefined;
+}
+
+function pidAgeMs(pid: number): number | undefined {
+  try {
+    const age = execFileSync("/bin/ps", ["-p", String(pid), "-o", "etime="], {
+      encoding: "utf8", timeout: 500, maxBuffer: 128,
+    });
+    const fields = /^(?:(\d+)-)?(?:(\d+):)?(\d{2}):(\d{2})$/.exec(age.trim());
+    if (fields === null) return undefined;
+    const [, days = "0", hours = "0", minutes, seconds] = fields;
+    return (Number(days) * 86_400 + Number(hours) * 3_600 + Number(minutes) * 60 + Number(seconds)) * 1_000;
+  } catch {
+    return undefined;
+  }
+}
+
+const liveStopDeps: DetachedStopDeps = {
+  readRecord: readRelayRecord, classify: classifyRelay, signal: signalPid, wait: waitUntil,
+  now: () => performance.now(), pidAgeMs,
+};
+
+export async function stopDetached(port: number, home: string, deps: DetachedStopDeps = liveStopDeps): Promise<void> {
+  const saved = deps.readRecord(port, home);
   assert.ok(saved.ok, "Unsafe relay test record");
-  if (saved.value === undefined || !signalPid(saved.value.pid, 0)) return;
-  const live = await classifyRelay(port, { home });
+  if (saved.value === undefined || !deps.signal(saved.value.pid, 0)) return;
+  const probeStarted = deps.now();
+  const live = await deps.classify(port, { home });
   assert.equal(live.kind, "verified", "Refuse to stop a relay without a verified identity");
   const { pid, nonce } = live.record;
   assert.ok(pid === saved.value.pid && nonce === saved.value.nonce, "Relay test record changed");
-  if (!signalPid(pid, "SIGTERM") || await waitUntil(() => !signalPid(pid, 0), STOP_MS)) return;
-  const current = readRelayRecord(port, home);
-  assert.ok(current.ok && current.value?.pid === pid && current.value.nonce === nonce, "Relay test record changed");
-  signalPid(pid, "SIGKILL");
+  if (!deps.signal(pid, "SIGTERM") || await deps.wait(() => !deps.signal(pid, 0), STOP_MS)) return;
+  const current = deps.readRecord(port, home);
+  assert.ok(current.ok, "Unsafe relay test record");
+  if (current.value === undefined) {
+    // Shutdown removes the record and closes health. Require a process older than the
+    // initial probe. Allow one second for the precision of the OS age sample.
+    const age = deps.pidAgeMs(pid);
+    if (age === undefined || age <= deps.now() - probeStarted + 1_000) return;
+    const latest = deps.readRecord(port, home);
+    assert.ok(latest.ok, "Unsafe relay test record");
+    assert.equal(latest.value, undefined, "Relay test record changed");
+  } else {
+    assert.ok(current.value.pid === pid && current.value.nonce === nonce, "Relay test record changed");
+    const latest = await deps.classify(port, { home });
+    if (latest.kind !== "verified" || latest.record.pid !== pid || latest.record.nonce !== nonce) return;
+  }
+  deps.signal(pid, "SIGKILL");
+}
+
+export function assertIsolatedRelayTarget(home: string, realHome: string, ...ports: readonly number[]): void {
+  assert.ok(isAbsolute(home) && isAbsolute(realHome), "Relay test homes must be absolute");
+  const fromTestHome = relative(home, realHome);
+  assert.ok(fromTestHome === ".." || fromTestHome.startsWith(`..${sep}`) || isAbsolute(fromTestHome),
+    "Relay test home contains the real home");
+  for (const port of ports) assert.ok(port !== 4141 && port !== DEFAULT_PORT, "Reserved relay test port");
 }
 
 export async function startRelayChild(options: RelayChildOptions = {}): Promise<RelayChild> {
-  const realHome = await realpath(homedir());
+  const [realHome, envHome] = await Promise.all([realpath(userInfo().homedir), realpath(homedir())]);
   const folders = await cliChildFolders({ resolveTemp: true });
-  assert.notEqual(folders.home, realHome, "Relay test home is the real home");
+  assertIsolatedRelayTarget(folders.home, realHome);
+  assertIsolatedRelayTarget(folders.home, envHome);
   const removeHome = () => rm(folders.home, { recursive: true, force: true });
   try {
     const portFromConfig = options.detach === true && options.portFromConfig === true;
     // Reserve both ports together. The exec allow-list permits only the port under test.
     const [port, otherPort] = await Promise.all([reservePort(), options.detach && !portFromConfig ? reservePort() : undefined]);
+    assertIsolatedRelayTarget(folders.home, realHome, ...(otherPort === undefined ? [port] : [port, otherPort]));
     assert.notEqual(port, otherPort, "The option port must differ from the config port");
     await options.prepare?.(folders);
     const cliArgs = ["serve", "--port", String(port)];
