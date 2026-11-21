@@ -22,6 +22,7 @@ import { globSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { GEMINI_TERMS } from "../../src/gemini-constants.js";
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../src");
 
@@ -365,11 +366,16 @@ it("G7: Gemini source has no Keychain mutations, client secrets or refresh grant
   assert.doesNotMatch("refresh_token: z.string()", GEMINI_GRANT);
 });
 
-it("G7: the Gemini terms sentence has a single source literal", () => {
+it("TP-41: the Gemini terms sentence appears once in source and once in the README", () => {
   const prefix = "Google's terms do not allow third-party tools such as Subswitch";
+  const occurrences = (text: string) => text.split(prefix).length - 1;
   const matches = globSync("**/*.ts", { cwd: SRC_DIR }).flatMap((file) =>
-    Array<string>(readSrc(file).split(prefix).length - 1).fill(file));
+    Array<string>(occurrences(readSrc(file))).fill(file));
   assert.deepEqual(matches, ["gemini-constants.ts"]);
+  assert.equal(occurrences(readRepo("README.md")), 1);
+  assert.equal(readRepo("README.md").split(GEMINI_TERMS).length - 1, 1);
+  const docs = globSync(["*.md", "docs/**/*.md", "e2e/**/*.md", ".github/**/*.md", ".devflow/features/**/*.md"], { cwd: REPO_DIR });
+  assert.deepEqual(docs.filter((file) => file !== "README.md" && occurrences(readRepo(file)) > 0), []);
 });
 
 // G5: the Kimi live check never sets the Claude Code base URL or sign-in variables.
@@ -382,12 +388,16 @@ const CLIENT_VARIABLE = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|ANTHROP
 const CLIENT_VARIABLE_SET = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)["'`]?\]?\s*(?::|=(?!=))/;
 const readRepo = (name: string): string => readFileSync(join(REPO_DIR, name), "utf8");
 
-describe("source-text guards: the Kimi live check", () => {
-  it("G5: the live check names no Claude Code override variable, and no Kimi live file sets one", () => {
-    assert.doesNotMatch(readRepo(LIVE_CHECK), CLIENT_VARIABLE);
-    const files = globSync("e2e/gates/kimi-live-*", { cwd: REPO_DIR });
-    assert.ok(files.includes(LIVE_CHECK) && files.length > 1, "The search must find the live check and its fake client");
-    assert.deepEqual(files.filter((file) => CLIENT_VARIABLE_SET.test(readRepo(file))), []);
+describe("source-text guards: the provider live checks", () => {
+  it("G5: only the fake clients read override variables, and no live check sets one", () => {
+    for (const provider of ["kimi", "gemini"]) {
+      const check = `e2e/gates/${provider}-live-check.ts`;
+      assert.doesNotMatch(readRepo(check), CLIENT_VARIABLE);
+      const files = globSync(`e2e/gates/${provider}-live-*`, { cwd: REPO_DIR });
+      assert.ok(files.includes(check) && files.length > 1, "The search must find the live check and its fake client");
+      assert.deepEqual(files.filter((file) => CLIENT_VARIABLE_SET.test(readRepo(file))), []);
+    }
+    assert.doesNotMatch(readRepo("e2e/gates/live-check-common.ts"), CLIENT_VARIABLE);
   });
 
   it("G5 positive control: the pattern finds each way to set a variable, and not a read", () => {

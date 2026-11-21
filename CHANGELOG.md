@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Opt-in Gemini route for Claude Code on macOS.** The route works with a simulated upstream.
+  Live use still needs confirmed model IDs and request details.
 - **Together AI route for Claude Code (paid, opt-in per model).** A Claude Code
   request for `together:<model-id>` goes to Together Chat Completions with your own
   Together API key. Together bills each request per token. Only `together:<model-id>`

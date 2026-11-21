@@ -485,6 +485,25 @@ that `SUBSWITCH_CONFIG` names. A project `subswitch.config.json` that sets
   `subswitch serve` at startup.
 - The [config reference](#config-reference) lists every `providers.kimi` key.
 
+## Gemini (agy sign-in)
+
+The opt-in Gemini route is for Claude Code on macOS only. It does not work with the Codex client.
+The route is not ready for live use. It still needs confirmed model IDs and request details.
+
+Google's terms do not allow third-party tools such as Subswitch to use the Gemini subscription sign-in, and if you turn this route on, that choice is yours.
+
+The `providers.gemini` block loads only from the user configuration or the file that `SUBSWITCH_CONFIG` names.
+Without the block, Subswitch does not read the Gemini Keychain item or send a Gemini request.
+
+Subswitch uses the macOS `security` command to read the `agy` sign-in from Keychain.
+Subswitch does not write to Keychain or run `agy`. It does not read a sign-in file.
+If the Keychain dialog names `security` for this read, choose **Allow**. A dialog may not appear.
+**Always Allow** gives the `security` command future access to the item without a prompt.
+Other programs that run `security` as your user can then also read the item.
+
+Run one `subswitch serve` process for many sessions. This lets the sessions share the sign-in reads.
+When the token expires, run agy once.
+
 ## Codex → Claude
 
 Sign in normally with both clients, then enable the reverse path:
