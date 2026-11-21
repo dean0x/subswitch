@@ -1,7 +1,7 @@
 ---
 feature: cli-ux
 name: CLI / init command / terminal UX
-description: "Use when changing the CLI, init wizard, doctor, serve banner, Kimi doctor row, probe:kimi, config load, models table or terminal UX (TTY, colors, dry-run). Keywords: cli, doctor, banner, optedIn, config."
+description: "Use when changing the CLI, init wizard, doctor, serve banner, Kimi doctor row, probe:kimi, probe:gemini, config load, models table or terminal UX (TTY, colors, dry-run). Keywords: cli, doctor, banner, optedIn, config."
 category: architecture
 directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/codex-doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts, src/provider-transport.ts, e2e/gates/kimi-live-check.ts, test/helpers]
 created: 2026-07-23
@@ -18,7 +18,7 @@ updated: 2026-11-21
 - **KB-INV-5** `ProviderRuntimeConfig.active` is false for Kimi and Gemini without their provider block. The serve banner, doctor and health do not read or stat that credential or probe that host.
 - **KB-INV-6** The doctor Kimi row only reads. With the block, it reads the file through the store, then shows the expiry and whether renewal is due (`kimiRenewalDue`). It never renews and makes no lock or marker. A store fault shows the fixed text of its code, with no path and no file text.
 - **KB-INV-7** The Kimi sign-in hint is `kimi login`. Only the `mainland-cn` region adds `--region mainland-cn`. `kimiCredentialFor` builds it, and Kimi has no host opt-in (`hostOptIn` false, https required).
-- **KB-INV-8** `npm run probe:kimi` has two modes. `--live` refuses under CI, without a TTY on stdin and stdout, and without the typed cap phrase. `--dry-run` skips that gate and the cooldown: it uses fake upstreams and a fabricated sign-in.
+- **KB-INV-8** `npm run probe:kimi` has two modes. `--live` refuses under CI, without a TTY on stdin and stdout, and without the typed cap phrase. `--dry-run` skips that gate and the cooldown: it uses fake upstreams and a fabricated sign-in. `npm run probe:gemini` (`e2e/gates/gemini-live-check.ts`) shares the parser, gate, folder and env helpers in `e2e/gates/live-check-common.ts`, but its `--live` mode exits 2 with `D4_values_required` before any send. Both dry runs set `SUBSWITCH_CONFIG` to a scratch file that holds only a port, and `--evidence-root` must be an absolute physical path (a path with `//` is refused).
 - **KB-INV-9** The live check starts its client (Claude Code, or the fake client in the dry run) in a new temp folder that holds only a copy of `package.json`. The narrow allow rule (`Read(./package.json)`) stays as the second control. A `finally` path removes the folder with the scratch folder. The dry run uses the same path and runs in the suite in `test/integration/kimi-live-dry-run.test.ts`.
 - **KB-AP-1** Do not add a new check of "is the block there" next to `detectConfiguredProviders`, and do not read, stat or probe for a provider before you test `active`. A provider without its block must cause no file call under its home and no host probe.
 - **KB-AP-2** Do not write a "no file call" CLI test without a positive control. Use `recordFsUnder` in `test/helpers/cli-child.ts` and also run the same command with the block, so you see the recorder log the read.
@@ -365,6 +365,7 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 - `src/errors.ts` — `ProxyError` (no `client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` single chokepoint
 - `src/doctor.ts` — `runDoctor`; `PROVIDER_AUTH_INSPECTORS` (exported totality anchor); `inspectKimiAuth` (read-only Kimi row); `makeLiveListAgentFiles` (absolute-path resolution critical)
 - `e2e/gates/kimi-live-check.ts` — `npm run probe:kimi`: `--live` (CI, TTY and phrase gate) and `--dry-run` (fakes)
+- `e2e/gates/gemini-live-check.ts`, `e2e/gates/live-check-common.ts` — `npm run probe:gemini` (live mode refuses with `D4_values_required`; dry run on fakes) and the helpers it shares with the Kimi check (`parseArguments`, `confirmLive`, `privateFolder`, `dryConfigEnv`)
 - `test/helpers/cli-child.ts`, `test/helpers/fs-path-recorder.ts` — the one CLI child starter and its file-call recorder; `test/integration/kimi-cli.test.ts` and `test/unit/kimi-doctor.test.ts` pin the Kimi banner and doctor rows
 - `src/init.ts` — Pure planning + `InitFsDeps` / `InitPrompts` seams; wizard prompts only port + settings-target
 - `src/agent-scan.ts` — `parseFrontmatterModel`; `checkAgentModels`; `unknown_provider` severity `"info"` (ADR-010)
