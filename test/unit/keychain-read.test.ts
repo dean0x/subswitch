@@ -140,7 +140,6 @@ for (const [name, fields, code] of [
   ["user canceled (128, reported, not live)", { code: 128 }, "denied"],
   ["interaction not allowed (36, reported, not live)", { code: 36 }, "denied"],
   ["authorization failed (51, reported, not live)", { code: 51 }, "denied"],
-  ["exec timeout", { code: "ETIMEDOUT" }, "timeout"],
   ["exec buffer overflow", { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }, "output_too_large"],
   ["unknown status", { code: 1 }, "exec_failed"],
   ["unexpected execution error", { code: "ENOENT" }, "exec_failed"],
@@ -185,6 +184,19 @@ it("ends the wait and aborts exec at the deadline even if exec does not settle",
   assertError(result, "timeout");
   assert.equal(calls[0]?.[2].signal.aborted, true);
   assert.equal(timer.canceled, true);
+});
+
+it("uses the reader deadline, not the execFile SIGKILL shape, to classify a timeout", async () => {
+  const failure = { code: null, signal: "SIGKILL", killed: true };
+  const { readSecret, timers } = harness({
+    exec: (_file, _args, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(failure), { once: true });
+    }),
+  });
+  const pending = readSecret(item);
+  assert.equal(timers[0]?.ms, 10_000);
+  timers[0]?.expire();
+  assertError(await pending, "timeout");
 });
 
 it("marks only denial, timeout and unclassified exec failure for a latch until restart", () => {

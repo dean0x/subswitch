@@ -58,7 +58,6 @@ const classifyExecError = (cause: unknown): KeychainReadError => {
     case 128: // User canceled.
     case 36: // Interaction not allowed.
     case 51: return "denied"; // Authorization failed.
-    case "ETIMEDOUT": return "timeout";
     case "ERR_CHILD_PROCESS_STDIO_MAXBUFFER": return "output_too_large";
     default: return "exec_failed";
   }
