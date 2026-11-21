@@ -9,21 +9,26 @@ import { codexIngressRoute } from "../../src/codex-ingress.js";
 import { loadConfig } from "../../src/config.js";
 import { MODEL_REGISTRY, PROVIDER_IDS } from "../../src/models.js";
 import { buildTestDeps } from "../helpers/server-deps.js";
+import { GEMINI_TEST_MODEL, geminiTestProvider, startGeminiFake } from "../fixtures/gemini.js";
 import { startFakeUpstream, startSubswitch, rawHttpRequest } from "./fake-upstreams.js";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 after(async () => { for (const cleanup of cleanups.reverse()) await cleanup(); });
 
-async function setup(handler: Parameters<typeof startFakeUpstream>[0], config: Record<string, unknown> = {}) {
+type ProxyOptions = NonNullable<Parameters<typeof startSubswitch>[1]>;
+async function setup(handler: Parameters<typeof startFakeUpstream>[0], config: Record<string, unknown> = {},
+  providers: Record<string, unknown> = {}, providerDeps?: ProxyOptions["providerDeps"]) {
   const anthropic = await startFakeUpstream((_req, res) => res.end("anthropic"));
   const subscription = await startFakeUpstream(handler);
   const api = await startFakeUpstream(handler);
   const logs: unknown[] = [];
   const proxy = await startSubswitch({
-    anthropic: { baseUrl: anthropic.url },
+    anthropic: { baseUrl: anthropic.url }, providers,
     codexIngress: { enabled: true, subscriptionBaseUrl: `${subscription.url}/backend-api/codex`, apiBaseUrl: `${api.url}/v1`, ...config },
     limits: { maxBufferedBodyBytes: 16 },
-  }, { logger: { log: (level, event, fields) => logs.push({ level, event, fields }) } });
+  }, { logger: { log: (level, event, fields) => logs.push({ level, event, fields }) },
+    ...(providerDeps === undefined ? {} : { providerDeps }),
+  });
   cleanups.push(anthropic.close, subscription.close, api.close, proxy.close);
   return { anthropic, subscription, api, proxy, logs };
 }
@@ -113,15 +118,16 @@ describe("Codex namespace and raw HTTP ingress", () => {
   });
 
   for (const claude of [false, true]) {
-    it(`sends a model of each other registry provider to the OpenAI upstream only, with Claude translation ${claude ? "on" : "off"}`,
-      async () => {
+    it(`TP-38: sends a model of each other registry provider to OpenAI only, with Claude translation ${claude ? "on" : "off"}`,
+      async (t) => {
+        const gemini = await startGeminiFake(t, (_req, res) => res.end());
         const { proxy, api, subscription, anthropic } = await setup((_req, res) => {
           res.writeHead(400, { "content-type": "application/json" });
           res.end('{"error":{"message":"The model does not exist","code":"model_not_found"}}');
-        }, { claude: { enabled: claude } });
+        }, { claude: { enabled: claude } }, { gemini: geminiTestProvider }, { gemini: gemini.deps });
         const names = PROVIDER_IDS.filter((id) => id !== "codex").flatMap((id) => {
           const entry = MODEL_REGISTRY.find((model) => model.provider === id);
-          // A provider with no registry entry routes only by its qualifier.
+          if (id === "gemini") return [GEMINI_TEST_MODEL, ...(entry === undefined ? [] : [entry.id, `${id}:${entry.id}`])];
           return entry === undefined ? [`${id}:fixture/model`] : [entry.id, `${id}:${entry.id}`];
         });
         for (const model of names) {
@@ -133,6 +139,9 @@ describe("Codex namespace and raw HTTP ingress", () => {
         }
         assert.equal(api.requests.length, names.length);
         assert.equal(subscription.requests.length + anthropic.requests.length, 0);
+        assert.deepEqual(gemini.execs, []);
+        assert.deepEqual(gemini.fetches, []);
+        assert.equal(gemini.upstream.connectionCount, 0);
         assert.deepEqual(proxy.refusedStoreCalls, [], "no provider credential store is used");
       });
   }

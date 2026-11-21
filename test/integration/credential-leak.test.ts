@@ -11,6 +11,7 @@ import {
   TOGETHER_API_KEY_ENV, createTogetherAuth, createTogetherKeyReader, type TogetherKeyReaderDeps,
 } from "../../src/together-auth.js";
 import { lateToolNames } from "../fixtures/together/streams.js";
+import { BOOTSTRAP, GENERATE, GEMINI_TEST_MODEL, geminiCandidate, geminiData, geminiTestProvider, startGeminiFake } from "../fixtures/gemini.js";
 
 /**
  * Credential-leak matrix — the three rows gradable today.
@@ -201,6 +202,77 @@ describe("credential leak matrix", () => {
       assert.equal(surface.includes("Bearer "), false, `no bearer credential may appear in the ${label}`);
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Gemini rows: keep the client's sign-in and both Gemini values off other surfaces.
+// ---------------------------------------------------------------------------
+
+it("TP-36: sends only Gemini sign-in to Google and keeps both Gemini values out of replies and logs", async (t) => {
+  let echo = "";
+  const google = await startGeminiFake(t, (_req, res, _body, index) => {
+    if (index === 1) {
+      res.writeHead(500, { "content-type": "application/json", "x-fixture-echo": echo });
+      res.end(JSON.stringify({ error: { message: echo } }));
+    } else {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(geminiCandidate([{ text: "fixture partial reply" }]) + geminiData({ error: { code: 500, message: echo } }));
+    }
+  });
+  echo = `fixture echo: ${google.access} and ${google.refresh}`;
+  // Gemini discards unqualified error text. A sibling error path passes the bare values
+  // to the shared renderer, so this row also proves Gemini registered both values there.
+  const codex = await startFakeUpstream((_req, res) => {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: echo } }));
+  });
+  t.after(codex.close);
+  const dir = await mkdtemp(join(tmpdir(), "subswitch-test-gemini-leak-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const authFile = join(dir, "auth.json");
+  await writeFile(authFile, makeAuthFileContent(makeAccessToken(FAR_FUTURE_MS)), { mode: 0o600 });
+  const logs: string[] = [];
+  const proxy = await startSubswitch({ anthropic: { baseUrl: google.upstream.url },
+    providers: { gemini: geminiTestProvider, codex: { baseUrl: codex.url, authFile } },
+  }, { providerDeps: { gemini: google.deps },
+    logger: { log: (level, event, fields) => logs.push(`${level} ${event} ${JSON.stringify(fields ?? {})}`) },
+  });
+  t.after(proxy.close);
+
+  const post = async (model: string, stream: boolean) => {
+    const reply = await fetch(`${proxy.url}/v1/messages`, { method: "POST", signal: AbortSignal.timeout(5_000),
+      headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", ...CLIENT_HEADERS },
+      body: JSON.stringify({ model, stream, max_tokens: 16, messages: [{ role: "user", content: "hello" }] }),
+    });
+    return { status: reply.status, headers: JSON.stringify([...reply.headers]), text: await reply.text() };
+  };
+  const http = await post(GEMINI_TEST_MODEL, false);
+  const stream = await post(GEMINI_TEST_MODEL, true);
+  const sibling = await post("gpt-5.5", false);
+  assert.equal(http.status, 502);
+  assert.match(http.text, /Gemini did not complete the request/);
+  assert.equal(stream.status, 200);
+  assert.match(stream.text, /fixture partial reply/);
+  assert.match(stream.text, /event: error/);
+  assert.equal(sibling.status, 400);
+  assert.equal(codex.requests.length, 1);
+
+  assert.deepEqual(google.upstream.requests.map(({ url }) => url), [BOOTSTRAP, GENERATE, GENERATE]);
+  for (const request of google.upstream.requests) {
+    assert.equal(request.headers["authorization"] === `Bearer ${google.access}`, true, "Google gets the Gemini access value");
+    assert.equal(request.headers["x-api-key"] === undefined, true, "Google must not get the client key");
+    for (const value of [...Object.values(CLIENT_HEADERS), google.refresh]) {
+      assert.equal(requestText(request).includes(value), false, "Google must not get either client value or the Gemini refresh value");
+    }
+  }
+  assert.ok(logs.some(line => line.includes("gemini_upstream_error")), "the logger records the Gemini failure");
+  for (const [name, surface] of [
+    ["client replies", [http, stream, sibling].map(({ headers, text }) => headers + text).join("\n")], ["logs", logs.join("\n")],
+  ] as const) {
+    assert.equal(surface.includes(google.access), false, `no Gemini access value in ${name}`);
+    assert.equal(surface.includes(google.refresh), false, `no Gemini refresh value in ${name}`);
+  }
+  assert.match(sibling.text, /fixture echo: <redacted> and <redacted>/);
 });
 
 // ---------------------------------------------------------------------------
