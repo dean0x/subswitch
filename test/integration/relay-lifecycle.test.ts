@@ -141,6 +141,46 @@ for (const signal of ["SIGHUP", "SIGINT"] as const) {
   });
 }
 
+it("removes the record before port release and leaves the next relay record alone", async (t) => {
+  const nonce = "ab".repeat(16);
+  const relay = await launch(t, { extraImport: `data:text/javascript,${encodeURIComponent(`
+    import fs from "node:fs";
+    import { Server } from "node:http";
+    import { syncBuiltinESMExports } from "node:module";
+    import { createServer } from "node:net";
+    import { homedir } from "node:os";
+    import { join } from "node:path";
+    const close = Server.prototype.close;
+    Server.prototype.close = function (done) {
+      const { address, port } = this.address();
+      const record = join(homedir(), ".cache", "subswitch", "relay", String(port), "relay.json");
+      process.stderr.write("record at close: " + fs.existsSync(record) + "\\n");
+      return close.call(this, () => createServer().listen(port, address, function () {
+        this.unref();
+        fs.writeFileSync(record, JSON.stringify({
+          schemaVersion: 1, pid: process.pid, port, version: ${JSON.stringify(SUBSWITCH_VERSION)},
+          startedAt: new Date().toISOString(), managedBy: "none", nonce: ${JSON.stringify(nonce)},
+        }), { mode: 0o600 });
+        const open = fs.openSync;
+        fs.openSync = (path, ...args) => {
+          if (path === record) process.stderr.write("record opened after port release\\n");
+          return open(path, ...args);
+        };
+        syncBuiltinESMExports();
+        done();
+      }));
+    };
+  `)}` });
+  await relay.waitFor("subswitch ready");
+  await access(join(state(relay), "relay.json"));
+  assert.ok(relay.child.kill("SIGTERM"));
+  assert.deepEqual(await relay.exited, [0, null]);
+  assert.match(relay.stderr, /record at close: false/);
+  assert.doesNotMatch(relay.stderr, /record opened after port release/);
+  const saved = readRelayRecord(relay.port, relay.folders.home);
+  assert.ok(saved.ok && saved.value?.nonce === nonce, "The next relay record must remain");
+});
+
 it("exits 1 after the grace period and keeps the first stop signal", async (t) => {
   const relay = await launch(t);
   await relay.waitFor("subswitch ready");

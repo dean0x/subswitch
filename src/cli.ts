@@ -351,9 +351,16 @@ const serve = async (
     }
     errOut("subswitch: relay record unavailable");
   }
+  let triedRecordCleanup = false;
+  const removeRelayRecordOnce = (): void => {
+    // Do not retry record cleanup after the port is free.
+    if (triedRecordCleanup) return;
+    triedRecordCleanup = true;
+    removeOwnRelayRecord(effectivePort, home, nonce);
+  };
   let stopSignal: RelayStopFields["signal"];
   process.once("exit", (exitCode) => {
-    removeOwnRelayRecord(effectivePort, home, nonce);
+    removeRelayRecordOnce();
     const folder = ensureRelayFolder(effectivePort, home);
     writeStopLineSync(folder.ok ? folder.value : undefined, { pid, exitCode, ...(stopSignal ? { signal: stopSignal } : {}) }, !detached);
   });
@@ -366,7 +373,7 @@ const serve = async (
   let removeActionControl: (() => Promise<void>) | undefined;
   if (effectiveConfig.configVersion === 2 && deps.sharedRouting) {
     try { removeActionControl = await publishActionControl(effectiveConfig.port, deps.sharedRouting.actions.capability); }
-    catch (error) { server.close(); throw error; }
+    catch (error) { removeRelayRecordOnce(); server.close(); throw error; }
   }
   deps.logger.log("info", "config_loaded", {
     path: configPath,
@@ -394,6 +401,7 @@ const serve = async (
     const exitAfterRenewals = (code: number): Promise<never> =>
       settleNativeRefreshes(NATIVE_REFRESH_SHUTDOWN_MS).then(() => process.exit(code));
     deps.logger.log("info", "shutting_down");
+    removeRelayRecordOnce();
     server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush(), relayLog.flush()]).finally(() => exitAfterRenewals(0)); });
     server.closeIdleConnections();
     setTimeout(() => { void exitAfterRenewals(1); }, SHUTDOWN_GRACE_MS).unref();

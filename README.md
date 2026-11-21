@@ -1114,7 +1114,9 @@ Only the owner can have write access to the folders from the home folder to the 
 The record fields are `schemaVersion`, `pid`, `port`, `version`, `startedAt`, `managedBy` and `nonce`.
 `schemaVersion` is `1`, and `managedBy` is `none` in both modes.
 Health returns the same `pid` and `nonce` as the record.
-At exit, the relay removes the record only if the nonce still matches.
+On a stop signal, the relay removes its record before it releases the port.
+On a fatal error, the relay removes its record at exit if it has not tried before.
+The relay removes the record only if the nonce still matches.
 
 Foreground `serve` writes structured logs to stderr and `relay.log`.
 A detached relay writes structured logs only to `relay.log`.
