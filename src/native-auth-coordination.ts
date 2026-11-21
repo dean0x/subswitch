@@ -21,6 +21,21 @@ interface RefreshFlight {
   promise: Promise<unknown>;
 }
 const flights = new Map<string, RefreshFlight>();
+const idleWaiters = new Set<() => void>();
+
+/** Wait until all tracked renewals complete, or until the shutdown bound expires. */
+export function settleNativeRefreshes(timeoutMs: number): Promise<void> {
+  if (flights.size === 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      idleWaiters.delete(finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    idleWaiters.add(finish);
+  });
+}
 
 /**
  * Share refresh and persistence only for the same native store and credential lineage.
@@ -47,7 +62,9 @@ export function coordinateNativeRefresh<T>(
     : Promise.resolve();
   const flight: RefreshFlight = { owner, promise: Promise.resolve() };
   const promise = ready.then(operation).finally(() => {
-    if (flights.get(key) === flight) flights.delete(key);
+    if (flights.get(key) !== flight) return;
+    flights.delete(key);
+    if (flights.size === 0) idleWaiters.forEach((finish) => finish());
   });
   flight.promise = promise;
   flights.set(key, flight);

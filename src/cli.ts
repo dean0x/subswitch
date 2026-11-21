@@ -25,8 +25,11 @@ import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
 import { createConsoleLogger } from "./logger.js";
 import { LimitRecorder, limitDirectory, withLimitRecorder, readLimitObservations } from "./limit-recorder.js";
+import { settleNativeRefreshes } from "./native-auth-coordination.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
+// Allow at least the full Kimi renewal deadline (20 s), including write-back.
+const NATIVE_REFRESH_SHUTDOWN_MS = 25_000;
 
 const out = (line: string): void => {
   process.stdout.write(`${line}\n`);
@@ -363,11 +366,16 @@ const serve = async (
   errOut(`  run \`subswitch doctor\` to verify setup\n`);
 
   if (recorder) errOut("  limit observations: " + recorder.directory + " (view with subswitch limits --json)\n");
+  let stopping = false;
   const shutdown = (): void => {
+    if (stopping) return;
+    stopping = true;
+    const exitAfterRenewals = (code: number): Promise<never> =>
+      settleNativeRefreshes(NATIVE_REFRESH_SHUTDOWN_MS).then(() => process.exit(code));
     deps.logger.log("info", "shutting_down");
-    server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush()]).finally(() => process.exit(0)); });
+    server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush()]).finally(() => exitAfterRenewals(0)); });
     server.closeIdleConnections();
-    setTimeout(() => process.exit(1), SHUTDOWN_GRACE_MS).unref();
+    setTimeout(() => { void exitAfterRenewals(1); }, SHUTDOWN_GRACE_MS).unref();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
