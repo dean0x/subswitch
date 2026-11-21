@@ -1,6 +1,7 @@
 import { createColors } from "picocolors";
 import { resolveColorEnabled } from "./tty.js";
 import type { LimitObservation } from "./limit-observation.js";
+import type { SUBSWITCH_VERSION } from "./version.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -38,6 +39,10 @@ export interface LogFields {
   readonly observationAgeMs?: number;
   readonly retryEligible?: boolean;
   readonly evidence?: "documented" | "source-inspected" | "live-observed" | "unknown";
+  readonly pid?: number;
+  readonly signal?: "SIGINT" | "SIGTERM" | "SIGHUP";
+  readonly exitCode?: number;
+  readonly version?: typeof SUBSWITCH_VERSION;
 }
 
 export interface Logger {
@@ -64,6 +69,10 @@ export const FIELD_KEYS = [
   "sessionKey",
   "bodyMode",
   "attemptOrder", "targetProfile", "product", "commitState", "quotaWindow", "observationAgeMs", "retryEligible", "evidence",
+  "pid",
+  "signal",
+  "exitCode",
+  "version",
 ] as const satisfies readonly (keyof LogFields)[];
 // Completeness proof lives in test/unit/logger.types.test.ts (module-level type
 // proofs follow the *.types.test.ts convention; in-src guards are function-local
@@ -93,6 +102,18 @@ const renderToken = (value: string): string => {
   const safe = value.replace(CONTROL_CHARS, "");
   return /[\s="\\]/.test(safe) ? `"${safe.replace(/["\\]/g, (c) => `\\${c}`)}"` : safe;
 };
+
+/** Render the line without a timestamp or color. */
+export function renderLogLine(level: LogLevel, event: string, fields?: LogFields): string {
+  const parts = [`level=${level}`, `event=${renderToken(event)}`];
+  if (fields !== undefined) {
+    for (const key of FIELD_KEYS) {
+      const value = fields[key];
+      if (value !== undefined) parts.push(`${key}=${renderToken(String(value))}`);
+    }
+  }
+  return parts.join(" ");
+}
 
 const formatTime = (): string => {
   const d = new Date();
@@ -139,32 +160,14 @@ export const createConsoleLogger = (
   return {
     log(level, event, fields) {
       if (LEVEL_ORDER[level] < LEVEL_ORDER[minLevel]) return;
-      const levelStr = colorLevelStr(level);
-      // `event` gets the same treatment as a field value. It is a different axis from
-      // FIELD_KEYS — the closed allow-list bounds which fields may be logged and says
-      // nothing about the event token — and it is interpolated into the same line, so
-      // an unsanitised event name forges records exactly as an unsanitised value would.
-      // Every event name in the tree is a compile-time string literal — no config value
-      // and no request value can become one — which is the primary control; this is
-      // defence in depth. The guarantee is fully table-derived: all provider-scoped
-      // names come from the closed provider-events.ts tables (including CLAUDE_EVENTS
-      // and OPENAI_EVENTS for native ingress). This includes the seven auth
-      // events in codex-auth.ts, which were formerly hardcoded `codex_*` literals
-      // outside that table and have been brought in.
-      const eventStr = `event=${pc.bold(renderToken(event))}`;
-      const parts = [levelStr, eventStr];
-      if (fields !== undefined) {
-        for (const key of FIELD_KEYS) {
-          const value = fields[key];
-          if (value !== undefined) {
-            // FIELD_KEYS is a closed allow-list, so no token material can reach this
-            // path — but a crafted model string could still carry a newline or an `=`.
-            parts.push(`${key}=${renderToken(String(value))}`);
-          }
-        }
+      const line = renderLogLine(level, event, fields);
+      if (!color) {
+        write(line);
+        return;
       }
-      const ts = color ? `${pc.dim(formatTime())} ` : "";
-      write(`${ts}${parts.join(" ")}`);
+      const token = renderToken(event);
+      const prefix = `level=${level} event=${token}`;
+      write(`${pc.dim(formatTime())} ${colorLevelStr(level)} event=${pc.bold(token)}${line.slice(prefix.length)}`);
     },
   };
 };

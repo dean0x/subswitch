@@ -19,6 +19,7 @@
  */
 import type { LogFields } from "../../src/logger.js";
 import { FIELD_KEYS } from "../../src/logger.js";
+import type { SUBSWITCH_VERSION } from "../../src/version.js";
 
 const fieldKeysCoversAllLogFields = (): void => {
   // Every key declared in LogFields must appear in FIELD_KEYS.
@@ -34,3 +35,17 @@ const fieldKeysCoversAllLogFields = (): void => {
   // Together the two constraints make the mapping a bijection at compile time.
 };
 void fieldKeysCoversAllLogFields;
+
+const lifecycleFieldTypes = (): void => {
+  type LifecycleFields = Pick<LogFields, "pid" | "signal" | "exitCode" | "version">;
+  type Expected = {
+    readonly pid?: number;
+    readonly signal?: "SIGINT" | "SIGTERM" | "SIGHUP";
+    readonly exitCode?: number;
+    readonly version?: typeof SUBSWITCH_VERSION;
+  };
+  type Matches = [LifecycleFields, Expected] extends [Expected, LifecycleFields] ? true : false;
+  const matches: Matches = true;
+  void matches;
+};
+void lifecycleFieldTypes;
