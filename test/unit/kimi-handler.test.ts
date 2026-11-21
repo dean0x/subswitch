@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
+import { addAbortListener, EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { it } from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import type { KimiProviderConfig } from "../../src/config.js";
 import { createKimiHandler } from "../../src/kimi-handler.js";
 import type { KimiAuth } from "../../src/kimi-native-auth.js";
@@ -53,6 +54,11 @@ class StubResponse extends EventEmitter {
     this.writableEnded = true;
     return this;
   }
+
+  close(): void {
+    this.destroyed = true;
+    this.emit("close");
+  }
 }
 
 /** A client request that carries the client's own Claude sign-in and beta values. */
@@ -85,9 +91,19 @@ const toolReply = sse([start,
   { type: "content_block_stop", index: 1 },
   { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 9 } },
   { type: "message_stop" }]);
-const sseResponse = (body: string) => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+const sseResponse = (body: string | ReadableStream<Uint8Array>) =>
+  new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 
-const rig = (replies: readonly (() => Response)[], authOverrides: Partial<KimiAuth> = {}) => {
+const openSseResponse = (signal: AbortSignal): Response => sseResponse(new ReadableStream<Uint8Array>({
+  start(controller) {
+    controller.enqueue(Buffer.from(sse([start])));
+    addAbortListener(signal, () => controller.error(signal.reason));
+  },
+}));
+
+type Reply = (init: RequestInit) => Response | Promise<Response>;
+type RigOverrides = { readonly auth?: Partial<KimiAuth>; readonly provider?: Partial<KimiProviderConfig> };
+const rig = (replies: readonly Reply[], overrides: RigOverrides = {}) => {
   const sent: Sent[] = [];
   const logs: unknown[] = [];
   const refreshes: unknown[] = [];
@@ -96,19 +112,18 @@ const rig = (replies: readonly (() => Response)[], authOverrides: Partial<KimiAu
     refreshable: true, deviceId: DEVICE_ID,
     getCredentials: async () => { credentialCalls++; return ok(credential(ACCESS)); },
     forceRefresh: async (_signal, failed) => { refreshes.push(failed); return ok(credential(RENEWED)); },
-    ...authOverrides,
+    ...overrides.auth,
   };
-  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-    sent.push({ url: String(url), init: init ?? {}, body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+  const fetchImpl: typeof fetch = async (url, init = {}) => {
+    sent.push({ url: String(url), init, body: JSON.parse(String(init.body)) as Record<string, unknown> });
     const reply = replies[sent.length - 1];
-    return reply === undefined ? assert.fail("Unexpected upstream request") : reply();
-  }) as typeof fetch;
+    return reply === undefined ? assert.fail("Unexpected upstream request") : reply(init);
+  };
   const handler = createKimiHandler({
-    provider, auth, fetchImpl, cache: new ReasoningCache(8, 64 * 1024, true),
+    provider: { ...provider, ...overrides.provider }, auth, fetchImpl, cache: new ReasoningCache(8, 64 * 1024, true),
     logger: { log: (level, event, fields) => logs.push({ level, event, fields }) },
   });
-  const send = async (body: Record<string, unknown>) => {
-    const res = new StubResponse();
+  const send = async (body: Record<string, unknown>, res = new StubResponse()) => {
     await handler.handleMessages(clientRequest, res as unknown as ServerResponse, Buffer.from(JSON.stringify(body)), body, "kimi-for-coding");
     return res;
   };
@@ -151,6 +166,90 @@ it("streams Anthropic frames that name the canonical model", async () => {
   assert.match(res.body, /"text_delta","text":"hello"/);
   assert.equal(sent[0]?.body["model"], "kimi-for-coding");
   assert.equal(sent[0]?.body["stream"], true);
+});
+
+const shortTimeouts = { requestTimeoutMs: 100, streamIdleTimeoutMs: 20 };
+
+it("aborts the Kimi fetch when the client closes after the first frame", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const res = new StubResponse();
+  const cleanup = new AbortController();
+  const { send, sent } = rig([({ signal }) => {
+    assert.ok(signal);
+    return openSseResponse(AbortSignal.any([signal, cleanup.signal]));
+  }], { provider: shortTimeouts });
+  const run = send(request({ stream: true }), res);
+  t.after(async () => { cleanup.abort(); await run; });
+
+  await nextTurn();
+  assert.match(res.body, /^event: message_start\n/);
+  const signal = sent[0]?.init.signal;
+  assert.ok(signal);
+  assert.equal(signal.aborted, false);
+  res.close();
+
+  assert.equal(signal.aborted, true, "client close must abort the Kimi fetch");
+  await run;
+});
+
+it("returns a 504 and aborts the Kimi fetch at the request timeout before headers", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { send, sent } = rig([({ signal }) => new Promise<Response>((_resolve, reject) => {
+    assert.ok(signal);
+    addAbortListener(signal, () => reject(signal.reason));
+  })], { provider: shortTimeouts });
+  const run = send(request({ stream: true }));
+
+  await nextTurn();
+  const signal = sent[0]?.init.signal;
+  assert.ok(signal);
+  t.mock.timers.tick(shortTimeouts.requestTimeoutMs - 1);
+  assert.equal(signal.aborted, false, "the request must wait for its full header deadline");
+  t.mock.timers.tick(1);
+  assert.equal(signal.aborted, true, "the request deadline must abort the Kimi fetch");
+  const res = await run;
+
+  assert.equal(res.statusCode, 504);
+  assert.deepEqual(JSON.parse(res.body), { type: "error", error: { type: "api_error", message: "Kimi request timed out" } });
+});
+
+it("ends a stalled Kimi stream with an SSE error at the idle timeout", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const res = new StubResponse();
+  const cleanup = new AbortController();
+  // Keep the body open when the fetch signal aborts. The runner must stop the read.
+  const { send } = rig([() => openSseResponse(cleanup.signal)], { provider: shortTimeouts });
+  const run = send(request({ stream: true }), res);
+  t.after(async () => { cleanup.abort(); await run; });
+
+  await nextTurn();
+  assert.match(res.body, /^event: message_start\n/);
+  t.mock.timers.tick(shortTimeouts.streamIdleTimeoutMs - 1);
+  assert.equal(res.writableEnded, false);
+  t.mock.timers.tick(1);
+  await nextTurn();
+
+  assert.equal(res.writableEnded, true, "the idle timeout must end the client stream");
+  assert.ok(res.body.endsWith('event: error\ndata: {"type":"error","error":{"type":"api_error","message":"Kimi stream interrupted"}}\n\n'));
+  await run;
+});
+
+it("returns only an error when a non-stream Kimi reply exceeds the aggregate cap", async () => {
+  const { send } = rig([() => sseResponse(textReply)], { provider: { maxAggregateBytes: 512 } });
+  const res = await send(request({ stream: false }));
+
+  assert.equal(res.statusCode, 502);
+  assert.deepEqual(JSON.parse(res.body), { type: "error", error: { type: "api_error", message: "Kimi stream interrupted" } });
+});
+
+it("returns a fixed 502 when Kimi sends JSON to a stream request", async () => {
+  const { send } = rig([() => Response.json({ content: "Unexpected Kimi JSON" })]);
+  const res = await send(request({ stream: true }));
+
+  assert.equal(res.statusCode, 502);
+  assert.deepEqual(JSON.parse(res.body), {
+    type: "error", error: { type: "api_error", message: "Kimi returned a JSON reply to a stream request." },
+  });
 });
 
 it("asks Kimi for a stream and folds it to one JSON reply when the client sends stream false", async () => {
@@ -235,7 +334,7 @@ it("renews the sign-in once after a 401 and then replies with fixed text", async
 });
 
 it("replies with the sign-in error and sends no request when the sign-in fails", async () => {
-  const { send, sent } = rig([], { getCredentials: async () => err({ kind: "auth", message: "fixed sign-in text" }) });
+  const { send, sent } = rig([], { auth: { getCredentials: async () => err({ kind: "auth", message: "fixed sign-in text" }) } });
   const res = await send(request({ stream: true }));
 
   assert.equal(res.statusCode, 401);
@@ -244,13 +343,11 @@ it("replies with the sign-in error and sends no request when the sign-in fails",
 });
 
 it("ends a pending sign-in wait when the client closes, with no request to Kimi", async () => {
-  const { handler, sent } = rig([], { getCredentials: () => new Promise(() => {}) });
+  const { send, sent } = rig([], { auth: { getCredentials: () => new Promise(() => {}) } });
   const res = new StubResponse();
-  const body = request({ stream: true });
-  const run = handler.handleMessages(clientRequest, res as unknown as ServerResponse, Buffer.from(JSON.stringify(body)), body, "kimi-for-coding");
-  res.destroyed = true;
-  res.emit("close");
-  const settled = await Promise.race([run.then(() => true), new Promise<boolean>((resolve) => setImmediate(resolve, false))]);
+  const run = send(request({ stream: true }), res);
+  res.close();
+  const settled = await Promise.race([run.then(() => true), nextTurn(false)]);
 
   assert.equal(settled, true);
   assert.equal(sent.length, 0);
