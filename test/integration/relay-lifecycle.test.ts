@@ -131,10 +131,18 @@ for (const detach of [false, true]) {
 }
 
 for (const signal of ["SIGHUP", "SIGINT"] as const) {
-  it(`${signal} produces one stop line`, async (t) => {
-    const relay = await launch(t);
+  it(`${signal} produces one stop line at the ready banner`, async (t) => {
+    const relay = await launch(t, { extraImport: `data:text/javascript,${encodeURIComponent(`
+      const write = process.stderr.write;
+      process.stderr.write = function (chunk, ...args) {
+        const result = write.call(this, chunk, ...args);
+        if (typeof chunk === "string" && chunk.startsWith("\\nsubswitch ready")) {
+          process.kill(process.pid, ${JSON.stringify(signal)});
+        }
+        return result;
+      };
+    `)}` });
     await relay.waitFor("subswitch ready");
-    assert.ok(relay.child.kill(signal));
     assert.deepEqual(await relay.exited, [0, null]);
     const lines = lifecycleLines(await log(relay));
     assert.equal(lines.length, 1);

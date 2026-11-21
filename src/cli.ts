@@ -375,6 +375,22 @@ const serve = async (
     try { removeActionControl = await publishActionControl(effectiveConfig.port, deps.sharedRouting.actions.capability); }
     catch (error) { removeRelayRecordOnce(); server.close(); throw error; }
   }
+  const shutdown = (signal: NonNullable<RelayStopFields["signal"]>): void => {
+    if (stopSignal !== undefined) return;
+    stopSignal = signal;
+    const exitAfterRenewals = (code: number): Promise<never> =>
+      settleNativeRefreshes(NATIVE_REFRESH_SHUTDOWN_MS).then(() => process.exit(code));
+    deps.logger.log("info", "shutting_down");
+    removeRelayRecordOnce();
+    server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush(), relayLog.flush()]).finally(() => exitAfterRenewals(0)); });
+    server.closeIdleConnections();
+    setTimeout(() => { void exitAfterRenewals(1); }, SHUTDOWN_GRACE_MS).unref();
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => shutdown(signal));
+  }
+  ready = true;
+
   deps.logger.log("info", "config_loaded", {
     path: configPath,
     eventType: fileFound ? "loaded" : "defaults",
@@ -395,21 +411,6 @@ const serve = async (
   errOut(`  run \`subswitch doctor\` to verify setup\n`);
 
   if (recorder) errOut("  limit observations: " + recorder.directory + " (view with subswitch limits --json)\n");
-  const shutdown = (signal: NonNullable<RelayStopFields["signal"]>): void => {
-    if (stopSignal !== undefined) return;
-    stopSignal = signal;
-    const exitAfterRenewals = (code: number): Promise<never> =>
-      settleNativeRefreshes(NATIVE_REFRESH_SHUTDOWN_MS).then(() => process.exit(code));
-    deps.logger.log("info", "shutting_down");
-    removeRelayRecordOnce();
-    server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush(), relayLog.flush()]).finally(() => exitAfterRenewals(0)); });
-    server.closeIdleConnections();
-    setTimeout(() => { void exitAfterRenewals(1); }, SHUTDOWN_GRACE_MS).unref();
-  };
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    process.on(signal, () => shutdown(signal));
-  }
-  ready = true;
 };
 
 // ---------------------------------------------------------------------------
