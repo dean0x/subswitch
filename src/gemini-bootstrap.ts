@@ -2,13 +2,13 @@ import { isUtf8 } from "node:buffer";
 import { createHash } from "node:crypto";
 import { abortable } from "./abortable.js";
 import { decodeBody } from "./content-encoding.js";
-import { GEMINI_DEFAULT_HOST } from "./gemini-constants.js";
+import { GEMINI_BOOTSTRAP_PATH, GEMINI_DEFAULT_HOST } from "./gemini-constants.js";
 import type { GeminiAccountBlockLatch } from "./gemini-errors.js";
 import type { ProviderCredential } from "./provider-auth.js";
 import { err, ok, type Result } from "./result.js";
 import type { PrepareBodyError } from "./translated-leg.js";
 
-const LOAD_CODE_ASSIST_URL = `https://${GEMINI_DEFAULT_HOST}/v1internal:loadCodeAssist`;
+const LOAD_CODE_ASSIST_URL = `https://${GEMINI_DEFAULT_HOST}${GEMINI_BOOTSTRAP_PATH}`;
 const DEADLINE_MS = 10_000;
 const MAX_WIRE_BYTES = 64 * 1024;
 const MAX_DECODED_BYTES = 256 * 1024;

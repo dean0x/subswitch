@@ -85,7 +85,8 @@ export interface SubswitchInstance {
  *   absent Codex and Claude auth files in a private folder.
  * @param options.logger - Send logs from the server and its handlers to this logger.
  * @param options.resolve - Use this resolver instead of the registry resolver.
- * @param options.providerDeps - Supply explicit provider deps. The default fakes refuse Together and Kimi store calls.
+ * @param options.providerDeps - Inject provider deps. Defaults refuse Together and Kimi store calls,
+ *   plus Gemini reader and fetch calls. Keep Gemini's default host in config and map it to a fake in the injected fetch.
  * @param options.fetchImpl - Send the explicit-route and Together requests through this fetch.
  * @param options.checkConfig - Check resolved config before the stores use it.
  *

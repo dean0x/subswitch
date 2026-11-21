@@ -4,7 +4,7 @@ import type { ProviderHandler } from "./provider-handler.js";
 import { respondJson } from "./provider-transport.js";
 
 /**
- * The handler for a provider whose `providers.<key>` block is not in the user
+ * The local reply for a provider whose `providers.<key>` block is not in the user
  * configuration or in a file selected with SUBSWITCH_CONFIG.
  *
  * Every request, count_tokens included, gets the same fixed local 400. The reply
@@ -12,10 +12,12 @@ import { respondJson } from "./provider-transport.js";
  * credential, file or network, and it does not read the request or its body.
  * A project file can not set the block, so the text never names one.
  */
+export const notOptedInBody = (displayName: string, key: string): string => toAnthropicErrorBody("invalid_request_error",
+  `${displayName} is not turned on. Add a "providers.${key}" block to the user configuration, ` +
+  "or to a file selected with SUBSWITCH_CONFIG, then restart subswitch.");
+
 export const notOptedInHandler = (displayName: string, key: string): ProviderHandler => {
-  const body = toAnthropicErrorBody("invalid_request_error",
-    `${displayName} is not turned on. Add a "providers.${key}" block to the user configuration, ` +
-    "or to a file selected with SUBSWITCH_CONFIG, then restart subswitch.");
+  const body = notOptedInBody(displayName, key);
   const reply = (res: ServerResponse): void => respondJson(res, 400, body);
   return {
     handleMessages: async (_req, res) => { reply(res); },

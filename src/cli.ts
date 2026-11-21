@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
 import { formatProviderBanner, modelProviderRows } from "./cli-report.js";
-import { liveKimiStoreDeps, liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";
+import { liveGeminiDeps, liveKimiStoreDeps, liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
   runInitInteractive,
@@ -385,6 +385,7 @@ const doctor = async (result: LoadConfigResult, client: Client): Promise<void> =
       readAuthFile: (path) => readFile(path, "utf8"),
       togetherKeyReader: liveTogetherKeyReaderDeps(),
       kimiStore: { openStore, now },
+      ...(result.config.providers.gemini.optedIn ? { keychainReader: liveGeminiDeps().reader } : {}),
       httpGet: makeLiveHttpGet(),
       tlsConnect: makeLiveTlsConnect(),
       color,
@@ -473,6 +474,7 @@ const models = (config: Config, client: Client): void => {
       .replace("(direct)", pc.dim("(direct)"));
     out(`  ${colorized}`);
   }
+  if (!MODEL_REGISTRY.some(({ provider }) => provider === "gemini")) out("  gemini  (no models)");
   // Any id with the together: prefix routes, so the vetted rows above are not the whole set.
   out(`  together:<model-id>  →  any Together AI model (pass-through; output cap ${config.providers.together.outputCap} tokens)`);
 };

@@ -331,6 +331,47 @@ it("uses execFile with no shell for the Together Keychain read", () => {
   }
 });
 
+// G7: wire Gemini's live reader and transport only at the composition root.
+const GEMINI_MODULE = /(?:^|\/)gemini-[^/]+\.ts$/;
+const GEMINI_LIVE_CALL = /\b(?:createKeychainReader\s*\(|(?:globalThis\s*\.\s*)?fetch\s*\(|node:(?:http|https|http2|net|tls)\b)/;
+const KEYCHAIN_MUTATION = /\b(?:add|delete|update)-(?:generic|internet)-password\b/;
+const GEMINI_GRANT = /\bclient[_-]?secret\b|\bgrant[_-]?type\b/i;
+
+it("G7: only server.ts wires the live Gemini reader and fetch", () => {
+  const source = readSrc(LIVE_FACTORY_HOME);
+  assert.match(source, /export const liveGeminiDeps = /);
+  assert.match(source, /reader: createKeychainReader\(/);
+  assert.match(source, /fetch: liveGeminiFetch/);
+  const files = globSync("**/*.ts", { cwd: SRC_DIR }).filter((file) => GEMINI_MODULE.test(file));
+  assert.ok(files.includes("gemini-auth.ts") && files.includes("gemini-handler.ts"));
+  for (const file of files) {
+    assert.doesNotMatch(readSrc(file), GEMINI_LIVE_CALL, `Inject the Gemini reader and transport in ${file}`);
+  }
+  for (const text of ['createKeychainReader(deps)', 'fetch(url)', 'globalThis.fetch(url)', 'import https from "node:https"']) {
+    assert.match(text, GEMINI_LIVE_CALL);
+  }
+});
+
+it("G7: Gemini source has no Keychain mutations, client secrets or refresh grants", () => {
+  const files = globSync("**/*.ts", { cwd: SRC_DIR }).filter((file) => GEMINI_MODULE.test(file));
+  assert.ok(files.includes("gemini-auth.ts"));
+  for (const file of [...files, "keychain-read.ts"]) {
+    assert.doesNotMatch(readSrc(file), KEYCHAIN_MUTATION, file);
+    assert.doesNotMatch(readSrc(file), GEMINI_GRANT, file);
+  }
+  for (const verb of ["add", "delete", "update"]) assert.match(`${verb}-generic-password`, KEYCHAIN_MUTATION);
+  assert.match('client_secret: "fixture"', GEMINI_GRANT);
+  assert.match('grant_type: "refresh_token"', GEMINI_GRANT);
+  assert.doesNotMatch("refresh_token: z.string()", GEMINI_GRANT);
+});
+
+it("G7: the Gemini terms sentence has a single source literal", () => {
+  const prefix = "Google's terms do not allow third-party tools such as Subswitch";
+  const matches = globSync("**/*.ts", { cwd: SRC_DIR }).flatMap((file) =>
+    Array<string>(readSrc(file).split(prefix).length - 1).fill(file));
+  assert.deepEqual(matches, ["gemini-constants.ts"]);
+});
+
 // G5: the Kimi live check never sets the Claude Code base URL or sign-in variables.
 // `run-action` sets the base URL for its own child. The live run uses the sign-in
 // that Claude Code already has.

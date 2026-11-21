@@ -9,6 +9,7 @@ import {
   type ProviderRuntimeConfig, type TogetherProviderConfig,
 } from "./config.js";
 import { createKeychainReader, type KeychainReaderDeps, type KeychainReadError } from "./keychain-read.js";
+import { GEMINI_TERMS, GEMINI_USER_AGENT } from "./gemini-constants.js";
 import { inspectAuthFile, type AuthInspection } from "./codex-auth.js";
 import { isPlainObject } from "./plain-object.js";
 import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
@@ -19,6 +20,8 @@ import { redactCredentials } from "./errors.js";
 import { KIMI_ERRORS, kimiErrorCodeOf, type KimiErrorCode } from "./kimi-errors.js";
 import { kimiRenewalDue, type KimiStoreDeps } from "./kimi-native-auth.js";
 import type { KimiTokenRecord } from "./kimi-native-store.js";
+
+type KeychainProbe = Pick<ReturnType<typeof createKeychainReader>, "probe">;
 
 // ---------------------------------------------------------------------------
 // Per-provider auth inspection: neutral row types
@@ -142,11 +145,12 @@ const inspectKimiAuth = async (slice: KimiProviderConfig, io: DoctorIO): Promise
 };
 
 const inspectNativeKeychain = async (
-  credential: Extract<ProviderRuntimeConfig, { kind: "native-keychain" }>, deps: KeychainReaderDeps | undefined,
+  credential: Extract<ProviderRuntimeConfig, { kind: "native-keychain" }>, reader: KeychainProbe | KeychainReaderDeps | undefined,
 ): Promise<DoctorAuthInspection> => {
   if (!credential.active) return { kind: "not-opted-in" };
   const { keychainService: service, keychainAccount: account, loginCommand } = credential;
-  const result = deps === undefined ? err("probe_unavailable" as const) : await createKeychainReader(deps).probe({ service, account });
+  const probe = reader === undefined || "probe" in reader ? reader : createKeychainReader(reader);
+  const result = probe === undefined ? err("probe_unavailable" as const) : await probe.probe({ service, account });
   return { kind: "native-keychain", loginCommand, result };
 };
 
@@ -347,7 +351,7 @@ export interface DoctorIO {
   readonly togetherKeyReader?: TogetherKeyReaderDeps;
   /** The Kimi store maker and the clock. Doctor gets no fetch, so it can not renew a sign-in. */
   readonly kimiStore?: Pick<KimiStoreDeps, "openStore" | "now">;
-  readonly keychainReader?: KeychainReaderDeps;
+  readonly keychainReader?: KeychainProbe | KeychainReaderDeps;
   readonly providerConfigFor?: typeof providerConfigFor;
   readonly httpGet: (url: string) => Promise<HttpGetResult>;
   readonly tlsConnect: (host: string, port: number) => Promise<TlsStatus>;
@@ -504,13 +508,17 @@ export const runDoctor = async (
     const optedIn = configuredProviderIds.has(id);
     switch (inspection.kind) {
       case "not-opted-in": return {
-        lines: [row(`${id} auth:`, pc.dim("not turned on") +
+        lines: [row(`${id} auth:`, pc.dim(id === "gemini" ? "not configured" : "not turned on") +
           ` (add a "providers.${id}" block to the user configuration or to a file selected with SUBSWITCH_CONFIG)`)],
         failed: false, credentialUsable: false,
       };
       case "oauth-file": return oauthFileCheck(id, inspection, optedIn);
       case "api-key": return apiKeyCheck(id, inspection, optedIn);
-      case "native-keychain": return nativeKeychainCheck(id, inspection, optedIn);
+      case "native-keychain": {
+        const check = nativeKeychainCheck(id, inspection, optedIn);
+        if (id !== "gemini" || !credential.active) return check;
+        return { ...check, lines: [...check.lines, row("Gemini user agent:", GEMINI_USER_AGENT), `  ${GEMINI_TERMS}`] };
+      }
     }
   };
 

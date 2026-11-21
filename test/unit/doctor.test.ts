@@ -710,10 +710,8 @@ describe("runDoctor — credentialUsable drives providersWithCredentials", () =>
     });
     assert.equal(exitCode, 0, "a provider with valid credentials must not trigger provider_unconfigured");
     const output = lines.join("\n");
-    assert.ok(
-      !output.includes("not configured"),
-      "a provider whose auth file is valid must not produce a 'not configured' finding",
-    );
+    assert.doesNotMatch(output, /agent model:\s+FAIL.*provider is not configured/,
+      "a provider whose auth file is valid must not produce a 'not configured' agent finding");
   });
 });
 

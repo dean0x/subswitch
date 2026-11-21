@@ -22,7 +22,18 @@ const refusingKimiDeps = (refused: string[]): KimiStoreDeps => {
   return { openStore: () => store, fetch: async () => refuse("fetch"), now: () => refuse("now") };
 };
 
-/** The default test deps: each one records a store call in `refused` and throws. */
+const refusingGeminiDeps = (refused: string[]): ProviderDepsById["gemini"] => {
+  const refuse = (call: string): never => {
+    refused.push(`gemini.${call}`);
+    throw new Error("Unexpected Gemini call: inject the Gemini deps");
+  };
+  return {
+    reader: { probe: async () => refuse("probe"), readSecret: async () => refuse("readSecret") },
+    fetch: async () => refuse("fetch"),
+  };
+};
+
+/** The default test deps: each one records an unexpected call in `refused` and throws. */
 export const refusingProviderDeps = (refused: string[]): ProviderDepsById => ({
   codex: undefined,
   together: {
@@ -34,7 +45,7 @@ export const refusingProviderDeps = (refused: string[]): ProviderDepsById => ({
     },
   },
   kimi: refusingKimiDeps(refused),
-  gemini: undefined,
+  gemini: refusingGeminiDeps(refused),
 });
 
 type TestOptions = NonNullable<Parameters<typeof buildDeps>[2]> & { readonly refusedStoreCalls?: string[] };

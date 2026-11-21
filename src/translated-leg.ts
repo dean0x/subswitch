@@ -55,6 +55,8 @@ export interface TranslatedLegOptions<C> {
   readonly prepareBody?: (credential: C, signal: AbortSignal) => Promise<Result<object, PrepareBodyError>>;
   /** Fixed diagnostic codes from the provider. Other preparation failures log "unknown". */
   readonly prepareErrorCodes?: ReadonlySet<string>;
+  /** Fixed client text for a preparation failure, not an auth failure. */
+  readonly prepareFailureMessage?: string;
   readonly buildHeaders: (credential: C) => Record<string, string>;
   readonly createTranslator: () => { readonly parser: Transform; readonly translator: Transform };
   readonly aggregateFrames: (frames: readonly string[]) => Result<AggregateOutcome, ProxyError>;
@@ -81,9 +83,10 @@ const prepareRejectionCode = (cause: unknown): string => {
   return PREPARE_ERROR_NAMES.has(name) ? name : "unknown";
 };
 
-const credentialLoadFailure = <C>(options: TranslatedLegOptions<C>, errorCode: string): ProxyError => {
+const credentialLoadFailure = <C>(options: TranslatedLegOptions<C>, errorCode: string,
+  message = `${options.name} credential load failed`): ProxyError => {
   options.logger.log("error", options.events.credentialLoadFailed, { model: options.model, errorCode });
-  return { kind: "upstream", status: 500, message: `${options.name} credential load failed` };
+  return { kind: "upstream", status: 500, message };
 };
 
 /** End the wait on abort, even if the operation does not stop. */
@@ -131,7 +134,8 @@ const requestAttempt = async <C>(res: ServerResponse, options: TranslatedLegOpti
     if (!prepared.ok) {
       if (prepared.error.kind === "unauthorized") return "unauthorized";
       const { errorCode } = prepared.error;
-      replyError(credentialLoadFailure(options, options.prepareErrorCodes?.has(errorCode) ? errorCode : "unknown"));
+      replyError(credentialLoadFailure(options, options.prepareErrorCodes?.has(errorCode) ? errorCode : "unknown",
+        options.prepareFailureMessage));
       return;
     }
     body = prepared.value;

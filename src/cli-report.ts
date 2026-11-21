@@ -1,5 +1,6 @@
 import { withCredential, type CredentialKindTable, type ProviderRuntimeConfig, type RoutingDestination } from "./config.js";
 import type { ProviderId } from "./models.js";
+import { GEMINI_TERMS } from "./gemini-constants.js";
 
 const BANNER_HOST: CredentialKindTable<string> = {
   "api-key": ({ baseUrl }) => new URL(baseUrl).hostname,
@@ -19,7 +20,8 @@ export const formatProviderBanner = (id: ProviderId, modelCount: number, credent
     const host = withCredential(credential, BANNER_HOST);
     suffix = host !== "" ? `  → ${host}` : "";
   }
-  return `  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${suffix}`;
+  const terms = id === "gemini" && credential.active ? `\n  ${GEMINI_TERMS}` : "";
+  return `  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${suffix}${terms}`;
 };
 
 export const modelProviderRows = (destinations: readonly RoutingDestination[]) =>

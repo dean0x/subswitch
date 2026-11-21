@@ -18,7 +18,74 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, rm, readdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cliChildCommand, cliChildFolders, type CliChildFolders } from "../helpers/cli-child.js";
+import { cliChildCommand, cliChildFolders, offlineDoctorConfig, readExecLog, runCliChild, type CliChildFolders } from "../helpers/cli-child.js";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
+
+const geminiTerms = "Google's terms do not allow third-party tools such as Subswitch to use the Gemini subscription sign-in, and if you turn this route on, that choice is yours.";
+
+describe("CLI Gemini surfaces", () => {
+  for (const active of [false, true]) {
+    it(`shows the Gemini terms in serve only with the block (${active})`, async (t) => {
+      const folders = await cliChildFolders();
+      t.after(() => rm(folders.home, { recursive: true, force: true }));
+      const config = await offlineDoctorConfig(active ? { providers: { gemini: {} } } : {});
+      await writeFile(folders.configFile, JSON.stringify(config));
+      const command = cliChildCommand(folders, ["serve"], { env: { SUBSWITCH_LIMIT_RECORDING: "0" } });
+      const child = spawn(command.file, command.args, { cwd: command.cwd, env: command.env, stdio: ["ignore", "ignore", "pipe"] });
+      const exited = once(child, "exit");
+      let banner = "";
+      child.stderr.on("data", (chunk) => { banner += String(chunk); });
+      try {
+        for (let wait = 0; wait < 500 && !banner.includes("to verify setup") && child.exitCode === null; wait++) await delay(20);
+        assert.match(banner, /subswitch ready/);
+        assert.match(banner, /gemini\s+0 models/);
+        assert.equal(banner.split(geminiTerms).length - 1, active ? 1 : 0);
+      } finally {
+        child.kill("SIGTERM");
+        const stop = setTimeout(() => child.kill("SIGKILL"), 2_000);
+        await exited.finally(() => clearTimeout(stop));
+      }
+    });
+  }
+
+  it("reports an empty Gemini model list in text and JSON", async (t) => {
+    const folders = await cliChildFolders();
+    t.after(() => rm(folders.home, { recursive: true, force: true }));
+    await writeFile(folders.configFile, '{"providers":{"gemini":{}}}');
+    const text = await runCliChild(folders, ["models"]);
+    assert.equal(text.code, 0);
+    assert.match(text.stdout, /^\s+gemini\s+\(no models\)$/m);
+    const json = await runCliChild(folders, ["models", "--json"]);
+    assert.equal(json.code, 0);
+    const rows: { providers: { id: string }[]; models: { provider: string }[] } = JSON.parse(json.stdout);
+    assert.ok(rows.providers.some(({ id }) => id === "gemini"));
+    assert.deepEqual(rows.models.filter(({ provider }) => provider === "gemini"), []);
+    assert.ok(!text.stdout.includes(geminiTerms) && !json.stdout.includes(geminiTerms));
+  });
+
+  it("probes Gemini only with the block and does not stat the Keychain file", async (t) => {
+    for (const active of [false, true]) {
+      const folders = await cliChildFolders();
+      t.after(() => rm(folders.home, { recursive: true, force: true }));
+      const keychains = join(folders.home, "Library", "Keychains");
+      const fixture = join(keychains, "fixture-codex.json");
+      const config = await offlineDoctorConfig(active ? { providers: {
+        gemini: {}, codex: { baseUrl: "http://127.0.0.1:9", authFile: fixture },
+      } } : {});
+      await writeFile(folders.configFile, JSON.stringify(config));
+      const result = await runCliChild(folders, ["doctor"], { recordFsUnder: keychains, offlineDarwin: true });
+      const log = await readExecLog(folders);
+      assert.equal(result.stdout.split(geminiTerms).length - 1, active ? 1 : 0);
+      assert.match(result.stdout, active ? /gemini auth:\s+UNAVAILABLE/ : /gemini auth:\s+not configured/);
+      assert.equal(log.filter((line) => line === "execFile /usr/bin/security").length, active ? 2 : 1,
+        "Together probes once independently of Gemini");
+      const fileCalls = log.filter((line) => line.startsWith("fs"));
+      assert.ok(fileCalls.every((line) => line.endsWith(` ${fixture}`)));
+      assert.equal(fileCalls.length > 0, active, "the configured Codex path proves the recorder sees file calls");
+    }
+  });
+});
 
 interface SpawnResult {
   exitCode: number;

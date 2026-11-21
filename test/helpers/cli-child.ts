@@ -29,6 +29,7 @@ const DENY_PRELOAD = new URL("./deny-exec-file.ts", import.meta.url).href;
 /** The variables that only the helper sets. */
 const HELPER_VARIABLES = [
   "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "SUBSWITCH_TEST_EXEC_LOG", "SUBSWITCH_TEST_EXEC_ALLOW", "SUBSWITCH_TEST_FS_WATCH",
+  "SUBSWITCH_TEST_OFFLINE_DARWIN",
 ] as const;
 const FIXTURE_FOLDER_VARIABLES = [
   "CODEX_HOME", "CLAUDE_CONFIG_DIR", "SUBSWITCH_LIMIT_DIR", "XDG_STATE_HOME", "XDG_DATA_HOME",
@@ -67,6 +68,8 @@ export interface CliChildOptions {
    * in it.
    */
   readonly recordFsUnder?: string;
+  /** Select the macOS paths and stub TLS probes. The preload still refuses all exec calls. */
+  readonly offlineDarwin?: boolean;
 }
 
 export interface CliChildCommand {
@@ -144,6 +147,7 @@ export const cliChildCommand = (
       PATH: process.env["PATH"], TMPDIR: process.env["TMPDIR"], ...extra, SUBSWITCH_CONFIG: config,
       HOME: folders.home, XDG_CONFIG_HOME: folders.configHome, XDG_CACHE_HOME: folders.cacheHome,
       SUBSWITCH_TEST_EXEC_LOG: folders.execLog, ...allow, ...watch,
+      ...(options.offlineDarwin === true ? { SUBSWITCH_TEST_OFFLINE_DARWIN: "1" } : {}),
     },
   };
 };

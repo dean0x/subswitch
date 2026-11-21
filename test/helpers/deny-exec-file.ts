@@ -59,6 +59,17 @@ for (const name of DENIED) {
     throw new Error(`${name} is disabled in this test process`);
   };
 }
+// Doctor tests can exercise the macOS branch without a real TLS or Keychain call.
+if (process.env["SUBSWITCH_TEST_OFFLINE_DARWIN"] === "1") {
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  const tls: typeof import("node:tls") = createRequire(import.meta.url)("node:tls");
+  const { Socket }: typeof import("node:net") = createRequire(import.meta.url)("node:net");
+  Object.defineProperty(tls, "connect", { value: () => {
+    const socket = new Socket();
+    queueMicrotask(() => socket.destroy(new Error("TLS is disabled in this test process")));
+    return socket;
+  } });
+}
 // Copy the replacements into the ESM named exports, which src modules import.
 syncBuiltinESMExports();
 appendFileSync(log, "preload\n");

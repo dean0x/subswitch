@@ -8,8 +8,16 @@ import { createTogetherHandler } from "./together-handler.js";
 import { createKimiAuth, type KimiStoreDeps } from "./kimi-native-auth.js";
 import { createKimiNativeStore } from "./kimi-native-store.js";
 import { createKimiHandler } from "./kimi-handler.js";
-import { GEMINI_LOGIN_COMMAND } from "./gemini-constants.js";
+import { createGeminiAuth, type GeminiAuthDeps } from "./gemini-auth.js";
+import { createGeminiAccountBlockLatch } from "./gemini-errors.js";
+import { createGeminiHandler, type GeminiHandlerDeps } from "./gemini-handler.js";
+import { GEMINI_BOOTSTRAP_PATH, GEMINI_DEFAULT_HOST } from "./gemini-constants.js";
+import { createKeychainReader } from "./keychain-read.js";
 import http from "node:http";
+import https from "node:https";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, Server } from "node:http";
 import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./errors.js";
@@ -40,7 +48,7 @@ import {
 } from "./models.js";
 import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 import type { ProviderHandler } from "./provider-handler.js";
-import { notOptedInHandler } from "./provider-opt-in.js";
+import { notOptedInBody, notOptedInHandler } from "./provider-opt-in.js";
 import { codexIngressRoute } from "./codex-ingress.js";
 import { rejectCodexUpgrade, type CodexIngressEntry } from "./openai-passthrough.js";
 import { CodexGateway } from "./codex-gateway.js";
@@ -50,14 +58,6 @@ import { codexIngressHealth } from "./codex-health.js";
 import { SharedRouting } from "./routing/shared-routing.js";
 import { RoutingError } from "./routing/routing-types.js";
 import { object as routingObject } from "./plain-object.js";
-
-const GEMINI_UNAVAILABLE_BODY = toAnthropicErrorBody("api_error",
-  `Gemini requests are unavailable in this build. The ${GEMINI_LOGIN_COMMAND} sign-in is not used.`);
-
-const geminiUnavailableHandler: ProviderHandler = {
-  handleMessages: async (_req, res) => { respondJson(res, 503, GEMINI_UNAVAILABLE_BODY); },
-  handleCountTokens: (_req, res) => { respondJson(res, 503, GEMINI_UNAVAILABLE_BODY); },
-};
 
 export interface ServerDeps {
   readonly sharedRouting?: SharedRouting;
@@ -112,13 +112,20 @@ const createCodexProvider = (config: Config, logger: Logger, auth: ProviderAuth<
  * The deps of each provider that read a credential store, run a program or read the
  * environment. Every provider id needs an entry, so a new provider must state its deps.
  * The integration test harness uses absent auth files for Codex and Claude by default.
- * The default test fakes refuse Together and Kimi store calls.
+ * The default test fakes refuse Together, Kimi and Gemini store calls and Gemini fetch calls.
  */
+interface GeminiProviderDeps {
+  readonly reader: GeminiAuthDeps["reader"];
+  readonly fetch: typeof fetch;
+  /** Only offline tests supply a synthetic extractor. */
+  readonly extractProjectId?: GeminiHandlerDeps["extractProjectId"];
+}
+
 export interface ProviderDepsById {
   readonly codex: undefined;
   readonly together: TogetherKeyReaderDeps;
   readonly kimi: KimiStoreDeps;
-  readonly gemini: undefined;
+  readonly gemini: GeminiProviderDeps;
 }
 
 /** Injected provider deps, by provider id. buildDeps uses the live deps for a missing entry. */
@@ -141,6 +148,70 @@ export const liveKimiStoreDeps = (): KimiStoreDeps => ({
   fetch,
   now: Date.now,
 });
+
+const geminiOrigin = `https://${GEMINI_DEFAULT_HOST}`;
+
+/** Do not decode bootstrap bytes before its wire-size check. */
+const liveGeminiFetch: typeof fetch = async (input, init) => {
+  const url = typeof input === "string" ? URL.parse(input) : null;
+  if (url?.origin !== geminiOrigin || url.username !== "" || url.password !== "" || init?.method !== "POST"
+    || typeof init.body !== "string") return new Response(null, { status: 502 });
+  if (url.pathname !== GEMINI_BOOTSTRAP_PATH) return fetch(url, { ...init, redirect: "error" });
+
+  const { body, signal } = init;
+  return new Promise<Response>((resolve, reject) => {
+    const request = https.request(url, {
+      method: "POST", headers: Object.fromEntries(new Headers(init.headers)), signal: signal ?? undefined,
+    }, (response) => {
+      const status = response.statusCode ?? 502;
+      if (status !== 200) {
+        response.destroy();
+        resolve(new Response(null, { status: status >= 200 && status <= 599 ? status : 502 }));
+        return;
+      }
+      try {
+        const headers = new Headers();
+        for (const key of ["content-length", "content-encoding"] as const) {
+          const value = response.headers[key];
+          if (typeof value === "string") headers.set(key, value);
+        }
+        resolve(new Response(Readable.toWeb(response) as ReadableStream<Uint8Array>, { status, headers }));
+      } catch {
+        response.destroy();
+        resolve(new Response(null, { status: 502 }));
+      }
+    });
+    request.on("error", reject);
+    request.end(body);
+  });
+};
+
+const scheduleTimer = (expire: () => void, delay: number): (() => void) => {
+  const timer = setTimeout(expire, delay);
+  return () => clearTimeout(timer);
+};
+
+/** The read-only Gemini Keychain reader and network transport. Calling it reads nothing. */
+export const liveGeminiDeps = (): GeminiProviderDeps => ({
+  reader: createKeychainReader({
+    env: process.env, platform: process.platform, loginKeychainPath: join(homedir(), "Library", "Keychains", "login.keychain-db"),
+    exec: promisify(execFile), setTimer: scheduleTimer,
+  }),
+  fetch: liveGeminiFetch,
+});
+
+const createGeminiProvider = (config: Config, logger: Logger, deps: GeminiProviderDeps): ProviderHandler => {
+  const provider = config.providers.gemini;
+  const { maxEntries, maxBytes } = provider.signatureCache;
+  const accountBlock = createGeminiAccountBlockLatch();
+  return createGeminiHandler({
+    provider, logger, accountBlock,
+    auth: createGeminiAuth({ reader: deps.reader, now: Date.now, register: registerExactCredential, accountBlock, logger }),
+    signatures: new ReasoningCache(maxEntries, maxBytes, true),
+    fetchRaw: deps.fetch, fetchImpl: deps.fetch, clock: { schedule: scheduleTimer },
+    ...(deps.extractProjectId === undefined ? {} : { extractProjectId: deps.extractProjectId }),
+  });
+};
 
 /** The Kimi leg. buildDeps calls it only when the Kimi block is in the user config or SUBSWITCH_CONFIG. */
 const createKimiProvider = (config: Config, logger: Logger, deps: KimiStoreDeps): ProviderHandler => {
@@ -320,7 +391,9 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
       // Without the block, the fixed local error makes no store and reads no credential, file or network.
       kimi: config.providers.kimi.optedIn ? createKimiProvider(config, logger, kimiDeps ?? liveKimiStoreDeps())
         : notOptedInHandler("Kimi", "kimi"),
-      gemini: config.providers.gemini.optedIn ? geminiUnavailableHandler : notOptedInHandler("Gemini", "gemini"),
+      gemini: config.providers.gemini.optedIn
+        ? createGeminiProvider(config, logger, routingOptions.providerDeps?.gemini ?? liveGeminiDeps())
+        : notOptedInHandler("Gemini", "gemini"),
     },
     togetherEnv: keyReaderDeps.env,
     resolve: (name) => resolveModelFromTable(table, name),
@@ -744,12 +817,11 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         case "invalid_qualified": {
           route = "invalid_qualified";
           model = undefined;
-          if (decision.provider === "gemini") {
-            respondJson(res, 503, GEMINI_UNAVAILABLE_BODY);
-          } else {
-            res.writeHead(400, synthesizedHeaders());
-            res.end(toAnthropicErrorBody("invalid_request_error", "Invalid model id after the together: qualifier."));
-          }
+          const qualifier = decision.provider ?? "together";
+          const body = qualifier === "gemini" && !deps.config.providers.gemini.optedIn
+            ? notOptedInBody("Gemini", "gemini")
+            : toAnthropicErrorBody("invalid_request_error", `Invalid model id after the ${qualifier}: qualifier.`);
+          respondJson(res, 400, body);
           if (ingest.value.kind === "over_window") drainRejectedUpload(req);
           return;
         }

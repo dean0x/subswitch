@@ -5,6 +5,7 @@ import { aggregateFrames } from "./codex-response.js";
 import type { GeminiProviderConfig } from "./config.js";
 import { deriveConversationKey } from "./conversation-key.js";
 import { createGeminiBootstrap, geminiPrepareErrorCodes, type GeminiBootstrapDeps } from "./gemini-bootstrap.js";
+import { GEMINI_USER_AGENT } from "./gemini-constants.js";
 import { GEMINI_ERRORS, renderGeminiUpstreamError, toGeminiProxyError, type GeminiErrorCode } from "./gemini-errors.js";
 import { buildGeminiRequest } from "./gemini-request.js";
 import { createGeminiSseTranslator } from "./gemini-response.js";
@@ -30,8 +31,6 @@ export interface GeminiHandlerDeps extends GeminiBootstrapDeps {
 
 const MAX_EVENT_BYTES = 4 * 1024 * 1024;
 const MAX_AGGREGATE_BYTES = 64 * 1024 * 1024;
-// [D4] Replace this offline-only value with the qualified agy identity.
-const GEMINI_USER_AGENT = "subswitch-gemini-unqualified";
 
 type Credential = ProviderCredential<"gemini">;
 
@@ -102,6 +101,7 @@ export const createGeminiHandler = (deps: GeminiHandlerDeps): ProviderHandler =>
         requestTimeoutMs: provider.requestTimeoutMs, streamIdleTimeoutMs: provider.streamIdleTimeoutMs,
         maxAggregateBytes: MAX_AGGREGATE_BYTES, logger: runnerLogger, events: GEMINI_EVENTS, auth,
         redirect: "error", abortOnResponseTimeout: true, prepareErrorCodes: geminiPrepareErrorCodes,
+        prepareFailureMessage: "Gemini could not prepare the request.",
         async prepareBody(credential, signal) {
           const project = await bootstrap.loadProject(credential, signal);
           if (!project.ok) return project;

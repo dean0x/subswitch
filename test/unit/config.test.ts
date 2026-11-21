@@ -374,8 +374,8 @@ describe("Gemini config block", () => {
           const { providers } = JSON.parse(body) as { providers: { id: string; configured: boolean }[] };
           assert.deepEqual(providers.find(({ id }) => id === "gemini"), { id: "gemini", configured: active, modelCount: 0 });
         } else {
-          assert.equal(res.statusCode, 503);
-          assert.match(body, /Gemini requests are unavailable/);
+          assert.equal(res.statusCode, 400);
+          assert.match(body, active ? /Invalid model id after the gemini: qualifier/ : /Gemini is not turned on/);
         }
       }
     }
@@ -397,24 +397,32 @@ describe("Gemini config block", () => {
         const end = t.mock.method(res, "end", () => res);
         if (endpoint === "messages") await handler.handleMessages(req, res, Buffer.alloc(0), {}, "fixture-target");
         else handler.handleCountTokens(req, res, Buffer.alloc(0));
-        assert.equal(res.statusCode, optedIn ? 503 : 400);
+        assert.equal(res.statusCode, optedIn && endpoint === "count_tokens" ? 200 : 400);
         assert.equal(end.mock.callCount(), 1);
-        assert.match(String(end.mock.calls[0]?.arguments[0]), optedIn ? /Gemini requests are unavailable.*agy/ : /Gemini is not turned on/);
+        const body = String(end.mock.calls[0]?.arguments[0]);
+        if (!optedIn) assert.match(body, /Gemini is not turned on/);
+        else if (endpoint === "count_tokens") assert.deepEqual(JSON.parse(body), { input_tokens: 0 });
+        else assert.doesNotMatch(body, /sign in/i);
       }
       req.destroy();
       const lines: string[] = [];
       const itemCalls: (readonly string[])[] = [];
+      const hosts: string[] = [];
       await runDoctor(config, configPath, fileFound, {
         write: (line) => lines.push(line), color: false, readAuthFile: async () => "{}",
         keychainReader: { platform: "darwin", env: {}, loginKeychainPath: "/fixture/keychain", setTimer: () => () => {},
           exec: async (_file, args) => { itemCalls.push(args); throw { code: 44 }; } },
         togetherKeyReader: refusingProviderDeps(refused).together,
         httpGet: async () => ({ ok: false, connectionRefused: true }),
-        tlsConnect: async () => ({ kind: "reachable" }), listAgentFiles: async () => [], readTextFile: async () => "",
+        tlsConnect: async (host) => { hosts.push(host); return { kind: "reachable" }; },
+        listAgentFiles: async () => [], readTextFile: async () => "",
       }, configuredProviders);
-      assert.match(lines.join("\n"), optedIn ? /gemini auth:\s+UNAVAILABLE \(missing .*agy/ : /gemini auth:\s+not turned on/);
+      assert.match(lines.join("\n"), optedIn ? /gemini auth:\s+UNAVAILABLE \(missing .*agy/ : /gemini auth:\s+not configured/);
+      assert.equal(lines.filter((line) => line.includes("Google's terms do not allow third-party tools")).length, optedIn ? 1 : 0);
+      assert.equal(lines.some((line) => /Gemini user agent:\s+subswitch-gemini-unqualified/.test(line)), optedIn);
+      assert.equal(hosts.includes("daily-cloudcode-pa.googleapis.com"), optedIn);
       assert.deepEqual(itemCalls, optedIn ? [["find-generic-password", "-s", "gemini", "-a", "antigravity", "/fixture/keychain"]] : []);
-      // Doctor checks the unrelated Together row. The Gemini route has no credential reader.
+      // Only the Together doctor row uses a refusing fake in these cases.
       assert.deepEqual(refused, ["together.exec"]);
     }
   });

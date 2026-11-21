@@ -13,11 +13,134 @@ import net from "node:net";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { loadConfig, type Config } from "../../src/config.js";
-import { createProxyServer } from "../../src/server.js";
-import { buildTestDeps } from "../helpers/server-deps.js";
+import { createProxyServer, liveGeminiDeps } from "../../src/server.js";
+import { buildTestDeps, refusingProviderDeps } from "../helpers/server-deps.js";
+import { createKeychainReader } from "../../src/keychain-read.js";
+import { GEMINI_DEFAULT_HOST } from "../../src/gemini-constants.js";
+import { randomUUID } from "node:crypto";
+import https from "node:https";
+import { PassThrough } from "node:stream";
+import { gzipSync } from "node:zlib";
 import { SERVER_TUNING } from "../../src/inbound-policy.js";
 import type { Logger, LogLevel, LogFields } from "../../src/logger.js";
-import { startFakeUpstream } from "./fake-upstreams.js";
+import { startFakeUpstream, startSubswitch } from "./fake-upstreams.js";
+
+const geminiOrigin = `https://${GEMINI_DEFAULT_HOST}`;
+const geminiConfig = { providers: { gemini: { aliases: { "fixture-gemini": "fixture-target" } } } };
+const sendGemini = (url: string) => fetch(`${url}/v1/messages`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ model: "gemini:fixture-gemini", messages: [{ role: "user", content: "hello" }] }),
+});
+
+const geminiReader = (calls: string[]) => {
+  const record = { token: { access_token: randomUUID(), refresh_token: randomUUID(), expiry: "2099-01-01T00:00:00Z" } };
+  return createKeychainReader({
+    platform: "darwin", env: {}, loginKeychainPath: "/fixture/login.keychain-db", setTimer: () => () => {},
+    exec: async (_file, args) => {
+      const secret = args.includes("-w");
+      calls.push(secret ? "readSecret" : "probe");
+      return { stdout: secret ? `go-keyring-base64:${Buffer.from(JSON.stringify(record)).toString("base64")}`
+        : '"mdat"<timedate>=0x32303234303232393132333435365A00  "20240229123456Z\\000"' };
+    },
+  });
+};
+
+it("starts Gemini without I/O and keeps the unqualified project refusal local to bootstrap", async (t) => {
+  const calls: string[] = [];
+  const codes: string[] = [];
+  const proxy = await startSubswitch(geminiConfig, {
+    logger: { log: (_level, _event, fields) => { if (fields?.errorCode !== undefined) codes.push(fields.errorCode); } },
+    providerDeps: { gemini: { reader: geminiReader(calls), fetch: async (url) => {
+      calls.push(String(url));
+      return Response.json({ project: "fixture-project" });
+    } } },
+  });
+  t.after(proxy.close);
+  assert.deepEqual(calls, []);
+  const health = await fetch(`${proxy.url}/__subswitch/health`);
+  const report = await health.json() as { providers: { id: string; configured: boolean }[] };
+  assert.deepEqual(report.providers.find(({ id }) => id === "gemini"), { id: "gemini", configured: true, modelCount: 0 });
+  assert.deepEqual(calls, []);
+  const reply = await sendGemini(proxy.url);
+  assert.equal(reply.status, 500);
+  assert.deepEqual(await reply.json(), { type: "error", error: { type: "api_error", message: "Gemini could not prepare the request." } });
+  assert.deepEqual(codes, ["bootstrap_project"]);
+  assert.deepEqual(calls, ["probe", "readSecret", `${geminiOrigin}/v1internal:loadCodeAssist`]);
+});
+
+it("keeps Gemini bootstrap response bytes raw and does not follow a redirect", async (t) => {
+  const bytes = gzipSync('{"project":"fixture-project"}');
+  const url = `${geminiOrigin}/v1internal:loadCodeAssist`;
+  const network = t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected default fetch"); });
+  const transport = t.mock.method(https, "request", (...args: unknown[]) => {
+    const cb = args[2];
+    assert.equal(String(args[0]), url);
+    assert.equal(typeof cb, "function");
+    if (typeof cb !== "function") throw new Error("Missing response callback");
+    const statusCode = transport.mock.callCount() === 0 ? 200 : 302;
+    const response = Object.assign(new PassThrough(), { statusCode, headers: { "content-encoding": "gzip" } });
+    queueMicrotask(() => { cb(response); response.end(bytes); });
+    return new PassThrough();
+  });
+  const { fetch: send } = liveGeminiDeps();
+  const init = { method: "POST", body: "{}", redirect: "error" as const };
+  const raw = await send(url, init);
+  assert.equal(raw.headers.get("content-encoding"), "gzip");
+  assert.deepEqual(Buffer.from(await raw.arrayBuffer()), bytes);
+  assert.equal((await send(url, init)).status, 302);
+  assert.equal((await send("https://other.example.test/v1internal:loadCodeAssist", init)).status, 502);
+  assert.equal(transport.mock.callCount(), 2);
+  assert.equal(network.mock.callCount(), 0);
+});
+
+it("refuses Gemini loopback at startup even with injected deps", async () => {
+  await assert.rejects(startSubswitch({ providers: { gemini: { baseUrl: "https://127.0.0.1" } } }), {
+    message: "buildDeps rejected config: providers.gemini.baseUrl must use the default host on port 443.",
+  });
+});
+
+it("refuses Gemini reader and fetch calls unless the test injects them", async (t) => {
+  const proxy = await startSubswitch(geminiConfig);
+  t.after(proxy.close);
+  assert.deepEqual(proxy.refusedStoreCalls, []);
+  assert.equal((await sendGemini(proxy.url)).status, 503);
+  assert.deepEqual(proxy.refusedStoreCalls, ["gemini.probe"]);
+
+  const refused: string[] = [];
+  const { gemini } = refusingProviderDeps(refused);
+  assert.ok(gemini);
+  const item = { service: "fixture", account: "fixture" };
+  await assert.rejects(gemini.reader.readSecret(item), /Unexpected Gemini/);
+  await assert.rejects(gemini.fetch(geminiOrigin), /Unexpected Gemini/);
+  assert.deepEqual(refused, ["gemini.readSecret", "gemini.fetch"]);
+});
+
+it("maps only the vetted Gemini origin to the fake upstream through the injected fetch", async (t) => {
+  const project = "fixture-project";
+  const upstream = await startFakeUpstream((_req, res) => {
+    res.end(JSON.stringify({ project }));
+  });
+  t.after(upstream.close);
+  const urls: string[] = [];
+  const proxy = await startSubswitch(geminiConfig, { providerDeps: { gemini: {
+    reader: geminiReader([]),
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      assert.equal(url.origin, geminiOrigin);
+      assert.equal(init?.redirect, "error");
+      urls.push(url.pathname + url.search);
+      return fetch(upstream.url + url.pathname + url.search, init);
+    },
+    extractProjectId: (value) => typeof value === "object" && value !== null && "project" in value && value.project === project
+      ? project : undefined,
+  } } });
+  t.after(proxy.close);
+  const response = await sendGemini(proxy.url);
+  await response.body?.cancel();
+  assert.deepEqual(urls, ["/v1internal:loadCodeAssist", "/v1internal:streamGenerateContent?alt=sse"]);
+  assert.deepEqual(upstream.requests.map(({ url }) => url), urls);
+  assert.equal(JSON.parse(String(upstream.requests[1]?.body)).project, project);
+});
 
 /** Run `fn` with stderr captured, returning every line it wrote. */
 const captureStderr = (fn: () => void): string[] => {
