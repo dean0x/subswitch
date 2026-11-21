@@ -178,6 +178,7 @@ const CHILD_PROCESS_FILES: ReadonlyMap<string, string> = new Map([
   ["server.ts", "the live deps factories build the program runners"],
   ["claude-auth.ts", "the Claude client-ingress store runs the macOS Keychain tool"],
   ["run-action.ts", "run-action starts the client command that the user names"],
+  ["relay-exec.ts", "starts the detached relay"],
 ]);
 const CHILD_PROCESS_MODULE = /["'](?:node:)?child_process["']/;
 /** The Kimi file store module, and the name of its maker. Only the live Kimi factory may name it. */
@@ -239,7 +240,7 @@ describe("source-text guards: CLI child processes", () => {
 describe("source-text guards: live deps factories", () => {
   it("G2: only server.ts defines a live factory, and only cli.ts and run-action.ts call one", () => {
     const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
-    for (const file of [LIVE_FACTORY_HOME, ...LIVE_FACTORY_CALLERS, ...CHILD_PROCESS_FILES.keys()]) {
+    for (const file of [LIVE_FACTORY_HOME, ...LIVE_FACTORY_CALLERS, "claude-auth.ts"]) {
       assert.ok(files.includes(file), `The source list must include ${file}`);
     }
     assert.match(readSrc(LIVE_FACTORY_HOME), /export const liveTogetherKeyReaderDeps = /);
@@ -299,6 +300,56 @@ describe("source-text guards: live deps factories", () => {
 const KIMI_FIXTURE_MARKER = /FAKE-KIMI/i;
 const KIMI_TEST_FILE = /(?:^|\/)kimi-[^/]*\.ts$/;
 const THIS_GUARD = "unit/source-text-guards.test.ts";
+const RELAY_CHILD_HELPER = "helpers/relay-child.ts";
+// Literal arrays only. The CLI runner's own tests exercise paths that fail before bind.
+const CLI_CHILD_ARRAY = /\b(?:cliChildCommand|runCliChild)\s*\([^,]*,\s*\[([^\]]*)\]/g;
+const serveLaunches = (source: string): string[] => [...source.matchAll(CLI_CHILD_ARRAY)]
+  .filter(([, args = ""]) => /^\s*(?:$|["'`]-)|(?:^|,)\s*(["'`])serve\1\s*(?:,|$)/.test(args))
+  .map(([call]) => call);
+const healthProbe = (source: string): boolean => source.includes("/__subswitch/health") && /\bfetch\s*\(/.test(source);
+const RELAY_DETACH_SIGNAL = /\.\s*kill\s*\(|\[\s*["'`]kill["'`]\s*\]/;
+
+describe("source-text guards: relay lifecycle", () => {
+  it("G7: serve launches use the isolated relay child helper", () => {
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: TEST_DIR });
+    assert.ok(files.includes(RELAY_CHILD_HELPER));
+    assert.deepEqual([...files].sort().flatMap((file) =>
+      [RELAY_CHILD_HELPER, THIS_GUARD, "integration/cli-child.test.ts"].includes(file) ? [] :
+        serveLaunches(readFileSync(join(TEST_DIR, file), "utf8")).map((call) => `${file}: ${call}`)), [
+      // Step 7 moves these calls. Keep exact call text and count until then.
+      'integration/kimi-cli.test.ts: cliChildCommand(folders, ["serve"]',
+      'integration/kimi-shutdown.test.ts: cliChildCommand(folders, ["serve"]',
+      'integration/limit-recording.test.ts: cliChildCommand(folders, ["serve"]',
+    ]);
+  });
+
+  it("G7 positive control: detects direct serve, empty and flag-first arrays", () => {
+    for (const args of ['["serve"]', "['models', 'serve']", "[ ]", '[\n "--port", "42193"]']) {
+      for (const name of ["cliChildCommand", "runCliChild"]) {
+        const call = `${name}(folders, ${args}`;
+        assert.deepEqual(serveLaunches(`${call}, options)`), [call]);
+      }
+    }
+    assert.deepEqual(serveLaunches('runCliChild(folders, ["models", "--json"])'), []);
+  });
+
+  it("G8: only the record module probes health for the relay lifecycle", () => {
+    const files = globSync("**/relay-*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
+    assert.ok(files.includes("relay-record.ts") && files.includes("relay-log.ts"));
+    assert.ok(healthProbe(readSrc("relay-record.ts")), "The guard must find the owner probe");
+    assert.deepEqual(files.filter((file) => file !== "relay-record.ts" && healthProbe(readSrc(file))), []);
+  });
+
+  it("G9: relay detach sends no signal and only relay exec can load child_process", () => {
+    assert.match('process.kill(pid, "SIGTERM");', RELAY_DETACH_SIGNAL);
+    const importSpawn = 'import { spawn } from "node:child_process";';
+    assert.deepEqual(liveFactoryViolations("relay-detach.ts", importSpawn), ["loads node:child_process"]);
+    assert.deepEqual(liveFactoryViolations("relay-exec.ts", importSpawn), []);
+    for (const file of globSync("**/relay-detach.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR })) {
+      assert.doesNotMatch(readSrc(file), RELAY_DETACH_SIGNAL, `src/${file} must not send signals`);
+    }
+  });
+});
 
 describe("source-text guards: provider fixtures", () => {
   it("G4: only Kimi-named test files hold a marked Kimi fixture", () => {
@@ -340,6 +391,19 @@ const CLIENT_VARIABLE = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|ANTHROP
 /** An object key, a property or index assignment, or a shell prefix that sets one of these variables. */
 const CLIENT_VARIABLE_SET = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)["'`]?\]?\s*(?::|=(?!=))/;
 const readRepo = (name: string): string => readFileSync(join(REPO_DIR, name), "utf8");
+
+it("the package smoke script isolates both serve calls and checks normal exit", () => {
+  const script = readRepo("scripts/smoke-tarball.sh");
+  const serves = script.replaceAll("\\\n", "").split("\n")
+    .filter((line) => line.endsWith("node_modules/.bin/subswitch serve &"));
+  assert.equal(serves.length, 2);
+  for (const line of serves) {
+    assert.match(line, /(?:^| )HOME="\$\{TMPDIR_INSTALL\}(?:\/[^" ]+)?" /);
+    assert.match(line, /(?:^| )XDG_CACHE_HOME="\$\{TMPDIR_INSTALL\}\/[^" ]+" /);
+  }
+  assert.match(script, /^set -euo pipefail$/m);
+  assert.match(script, /^kill "\$\{SERVE_PID\}"\nwait "\$\{SERVE_PID\}"$/m);
+});
 
 describe("source-text guards: the Kimi live check", () => {
   it("G5: the live check names no Claude Code override variable, and no Kimi live file sets one", () => {

@@ -63,7 +63,8 @@ NODE
 # Ask the OS for an available port; never assume a developer port is unused.
 SMOKE_PORT="$(node -e 'const net=require("node:net"); const s=net.createServer(); s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close();});')"
 node -e 'const fs=require("node:fs");fs.writeFileSync("subswitch.config.json",JSON.stringify({port:Number(process.argv[1]),providers:{codex:{authFile:process.cwd()+"/unused-auth.json"}}}),{mode:0o600});' "${SMOKE_PORT}"
-SUBSWITCH_CONFIG="${TMPDIR_INSTALL}/subswitch.config.json" node_modules/.bin/subswitch serve &
+HOME="${TMPDIR_INSTALL}" XDG_CACHE_HOME="${TMPDIR_INSTALL}/cache" \
+  SUBSWITCH_CONFIG="${TMPDIR_INSTALL}/subswitch.config.json" node_modules/.bin/subswitch serve &
 SERVE_PID="$!"
 
 wait_for_health() {
@@ -116,7 +117,8 @@ echo "Smoke: init preserved the inherited configuration"
 node -e 'const fs=require("node:fs");const p="subswitch.config.json";const c=JSON.parse(fs.readFileSync(p,"utf8"));c.codexIngress.claude.authFile=process.cwd()+"/unused-claude-auth.json";fs.writeFileSync(p,JSON.stringify(c),{mode:0o600});'
 SUBSWITCH_CONFIG="${TMPDIR_INSTALL}/subswitch.config.json" node_modules/.bin/subswitch models --client codex --json > reverse-models.json
 node -e 'const fs=require("node:fs");const m=JSON.parse(fs.readFileSync("reverse-models.json","utf8"));if(!m.enabled||!m.models.some(x=>x.id==="claude-sonnet-5"))process.exit(1);if(!fs.readFileSync("native-codex/config.toml","utf8").includes("openai_base_url"))process.exit(1);'
-SUBSWITCH_CONFIG="${TMPDIR_INSTALL}/subswitch.config.json" node_modules/.bin/subswitch serve &
+HOME="${TMPDIR_INSTALL}" XDG_CACHE_HOME="${TMPDIR_INSTALL}/cache" \
+  SUBSWITCH_CONFIG="${TMPDIR_INSTALL}/subswitch.config.json" node_modules/.bin/subswitch serve &
 SERVE_PID="$!"
 wait_for_health
 if ! echo "${BODY}" | grep -q '"translationAvailable":true'; then

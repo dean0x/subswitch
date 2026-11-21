@@ -56,6 +56,7 @@ export interface ServerDeps {
   readonly logger: Logger;
   readonly destinations: readonly RoutingDestination[];
   readonly togetherEnv?: Readonly<NodeJS.ProcessEnv>;
+  readonly identity?: { readonly pid: number; readonly nonce: string };
   /** Privileged default leg — handles everything that is not POST /v1/messages*. */
   readonly forwardAnthropic: AnthropicForwarder;
   readonly forwardOpenai: CodexIngressEntry | undefined;
@@ -349,7 +350,9 @@ export const listenServer = (
  * Uses enumerateDestinations so the topology (Anthropic passthrough + registry
  * providers) is the single source of truth shared with models --json.  (ARCH-04)
  */
-const buildHealthBody = (config: Config, destinations: readonly RoutingDestination[], env: Readonly<NodeJS.ProcessEnv>): string =>
+const buildHealthBody = (
+  config: Config, destinations: readonly RoutingDestination[], env: Readonly<NodeJS.ProcessEnv>, identity: ServerDeps["identity"],
+): string =>
   JSON.stringify({
     name: SUBSWITCH_NAME,
     version: SUBSWITCH_VERSION,
@@ -374,6 +377,7 @@ const buildHealthBody = (config: Config, destinations: readonly RoutingDestinati
         modelCount: routableModelCount(MODEL_REGISTRY, d.id),
       };
     }),
+    ...(identity === undefined ? {} : { pid: identity.pid, nonce: identity.nonce }),
   });
 
 /**
@@ -603,7 +607,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       if (pathname.startsWith("/__subswitch/")) {
         if (req.method === "GET" && pathname === "/__subswitch/health") {
           res.writeHead(200, synthesizedHeaders());
-          res.end(buildHealthBody(config, deps.destinations, deps.togetherEnv ?? {}));
+          res.end(buildHealthBody(config, deps.destinations, deps.togetherEnv ?? {}, deps.identity));
           return;
         }
         res.writeHead(404, synthesizedHeaders());
