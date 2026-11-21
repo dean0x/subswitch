@@ -119,6 +119,145 @@ it("logs the cause name and returns a 500 without a fetch when the credential so
   ]);
 });
 
+for (const rejectedBy of ["prepareBody", "upstream"] as const) {
+  it(`prepares the body again with the refreshed credential after a 401 from ${rejectedBy}`, async (t) => {
+    const res = response();
+    const getCredentials = t.mock.fn(async (_signal: AbortSignal) => ok("initial"));
+    const forceRefresh = t.mock.fn(async (_signal: AbortSignal, _failed: string) => ok("renewed"));
+    const prepareBody = t.mock.fn(async (credential: string, _signal: AbortSignal) =>
+      rejectedBy === "prepareBody" && credential === "initial"
+        ? err({ kind: "unauthorized" as const })
+        : ok({ input: `prepared with ${credential}` }));
+    const fetchImpl = t.mock.fn<typeof fetch>(async (_url, init) =>
+      rejectedBy === "upstream" && init?.body === '{"input":"prepared with initial"}'
+        ? new Response("denied", { status: 401 })
+        : new Response("frame"));
+
+    await runTranslatedLeg(res, options({
+      auth: { refreshable: true, getCredentials, forceRefresh }, prepareBody, fetchImpl,
+    }));
+
+    assert.equal(forceRefresh.mock.callCount(), 1);
+    const signal = getCredentials.mock.calls[0]?.arguments[0];
+    assert.ok(signal instanceof AbortSignal);
+    assert.deepEqual(forceRefresh.mock.calls[0]?.arguments, [signal, "initial"]);
+    assert.deepEqual(prepareBody.mock.calls.map(({ arguments: args }) => args), [["initial", signal], ["renewed", signal]]);
+    assert.deepEqual(fetchImpl.mock.calls.map(({ arguments: [, init] }) => [init?.headers, init?.body]), [
+      ...(rejectedBy === "upstream" ? [[{ "x-fixture-auth": "initial" }, '{"input":"prepared with initial"}']] : []),
+      [{ "x-fixture-auth": "renewed" }, '{"input":"prepared with renewed"}'],
+    ]);
+    assert.equal(res.statusCode, 200);
+  });
+}
+
+for (const [refreshable, rejects] of [
+  [false, ["prepareBody"]],
+  [true, ["prepareBody", "prepareBody"]],
+  [true, ["prepareBody", "upstream"]],
+  [true, ["upstream", "prepareBody"]],
+] as const) {
+  it(`stops after ${rejects.join(" then ")} rejects the credential (refreshable: ${refreshable})`, async (t) => {
+    const res = response();
+    const end = t.mock.method(res, "end");
+    const forceRefresh = t.mock.fn(async () => ok("renewed"));
+    const prepareBody = t.mock.fn(async (credential: string) =>
+      rejects[credential === "initial" ? 0 : 1] === "prepareBody"
+        ? err({ kind: "unauthorized" as const })
+        : ok({ input: "prepared" }));
+    const fetchImpl = t.mock.fn(async () => new Response("denied", { status: 401 }));
+    const logs: string[] = [];
+
+    await runTranslatedLeg(res, options({
+      auth: { ...options().auth, refreshable, forceRefresh }, prepareBody, fetchImpl,
+      logger: { log: (_level, event) => logs.push(event) },
+    }));
+
+    assert.equal(forceRefresh.mock.callCount(), refreshable ? 1 : 0);
+    assert.equal(prepareBody.mock.callCount(), rejects.length);
+    assert.equal(fetchImpl.mock.callCount(), rejects.some((source) => source === "upstream") ? 1 : 0);
+    assert.equal(res.statusCode, 401);
+    assert.equal(end.mock.calls[0]?.arguments[0], rejects.at(-1) === "prepareBody"
+      ? '{"type":"error","error":{"type":"authentication_error","message":"fixture request unauthorized"}}'
+      : '{"type":"error","error":{"type":"api_error","message":"upstream rejected request"}}');
+    assert.deepEqual(logs, [
+      ...(refreshable ? ["fixture_upstream_401_refreshing"] : []),
+      ...(rejects.at(-1) === "upstream" ? ["fixture_upstream_error"] : []),
+    ]);
+  });
+}
+
+for (const failure of ["result", "rejection", "throw"] as const) {
+  it(`logs only the error code for a prepareBody ${failure} and returns a 500 without a fetch`, async (t) => {
+    const res = response();
+    const end = t.mock.method(res, "end");
+    const fetchImpl = t.mock.fn(async () => new Response("frame"));
+    const logs: unknown[] = [];
+    const prepareBody = () => {
+      const cause = new Error("fake fixture detail");
+      if (failure === "throw") throw cause;
+      if (failure === "rejection") return Promise.reject(cause);
+      return Promise.resolve(err({ kind: "failed" as const, errorCode: "fixture_failed", detail: cause.message }));
+    };
+
+    await runTranslatedLeg(res, options({
+      auth: { ...options().auth, refreshable: true }, prepareBody, fetchImpl,
+      logger: { log: (level, event, fields) => logs.push({ level, event, fields }) },
+    }));
+
+    assert.equal(res.statusCode, 500);
+    assert.equal(end.mock.calls[0]?.arguments[0],
+      '{"type":"error","error":{"type":"api_error","message":"fixture credential load failed"}}');
+    assert.equal(fetchImpl.mock.callCount(), 0);
+    assert.deepEqual(logs, [{
+      level: "error", event: "fixture_credential_load_failed",
+      fields: { model: "fixture-model", errorCode: failure === "result" ? "fixture_failed" : "Error" },
+    }]);
+  });
+}
+
+it("ends a pending prepareBody wait on close with a timeout and no log or fetch", { timeout: 1000 }, async (t) => {
+  const res = response();
+  const end = t.mock.method(res, "end");
+  const fetchImpl = t.mock.fn(async () => new Response("frame"));
+  const log = t.mock.fn();
+  let cancelWait: (cause: Error) => void = () => assert.fail("Preparation did not start");
+  const run = runTranslatedLeg(res, options({
+    prepareBody: () => new Promise((_resolve, reject) => { cancelWait = reject; }),
+    logger: { log }, fetchImpl,
+  }));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  res.emit("close");
+  const settled = await Promise.race([run.then(() => true), new Promise<boolean>((resolve) => setImmediate(resolve, false))]);
+
+  assert.equal(res.statusCode, 504);
+  assert.equal(settled, true, "the runner must not wait for preparation after close");
+  assert.equal(end.mock.calls[0]?.arguments[0],
+    '{"type":"error","error":{"type":"api_error","message":"fixture request timed out"}}');
+  cancelWait(new Error("fake fixture detail"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(log.mock.callCount(), 0);
+  assert.equal(fetchImpl.mock.callCount(), 0);
+  assert.equal(res.listenerCount("close"), 0);
+});
+
+it("does not log or fetch after prepareBody fails on an already aborted signal", async (t) => {
+  const res = response();
+  const fetchImpl = t.mock.fn(async () => new Response("frame"));
+  const log = t.mock.fn();
+
+  await runTranslatedLeg(res, options({
+    prepareBody: async () => {
+      res.emit("close");
+      return err({ kind: "failed", errorCode: "fixture_failed" });
+    },
+    logger: { log }, fetchImpl,
+  }));
+
+  assert.equal(res.statusCode, 504);
+  assert.equal(log.mock.callCount(), 0);
+  assert.equal(fetchImpl.mock.callCount(), 0);
+});
+
 it("sets redirect on the injected POST without replacing its headers or signal", async () => {
   const requests: { url: string; init?: RequestInit }[] = [];
   const { auth } = options();

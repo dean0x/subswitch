@@ -24,6 +24,10 @@ interface UpstreamError extends AnthropicError {
   readonly headers?: Record<string, string>;
 }
 
+export type PrepareBodyError =
+  | { readonly kind: "unauthorized" }
+  | { readonly kind: "failed"; readonly errorCode: string };
+
 export interface TranslatedLegOptions<C> {
   readonly url: string;
   readonly name: string;
@@ -47,6 +51,8 @@ export interface TranslatedLegOptions<C> {
     readonly forceRefresh: (signal: AbortSignal, failed: C) => Promise<Result<C, ProxyError>>;
   };
   readonly fetchImpl: typeof fetch;
+  /** Use fixed error codes. An unauthorized result shares the upstream 401 retry budget. */
+  readonly prepareBody?: (credential: C, signal: AbortSignal) => Promise<Result<object, PrepareBodyError>>;
   readonly buildHeaders: (credential: C) => Record<string, string>;
   readonly createTranslator: () => { readonly parser: Transform; readonly translator: Transform };
   readonly aggregateFrames: (frames: readonly string[]) => Result<AggregateOutcome, ProxyError>;
@@ -63,62 +69,94 @@ type FramePipeline = readonly [Readable, Transform, Transform];
 
 const timeoutError = (name: string): ProxyError => ({ kind: "timeout", message: `${name} request timed out` });
 
-/**
- * Return the credential, or reply here and return undefined.
- * The wait ends at the abort even when the credential source does not observe cancellation.
- */
-const waitForCredential = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>,
-  pending: Promise<Result<C, ProxyError>>, signal: AbortSignal, replyError: ReplyError): Promise<{ readonly value: C } | undefined> => {
-  const { events, logger, model, name } = options;
-  const result = await abortable(pending, signal).catch((cause: unknown): Result<C, ProxyError> => {
-    // A cancelled wait gets the timeout reply below. Log only the cause name: the message can hold a credential.
-    if (!signal.aborted) logger.log("error", events.credentialLoadFailed, { model, errorCode: cause instanceof Error ? cause.name : "unknown" });
-    return { ok: false, error: { kind: "upstream", status: 500, message: `${name} credential load failed` } };
-  });
-  if (res.destroyed || res.writableEnded) return undefined;
+const credentialLoadFailure = <C>(options: TranslatedLegOptions<C>, errorCode: string): ProxyError => {
+  options.logger.log("error", options.events.credentialLoadFailed, { model: options.model, errorCode });
+  return { kind: "upstream", status: 500, message: `${options.name} credential load failed` };
+};
+
+/** End the wait on abort, even if the operation does not stop. */
+const waitForAuthStep = async <C, T, E>(res: ServerResponse, options: TranslatedLegOptions<C>,
+  start: () => Promise<Result<T, E>>, signal: AbortSignal, replyError: ReplyError): Promise<Result<T, E> | undefined> => {
+  let result: Result<T, E> | undefined;
+  let failure: ProxyError | undefined;
+  try {
+    result = await abortable(start(), signal);
+  } catch (cause) {
+    // A cancelled wait is not a fault. The cause message can hold a credential.
+    if (!signal.aborted) failure = credentialLoadFailure(options, cause instanceof Error ? cause.name : "unknown");
+  }
+  if (res.destroyed || res.writableEnded) return;
   if (signal.aborted) {
-    replyError(timeoutError(name));
-    return undefined;
+    replyError(timeoutError(options.name));
+    return;
   }
-  if (!result.ok) {
-    replyError(result.error);
-    return undefined;
-  }
+  if (failure !== undefined) replyError(failure);
   return result;
+};
+
+const waitForCredential = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>,
+  start: () => Promise<Result<C, ProxyError>>, signal: AbortSignal, replyError: ReplyError): Promise<{ readonly value: C } | undefined> => {
+  const result = await waitForAuthStep(res, options, start, signal, replyError);
+  if (result === undefined) return;
+  if (result.ok) return result;
+  replyError(result.error);
+};
+
+/** Return unauthorized only for a local preparation step. An HTTP 401 keeps its response. */
+const requestAttempt = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, credential: C, signal: AbortSignal,
+  replyError: ReplyError): Promise<Response | "unauthorized" | undefined> => {
+  const { prepareBody, name } = options;
+  let body = options.body;
+  if (prepareBody !== undefined) {
+    const prepared = await waitForAuthStep(res, options, () => prepareBody(credential, signal), signal, replyError);
+    if (prepared === undefined || res.destroyed || res.writableEnded) return;
+    if (signal.aborted) {
+      replyError(timeoutError(name));
+      return;
+    }
+    if (!prepared.ok) {
+      if (prepared.error.kind === "unauthorized") return "unauthorized";
+      replyError(credentialLoadFailure(options, prepared.error.errorCode));
+      return;
+    }
+    body = prepared.value;
+  }
+  try {
+    return await options.fetchImpl(options.url, {
+      method: "POST",
+      headers: options.buildHeaders(credential),
+      body: JSON.stringify(body),
+      // Keep the fetch init unchanged for the follow policy.
+      ...(options.redirect === "follow" ? {} : { redirect: options.redirect }),
+      signal,
+    });
+  } catch {
+    if (!res.writableEnded && !res.destroyed) {
+      replyError(signal.aborted ? timeoutError(name) : { kind: "upstream", message: `${name} upstream unreachable` });
+    }
+  }
 };
 
 /** Return the upstream response, or end the request here if no response is available. */
 const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, signal: AbortSignal,
   replyError: ReplyError): Promise<Response | undefined> => {
-  const { auth, events, fetchImpl, logger, model, name } = options;
-  const initial = await waitForCredential(res, options, auth.getCredentials(signal), signal, replyError);
+  const { auth, events, logger, model, name } = options;
+  const initial = await waitForCredential(res, options, () => auth.getCredentials(signal), signal, replyError);
   if (initial === undefined) return;
   let credential = initial.value;
   const maxAttempts = auth.refreshable ? 2 : 1;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    let response: Response;
-    try {
-      response = await fetchImpl(options.url, {
-        method: "POST",
-        headers: options.buildHeaders(credential),
-        body: JSON.stringify(options.body),
-        // Keep the fetch init unchanged for the follow policy.
-        ...(options.redirect === "follow" ? {} : { redirect: options.redirect }),
-        signal,
-      });
-    } catch {
-      if (!res.writableEnded && !res.destroyed) {
-        replyError(signal.aborted
-          ? { kind: "timeout", message: `${name} request timed out` }
-          : { kind: "upstream", message: `${name} upstream unreachable` });
-      }
+    const response = await requestAttempt(res, options, credential, signal, replyError);
+    if (response === undefined) return;
+    if (response !== "unauthorized" && (response.status !== 401 || attempt + 1 === maxAttempts)) return response;
+    if (attempt + 1 === maxAttempts) {
+      replyError({ kind: "auth", message: `${name} request unauthorized` });
       return;
     }
-    if (response.status !== 401 || attempt + 1 === maxAttempts) return response;
     logger.log("warn", events.upstream401Refreshing, { model });
-    await response.body?.cancel().catch(() => undefined);
+    if (response !== "unauthorized") await response.body?.cancel().catch(() => undefined);
     // The refresh gets the request signal for its waits only, so a sent refresh still completes and is saved.
-    const refreshed = await waitForCredential(res, options, auth.forceRefresh(signal, credential), signal, replyError);
+    const refreshed = await waitForCredential(res, options, () => auth.forceRefresh(signal, credential), signal, replyError);
     if (refreshed === undefined) return;
     credential = refreshed.value;
   }
