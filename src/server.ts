@@ -207,7 +207,7 @@ const createGeminiProvider = (config: Config, logger: Logger, deps: GeminiProvid
   return createGeminiHandler({
     provider, logger, accountBlock,
     auth: createGeminiAuth({ reader: deps.reader, now: Date.now, register: registerExactCredential, accountBlock, logger }),
-    signatures: new ReasoningCache(maxEntries, maxBytes, true),
+    signatures: new ReasoningCache(maxEntries, maxBytes, "entry"),
     fetchRaw: deps.fetch, fetchImpl: deps.fetch, clock: { schedule: scheduleTimer },
     ...(deps.extractProjectId === undefined ? {} : { extractProjectId: deps.extractProjectId }),
   });

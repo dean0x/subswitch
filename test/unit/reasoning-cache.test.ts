@@ -89,8 +89,8 @@ describe("ReasoningCache", () => {
     assert.deepEqual(cache.get("c"), [7, 8, 9]);
   });
 
-  it("charges the key and value to the strict byte budget", () => {
-    const cache = new ReasoningCache(4, 10, true);
+  it("charges the key and value to the entry byte budget", () => {
+    const cache = new ReasoningCache(4, 10, "entry");
     cache.put("éé", [1]);
     cache.put("abcd", [2]);
     assert.equal(cache.get("éé"), undefined);
@@ -98,12 +98,20 @@ describe("ReasoningCache", () => {
     assert.equal(cache.byteSize, 7);
   });
 
-  it("does not replay an old value after an oversized replacement", () => {
-    const cache = new ReasoningCache(2, 10, true);
+  it("does not replay an old value after an oversized replacement in entry mode", () => {
+    const cache = new ReasoningCache(2, 10, "entry");
     cache.put("a", [1]);
     cache.put("a", ["a longer value"]);
     assert.equal(cache.get("a"), undefined);
     assert.equal(cache.byteSize, 0);
+  });
+
+  it("counts only UTF-8 value bytes and keeps the old value on an oversized replacement in strict mode", () => {
+    const cache = new ReasoningCache(2, 10, true);
+    cache.put("long-key-é", ["éé"]);
+    cache.put("long-key-é", ["a longer value"]);
+    assert.deepEqual(cache.get("long-key-é"), ["éé"]);
+    assert.equal(cache.byteSize, 8);
   });
 
   it("tracks totalBytes correctly on key overwrite", () => {

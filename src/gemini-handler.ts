@@ -99,7 +99,7 @@ export const createGeminiHandler = (deps: GeminiHandlerDeps): ProviderHandler =>
       await runTranslatedLeg<Credential>(res, {
         url, name: "Gemini", model, body: translated.value, wantStream: request.stream === true,
         requestTimeoutMs: provider.requestTimeoutMs, streamIdleTimeoutMs: provider.streamIdleTimeoutMs,
-        maxAggregateBytes: MAX_AGGREGATE_BYTES, logger: runnerLogger, events: GEMINI_EVENTS, auth,
+        maxAggregateBytes: MAX_AGGREGATE_BYTES, countAggregateUtf8Bytes: true, logger: runnerLogger, events: GEMINI_EVENTS, auth,
         redirect: "error", abortOnResponseTimeout: true, prepareErrorCodes: geminiPrepareErrorCodes,
         renderRunnerError: renderGeminiRunnerError,
         async prepareBody(credential, signal) {

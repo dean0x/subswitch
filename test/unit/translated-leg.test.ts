@@ -55,12 +55,18 @@ const response = (): ServerResponse => {
   return res;
 };
 
-it("limits aggregate frames by UTF-8 bytes", async () => {
+it("limits aggregate frames by UTF-8 bytes when selected", async () => {
   const res = response();
-  await runTranslatedLeg(res, options({ maxAggregateBytes: 3, fetchImpl: async () => new Response("éé"),
+  await runTranslatedLeg(res, options({ maxAggregateBytes: 3, countAggregateUtf8Bytes: true, fetchImpl: async () => new Response("éé"),
     aggregateFrames: () => assert.fail("An incomplete response must not reach the aggregator"),
   }));
   assert.equal(res.statusCode, 502);
+});
+
+it("accepts multibyte aggregate frames within the default string length limit", async () => {
+  const res = response();
+  await runTranslatedLeg(res, options({ maxAggregateBytes: 3, fetchImpl: async () => new Response("éé") }));
+  assert.equal(res.statusCode, 200);
 });
 
 it("sets the close listener before credential load", async () => {

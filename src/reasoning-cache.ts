@@ -18,8 +18,9 @@ const computeBytes = (items: readonly unknown[]): number => JSON.stringify(items
  * `get` refreshes recency but never removes: Claude Code may retry a request and
  * re-ask for the same call_id.
  *
- * The default mode retains one oversized entry. Strict mode counts the UTF-8 bytes
- * of each key and its serialized items. An oversized replacement leaves a cache miss.
+ * The default mode retains one oversized entry. Strict mode (`true`) counts the
+ * UTF-8 bytes of the serialized items and keeps the old value on an oversized replacement.
+ * The `"entry"` option also counts key bytes and removes an oversized replacement's old value.
  */
 export class ReasoningCache {
   private readonly entries = new Map<string, CacheEntry>();
@@ -28,14 +29,18 @@ export class ReasoningCache {
   constructor(
     private readonly maxEntries: number,
     private readonly maxBytes: number,
-    private readonly strictByteBound = false,
+    private readonly byteBound: boolean | "entry" = false,
   ) {
     assert(Number.isInteger(maxEntries) && maxEntries > 0, "maxEntries must be a positive integer");
     assert(Number.isInteger(maxBytes) && maxBytes > 0, "maxBytes must be a positive integer");
   }
 
   put(callId: string, items: readonly unknown[]): void {
-    const bytes = this.strictByteBound ? Buffer.byteLength(callId) + Buffer.byteLength(JSON.stringify(items)) : computeBytes(items);
+    const boundEntry = this.byteBound === "entry";
+    const valueBytes = this.byteBound ? Buffer.byteLength(JSON.stringify(items)) : computeBytes(items);
+    const bytes = boundEntry ? valueBytes + Buffer.byteLength(callId) : valueBytes;
+    const oversized = this.byteBound !== false && bytes > this.maxBytes;
+    if (oversized && !boundEntry) return;
 
     // Remove existing entry first so a key overwrite correctly subtracts its old bytes.
     const existing = this.entries.get(callId);
@@ -44,7 +49,7 @@ export class ReasoningCache {
       this.entries.delete(callId);
     }
 
-    if (this.strictByteBound && bytes > this.maxBytes) return;
+    if (oversized) return;
     this.entries.set(callId, { items, bytes });
     this.totalBytes += bytes;
 

@@ -37,6 +37,8 @@ export interface TranslatedLegOptions<C> {
   readonly requestTimeoutMs: number;
   readonly streamIdleTimeoutMs: number;
   readonly maxAggregateBytes: number;
+  /** Count UTF-8 bytes instead of string length for aggregate frames. */
+  readonly countAggregateUtf8Bytes?: true;
   readonly logger: Logger;
   readonly events: {
     readonly upstream401Refreshing: string;
@@ -238,14 +240,14 @@ const streamFrames = async <C>(res: ServerResponse, options: TranslatedLegOption
 const collectFrames = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, streams: FramePipeline,
   signal: AbortSignal, replyError: ReplyError): Promise<void> => {
   const frames: string[] = [];
-  let framesBytes = 0;
+  let aggregateSize = 0;
   try {
     await pipeline(...streams, async (source) => {
       for await (const chunk of source) {
         const frame = String(chunk);
-        framesBytes += Buffer.byteLength(frame);
+        aggregateSize += options.countAggregateUtf8Bytes ? Buffer.byteLength(frame) : frame.length;
         // Reject the pipeline immediately at the bound. Do not aggregate partial frames.
-        if (framesBytes > options.maxAggregateBytes) throw new Error("sse_aggregate_too_large");
+        if (aggregateSize > options.maxAggregateBytes) throw new Error("sse_aggregate_too_large");
         frames.push(frame);
       }
     });
