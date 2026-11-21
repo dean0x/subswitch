@@ -127,6 +127,7 @@ Flags (serve):
       --verbose    Set log level to debug for this run
       --quiet      Set log level to warn for this run
       --port <n>   Override listen port (default: 4141)
+      --detach     Start the proxy in its own session and print its PID
 
 Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults

@@ -25,8 +25,10 @@ import { claudeModelRows } from "./claude-models.js";
 import { routingDiscovery } from "./routing/routing-discovery.js";
 import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
+import { detachRelay } from "./relay-detach.js";
+import { spawnRelay } from "./relay-exec.js";
 import { createRelayLogger, writeFatalLineSync, writeStopLineSync, type RelayStopFields } from "./relay-log.js";
-import { createRelayNonce, ensureRelayFolder, publishRelayRecord, relayFolder, removeOwnRelayRecord } from "./relay-record.js";
+import { classifyRelay, createRelayNonce, ensureRelayFolder, publishRelayRecord, readRelayRecord, relayFolder, removeOwnRelayRecord } from "./relay-record.js";
 import { appendRotatingPrivateFile } from "./private-file.js";
 import { LimitRecorder, limitDirectory, withLimitRecorder, readLimitObservations } from "./limit-recorder.js";
 import { settleNativeRefreshes } from "./native-auth-coordination.js";
@@ -77,6 +79,7 @@ Flags (serve):
       --verbose    Set log level to debug for this run
       --quiet      Set log level to warn for this run
       --port <n>   Override listen port (default: ${DEFAULT_PORT})
+      --detach     Start the proxy in its own session and print its PID
 
 Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
@@ -114,7 +117,7 @@ Environment:
 type CliCommand =
   | { readonly kind: "help" }
   | { readonly kind: "version" }
-  | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly port?: string }
+  | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly detach: boolean; readonly port?: string }
   | { readonly kind: "doctor"; readonly client: Client }
   | { readonly kind: "models"; readonly json: boolean; readonly client: Client; readonly schemaVersion?: 3 }
   | { readonly kind: "limits"; readonly json: boolean; readonly port?: string }
@@ -123,7 +126,7 @@ type CliCommand =
 
 // Flag sets per command — used for per-command validation (A3.19)
 const GLOBAL_FLAGS = new Set(["help", "version"]);
-const SERVE_FLAGS = new Set(["verbose", "quiet", "port"]);
+const SERVE_FLAGS = new Set(["verbose", "quiet", "port", "detach"]);
 const DOCTOR_FLAGS = new Set(["client"]);
 const MODELS_FLAGS = new Set(["json", "client", "schema-version"]);
 const LIMITS_FLAGS = new Set(["json", "port"]);
@@ -152,6 +155,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
         // serve flags
         verbose:           { type: "boolean" },
         quiet:             { type: "boolean" },
+        detach:            { type: "boolean" },
         // init flags
         yes:               { type: "boolean", short: "y" },
         "dry-run":         { type: "boolean" },
@@ -240,6 +244,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
           kind: "serve",
           verbose: values.verbose === true,
           quiet: values.quiet === true,
+          detach: values.detach === true,
           ...(typeof values.port === "string" ? { port: values.port } : {}),
         },
       };
@@ -597,7 +602,21 @@ const main = async (): Promise<void> => {
       return;
 
     case "serve": {
-      const configResult = loadConfig();
+      if (command.detach) {
+        process.exitCode = await detachRelay({
+          platform: process.platform, home: homedir(),
+          verbose: command.verbose, quiet: command.quiet,
+          ...(command.port === undefined ? {} : { port: command.port }),
+          node: { execPath: process.execPath, execArgv: process.execArgv, entry: process.argv[1], env: process.env },
+          clock: { after: (ms, run) => {
+            const timer = setTimeout(run, ms);
+            return () => clearTimeout(timer);
+          } },
+          spawn: spawnRelay, classify: classifyRelay, readRecord: readRelayRecord, loadConfig, out, errOut, fail,
+        });
+        return;
+      }
+      const configResult = loadConfig({ allowProjectPort: process.env["SUBSWITCH_MANAGED_BY"] !== "detach" });
       if (!configResult.ok) {
         fail(configResult.error.message);
         return;

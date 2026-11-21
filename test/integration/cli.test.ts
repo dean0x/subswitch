@@ -149,12 +149,9 @@ describe("CLI --help", () => {
     const end = readme.indexOf("```", bodyStart);
     assert.ok(end > bodyStart, "README CLI reference block must be closed");
 
-    const readmeBlock = readme.slice(bodyStart, end).trimEnd();
-    assert.equal(
-      result.stdout.trimEnd(),
-      readmeBlock,
-      "the CLI USAGE text and the README CLI reference block must stay byte-identical",
-    );
+    const readmeBlock = readme.slice(bodyStart, end);
+    assert.equal(result.stdout, readmeBlock, "USAGE and the README CLI block must stay byte-identical");
+    assert.match(result.stdout, /^      --detach +\S/m);
   });
 });
 

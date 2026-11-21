@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { DEFAULT_PORT } from "../../src/config.js";
+import { DEFAULT_PORT, userConfigPath } from "../../src/config.js";
 import { classifyRelay, readRelayRecord } from "../../src/relay-record.js";
 import { cliChildCommand, cliChildFolders, type CliChildFolders } from "./cli-child.js";
 
@@ -16,6 +16,8 @@ export interface RelayChildOptions {
   /** A path below the test home, relative to that home or absolute. */
   readonly recordFsUnder?: string;
   readonly detach?: boolean;
+  /** Use the implicit user config and omit --port from the detach launcher. */
+  readonly portFromConfig?: boolean;
   /** Set up fixtures in the isolated home before the child starts. */
   readonly prepare?: (folders: CliChildFolders) => void | Promise<void>;
 }
@@ -32,6 +34,7 @@ export interface RelayChild {
 }
 
 const STOP_MS = 5_000;
+const DETACH_LAUNCH_MS = 12_000;
 const OUTPUT_CAP = 256 * 1024;
 
 async function reservePort(): Promise<number> {
@@ -86,21 +89,27 @@ export async function startRelayChild(options: RelayChildOptions = {}): Promise<
   assert.notEqual(folders.home, realHome, "Relay test home is the real home");
   const removeHome = () => rm(folders.home, { recursive: true, force: true });
   try {
-    const port = await reservePort();
+    const portFromConfig = options.detach === true && options.portFromConfig === true;
+    // Reserve both ports together. The exec allow-list permits only the port under test.
+    const [port, otherPort] = await Promise.all([reservePort(), options.detach && !portFromConfig ? reservePort() : undefined]);
+    assert.notEqual(port, otherPort, "The option port must differ from the config port");
     await options.prepare?.(folders);
     const cliArgs = ["serve", "--port", String(port)];
+    const extraEnv = typeof options.env === "function" ? options.env(folders) : options.env;
     const childOptions = {
-      env: typeof options.env === "function" ? options.env(folders) : options.env ?? {},
+      env: portFromConfig ? { ...extraEnv, SUBSWITCH_CONFIG: "" } : extraEnv ?? {},
       ...(options.recordFsUnder === undefined ? {} : { recordFsUnder: resolve(folders.home, options.recordFsUnder) }),
     };
     const command = cliChildCommand(folders, cliArgs, childOptions);
-    const configFile = command.env["SUBSWITCH_CONFIG"];
+    const configFile = portFromConfig ? userConfigPath(command.env) : command.env["SUBSWITCH_CONFIG"];
     assert.ok(configFile, "Relay test needs an isolated config file");
-    await writeFile(resolve(command.cwd, configFile), JSON.stringify({ ...options.config, port }));
+    if (portFromConfig) await mkdir(dirname(configFile), { recursive: true, mode: 0o700 });
+    await writeFile(resolve(command.cwd, configFile), JSON.stringify({ ...options.config, port: otherPort ?? port }));
     const args = options.extraImport === undefined ? command.args :
       command.args.toSpliced(-cliArgs.length - 1, 0, "--import", options.extraImport);
     const env = options.detach ? cliChildCommand(folders, cliArgs, { ...childOptions, allowNodeArgs: args }).env : command.env;
-    const child = spawn(command.file, options.detach ? [...args, "--detach"] : args, {
+    const launcherArgs = portFromConfig ? args.slice(0, -2) : args;
+    const child = spawn(command.file, options.detach ? [...launcherArgs, "--detach"] : launcherArgs, {
       cwd: command.cwd, env, detached: options.detach ?? false, stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -109,15 +118,15 @@ export async function startRelayChild(options: RelayChildOptions = {}): Promise<
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-OUTPUT_CAP); });
     let closed = false;
     const exited = new Promise<readonly [number | null, NodeJS.Signals | null]>((done, fail) => {
-      child.once("error", fail);
-      child.once("close", (code, signal) => { closed = true; done([code, signal]); });
+      const deadline = options.detach ? setTimeout(() => fail(new Error("Relay test launcher did not exit")), DETACH_LAUNCH_MS) : undefined;
+      child.once("error", (error) => { clearTimeout(deadline); fail(error); });
+      child.once("close", (code, signal) => { clearTimeout(deadline); closed = true; done([code, signal]); });
     });
     void exited.catch(() => undefined);
     const stop = async () => {
       try {
         if (options.detach) {
-          assert.ok(await waitUntil(() => closed, 12_000), "Relay test launcher did not exit");
-          await stopDetached(port, folders.home);
+          try { await exited; } finally { await stopDetached(port, folders.home); }
         } else if (!closed) {
           child.kill("SIGTERM");
           if (!await waitUntil(() => closed, STOP_MS)) {

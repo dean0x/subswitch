@@ -7,11 +7,11 @@ import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { DEFAULT_PORT } from "../../src/config.js";
 import { isPlainObject } from "../../src/plain-object.js";
-import { ensureRelayFolder, readRelayRecord } from "../../src/relay-record.js";
+import { classifyRelay, ensureRelayFolder, readRelayRecord } from "../../src/relay-record.js";
 import { SUBSWITCH_VERSION } from "../../src/version.js";
 import { startRelayChild, type RelayChild, type RelayChildOptions } from "../helpers/relay-child.js";
 
-async function launch(t: TestContext, options: Pick<RelayChildOptions, "extraImport" | "prepare"> & { readonly env?: NodeJS.ProcessEnv } = {}) {
+async function launch(t: TestContext, options: Pick<RelayChildOptions, "detach" | "portFromConfig" | "extraImport" | "prepare"> & { readonly env?: NodeJS.ProcessEnv } = {}) {
   const relay = await startRelayChild({
     ...options, env: { NO_COLOR: "1", SUBSWITCH_LIMIT_RECORDING: "0", ...options.env },
   });
@@ -159,6 +159,48 @@ it("starts and stops a relay under a separate home and on a test port", async (t
   await relay.cleanup();
   assert.deepEqual(await relay.exited, [0, null]);
   await assert.rejects(access(relay.folders.home), { code: "ENOENT" });
+});
+
+it("prints only the detached relay PID and stops the relay through the test record", async (t) => {
+  const relay = await launch(t, { detach: true });
+  assert.deepEqual(await relay.exited, [0, null], relay.stderr);
+  assert.equal(relay.stderr, "");
+  const live = await classifyRelay(relay.port, { home: relay.folders.home });
+  assert.equal(live.kind, "verified");
+  const { pid } = live.record;
+  assert.notEqual(pid, relay.child.pid);
+  assert.equal(relay.stdout, `${pid}\n`);
+  await relay.cleanup();
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  await assert.rejects(access(relay.folders.home), { code: "ENOENT" });
+});
+
+it("keeps the relay ready after SIGKILL to the detach launcher's process group", async (t) => {
+  const relay = await launch(t, { detach: true });
+  assert.deepEqual(await relay.exited, [0, null], relay.stderr);
+  const group = relay.child.pid;
+  assert.ok(group !== undefined && group > 1 && /^[1-9]\d*\n$/.test(relay.stdout));
+  let groupExisted = false;
+  try {
+    groupExisted = process.kill(-group, "SIGKILL");
+  } catch (error) {
+    assert.ok(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
+  const live = await classifyRelay(relay.port, { home: relay.folders.home });
+  assert.equal(live.kind, "verified");
+  assert.equal(relay.stdout, `${live.record.pid}\n`);
+  assert.equal(groupExisted, false, "No process should stay in the launcher group");
+});
+
+it("uses the user config port and ignores the project port on detach", async (t) => {
+  const relay = await launch(t, {
+    detach: true, portFromConfig: true,
+    prepare: ({ home }) => writeFile(join(home, "subswitch.config.json"), '{"port":0}'),
+  });
+  assert.deepEqual(await relay.exited, [0, null], relay.stderr);
+  const live = await classifyRelay(relay.port, { home: relay.folders.home });
+  assert.equal(live.kind, "verified");
+  assert.equal(relay.stdout, `${live.record.pid}\n`);
 });
 
 it("refuses port 4141 before any relay child can start", async (t) => {
