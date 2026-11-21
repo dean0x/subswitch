@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import childProcess from "node:child_process";
+import childProcess, { execFile } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { startSubswitch, startFakeUpstream } from "./fake-upstreams.js";
 import { loadConfig } from "../../src/config.js";
@@ -56,8 +56,12 @@ for (const active of [true, false]) {
     const row = body.providers.find(({ id }) => id === "codex");
     assert.ok(row);
     assert.deepEqual(row, { id: "codex", configured: active, modelCount: row.modelCount });
-    assert.equal(exec.mock.callCount(), 0);
+    assert.equal(exec.mock.callCount(), 0, "health must not call execFile");
     assert.deepEqual(refusedStoreCalls, []);
+
+    // Check the same named import that the server uses.
+    execFile("/usr/bin/true");
+    assert.equal(exec.mock.callCount(), 1, "the mock must see calls through the named import");
   });
 }
 
