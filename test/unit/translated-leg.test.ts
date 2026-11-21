@@ -105,7 +105,12 @@ it("logs the cause name and returns a 500 without a fetch when the credential so
   const fetchImpl = t.mock.fn(async () => new Response("frame"));
   const logs: unknown[] = [];
   await runTranslatedLeg(res, options({
-    auth: { ...options().auth, getCredentials: async () => { throw new Error("fixture credential source detail"); } },
+    auth: {
+      ...options().auth,
+      getCredentials: async () => {
+        throw Object.assign(new Error("fixture credential source detail"), { name: "FixtureLoadError" });
+      },
+    },
     logger: { log: (level, event, fields) => logs.push({ level, event, fields }) },
     fetchImpl,
   }));
@@ -115,7 +120,7 @@ it("logs the cause name and returns a 500 without a fetch when the credential so
     '{"type":"error","error":{"type":"api_error","message":"fixture credential load failed"}}');
   assert.equal(fetchImpl.mock.callCount(), 0);
   assert.deepEqual(logs, [
-    { level: "error", event: "fixture_credential_load_failed", fields: { model: "fixture-model", errorCode: "Error" } },
+    { level: "error", event: "fixture_credential_load_failed", fields: { model: "fixture-model", errorCode: "FixtureLoadError" } },
   ]);
 });
 
@@ -455,7 +460,13 @@ it("logs the cause name and returns a 500 when the forced refresh throws", async
   const fetchImpl = t.mock.fn(async () => new Response("denied", { status: 401 }));
   const logs: unknown[] = [];
   await runTranslatedLeg(res, options({
-    auth: { ...options().auth, refreshable: true, forceRefresh: async () => { throw new Error("fixture refresh source detail"); } },
+    auth: {
+      ...options().auth,
+      refreshable: true,
+      forceRefresh: async () => {
+        throw Object.assign(new Error("fixture refresh source detail"), { name: "FixtureRefreshError" });
+      },
+    },
     logger: { log: (level, event, fields) => logs.push({ level, event, fields }) },
     fetchImpl,
   }));
@@ -466,7 +477,7 @@ it("logs the cause name and returns a 500 when the forced refresh throws", async
   assert.equal(fetchImpl.mock.callCount(), 1);
   assert.deepEqual(logs, [
     { level: "warn", event: "fixture_upstream_401_refreshing", fields: { model: "fixture-model" } },
-    { level: "error", event: "fixture_credential_load_failed", fields: { model: "fixture-model", errorCode: "Error" } },
+    { level: "error", event: "fixture_credential_load_failed", fields: { model: "fixture-model", errorCode: "FixtureRefreshError" } },
   ]);
 });
 

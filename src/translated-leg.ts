@@ -71,12 +71,14 @@ type FramePipeline = readonly [Readable, Transform, Transform];
 
 const timeoutError = (name: string): ProxyError => ({ kind: "timeout", message: `${name} request timed out` });
 
-const ERROR_NAMES = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError",
+const errorName = (cause: unknown): string => cause instanceof Error ? cause.name : "unknown";
+
+const PREPARE_ERROR_NAMES = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError",
   "AggregateError", "AbortError", "TimeoutError"]);
 
-const authErrorName = (cause: unknown): string => {
-  const name = cause instanceof Error ? cause.name : "unknown";
-  return ERROR_NAMES.has(name) ? name : "unknown";
+const prepareRejectionCode = (cause: unknown): string => {
+  const name = errorName(cause);
+  return PREPARE_ERROR_NAMES.has(name) ? name : "unknown";
 };
 
 const credentialLoadFailure = <C>(options: TranslatedLegOptions<C>, errorCode: string): ProxyError => {
@@ -86,14 +88,15 @@ const credentialLoadFailure = <C>(options: TranslatedLegOptions<C>, errorCode: s
 
 /** End the wait on abort, even if the operation does not stop. */
 const waitForAuthStep = async <C, T, E>(res: ServerResponse, options: TranslatedLegOptions<C>,
-  start: () => Promise<Result<T, E>>, signal: AbortSignal, replyError: ReplyError): Promise<Result<T, E> | undefined> => {
+  start: () => Promise<Result<T, E>>, signal: AbortSignal, replyError: ReplyError,
+  rejectionCode: (cause: unknown) => string): Promise<Result<T, E> | undefined> => {
   let result: Result<T, E> | undefined;
   let failure: ProxyError | undefined;
   try {
     if (!res.destroyed && !res.writableEnded && !signal.aborted) result = await abortable(start(), signal);
   } catch (cause) {
     // A cancelled wait is not a fault. The cause message can hold a credential.
-    if (!signal.aborted) failure = credentialLoadFailure(options, authErrorName(cause));
+    if (!signal.aborted) failure = credentialLoadFailure(options, rejectionCode(cause));
   }
   if (res.destroyed || res.writableEnded) return;
   if (signal.aborted) {
@@ -106,7 +109,7 @@ const waitForAuthStep = async <C, T, E>(res: ServerResponse, options: Translated
 
 const waitForCredential = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>,
   start: () => Promise<Result<C, ProxyError>>, signal: AbortSignal, replyError: ReplyError): Promise<{ readonly value: C } | undefined> => {
-  const result = await waitForAuthStep(res, options, start, signal, replyError);
+  const result = await waitForAuthStep(res, options, start, signal, replyError, errorName);
   if (result === undefined) return;
   if (result.ok) return result;
   replyError(result.error);
@@ -118,7 +121,8 @@ const requestAttempt = async <C>(res: ServerResponse, options: TranslatedLegOpti
   const { prepareBody, name } = options;
   let body = options.body;
   if (prepareBody !== undefined) {
-    const prepared = await waitForAuthStep(res, options, () => prepareBody(credential, signal), signal, replyError);
+    const prepared = await waitForAuthStep(res, options, () => prepareBody(credential, signal), signal, replyError,
+      prepareRejectionCode);
     if (prepared === undefined || res.destroyed || res.writableEnded) return;
     if (signal.aborted) {
       replyError(timeoutError(name));

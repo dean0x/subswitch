@@ -11,7 +11,7 @@ updated: 2026-11-21
 # Codex Translation Leg (gpt-* → /responses)
 
 ## Rules
-- **KB-AP-1** Do not log the message of a rejected credential load: the message can hold the key. Log only `errorCode`. Use a recognized exception name or `"unknown"`. The body hook can also return a code from `prepareErrorCodes`.
+- **KB-AP-1** Do not log the message of a rejected credential load: the message can hold the key. Log only `errorCode` (the cause name, or `"unknown"`). The body hook can return a code from `prepareErrorCodes`.
 - **KB-INV-1** When `getCredentials` rejects and the signal is not aborted, `runTranslatedLeg` logs one `credentialLoadFailed` error line and replies 500 `"<name> credential load failed"`.
 - **KB-INV-2** When `getCredentials` rejects after an abort, the runner logs nothing and sends the timeout reply.
 - **KB-INV-3** A new runner event goes into both the `providerEvents` table and `TranslatedLegOptions.events`; the type `ProviderEvents<P>` pins the table.
@@ -47,7 +47,7 @@ subswitch translates Anthropic Messages API requests into OpenAI Responses API c
 
 The pipeline has three stages: **resolve** in `server.ts`, **route** in `router.ts`, and **send**. `codex-handler.ts` translates the request. `translated-leg.ts` sends it and manages the response. The router accepts a typed `ModelResolution`, not a raw string.
 
-**Together leg.** `together-handler.ts` uses the same runner to send Chat Completions requests to `<baseUrl>/chat/completions`. Each provider accessor carries a credential kind. Codex and Kimi use `oauth-file`. Together uses `api-key`. No provider uses the read-only `native-keychain` kind yet. A static key gets one attempt, no limit key and `redirect: "error"`. The request signal bounds the credential wait, so a client close ends a pending key read and no upstream request goes out. If the credential load rejects for a different cause, the runner logs a fixed error code and replies 500.
+**Together leg.** `together-handler.ts` uses the same runner to send Chat Completions requests to `<baseUrl>/chat/completions`. Each provider accessor carries a credential kind. Codex and Kimi use `oauth-file`. Together uses `api-key`. No provider uses the read-only `native-keychain` kind yet. A static key gets one attempt, no limit key and `redirect: "error"`. The request signal bounds the credential wait, so a client close ends a pending key read and no upstream request goes out. If the credential load rejects for a different cause, the runner logs the cause name only and replies 500 (see KB-INV-1).
 
 **Kimi leg.** `kimi-handler.ts` sends the client's Anthropic Messages request to the Kimi coding Messages endpoint on the same runner. The leg is opt-in and uses the user's own Kimi CLI sign-in file: Subswitch reads it, renews it under the CLI lock, and writes it back. It has no fallback route and no API-key mode. See `## Kimi Leg` below.
 
@@ -398,7 +398,9 @@ The manager has two deadlines: the renewal (`RENEWAL_DEADLINE_MS`, under the loc
 
 **Synthesizing a 400/429/503 for an ambiguous model name.** The policy is fail open (ADR-010). A relay-invented 400 naming our registry is a status the origin never emits. `Route.ambiguous` stays in the router for classification; the server decides the policy.
 
-**KB-AP-1 — Logging the message of a rejected credential load.** A key loader error can carry the key or a part of it in its message text. The runner logs only a recognized exception name or `"unknown"`. For a body hook failure, declare each fixed code in `prepareErrorCodes`. Other codes log as `"unknown"`. All use the same `credentialLoadFailed` event.
+**KB-AP-1 — Logging the message of a rejected credential load.** A key loader error can carry the key or a part of it in its message text. The runner in `src/translated-leg.ts` logs only the cause name as `errorCode`. The closed `LogFields` set in `src/logger.ts` is the log redaction control, but `errorCode` is a free string. The error render site redacts credentials only in error bodies, not in log fields. Thus a log call that puts `cause.message` in `errorCode` writes the credential to the log.
+
+For a body hook failure result, declare each fixed code in `prepareErrorCodes`. Other codes log as `"unknown"`. If the hook rejects, the runner logs a recognized exception name or `"unknown"`. All use the same `credentialLoadFailed` event.
 
 **KB-AP-2 — Removing only the exact key name from the child env.** On Windows, env names ignore letter case, so `together_api_key` and `TOGETHER_API_KEY` are the same variable for the child. A `delete env.TOGETHER_API_KEY` keeps the other case forms, and the native client gets the metered key. Use `childEnvWithoutTogetherKey` in `src/run-action.ts`, and test it in `test/unit/run-action-env.test.ts`.
 
@@ -477,7 +479,7 @@ The manager has two deadlines: the renewal (`RENEWAL_DEADLINE_MS`, under the loc
 - `src/claude-models.ts` — Reverse-leg (Claude ingress) model registry; `buildOpenaiModelNamePredicate(registry)` derives `isOpenaiModelName` from `MODEL_REGISTRY` (mirror of PF-007 on the reverse leg — `astra` is now automatically reserved); `validClaudeAlias` (the only gate on `codexIngress.claude.aliases`); `claudeResolver`, `claudeModelRows`, `augmentCodexModels` (advertises each model's own `defaultEffort` as `default_reasoning_level`, levels low..max); `CLAUDE_MODELS` entries carry REQUIRED capability fields (`maxOutputTokens`, `thinkingAlwaysOn`, `forcedToolChoice`, `defaultEffort`); `claudeModel(id)` lookup; `isClaudeModelName` (the `claude-`/`claude:` namespace, case-insensitive) and `displayModelName` (bounded, charset-neutralized echo of a client-supplied name)
 - `src/router.ts` — Pure routing decision; accepts `ModelResolution` (not raw string); zero name matching; exhaustive switch; classification only — policy lives in server.ts
 - `src/codex-handler.ts` — `createCodexHandler`, `buildHeaders`, canonical model substitution, stable session ID, and `handleCountTokens`.
-- `src/translated-leg.ts` — `runTranslatedLeg` manages aborts, timers, the retry limit, both limit observers, and response delivery. A rejected credential load logs `credentialLoadFailed` with a fixed code and replies 500. An aborted wait gets the timeout reply.
+- `src/translated-leg.ts` — `runTranslatedLeg` manages aborts, timers, the retry limit, both limit observers, and response delivery. A rejected credential load logs `credentialLoadFailed` with the cause name only and replies 500. An aborted wait gets the timeout reply.
 - `src/provider-transport.ts` — `createFrameWriter`, `readBoundedText`, `respondJson`, and `respondProxyError` with optional extra headers.
 - `src/provider-handler.ts` — `ProviderHandler` interface; P4 contract documented
 - `src/codex-request.ts` — All request translation logic; `translateRequest`, `translateEffort` (validates via `reasoningEffortsForModel(MODEL_REGISTRY, model)`), `estimateTokens` (chars/4 heuristic)
