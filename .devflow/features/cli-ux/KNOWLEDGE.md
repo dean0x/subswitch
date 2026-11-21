@@ -50,7 +50,8 @@ subswitch [command] [flags]
 
 The CLI handles `--help` and `--version` before it selects a command. Both exit 0.
 `init` does not need an existing config file. `doctor`, foreground `serve` and `models` load config before they run.
-The detach launcher loads config for the port only if `--port` is absent. A new child loads its own config.
+On supported platforms, the detach launcher always loads config with project ports off.
+After a successful load, the launcher uses the explicit `--port` if the caller gives one. A new child loads its own config.
 
 **USAGE invariant.** The `USAGE` constant in `src/cli.ts` must stay byte-identical to the CLI reference block in the README. If you update one, update the other.
 

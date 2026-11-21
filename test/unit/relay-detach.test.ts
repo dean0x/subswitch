@@ -159,6 +159,28 @@ for (const flag of ["verbose", "quiet"] as const) {
   });
 }
 
+it("removes debugger flags from NODE_OPTIONS and keeps other options", async t => {
+  const f = fixture(t);
+  f.state.record = record;
+  const keep = '--max-old-space-size=512 --import "./path with --inspect in it.mjs"';
+  const node = { ...f.deps.node, env: {
+    NODE_OPTIONS: `--inspect --inspect=0 "--inspec\\t"-brk --inspect-port 9229 --inspect-wait --debug --debug-brk --debug-port=0 ${keep}`,
+  } };
+
+  assert.equal(await detachRelay({ ...f.deps, node }), 0);
+  assert.equal(f.spawn.mock.calls[0]?.arguments[2].env["NODE_OPTIONS"], keep);
+});
+
+it("refuses malformed NODE_OPTIONS before spawn", async t => {
+  const f = fixture(t);
+  f.state.record = record;
+  const node = { ...f.deps.node, env: { NODE_OPTIONS: '--inspect --import "path' } };
+
+  assert.equal(await detachRelay({ ...f.deps, node }), 1);
+  assert.deepEqual(f.errors, ["invalid NODE_OPTIONS"]);
+  assert.equal(f.spawn.mock.callCount(), 0);
+});
+
 it("leaves an unsafe record intact (TP-8 to TP-11)", async t => {
   const f = fixture(t);
   const boot = openBootLog(port, f.home);
@@ -238,15 +260,20 @@ for (const change of [{ pid: 999 }, { nonce: "b".repeat(32) }, { name: "foreign"
   });
 }
 
-for (const why of ["invalid port", "config error", "win32", "entry absent"] as const) {
+for (const [why, input, message] of [
+  ["invalid port", { port: "65536" }, 'invalid --port "65536": port must be an integer between 1 and 65535'],
+  ["config error", {}, "bad config"],
+  ["config error with an explicit port", { port: String(port) }, "bad config"],
+  ["win32", { platform: "win32" }, "detach is not available on Windows"],
+  ["entry absent", {}, "the CLI entry is unavailable"],
+] as const) {
   it(`uses the existing error path for ${why} (TP-14/15)`, async t => {
     const f = fixture(t);
-    f.state.record = record;
-    const input = why === "win32" ? { platform: "win32" as const } : why === "invalid port" ? { port: "65536" } : {};
-    if (why === "config error") f.loadConfig.mock.mockImplementation(() => err({ message: "bad config" }));
+    if (message === "bad config") f.loadConfig.mock.mockImplementation(() => err({ message }));
+    f.spawn.mock.mockImplementation(() => err("child_exited"));
     const node = why === "entry absent" ? { ...f.deps.node, entry: undefined } : f.deps.node;
     assert.equal(await detachRelay({ ...f.deps, ...input, node }), 1);
-    assert.deepEqual([f.spawn.mock.callCount(), f.errors.length, f.stdout, f.stderr], [0, 1, [], []]);
+    assert.deepEqual([f.errors, f.stdout, f.stderr, f.spawn.mock.callCount(), f.classify.mock.callCount()], [[message], [], [], 0, 0]);
   });
 }
 
@@ -263,15 +290,15 @@ for (const unsafe of ["symlink", "folder mode"] as const) {
   });
 }
 
-it("uses the option first and otherwise requests config without project ports (TP-15/17)", async t => {
+it("loads config without project ports before it applies an explicit port (TP-15/17)", async t => {
   const f = fixture(t);
-  f.state.record = record;
   f.state.record = { ...record, port: 24162 };
   assert.equal(await detachRelay({ ...f.deps, port: "24162" }), 0);
-  assert.equal(f.loadConfig.mock.callCount(), 0);
+  assert.deepEqual(f.loadConfig.mock.calls.map(call => call.arguments), [[{ allowProjectPort: false }]]);
   f.state.record = record;
   assert.equal(await detachRelay(f.deps), 0);
-  assert.deepEqual(f.loadConfig.mock.calls[0]?.arguments, [{ allowProjectPort: false }]);
+  assert.equal(f.loadConfig.mock.callCount(), 2);
+  assert.deepEqual(f.loadConfig.mock.calls[1]?.arguments, [{ allowProjectPort: false }]);
   assert.equal(f.spawn.mock.callCount(), 2);
   assert.deepEqual(f.spawn.mock.calls.map(call => call.arguments[1].at(-1)), ["24162", "24161"]);
 });

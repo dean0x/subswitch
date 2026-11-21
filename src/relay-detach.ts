@@ -64,12 +64,45 @@ function existing(check: RelayClassification, afterExit = false): Outcome | unde
 }
 
 function effectivePort(d: DetachDeps): Result<number, string> {
-  if (d.port === undefined) {
-    const config = d.loadConfig({ allowProjectPort: false });
-    return config.ok ? ok(config.value.config.port) : err(config.error.message);
-  }
+  const config = d.loadConfig({ allowProjectPort: false });
+  if (!config.ok) return err(config.error.message);
+  if (d.port === undefined) return ok(config.value.config.port);
   const parsed = PortSchema.safeParse(d.port);
   return parsed.success ? ok(parsed.data) : err(`invalid --port "${d.port}": port must be an integer between 1 and 65535`);
+}
+
+function keepNodeArg(arg: string, previous: string | undefined): boolean {
+  return !DEBUGGER_FLAG.test(arg) && (arg.startsWith("-") || !DEBUGGER_VALUE_FLAG.test(previous ?? ""));
+}
+
+function detachedNodeOptions(input: string): Result<string, string> {
+  // Match Node's ParseNodeOptionsEnvVar. Keep the original text of each retained option.
+  const retained: string[] = [];
+  let previous: string | undefined;
+  let removed = false;
+  let quoted = false;
+  let start = 0;
+  let arg = "";
+  for (let i = 0; i <= input.length; i++) {
+    const ch = input[i];
+    if (ch === undefined || (ch === " " && !quoted)) {
+      if (arg !== "") {
+        if (keepNodeArg(arg, previous)) retained.push(input.slice(start, i));
+        else removed = true;
+        previous = arg;
+        arg = "";
+      }
+      start = i + 1;
+    } else if (ch === '"') {
+      quoted = !quoted;
+    } else if (ch === "\\" && quoted) {
+      arg += input[++i] ?? "";
+    } else {
+      arg += ch;
+    }
+  }
+  if (quoted) return err("invalid NODE_OPTIONS");
+  return ok(removed ? retained.join(" ") : input);
 }
 
 function readiness(check: RelayClassification, d: DetachDeps, port: number): Outcome | undefined {
@@ -170,14 +203,20 @@ export async function detachRelay(d: DetachDeps): Promise<0 | 1> {
   const found = existing(await d.classify(port, { home: d.home }));
   if (found !== undefined) return report(d, found, port);
 
+  const childEnv: NodeJS.ProcessEnv = { ...env, SUBSWITCH_MANAGED_BY: "detach" };
+  const nodeOptions = env["NODE_OPTIONS"];
+  if (nodeOptions !== undefined) {
+    const filtered = detachedNodeOptions(nodeOptions);
+    if (!filtered.ok) { d.fail(filtered.error); return 1; }
+    childEnv["NODE_OPTIONS"] = filtered.value;
+  }
   const boot = openBootLog(port, d.home);
   if (!boot.ok) return report(d, problem(boot.error), port);
-  const argv = execArgv.filter((arg, i) => !DEBUGGER_FLAG.test(arg) &&
-    (arg.startsWith("-") || !DEBUGGER_VALUE_FLAG.test(execArgv[i - 1] ?? "")));
+  const argv = execArgv.filter((arg, i) => keepNodeArg(arg, execArgv[i - 1]));
   argv.push(entry, "serve", "--port", String(port));
   if (d.verbose) argv.push("--verbose");
   if (d.quiet) argv.push("--quiet");
-  const child = d.spawn(execPath, argv, { detached: true, stdio: ["ignore", "ignore", boot.value], env: { ...env, SUBSWITCH_MANAGED_BY: "detach" } });
+  const child = d.spawn(execPath, argv, { detached: true, stdio: ["ignore", "ignore", boot.value], env: childEnv });
   try {
     closeSync(boot.value);
   } catch {
