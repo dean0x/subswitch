@@ -4,7 +4,8 @@ import { GEMINI_EVENTS } from "./provider-events.js";
 type GeminiErrorClass =
   | { readonly kind: "auth"; readonly status: 401 }
   | { readonly kind: "timeout"; readonly status: 504 }
-  | { readonly kind: "upstream"; readonly status: 403 | 429 | 502 | 503 };
+  | { readonly kind: "translate"; readonly status: 400 }
+  | { readonly kind: "upstream"; readonly status: 403 | 409 | 429 | 502 | 503 };
 
 type GeminiErrorEntry = GeminiErrorClass & {
   readonly text: string;
@@ -60,6 +61,18 @@ export const GEMINI_ERRORS = {
   account_blocked: {
     kind: "upstream", status: 403, event: GEMINI_EVENTS.upstreamError,
     text: "Gemini account access is blocked.", hint: RESTART,
+  },
+  invalid_request: {
+    kind: "translate", status: 400, event: GEMINI_EVENTS.translateWarning,
+    text: "Gemini does not support this request content.", hint: "Check the request and retry.",
+  },
+  image_unsupported: {
+    kind: "translate", status: 400, event: GEMINI_EVENTS.translateWarning,
+    text: "Gemini requests do not support images.", hint: "Remove the images and retry.",
+  },
+  signature_missing: {
+    kind: "upstream", status: 409, event: GEMINI_EVENTS.translateWarning,
+    text: "Gemini tool history needs a signature that Subswitch does not have.", hint: "Start a new conversation.",
   },
   // REPORTED reason names. The wire field that carries the reason is not qualified.
   TOS_VIOLATION: {
