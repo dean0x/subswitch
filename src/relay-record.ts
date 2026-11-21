@@ -55,7 +55,13 @@ export type RelayClassification =
   | { readonly kind: "unverified"; readonly reason: "unsafe_path" }
   | { readonly kind: "unverified"; readonly reason: "identity_mismatch" | "no_answer"; readonly record: RelayRecord }
   | { readonly kind: "verified"; readonly record: RelayRecord; readonly version: string };
-export interface ClassifyRelayDeps { readonly home: string; }
+export interface ClassifyRelayDeps {
+  readonly home: string;
+  /** A record from the strict reader that triggered a readiness probe. */
+  readonly record?: RelayRecord;
+  readonly signal?: AbortSignal;
+  readonly fetch?: typeof fetch;
+}
 
 export function relayFolder(port: number, home: string): string {
   return join(home, ".cache", "subswitch", "relay", String(port));
@@ -181,11 +187,13 @@ export function removeOwnRelayRecord(port: number, home: string, nonce: string):
 
 type HealthProbe = { readonly answered: false } | { readonly answered: true; readonly health?: RelayHealth };
 
-async function probeHealth(port: number): Promise<HealthProbe> {
+async function probeHealth(port: number, { signal: cancel, fetch = globalThis.fetch }: ClassifyRelayDeps): Promise<HealthProbe> {
+  const timeout = AbortSignal.timeout(HEALTH_MS);
+  const signal = cancel === undefined ? timeout : AbortSignal.any([timeout, cancel]);
   let response: Response;
   try {
     response = await fetch(`http://127.0.0.1:${port}/__subswitch/health`, {
-      method: "GET", redirect: "manual", signal: AbortSignal.timeout(HEALTH_MS),
+      method: "GET", redirect: "manual", signal,
     });
   } catch {
     return { answered: false };
@@ -210,17 +218,17 @@ async function probeHealth(port: number): Promise<HealthProbe> {
     }
     return invalid;
   } catch {
-    return invalid;
+    return signal.aborted ? { answered: false } : invalid;
   } finally {
     void reader.cancel().catch(() => undefined);
   }
 }
 
 export async function classifyRelay(port: number, deps: ClassifyRelayDeps): Promise<RelayClassification> {
-  const current = readRelayRecord(port, deps.home);
+  const current = deps.record === undefined ? readRelayRecord(port, deps.home) : ok(deps.record);
   if (!current.ok) return { kind: "unverified", reason: current.error };
   const record = current.value;
-  const probe = await probeHealth(port);
+  const probe = await probeHealth(port, deps);
   if (!probe.answered) return record === undefined ? { kind: "none" } : { kind: "unverified", reason: "no_answer", record };
   const health = probe.health;
   if (record === undefined) return { kind: health === undefined ? "foreign" : "legacy" };

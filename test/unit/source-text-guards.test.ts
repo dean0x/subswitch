@@ -337,10 +337,14 @@ describe("source-text guards: relay lifecycle", () => {
 
   it("G9: relay detach sends no signal and only relay exec can load child_process", () => {
     assert.match('process.kill(pid, "SIGTERM");', RELAY_DETACH_SIGNAL);
-    const importSpawn = 'import { spawn } from "node:child_process";';
-    assert.deepEqual(liveFactoryViolations("relay-detach.ts", importSpawn), ["loads node:child_process"]);
-    assert.deepEqual(liveFactoryViolations("relay-exec.ts", importSpawn), []);
-    for (const file of globSync("**/relay-detach.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR })) {
+    const exec = readSrc("relay-exec.ts");
+    assert.match(exec, CHILD_PROCESS_MODULE);
+    assert.equal(CHILD_PROCESS_FILES.get("relay-exec.ts"), "starts the detached relay");
+    assert.deepEqual(liveFactoryViolations("relay-detach.ts", exec), ["loads node:child_process"]);
+    assert.deepEqual(liveFactoryViolations("relay-exec.ts", exec), []);
+    const files = globSync("**/relay-detach.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
+    assert.ok(files.includes("relay-detach.ts"));
+    for (const file of files) {
       assert.doesNotMatch(readSrc(file), RELAY_DETACH_SIGNAL, `src/${file} must not send signals`);
     }
   });
