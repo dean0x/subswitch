@@ -368,7 +368,7 @@ const serve = async (
     const folder = ensureRelayFolder(effectivePort, home);
     if (folder.ok) writeFatalLineSync(folder.value, pid);
   });
-  if (published.ok) deps.logger.log("info", "relay_started", { pid, version: SUBSWITCH_VERSION });
+  deps.logger.log("info", "relay_started", { pid, version: SUBSWITCH_VERSION });
 
   let removeActionControl: (() => Promise<void>) | undefined;
   if (effectiveConfig.configVersion === 2 && deps.sharedRouting) {

@@ -123,6 +123,7 @@ for (const detach of [false, true]) {
       await relay.waitFor("subswitch ready");
       assert.ok(relay.child.kill("SIGTERM"));
       assert.deepEqual(await relay.exited, [0, null]);
+      assert.match(relay.stderr, /level=info event=relay_started\b/);
     }
     assert.equal(relay.stderr.match(/relay record unavailable/g)?.length, 1);
     await assert.rejects(access(join(relay.folders.home, "other-cache", "subswitch")), { code: "ENOENT" });
