@@ -47,6 +47,67 @@ it("keeps detached request logs out of the console", async (t) => {
   assert.deepEqual(await logLines(directory), ["level=info event=request_complete"]);
 });
 
+it("caps refusal lines across file writes and keeps stderr and lifecycle lines intact", async (t) => {
+  const directory = await privateDir(t);
+  const stderr: string[] = [];
+  let now = 0;
+  const { logger, flush } = createRelayLogger({
+    directory, mode: "foreground", minLevel: "info", now: () => now,
+    console: createConsoleLogger("info", (line) => stderr.push(`${line}\n`), false),
+  });
+  const refusal = { route: "host_rejected", status: 403 };
+  for (let request = 0; request < 5; request++) {
+    logger.log("warn", "host_rejected", { status: 403 });
+    logger.log("info", "request_complete", refusal);
+    await flush();
+  }
+  now = 59_999;
+  logger.log("info", "client_disconnected", { route: "host_rejected" });
+  logger.log("info", "request_complete", { status: 403 });
+  logger.log("info", "relay_started", { pid: 42 });
+  await flush();
+  writeFatalLineSync(directory, 42);
+  writeStopLineSync(directory, { pid: 42, exitCode: 1 });
+
+  const pair = ["level=warn event=host_rejected status=403", "level=info event=request_complete route=host_rejected status=403"];
+  const ordinary = ["level=info event=request_complete status=403", "level=info event=relay_started pid=42"];
+  const firstWindow = [
+    ...pair, ...pair, ...pair, ...pair, ...ordinary,
+    "level=error event=relay_fatal pid=42", "level=info event=relay_stopped pid=42 exitCode=1",
+  ];
+  assert.deepEqual(await logLines(directory), firstWindow, "only eight refusal lines fit in the first window");
+
+  now = 60_000;
+  logger.log("warn", "host_rejected", { status: 403 });
+  logger.log("info", "request_complete", refusal);
+  await flush();
+
+  assert.deepEqual(await logLines(directory), [...firstWindow, "level=warn event=host_refusal_lines_dropped count=3", ...pair]);
+  assert.deepEqual(stderr, [
+    ...pair, ...pair, ...pair, ...pair, ...pair,
+    "level=info event=client_disconnected route=host_rejected", ...ordinary, ...pair,
+  ].map((line) => `${line}\n`));
+});
+
+it("counts only refusal lines at or above the file level", async (t) => {
+  const directory = await privateDir(t);
+  let now = 0;
+  const { logger, flush } = createRelayLogger({ directory, mode: "detach", minLevel: "warn", now: () => now });
+  for (let request = 0; request < 9; request++) {
+    logger.log("warn", "host_rejected");
+    logger.log("info", "request_complete", { route: "host_rejected", status: 403 });
+  }
+  await flush();
+  now = 60_000;
+  logger.log("warn", "next");
+  await flush();
+
+  assert.deepEqual(await logLines(directory), [
+    ...Array<string>(8).fill("level=warn event=host_rejected"),
+    "level=warn event=host_refusal_lines_dropped count=1", "level=warn event=next",
+  ], "only the ninth warning is absent from the file");
+});
+
 it("uses the relay rotation names, cap and count", async (t) => {
   const directory = await privateDir(t);
   const active = join(directory, "relay.log");
