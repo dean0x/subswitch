@@ -2,11 +2,36 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { LogLevel } from "../../src/logger.js";
 import { vetCredentialUrl } from "../../src/upstream-policy.js";
+import { loadConfig } from "../../src/config.js";
+import { keychainBackedCodex, keychainCredential } from "../fixtures/native-keychain.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 
-/**
- * The https flag of the credential URL check, with a generic fixture host and
- * fixture event names. No real provider host or id is used here.
- */
+const startWithKeychainUrl = (baseUrl: string) => {
+  const config = loadConfig({ configPath: "fixture", readFile: () => "{}", env: {} });
+  assert.ok(config.ok);
+  return buildTestDeps(config.value.config, { log: () => {} }, {
+    providerConfigFor: keychainBackedCodex(true, { ...keychainCredential, baseUrl }),
+  });
+};
+
+it("refuses plain http for a Keychain credential on the expected host at startup", () => {
+  const result = startWithKeychainUrl("http://upstream.example.test/v1");
+  assert.ok(!result.ok);
+  assert.equal(result.error, "providers.codex.baseUrl must use https.");
+});
+
+for (const host of ["other.example.test", "upstream.example.test:8443", "127.0.0.1:443"]) {
+  it(`refuses the Keychain origin ${host} at startup with fixed text and no opt-in hint`, () => {
+    const result = startWithKeychainUrl(`https://${host}/v1`);
+    assert.ok(!result.ok);
+    assert.equal(result.error, "providers.codex.baseUrl must use the default host on port 443.");
+  });
+}
+
+it("starts with only the approved Keychain base URL and no token URL", () => {
+  assert.equal(startWithKeychainUrl("https://upstream.example.test/v1").ok, true);
+});
+
 const events = {
   insecureBaseUrlScheme: "fixture_insecure_base_url_scheme",
   baseUrlHostRejected: "fixture_base_url_host_rejected",

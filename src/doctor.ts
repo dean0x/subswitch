@@ -6,8 +6,9 @@ import { createColors } from "picocolors";
 import {
   aliasesByProvider, codexCredentialFor, kimiCredentialFor, providerConfigFor, withCredential,
   type CodexProviderConfig, type Config, type CredentialKindTable, type KimiProviderConfig, type ProviderConfigs,
-  type TogetherProviderConfig,
+  type ProviderRuntimeConfig, type TogetherProviderConfig,
 } from "./config.js";
+import { createKeychainReader, type KeychainReaderDeps, type KeychainReadError } from "./keychain-read.js";
 import { inspectAuthFile, type AuthInspection } from "./codex-auth.js";
 import { isPlainObject } from "./plain-object.js";
 import { MODEL_REGISTRY, buildRoutingTable, formatModelsReport, PROVIDER_IDS, type ProviderId } from "./models.js";
@@ -64,6 +65,11 @@ export type DoctorAuthInspection =
   | {
       readonly kind: "api-key";
       readonly key: { readonly kind: "present"; readonly source: string } | { readonly kind: "missing" | "malformed" | "aborted" };
+    }
+  | {
+      readonly kind: "native-keychain";
+      readonly loginCommand: string;
+      readonly result: Result<{ readonly modifiedAtMs: number }, KeychainReadError | "probe_unavailable">;
     };
 
 /** The Codex summary as a neutral row. inspectAuthFile and AuthInspection stay Codex's own. */
@@ -133,6 +139,15 @@ const inspectKimiAuth = async (slice: KimiProviderConfig, io: DoctorIO): Promise
       : { kind: "unreadable", missing: code === "credential_missing" };
     return { kind: "oauth-file", authFile, loginCommand, result: err(fault) };
   }
+};
+
+const inspectNativeKeychain = async (
+  credential: Extract<ProviderRuntimeConfig, { kind: "native-keychain" }>, deps: KeychainReaderDeps | undefined,
+): Promise<DoctorAuthInspection> => {
+  if (!credential.active) return { kind: "not-opted-in" };
+  const { keychainService: service, keychainAccount: account, loginCommand } = credential;
+  const result = deps === undefined ? err("probe_unavailable" as const) : await createKeychainReader(deps).probe({ service, account });
+  return { kind: "native-keychain", loginCommand, result };
 };
 
 // ---------------------------------------------------------------------------
@@ -331,6 +346,8 @@ export interface DoctorIO {
   readonly togetherKeyReader?: TogetherKeyReaderDeps;
   /** The Kimi store maker and the clock. Doctor gets no fetch, so it can not renew a sign-in. */
   readonly kimiStore?: Pick<KimiStoreDeps, "openStore" | "now">;
+  readonly keychainReader?: KeychainReaderDeps;
+  readonly providerConfigFor?: typeof providerConfigFor;
   readonly httpGet: (url: string) => Promise<HttpGetResult>;
   readonly tlsConnect: (host: string, port: number) => Promise<TlsStatus>;
   readonly color: boolean;
@@ -453,12 +470,36 @@ export const runDoctor = async (
     return { lines: [row(`${id} auth:`, `${status}${reason} (${hint})`)], failed: optedIn, credentialUsable: false };
   };
 
+  const nativeKeychainCheck = (
+    id: ProviderId, { result, loginCommand }: Extract<DoctorAuthInspection, { kind: "native-keychain" }>, optedIn: boolean,
+  ): ProviderCheck => {
+    if (result.ok) {
+      return {
+        lines: [
+          row(`${id} auth:`, passStr("Keychain item found")),
+          row("Keychain modified:", new Date(result.value.modifiedAtMs).toISOString()),
+        ],
+        failed: false, credentialUsable: true,
+      };
+    }
+    const status = optedIn ? failStr("UNAVAILABLE") : pc.dim("unconfigured");
+    return {
+      lines: [row(`${id} auth:`, `${status} (${result.error} — run \`${loginCommand}\`)`)],
+      failed: optedIn, credentialUsable: false,
+    };
+  };
+
+  const resolveProvider = io.providerConfigFor ?? providerConfigFor;
+  const runtimeProviders = PROVIDER_IDS.map((id) => ({ id, credential: resolveProvider(config, id) }));
+
   // Dispatch by id: the generic key keeps each inspector paired with its own config slice.
   const inspectProvider = <K extends ProviderId>(id: K): Promise<DoctorAuthInspection> =>
     PROVIDER_AUTH_INSPECTORS[id](config.providers[id], io);
 
-  const checkOneProvider = async (id: ProviderId): Promise<ProviderCheck> => {
-    const inspection = await inspectProvider(id);
+  const checkOneProvider = async ({ id, credential }: typeof runtimeProviders[number]): Promise<ProviderCheck> => {
+    const inspection = credential.kind === "native-keychain"
+      ? await inspectNativeKeychain(credential, io.keychainReader)
+      : await inspectProvider(id);
     const optedIn = configuredProviderIds.has(id);
     switch (inspection.kind) {
       case "not-opted-in": return {
@@ -468,6 +509,7 @@ export const runDoctor = async (
       };
       case "oauth-file": return oauthFileCheck(id, inspection, optedIn);
       case "api-key": return apiKeyCheck(id, inspection, optedIn);
+      case "native-keychain": return nativeKeychainCheck(id, inspection, optedIn);
     }
   };
 
@@ -478,8 +520,7 @@ export const runDoctor = async (
 
   // Resolve provider hosts up front so the probes can all be issued in parallel.
   // Only URL parsing is guarded here; a probe rejection must never be swallowed.
-  const providerHosts = PROVIDER_IDS.map((id) => {
-    const { baseUrl, active } = providerConfigFor(config, id);
+  const providerHosts = runtimeProviders.map(({ id, credential: { baseUrl, active } }) => {
     // A provider without its block gets no probe.
     if (!active) return { id, host: "" };
     try {
@@ -493,7 +534,7 @@ export const runDoctor = async (
   const [subswitchStatus, anthropicTls, providerResults, providerTls] = await Promise.all([
     probeSubswitch(config.port, { httpGet: io.httpGet }),
     probeTlsReachable(anthropicHost, { tlsConnect: io.tlsConnect }),
-    Promise.all(PROVIDER_IDS.map((id) => checkOneProvider(id))),
+    Promise.all(runtimeProviders.map(checkOneProvider)),
     Promise.all(
       providerHosts.map(async ({ host }) =>
         host === "" ? undefined : probeTlsReachable(host, { tlsConnect: io.tlsConnect }),
@@ -571,10 +612,11 @@ export const runDoctor = async (
     }),
   );
 
-  // A pin to a provider whose key the user supplies is an explicit opt-in. Without
-  // the key, every request of that agent gets a local 401, so the finding fails.
-  const pinNeedsKey: CredentialKindTable<boolean> = { "oauth-file": () => false, "api-key": () => true };
-  const keyRequiredProviders = new Set(PROVIDER_IDS.filter((id) => withCredential(providerConfigFor(config, id), pinNeedsKey)));
+  // A pin to a key or Keychain provider fails the check if its credential is absent.
+  const pinNeedsKey: CredentialKindTable<boolean> = {
+    "oauth-file": () => false, "api-key": () => true, "native-keychain": () => true,
+  };
+  const keyRequiredProviders = new Set(runtimeProviders.filter(({ credential }) => withCredential(credential, pinNeedsKey)).map(({ id }) => id));
   const agentFindings = checkAgentModels(fileTexts, table, providersWithCredentials, MODEL_REGISTRY, keyRequiredProviders);
 
   // Label the first finding row; blank-label subsequent rows to avoid N identical "agent model:"

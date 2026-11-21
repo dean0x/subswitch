@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { startSubswitch, startFakeUpstream } from "./fake-upstreams.js";
+import { loadConfig } from "../../src/config.js";
+import { createProxyServer, listenServer } from "../../src/server.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
+import { keychainBackedCodex } from "../fixtures/native-keychain.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 let authDir: string;
@@ -24,6 +30,36 @@ const startHealthProxy = (baseUrl: string, authFileName = "missing.json") =>
     anthropic: { baseUrl },
     providers: { codex: { authFile: join(authDir, authFileName) } },
   });
+
+for (const active of [true, false]) {
+  it(`reports a Keychain provider configured=${active} without credential I/O`, async (t) => {
+    const loaded = loadConfig({ configPath: "fixture", env: {}, readFile: () => JSON.stringify({
+      providers: { codex: { authFile: join(authDir, "missing.json") } },
+    }) });
+    assert.ok(loaded.ok);
+    const exec = t.mock.method(childProcess, "execFile", () => undefined);
+    syncBuiltinESMExports();
+    t.after(() => { exec.mock.restore(); syncBuiltinESMExports(); });
+    const refusedStoreCalls: string[] = [];
+    const built = buildTestDeps(loaded.value.config, { log: () => {} }, {
+      refusedStoreCalls, providerConfigFor: keychainBackedCodex(active),
+    });
+    assert.ok(built.ok);
+    const server = createProxyServer(built.value);
+    assert.ok((await listenServer(server, 0, "127.0.0.1")).ok);
+    t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const response = await fetch(`http://127.0.0.1:${address.port}/__subswitch/health`);
+    assert.equal(response.status, 200);
+    const body = await response.json() as { providers: readonly { id: string; modelCount: number }[] };
+    const row = body.providers.find(({ id }) => id === "codex");
+    assert.ok(row);
+    assert.deepEqual(row, { id: "codex", configured: active, modelCount: row.modelCount });
+    assert.equal(exec.mock.callCount(), 0);
+    assert.deepEqual(refusedStoreCalls, []);
+  });
+}
 
 describe("__subswitch health namespace", () => {
   it("GET /__subswitch/health returns 200 with name+version and does NOT forward to Anthropic", async () => {

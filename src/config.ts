@@ -623,6 +623,15 @@ export type Credential =
       readonly allowInsecureBaseUrl: boolean;
       readonly envName: typeof TOGETHER_API_KEY_ENV;
       readonly keychainService: typeof TOGETHER_KEYCHAIN_SERVICE;
+    }
+  | {
+      readonly kind: "native-keychain";
+      readonly baseUrl: string;
+      readonly defaultHost: string;
+      readonly keychainService: string;
+      readonly keychainAccount: string;
+      readonly loginCommand: string;
+      readonly renewal: "none";
     };
 
 type CredentialKind = Credential["kind"];
@@ -635,6 +644,7 @@ export const withCredential = <R>(credential: Credential, table: CredentialKindT
   switch (credential.kind) {
     case "oauth-file": return table["oauth-file"](credential);
     case "api-key": return table["api-key"](credential);
+    case "native-keychain": return table["native-keychain"](credential);
   }
 };
 
@@ -771,10 +781,12 @@ export type RoutingDestination =
  * Before this helper, each site assembled its own providers list and they drifted:
  * health omitted Anthropic while models --json included it.  (ARCH-04)
  */
-export const enumerateDestinations = (config: Config): readonly RoutingDestination[] => [
+export const enumerateDestinations = (
+  config: Config, resolveProvider: typeof providerConfigFor = providerConfigFor,
+): readonly RoutingDestination[] => [
   { routing: "passthrough", id: "anthropic", displayName: "Anthropic" },
   ...PROVIDER_IDS.map((id): RoutingDestination => {
-    const { displayName, active, ...credential } = providerConfigFor(config, id);
+    const { displayName, active, ...credential } = resolveProvider(config, id);
     return { routing: "registry", id, displayName, active, credential };
   }),
 ];
