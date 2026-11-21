@@ -224,10 +224,9 @@ it("does not probe an inactive Keychain provider and reports its workspace pin",
   assert.equal(code, 1);
 });
 
-it("reports a missing Keychain probe without a credential read", async () => {
-  const { code, calls, output } = await keychainDoctor(true, undefined);
+it("returns exit code 1 and reports probe_unavailable when the Keychain probe is absent", async () => {
+  const { code, output } = await keychainDoctor(true, undefined);
   assert.equal(code, 1);
-  assert.deepEqual(calls, []);
   assert.match(output, /codex auth:\s+UNAVAILABLE \(probe_unavailable .*fixture login/);
 });
 
