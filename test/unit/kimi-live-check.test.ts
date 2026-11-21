@@ -9,7 +9,7 @@ import type { AddressInfo } from "node:net";
 import { describe, it, type TestContext } from "node:test";
 import { loadConfig } from "../../src/config.js";
 import {
-  CAP_LIMITS, CapLedger, KIMI_MESSAGES_URL, KIMI_TOKEN_URL, LIVE_PHRASE, MAX_BODY_BYTES, PROBE_MODEL,
+  CAP_LIMITS, COOLDOWN_MS, CapLedger, KIMI_MESSAGES_URL, KIMI_TOKEN_URL, LIVE_PHRASE, MAX_BODY_BYTES, PROBE_MODEL,
   cappedClaudeForwarder, cappedKimiFetch, checkEvidence, checkUserConfig, emptyCounts, liveGate, main, parseArguments,
   reserveDispatch, verdict, type Counts, type Evidence, type Exercise, type GateIO, type DispatchKind, type LiveArguments,
 } from "../../e2e/gates/kimi-live-check.js";
@@ -75,6 +75,10 @@ describe("Kimi live check: the live gate", () => {
 });
 
 describe("Kimi live check: the entry", () => {
+  it("keeps the live cooldown at 75 seconds", () => {
+    assert.equal(COOLDOWN_MS, 75_000);
+  });
+
   it("runs the live check only after the gate passes", async () => {
     const refused = await runMain(["--live", "--evidence-root", ROOT], { stdinIsTTY: false });
     assert.equal(refused.code, 2);
@@ -86,7 +90,7 @@ describe("Kimi live check: the entry", () => {
     assert.deepEqual(passed.runs, [{ mode: "live", evidenceRoot: ROOT }]);
   });
 
-  it("the dry run skips the gate and nothing else", async () => {
+  it("passes the dry-run arguments through without the live gate", async () => {
     const dry = await runMain(["--evidence-root", ROOT, "--dry-run"], { env: { CI: "true" }, stdinIsTTY: false, stdoutIsTTY: false });
     assert.equal(dry.code, 0);
     assert.deepEqual(dry.asked, [], "the dry run does not ask for the phrase");

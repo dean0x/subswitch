@@ -1,7 +1,14 @@
 // The fake client of the Kimi dry run. `run-action` starts it in place of Claude Code.
 // It sends one Kimi request to the base URL that `run-action` gave it, as Claude Code
-// does, reads the whole reply, and exits 0 only for a complete 200 stream. It sends no
-// credential and reads no file.
+// does, reads the whole reply, and exits 0 only for a complete 200 stream.
+import { readdir } from "node:fs/promises";
+
+const files = await readdir(".").catch(() => []);
+if (files.length !== 1 || files[0] !== "package.json") {
+  process.stderr.write("The client folder must contain only package.json.\n");
+  process.exit(2);
+}
+
 const base = process.env.ANTHROPIC_BASE_URL;
 const cap = Number(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS);
 if (typeof base !== "string" || !base.startsWith("http://127.0.0.1:") || !Number.isSafeInteger(cap)) process.exit(2);

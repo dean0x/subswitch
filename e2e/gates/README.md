@@ -98,18 +98,19 @@ sign-in variables.
 
 1. The probe layer sends six plain HTTP requests to the proxy: a stream, a JSON reply, a
    tool call, a tool result, `count_tokens` and a cancelled stream.
-2. After a 75 s cooldown, the Claude Code layer publishes the action control file of the
-   proxy and prints the `subswitch run-action` command for Claude Code. The owner runs it
-   in a second Terminal. A run with no Claude Code request through the action ingress
-   fails. On exit, the check removes the control file.
+2. The live check waits 75 s. Then it publishes the action control file and prints the
+   `subswitch run-action` command for Claude Code. Run it in a second Terminal. The command
+   starts Claude Code in a new folder that contains only a copy of `package.json`.
+   The check fails if no Claude Code request goes through the action ingress.
+   On exit, the check removes the control file and the client folder.
 3. The check writes `report.json` in a new dated folder under the evidence root. The
    report holds only counts, status classes, fixed codes and booleans.
 
 `--live` refuses under CI, without a terminal on stdin and stdout, and without the typed
-phrase that names the caps. `--dry-run` skips only that gate. It uses a temporary home,
-a free port, a fabricated Kimi sign-in, fake Kimi and Claude servers, and a fake client
-that `run-action` starts in place of Claude Code. The dry run makes no request off the
-loopback host.
+phrase that names the caps. `--dry-run` skips that gate and the 75 s cooldown. It uses a
+temporary home, a free port, a fabricated Kimi sign-in, and fake Kimi and Claude servers.
+`run-action` starts a fake client in the same type of client folder. The dry run makes no
+request off the loopback host.
 
 ## Direct backend checks
 

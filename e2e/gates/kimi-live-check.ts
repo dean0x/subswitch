@@ -7,7 +7,7 @@
  * Run it from the repository root, and stop `subswitch serve` first: the check listens on
  * the configured port. Only the owner runs the live mode, in his own Terminal, after a
  * passing dry run. The live mode refuses under CI, without a TTY on stdin and stdout, and
- * without the typed cap phrase. The dry run skips that gate and nothing else: it uses a
+ * without the typed cap phrase. The dry run skips that gate and the cooldown. It uses a
  * temporary home, a free port, a fabricated Kimi sign-in and in-process fake upstreams.
  *
  * Both modes run these steps:
@@ -21,9 +21,9 @@
  *    request listener.
  * 3. Probe layer: plain HTTP requests to the proxy. No Claude Code process.
  * 4. Wait the cooldown, publish the action control file and print the client commands.
- *    Live: run the printed live command in a second Terminal in this folder. Dry run: the
- *    check runs the printed dry-run command, whose fake client sends one request.
- * 5. Remove the control file, stop the proxy and write report.json with fixed fields only
+ *    Live: run the printed live command in a second Terminal. Dry run: the check runs the
+ *    printed dry-run command. Both start the client in a new folder with only package.json.
+ * 5. Remove the control file and client folder, stop the proxy, and write report.json with fixed fields only
  *    to a new dated folder under the evidence root.
  *
  * In the live mode, a Kimi renewal happens only when the sign-in is due: the check does not
@@ -31,7 +31,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
-import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -86,13 +86,15 @@ const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 export type Mode = "dry-run" | "live";
 export interface LiveArguments { readonly mode: Mode; readonly evidenceRoot: string }
 
+const cooldownFor = (mode: Mode): number => mode === "live" ? COOLDOWN_MS : 0;
+
 const MODES = ["dry-run", "live"] as const;
 const CAP_CODES = ["broken_cap", "cost_cap", "request_cap"] as const;
 const REFUSAL_CODES = [...CAP_CODES, "unknown_destination", "invalid_body", "unexpected_model", "unexpected_request",
   "refused_route"] as const;
 const FAILURE_CODES = ["repo_root_required", "evidence_root_invalid", "host_mismatch", "user_config_invalid",
   "user_config_has_kimi_block", "dry_run_port_refused", "kimi_sign_in_missing", "evidence_dir_exists", "config_failed",
-  "server_failed", "listen_failed", "probe_failed", "renewal_missing", "renewal_failed", "control_failed", "attach_failed",
+  "server_failed", "listen_failed", "probe_failed", "renewal_missing", "renewal_failed", "control_failed", "client_folder_failed", "attach_failed",
   "session_timeout", "action_not_completed", "no_session_requests", "session_error_reply", "no_kimi_session_dispatch",
   "dispatch_refused", "interrupted", "cleanup_failed", "evidence_rejected"] as const;
 const PROBE_NAMES = ["stream", "json", "tool_call", "tool_result", "count_tokens", "cancel"] as const;
@@ -422,7 +424,8 @@ export function checkUserConfig(loaded: Result<LoadConfigResult, ProxyError>): R
 // The client commands
 // ---------------------------------------------------------------------------
 
-const RUN_ACTION = ["node", "--import", "tsx", "src/cli.ts", "run-action", "--client", "claude-code", "--"] as const;
+const RUN_ACTION = [process.execPath, "--import", import.meta.resolve("tsx"), join(REPO_ROOT, "src/cli.ts"),
+  "run-action", "--client", "claude-code", "--"] as const;
 /** Claude Code reads these: a 256-token output cap and no extra traffic. */
 const CLIENT_ENV: Readonly<Record<string, string>> = {
   CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(MAX_OUTPUT_TOKENS), CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
@@ -431,7 +434,7 @@ const KIMI_AGENT = JSON.stringify({ kimi_probe: {
   description: "Read one file and report one value.", model: PROBE_MODEL, tools: ["Read"],
   prompt: "Use Read once on package.json. Reply with the value of its name field only. Use no other tool.",
 } });
-const DRY_RUN_COMMAND: readonly string[] = [...RUN_ACTION, "node", "e2e/gates/kimi-live-fake-client.mjs"];
+const DRY_RUN_COMMAND: readonly string[] = [...RUN_ACTION, process.execPath, join(REPO_ROOT, "e2e/gates/kimi-live-fake-client.mjs")];
 /** Claude, then a Kimi sub-agent with one Read call and its result, then Claude again. */
 const LIVE_COMMAND: readonly string[] = [...RUN_ACTION, "claude", "--print", "--setting-sources", "",
   "--settings", '{"disableAllHooks":true}', "--disable-slash-commands", "--strict-mcp-config", "--no-session-persistence",
@@ -440,8 +443,18 @@ const LIVE_COMMAND: readonly string[] = [...RUN_ACTION, "claude", "--print", "--
   "Delegate once to kimi_probe. Return its exact answer. Do not read the file yourself."];
 
 const shellWord = (word: string): string => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`;
-const renderCommand = (argv: readonly string[]): string =>
-  [...Object.entries(CLIENT_ENV).map(([name, value]) => `${name}=${value}`), ...argv.map(shellWord)].join(" ");
+const renderCommand = (folder: string, argv: readonly string[]): string =>
+  `(cd ${shellWord(folder)} && ${[...Object.entries(CLIENT_ENV).map(([name, value]) => `${name}=${value}`), ...argv.map(shellWord)].join(" ")})`;
+
+const prepareClientFolder = async (scratch: string): Promise<Result<string, FailureCode>> => {
+  try {
+    const folder = await mkdtemp(join(scratch, "client-"));
+    await copyFile(join(REPO_ROOT, "package.json"), join(folder, "package.json"));
+    return ok(folder);
+  } catch {
+    return err("client_folder_failed");
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Sites: the live home, or a fabricated one with fake upstreams
@@ -461,7 +474,7 @@ interface Site {
   readonly claudeForwarder: AnthropicForwarder | undefined;
   readonly sessionTimeoutMs: number;
   /** The dry run runs the dry-run command here. The live mode waits for the owner. */
-  attach(signal: AbortSignal, out: (line: string) => void): Promise<boolean>;
+  attach(folder: string, signal: AbortSignal, out: (line: string) => void): Promise<boolean>;
 }
 
 const fabricated = (kind: string): string => `dry-run-kimi-${kind}-${randomUUID()}`;
@@ -534,16 +547,15 @@ const freePort = (): Promise<number> => new Promise((resolve, reject) => {
 });
 
 /** Run the dry-run command: `run-action` attaches to the check proxy and starts the fake client. */
-const runAttach = async (env: Readonly<Record<string, string>>, signal: AbortSignal, out: (line: string) => void): Promise<boolean> => {
-  const args = DRY_RUN_COMMAND.slice(1).map((word) => (word === "node" ? process.execPath : word));
-  const result = await nativeProcess(process.execPath, args, { cwd: REPO_ROOT, env: { ...env, ...CLIENT_ENV }, timeoutMs: ATTACH_TIMEOUT_MS, signal });
+const runAttach = async (folder: string, env: Readonly<Record<string, string>>, signal: AbortSignal, out: (line: string) => void): Promise<boolean> => {
+  const result = await nativeProcess(process.execPath, DRY_RUN_COMMAND.slice(1),
+    { cwd: folder, env: { ...env, ...CLIENT_ENV }, timeoutMs: ATTACH_TIMEOUT_MS, signal });
   const passed = result.failure === undefined && result.code === 0;
   if (!passed) out(`The dry-run command failed (${result.failure ?? `exit ${String(result.code)}`}): ${result.stderr.slice(-2000)}`);
   return passed;
 };
 
-async function openDrySite(): Promise<Site> {
-  const scratch = await mkdtemp(join(await realpath(tmpdir()), "subswitch-kimi-dry-run-"));
+async function openDrySite(scratch: string): Promise<Site> {
   const home = join(scratch, "home"), temp = join(scratch, "tmp"), credentials = join(home, ".kimi-code", "credentials");
   await mkdir(credentials, { recursive: true, mode: 0o700 });
   await mkdir(temp, { mode: 0o700 });
@@ -559,11 +571,10 @@ async function openDrySite(): Promise<Site> {
     XDG_CACHE_HOME: join(home, ".cache"), TMPDIR: temp, LANG: "C" };
   return { mode: "dry-run", home, env, kimiAuthFile, scratch, renewalExpected: true, kimiTransport: fakeKimiTransport,
     claudeForwarder: fakeClaudeForwarder, sessionTimeoutMs: ATTACH_TIMEOUT_MS + 10_000,
-    attach: (signal, out) => runAttach(env, signal, out) };
+    attach: (folder, signal, out) => runAttach(folder, env, signal, out) };
 }
 
-async function openLiveSite(): Promise<Site> {
-  const scratch = await mkdtemp(join(await realpath(tmpdir()), "subswitch-kimi-live-"));
+function openLiveSite(scratch: string): Site {
   const home = homedir();
   return { mode: "live", home, env: process.env, kimiAuthFile: join(home, ".kimi-code", "credentials", KIMI_SLOT), scratch,
     renewalExpected: false, kimiTransport: liveKimiStoreDeps().fetch, claudeForwarder: undefined, sessionTimeoutMs: LIVE_SESSION_MS,
@@ -817,8 +828,9 @@ async function exercise(site: Site, start: Start, ledger: CapLedger, out: (line:
           probes = await runProbes(origin, ledger);
           if (probes.some((probe) => !probe.ok)) ledger.fail("probe_failed");
           if (ledger.failure === undefined) {
-            out(`Probe layer passed. Cooldown: ${COOLDOWN_MS / 1000} s.`);
-            await sleep(COOLDOWN_MS, undefined, { signal: ledger.stop.signal }).catch(() => ledger.fail("interrupted"));
+            const cooldownMs = cooldownFor(site.mode);
+            out(`Probe layer passed. Cooldown: ${cooldownMs / 1000} s.`);
+            if (cooldownMs > 0) await sleep(cooldownMs, undefined, { signal: ledger.stop.signal }).catch(() => ledger.fail("interrupted"));
           }
           if (ledger.failure === undefined) {
             ledger.phase = "session";
@@ -826,15 +838,19 @@ async function exercise(site: Site, start: Start, ledger: CapLedger, out: (line:
               .catch(() => { ledger.fail("control_failed"); return undefined; });
           }
           if (ledger.failure === undefined) {
-            out("Client commands, side by side. Run each one from this folder:");
-            out(`  dry run: ${renderCommand(DRY_RUN_COMMAND)}`);
-            out(`  live:    ${renderCommand(LIVE_COMMAND)}`);
-            out(site.mode === "live" ? `Run the live command in a second Terminal now. The check waits up to ${LIVE_SESSION_MS / 60_000} min.`
-              : "The dry run now runs the dry-run command itself.");
-            const ended = waitForEnd(session, site.sessionTimeoutMs, ledger.stop.signal);
-            const attached = await site.attach(ledger.stop.signal, out);
-            if (!attached) ledger.fail("attach_failed");
-            if (!await ended) ledger.fail(ledger.stop.signal.aborted ? "interrupted" : "session_timeout");
+            const folder = await prepareClientFolder(site.scratch);
+            if (!folder.ok) ledger.fail(folder.error);
+            else if (ledger.failure === undefined) {
+              out(`Client folder: ${folder.value}`);
+              out(`  dry run: ${renderCommand(folder.value, DRY_RUN_COMMAND)}`);
+              out(`  live:    ${renderCommand(folder.value, LIVE_COMMAND)}`);
+              out(site.mode === "live" ? `Run the live command in a second Terminal now. The check waits up to ${LIVE_SESSION_MS / 60_000} min.`
+                : "The dry run now runs the dry-run command itself.");
+              const ended = waitForEnd(session, site.sessionTimeoutMs, ledger.stop.signal);
+              const attached = await site.attach(folder.value, ledger.stop.signal, out);
+              if (!attached) ledger.fail("attach_failed");
+              if (!await ended) ledger.fail(ledger.stop.signal.aborted ? "interrupted" : "session_timeout");
+            }
           }
         }
       }
@@ -935,7 +951,7 @@ const buildEvidence = (mode: Mode, startedMs: number, run: Exercise, ledger: Cap
   const firstKimi = order.indexOf("kimi");
   return {
     schemaVersion: 1, mode, success: failure === undefined, failure: failure ?? null, durationMs: Date.now() - startedMs,
-    cooldownMs: COOLDOWN_MS, caps: { limits: CAP_LIMITS, used: ledger.counts }, refusals: [...ledger.refusals], probes: run.probes,
+    cooldownMs: cooldownFor(mode), caps: { limits: CAP_LIMITS, used: ledger.counts }, refusals: [...ledger.refusals], probes: run.probes,
     renewal: run.renewal,
     session: {
       actionStarted: run.session.actionStarted, outcome: run.session.outcome, requests: run.session.requests,
@@ -968,24 +984,27 @@ export async function runCheck(args: LiveArguments, out: (line: string) => void)
   const ledger = new CapLedger();
   const interrupt = (): void => ledger.fail("interrupted");
   for (const name of SIGNALS) process.on(name, interrupt);
-  let site: Site | undefined;
+  let scratch: string | undefined;
+  let scratchRemoved = false;
+  let start: Start, run: Exercise;
   try {
-    site = args.mode === "dry-run" ? await openDrySite() : await openLiveSite();
-    const start = await preflight(args, site, new Date(startedMs).toISOString());
-    if (!start.ok) {
-      out(JSON.stringify({ success: false, code: start.error }));
+    scratch = await mkdtemp(join(await realpath(tmpdir()), `subswitch-kimi-${args.mode}-`));
+    const site = args.mode === "dry-run" ? await openDrySite(scratch) : openLiveSite(scratch);
+    const prepared = await preflight(args, site, new Date(startedMs).toISOString());
+    if (!prepared.ok) {
+      out(JSON.stringify({ success: false, code: prepared.error }));
       return false;
     }
-    const run = await exercise(site, start.value, ledger, out);
-    const scratchRemoved = await rm(site.scratch, { recursive: true, force: true }).then(() => true, () => false);
-    const evidence = buildEvidence(args.mode, startedMs, { ...run, cleanupOk: run.cleanupOk && scratchRemoved }, ledger);
-    const written = await writeEvidence(start.value.evidenceDir, evidence);
-    out(JSON.stringify({ success: evidence.success && written, failure: evidence.failure, evidence: start.value.evidenceDir }));
-    return evidence.success && written;
+    start = prepared.value;
+    run = await exercise(site, start, ledger, out);
   } finally {
+    if (scratch !== undefined) scratchRemoved = await rm(scratch, { recursive: true, force: true }).then(() => true, () => false);
     for (const name of SIGNALS) process.off(name, interrupt);
-    if (site !== undefined) await rm(site.scratch, { recursive: true, force: true }).catch(() => undefined);
   }
+  const evidence = buildEvidence(args.mode, startedMs, { ...run, cleanupOk: run.cleanupOk && scratchRemoved }, ledger);
+  const written = await writeEvidence(start.evidenceDir, evidence);
+  out(JSON.stringify({ success: evidence.success && written, failure: evidence.failure, evidence: start.evidenceDir }));
+  return evidence.success && written;
 }
 
 /** One line from the terminal, or undefined when none comes within the wait. */
