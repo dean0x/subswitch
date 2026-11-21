@@ -14,6 +14,11 @@ const startWithKeychainUrl = (baseUrl: string) => {
   });
 };
 
+it("refuses an invalid Keychain base URL at startup", () => {
+  const result = startWithKeychainUrl("not a url");
+  assert.deepEqual(result, { ok: false, error: "providers.codex.baseUrl is not a valid URL." });
+});
+
 it("refuses plain http for a Keychain credential on the expected host at startup", () => {
   const result = startWithKeychainUrl("http://upstream.example.test/v1");
   assert.ok(!result.ok);
