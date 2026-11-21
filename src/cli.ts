@@ -3,7 +3,8 @@ import { CLIENT_IDS, parseClientSelection, selectedClients, type ClientId, type 
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
-import { type Config, withCredential, type CredentialKindTable, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
+import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
+import { formatProviderBanner, modelProviderRows } from "./cli-report.js";
 import { liveKimiStoreDeps, liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
@@ -274,17 +275,6 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
 // serve
 // ---------------------------------------------------------------------------
 
-const BANNER_HOST: CredentialKindTable<string> = {
-  "api-key": ({ baseUrl }) => new URL(baseUrl).hostname,
-  "oauth-file": ({ baseUrl }) => {
-    try {
-      return new URL(baseUrl).hostname;
-    } catch {
-      return baseUrl;
-    }
-  },
-};
-
 const serve = async (
   result: LoadConfigResult,
   verbose: boolean,
@@ -350,14 +340,7 @@ const serve = async (
   errOut(`\nsubswitch ready — http://127.0.0.1:${effectiveConfig.port}`);
   for (const id of PROVIDER_IDS) {
     const modelCount = routableModelCount(MODEL_REGISTRY, id);
-    const credential = providerConfigFor(effectiveConfig, id);
-    // A provider without its block sends nothing, so its row names no host.
-    let suffix = "  (not turned on)";
-    if (credential.active) {
-      const host = withCredential(credential, BANNER_HOST);
-      suffix = host !== "" ? `  → ${host}` : "";
-    }
-    errOut(`  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${suffix}`);
+    errOut(formatProviderBanner(id, modelCount, providerConfigFor(effectiveConfig, id)));
   }
   if (effectiveConfig.codexIngress.enabled) {
     errOut(effectiveConfig.codexIngress.claude.enabled ? "  codex ingress  OpenAI passthrough + Claude model routing (HTTP/WebSocket)" :
@@ -445,11 +428,7 @@ const modelsJson = (result: LoadConfigResult, client: Client): void => {
     configFileFound: fileFound,
     // enumerateDestinations provides the single topology source shared with the health
     // endpoint — Anthropic (passthrough) first, then registered providers.  (ARCH-04)
-    providers: enumerateDestinations(config).map((d) => ({
-      id: d.id,
-      displayName: d.displayName,
-      routing: d.routing,
-    })),
+    providers: modelProviderRows(enumerateDestinations(config)),
     models: rows,
   };
 

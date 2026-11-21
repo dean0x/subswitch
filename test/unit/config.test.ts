@@ -13,10 +13,22 @@ import {
   isLoopbackHost,
   providerConfigFor,
   userConfigPath,
+  withCredential,
   type LoadConfigOptions,
   type RoutingDestination,
 } from "../../src/config.js";
 import { PROVIDER_IDS } from "../../src/models.js";
+import { keychainCredential } from "../fixtures/native-keychain.js";
+
+it("dispatches Keychain service, account, sign-in command and renewal mode to the native arm", () => {
+  const fields = withCredential<readonly string[]>(keychainCredential, {
+    "oauth-file": () => ["file"],
+    "api-key": () => ["key"],
+    "native-keychain": ({ keychainService, keychainAccount, loginCommand, renewal }) =>
+      [keychainService, keychainAccount, loginCommand, renewal],
+  });
+  assert.deepEqual(fields, ["Fake Codex Sign-in", "fake-account", "fixture login", "none"]);
+});
 
 const missingFile = (): never => {
   const error = new Error("ENOENT") as Error & { code: string };
