@@ -57,6 +57,8 @@ const NOT_SENT_CODES: ReadonlySet<string> = new Set(["ENOTFOUND", "EAI_AGAIN", "
 /**
  * Renewal failures after which a due bearer that is still valid can serve the request.
  * None of them shows that the sign-in ended.
+ * A refused client needs action from the user. Subswitch reports `client_rejected` at once.
+ * It does not wait for the bearer to expire.
  */
 const KEEP_VALID_BEARER: ReadonlySet<KimiErrorCode> = new Set<KimiErrorCode>([
   "lock_busy", "refresh_busy", "refresh_unavailable", "refresh_recovery_required", "timeout",
