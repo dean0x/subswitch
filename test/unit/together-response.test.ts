@@ -9,7 +9,7 @@ import { chatChunk, chatSse } from "../helpers/chat-sse.js";
 
 const translate = async (body: string | readonly Buffer[], overrides: Partial<TogetherTranslatorOptions> = {}) => {
   const { parser, translator, diagnostics } = createTogetherSseTranslator({
-    model: "org/test-model", seed: "response-a", maxEventBytes: 4 * 1024 * 1024, ...overrides,
+    model: "org/test-model", seed: "response-a", maxEventBytes: 4 * 1024 * 1024, maxTokens: 100, ...overrides,
   });
   const frames: string[] = [];
   await pipeline(Readable.from(typeof body === "string" ? [Buffer.from(body)] : body), parser, translator,
@@ -135,7 +135,7 @@ it("fails a truncated tool call without exposing incomplete tool arguments", asy
 });
 
 it("closes a text block at the finish reason before DONE or EOF", (t) => {
-  const { translator } = createTogetherSseTranslator({ model: "org/model", seed: "turn", maxEventBytes: 1024 });
+  const { translator } = createTogetherSseTranslator({ model: "org/model", seed: "turn", maxEventBytes: 1024, maxTokens: 100 });
   t.after(() => { translator.destroy(); });
   const events: string[] = [];
   translator.on("data", (frame: string) => { events.push(frame.split("\n", 1)[0]!); });
@@ -156,6 +156,30 @@ it("reports max_tokens for a length-limited tool stream but rejects an incomplet
   assert.equal(aggregate.ok, false);
   if (!aggregate.ok) assert.match(aggregate.error.message, /unparseable tool_use arguments/);
 });
+
+const REASONING_FILLED_LIMIT = "Together model used the whole max_tokens limit (100 tokens) for reasoning and returned no answer. "
+  + "Raise max_tokens or providers.together.outputCap, or use a model that reasons less.";
+
+it("fails with a max_tokens error when reasoning fills the limit with no text and no tool call", async () => {
+  const { frames } = await translate(chatSse([chatChunk({ reasoning_content: "thinking" }), chatChunk({}, "length"), "[DONE]"]));
+  const error = { type: "error", error: { type: "invalid_request_error", message: REASONING_FILLED_LIMIT } };
+  assert.deepEqual(frames, [`event: error\ndata: ${JSON.stringify(error)}\n\n`]);
+  assert.deepEqual(fold(frames), { kind: "error", errorType: "invalid_request_error", message: REASONING_FILLED_LIMIT });
+});
+
+for (const [name, chunk] of [
+  ["text", chatChunk({ reasoning_content: "thinking", content: "partial" }, "length")],
+  ["partial tool arguments", chatChunk({ reasoning_content: "thinking", tool_calls: [toolDelta(0, "tool", '{"a":')] }, "length")],
+  ["no reasoning", chatChunk({}, "length")],
+] as const) {
+  it(`keeps the max_tokens stop for a length stop with ${name}`, async () => {
+    const { frames } = await translate(chatSse([chunk, "[DONE]"]));
+    assert.match(frames[0] ?? "", /^event: message_start\n/);
+    assert.match(frames.at(-2) ?? "", /"stop_reason":"max_tokens"/);
+    assert.match(frames.at(-1) ?? "", /^event: message_stop\n/);
+    assert.ok(!frames.some((frame) => frame.startsWith("event: error\n")));
+  });
+}
 
 it("does not invent empty input or return a tool stop without a tool", async () => {
   for (const tool_calls of [[], [toolDelta(0, "tool")]]) {
@@ -209,7 +233,7 @@ for (const [name, data] of [
   ["rejects a usage record without choices before the finish reason", '{"usage":{"prompt_tokens":37,"completion_tokens":11}}'],
 ]) {
   it(name, (t) => {
-    const { translator, diagnostics } = createTogetherSseTranslator({ model: "org/model", seed: "turn", maxEventBytes: 1024 });
+    const { translator, diagnostics } = createTogetherSseTranslator({ model: "org/model", seed: "turn", maxEventBytes: 1024, maxTokens: 100 });
     t.after(() => { translator.destroy(); });
     const frames: string[] = [];
     translator.on("data", (frame: string) => { frames.push(frame); });
@@ -279,6 +303,43 @@ it("does not store reasoning without a conversation key", async () => {
   ]), { putReasoning: (...entry) => { puts.push(entry); } });
   assert.deepEqual(puts, []);
   assert.equal(message(frames)["stop_reason"], "tool_use");
+});
+
+// The SHA-256 hex digest of the UTF-8 text "Hello world".
+const HELLO_WORLD_SHA256 = "64ec88ca00b268e5ba1a35678a1b5316d212f4f366b2477232534a8aeca37f3c";
+
+it("stores exact reasoning for a text-only turn under the text key when text turns are stored", async () => {
+  const puts: string[][] = [];
+  const { frames } = await translate(chatSse([
+    chatChunk({ reasoning_content: " think\n" }), chatChunk({ content: "Hello" }),
+    chatChunk({ content: " world", reasoning_content: "more " }), chatChunk({}, "stop"), "[DONE]",
+  ]), { conversationKey: "conversation", storeTextTurns: true, putReasoning: (...entry) => { puts.push(entry); } });
+  assert.deepEqual(puts, [[`conversation#text#${HELLO_WORLD_SHA256}`, " think\nmore "]]);
+  assert.deepEqual(message(frames)["content"], [{ type: "text", text: "Hello world" }]);
+});
+
+it("stores a text and tool turn only under the first tool ID when text turns are stored", async () => {
+  const puts: string[][] = [];
+  await translate(chatSse([
+    chatChunk({ reasoning_content: "reason", content: "Hello world", tool_calls: [toolDelta(0, "tool", "{}")] }),
+    chatChunk({}, "stop"), "[DONE]",
+  ]), { conversationKey: "conversation", storeTextTurns: true, putReasoning: (...entry) => { puts.push(entry); } });
+  assert.deepEqual(puts, [["conversation|toolu_response-a_0", "reason"]]);
+});
+
+it("stores no text-turn reasoning for a tool-turns row, an overflow, or no conversation key", async () => {
+  const stream = chatSse([chatChunk({ reasoning_content: "reason", content: "Hello" }), chatChunk({}, "stop"), "[DONE]"]);
+  const cases: readonly Partial<TogetherTranslatorOptions>[] = [
+    { conversationKey: "conversation" },
+    { conversationKey: "conversation", storeTextTurns: true, maxTurnBytes: 5 },
+    { storeTextTurns: true },
+  ];
+  for (const options of cases) {
+    const puts: string[][] = [];
+    const { frames } = await translate(stream, { ...options, putReasoning: (...entry) => { puts.push(entry); } });
+    assert.deepEqual(puts, [], JSON.stringify(options));
+    assert.deepEqual(message(frames)["content"], [{ type: "text", text: "Hello" }]);
+  }
 });
 
 it("maps JSON and SSE error objects to fixed text and permits only strict codes", async () => {

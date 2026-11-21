@@ -56,6 +56,8 @@ export interface TranslatedLegOptions<C> {
   readonly redirect: "follow" | "error";
   readonly abortOnResponseTimeout?: true;
   readonly renderJsonResponse?: (detail: string) => UpstreamError;
+  /** Extra headers for the 502 reply to an error event in a completed aggregate. */
+  readonly aggregateErrorHeaders?: (errorType: AnthropicErrorType) => Record<string, string> | undefined;
 }
 
 type ReplyError = (error: ProxyError) => void;
@@ -193,7 +195,8 @@ const collectFrames = async <C>(res: ServerResponse, options: TranslatedLegOptio
   if (!aggregated.ok) {
     replyError(aggregated.error);
   } else if (aggregated.value.kind === "error") {
-    respondJson(res, 502, toAnthropicErrorBody(aggregated.value.errorType, aggregated.value.message));
+    const { errorType, message } = aggregated.value;
+    respondJson(res, 502, toAnthropicErrorBody(errorType, message), options.aggregateErrorHeaders?.(errorType));
   } else {
     respondJson(res, 200, JSON.stringify(aggregated.value.message));
   }

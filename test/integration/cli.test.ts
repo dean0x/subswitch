@@ -394,6 +394,20 @@ describe("CLI models", () => {
   });
 });
 
+describe("CLI models --schema-version 3 (route discovery)", () => {
+  it("lists only Codex model ids in the codex model list, never a Together catalog id", async () => {
+    const result = await runCli(["models", "--schema-version", "3", "--client", "claude-code", "--json"]);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout) as { models: { codex: string[] } };
+    assert.ok(parsed.models.codex.includes("gpt-6.2-sol"), "the codex list must still hold the Codex models");
+    const togetherIds = [
+      "Qwen/Qwen3.8-Flash", "deepseek-ai/DeepSeek-V4-Pro-0813", "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "zai-org/GLM-5.3", "zai-org/GLM-5.3-Flash", "moonshotai/Kimi-K3.1-Pro",
+    ];
+    assert.deepEqual(parsed.models.codex.filter((id) => togetherIds.includes(id)), []);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // models --json (A14–A22, P5)
 // ---------------------------------------------------------------------------

@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { Transform } from "node:stream";
 import { z } from "zod";
 import { createSseParser, MAX_CONTENT_BLOCKS, type SseEvent } from "./codex-response.js";
-import { toAnthropicErrorSse } from "./errors.js";
+import { toAnthropicErrorSse, type AnthropicErrorType } from "./errors.js";
 import { isPlainObject } from "./plain-object.js";
-import { reasoningKey } from "./together-request.js";
+import { reasoningKey, textReasoningKey } from "./together-request.js";
 
 const MAX_ARGUMENT_BYTES = 1024 * 1024; // Across all calls in one response.
 const MAX_REASONING_BYTES = 1024 * 1024;
@@ -49,9 +50,13 @@ export interface TogetherTranslatorOptions {
   /** Use a fresh UUID per response. Tests can supply a fixed seed. */
   readonly seed: string;
   readonly maxEventBytes: number;
+  /** The max_tokens value of the upstream request. The error for a reasoning-only length stop names it. */
+  readonly maxTokens: number;
   readonly maxTurnBytes?: number;
   readonly conversationKey?: string;
   readonly putReasoning?: (key: string, text: string) => void;
+  /** Also store the reasoning of a text-only turn, under a key from the hash of its exact text. */
+  readonly storeTextTurns?: boolean;
 }
 
 type TogetherStreamWarning = "unknown_finish_reason" | "usage_missing" | "reasoning_too_large";
@@ -81,6 +86,9 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
   const warnings: TogetherStreamWarning[] = [];
   const reasoning: string[] = [];
   const { conversationKey, putReasoning, maxTurnBytes = MAX_REASONING_BYTES } = options;
+  // Hash the emitted text one delta at a time, so the translator holds no copy of the text.
+  const textHash = options.storeTextTurns === true && conversationKey !== undefined && putReasoning !== undefined
+    ? createHash("sha256") : undefined;
   let reasoningBytes = 0;
   let argumentsBytes = 0;
   let unparsableChunks = 0;
@@ -95,9 +103,9 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
     translator.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
   };
 
-  const fail = (message: string): void => {
+  const fail = (message: string, type: AnthropicErrorType = "api_error"): void => {
     terminal = true;
-    translator.push(toAnthropicErrorSse("api_error", message));
+    translator.push(toAnthropicErrorSse(type, message));
   };
 
   const start = (): void => {
@@ -120,6 +128,7 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
       hasText = true;
     }
     emit("content_block_delta", { index: 0, delta: { type: "text_delta", text } });
+    textHash?.update(text, "utf8");
   };
 
   const appendTools = (deltas: readonly z.infer<typeof ToolDelta>[]): void => {
@@ -183,6 +192,13 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
       fail("Together stream contained invalid tool arguments");
       return;
     }
+    // Reasoning used the whole output limit, so an empty max_tokens reply would hide the cause.
+    // The cause is the request limit, so the client must not retry the same request.
+    if (finishReason === "length" && !hasText && ready.length === 0 && reasoningBytes > 0) {
+      fail(`Together model used the whole max_tokens limit (${options.maxTokens} tokens) for reasoning and returned no answer. `
+        + "Raise max_tokens or providers.together.outputCap, or use a model that reasons less.", "invalid_request_error");
+      return;
+    }
     if (finishReason === undefined && !hasText && ready.length === 0) {
       fail("Together stream ended without a finish reason or recoverable content");
       return;
@@ -208,8 +224,12 @@ export const createTogetherSseTranslator = (options: TogetherTranslatorOptions) 
     if (finishReason === undefined) closeBlocks();
     if (terminal) return;
     terminal = true;
-    if (firstToolId !== undefined && conversationKey !== undefined && reasoning.length > 0) {
-      putReasoning?.(reasoningKey(conversationKey, firstToolId), reasoning.join(""));
+    if (conversationKey !== undefined && reasoning.length > 0) {
+      if (firstToolId !== undefined) {
+        putReasoning?.(reasoningKey(conversationKey, firstToolId), reasoning.join(""));
+      } else if (hasText && textHash !== undefined) {
+        putReasoning?.(textReasoningKey(conversationKey, textHash.digest("hex")), reasoning.join(""));
+      }
     }
     const stop = stopReason(finishReason, firstToolId !== undefined);
     if (stop === undefined) warnings.push("unknown_finish_reason");

@@ -10,11 +10,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Together AI route for Claude Code (paid, opt-in per model).** A Claude Code
   request for `together:<model-id>` goes to Together Chat Completions with your own
-  Together API key. Together bills each request per token. Only `together:<model-id>`
-  names route to Together in this version; no Together model IDs are registered.
-  Claude Code is the only supported client for this route. The Codex client
-  integration does not route to Together. Live behavior against the Together API is
-  not verified yet.
+  Together API key. Together bills each request per token. Claude Code is the only
+  supported client for this route. The Codex client integration does not route to
+  Together. Live behavior against the Together API is not verified yet.
+- Six registered Together models: Qwen3.8 Flash (`Qwen/Qwen3.8-Flash`), DeepSeek V4
+  Pro (`deepseek-ai/DeepSeek-V4-Pro-0813`), DeepSeek V4.1 Flash
+  (`deepseek-ai/DeepSeek-V4.1-Flash-1017`), GLM-5.3 (`zai-org/GLM-5.3`), GLM-5.3 Flash
+  (`zai-org/GLM-5.3-Flash`) and Kimi K3.1 Pro (`moonshotai/Kimi-K3.1-Pro`). The README
+  table gives the family name, context, max output, image support and price of each
+  model. **A bare id or a family name of these models routes to the paid Together route
+  and spends your Together balance, the same as `together:<id>`.** A model ID that is
+  not in the table routes to Together only with the `together:` prefix. The prices, the
+  image support and the max output (16,384 tokens, the default output cap) are
+  UNCONFIRMED until the live check runs.
+- A request with an image to GLM-5.3 or DeepSeek V4 Pro gets a local 400. Nothing goes
+  upstream.
+- Subswitch sends the reasoning of a turn with tool calls back to Together on the next
+  request. Kimi K3.1 Pro also gets the reasoning of a text-only turn back, but only when
+  the turn text is an exact match of the stored answer. DeepSeek V4 Pro gets the
+  reasoning in the `reasoning` field; the other models get it in `reasoning_content`.
+- When a Together model uses the whole `max_tokens` limit for reasoning and returns no
+  answer, Subswitch returns an error that names the limit, not an empty answer. A
+  non-stream request gets a 502 with `x-should-retry: false`. A stream request gets an
+  SSE `error` event.
+- `npm run probe:together` runs a bounded, paid live check against the Together API.
+  It needs your spend ceiling in USD, and `npm test` and CI do not run it. See
+  `e2e/gates/README.md`, "Together live check (paid)". The live check has not run yet.
 - Subswitch reads the Together key from `TOGETHER_API_KEY`. On macOS, when that
   variable is not set, it reads the Keychain item `Subswitch Together API key`
   (account `subswitch`). It reads the key once and keeps it in memory only. Set the
@@ -38,8 +59,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Subswitch also accepts `api-inference.together.ai` and `us-api.together.ai`, and
   no other host.
 - `doctor` shows the Together key source (`env` or `keychain`), never the value.
-  `subswitch models` shows the `together:<model-id>` pass-through line with the
-  output cap.
+  `subswitch models` shows the six Together models, then the `together:<model-id>`
+  pass-through line with the output cap.
+- A `providers.together.aliases` target must be one of the six registered Together
+  model ids. Any other target gets an `alias_rejected` warning.
 - Together requests send the conversation to Together, with tool results, file
   contents that tools read, and images.
 - Subswitch listens on loopback and has no local token. Any local process can send

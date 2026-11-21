@@ -28,7 +28,7 @@ update to the newest commit before reporting.
 subswitch is a **loopback-only development proxy**. It binds `127.0.0.1` and its
 only clients are the developer's own tools on the same machine. It sits between
 Claude Code and its upstreams — `api.anthropic.com`, the Codex backend, only for
-requests that name a `together:` model the paid Together AI API, and only with a
+requests that name a Together model the paid Together AI API, and only with a
 `providers.kimi` block the Kimi coding API — all reached over TLS.
 
 Defense-in-depth controls built into the proxy:
@@ -135,12 +135,21 @@ See [production acceptance](e2e/gates/production-parity.md).
 
 The Together AI route is the only paid destination. Together bills each request per
 token to the user's own API key. SubSwitch uses the key only for a Claude Code request
-that names a `together:<model-id>` model; no other route and no fallback uses it.
-Claude Code is the only supported client for this route. This section describes the
-configured behavior; a live check against the Together API is not done yet.
+that names a Together model; no other route and no fallback uses it. A Together model
+name is a `together:<model-id>` name, or the full id or family name of one of the six
+registered Together models: `Qwen/Qwen3.8-Flash`, `deepseek-ai/DeepSeek-V4-Pro-0813`,
+`deepseek-ai/DeepSeek-V4.1-Flash-1017`, `zai-org/GLM-5.3`, `zai-org/GLM-5.3-Flash` and
+`moonshotai/Kimi-K3.1-Pro` (the README lists their family names). A bare id or family
+name of a registered model routes to the paid Together route and spends the user's
+balance, the same as `together:<id>`. Claude Code is the only supported client for this
+route. This section describes the configured behavior; a live check against the Together
+API is not done yet (`npm run probe:together`, see
+[Together live check (paid)](e2e/gates/README.md#together-live-check-paid)). Until it
+runs, the prices, the image support and the max output of the six registered models are
+UNCONFIRMED.
 
 **Local spend exposure.** SubSwitch listens on loopback and has no local token. Any
-local process on the machine can send a `together:` request to the proxy, and
+local process on the machine can send a Together request to the proxy, and
 SubSwitch sends it to Together with the key. The `Host`/`Origin` gate stops web
 pages, not local processes. Use a small prepaid Together balance with auto-recharge
 off, and stop `subswitch serve` when you do not use Together.
@@ -184,10 +193,11 @@ request and does not retry.
 user configuration or an explicit `SUBSWITCH_CONFIG` file. A project
 `subswitch.config.json` that sets it, even to `{}` or `null`, fails at load, so a
 workspace file cannot redirect the key or change the output cap. A workspace file can
-name a `together:` model, for example in a project `.claude/agents/*.md` file or a
-project Claude Code settings file. When a key is available, those requests spend the
-user's Together balance and send the conversation to Together. Check a cloned repository
-for such names. `subswitch doctor` lists a Together agent pin only when no usable key is
+name a Together model, for example in a project `.claude/agents/*.md` file or a
+project Claude Code settings file. The name can be a `together:` name, or the id or
+family name of a registered Together model. When a key is available, those requests
+spend the user's Together balance and send the conversation to Together. Check a cloned
+repository for such names. `subswitch doctor` lists a Together agent pin only when no usable key is
 found. The startup host check accepts `https://api.together.ai/v1` by default. With
 `providers.together.allowInsecureBaseUrl: true` it also accepts `api-inference.together.ai`
 and `us-api.together.ai`, and no other host; `api.together.xyz` is refused. Loopback

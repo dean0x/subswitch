@@ -58,7 +58,8 @@
     "prepack": "npm run build",
     "prepublishOnly": "npm run check",
     "probe:native-reverse": "tsx e2e/gates/native-reverse.ts",
-    "probe:native-production": "tsx e2e/gates/native-production.ts"
+    "probe:native-production": "tsx e2e/gates/native-production.ts",
+    "probe:together": "tsx e2e/gates/together.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",

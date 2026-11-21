@@ -26,7 +26,8 @@ export function modelEfforts(
   model: string,
 ): readonly string[] | undefined {
   if (profile.provider === "codex")
-    return MODEL_REGISTRY.some((m) => m.id === model)
+    // A Together row in the registry is not a Codex model, so a codex profile refuses it.
+    return MODEL_REGISTRY.some((m) => m.provider === "codex" && m.id === model)
       ? reasoningEffortsForModel(MODEL_REGISTRY, model)
       : undefined;
   if (profile.provider === "claude")

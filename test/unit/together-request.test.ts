@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { TOGETHER_DEFAULT_CAPABILITIES } from "../../src/together-models.js";
-import type { AnthropicRequest } from "../../src/anthropic-wire-types.js";
+import { TOGETHER_DEFAULT_CAPABILITIES, type TogetherCapabilities } from "../../src/together-models.js";
+import type { AnthropicMessage, AnthropicRequest } from "../../src/anthropic-wire-types.js";
 import { reasoningKey, translateTogetherRequest, type TogetherRequestOptions } from "../../src/together-request.js";
 
 const model = "org/fixture-model";
@@ -200,7 +200,7 @@ it("replays exact cached reasoning only under the first tool ID of the assistant
 it("omits reasoning when the key is absent, replay is disabled, or the cache misses", (t) => {
   const getReasoning = t.mock.fn((_key: string) => undefined);
   const input = { messages: continuation };
-  const disabled = { ...TOGETHER_DEFAULT_CAPABILITIES, reasoningReplay: false };
+  const disabled: TogetherCapabilities = { ...TOGETHER_DEFAULT_CAPABILITIES, reasoningReplay: "off" };
   for (const options of [{}, { conversationKey: "fixture-session", capabilities: disabled }]) {
     assert.ok(!Object.hasOwn(translate(input, { ...options, getReasoning }).body.messages[0] ?? {}, "reasoning_content"));
   }
@@ -208,4 +208,54 @@ it("omits reasoning when the key is absent, replay is disabled, or the cache mis
   const miss = translate(input, { conversationKey: "fixture-session", getReasoning });
   assert.equal(getReasoning.mock.callCount(), 1);
   assert.ok(!Object.hasOwn(miss.body.messages[0] ?? {}, "reasoning_content"));
+});
+
+it("replays tool-turn reasoning only in the field that the row names", () => {
+  const calls = [
+    { id: "call_1", type: "function", function: { name: "Read", arguments: "{}" } },
+    { id: "call_2", type: "function", function: { name: "Read", arguments: "{}" } },
+  ];
+  const named: TogetherCapabilities = { ...TOGETHER_DEFAULT_CAPABILITIES, reasoningField: "reasoning" };
+  for (const [capabilities, field] of [[TOGETHER_DEFAULT_CAPABILITIES, "reasoning_content"], [named, "reasoning"]] as const) {
+    const { body } = translate({ messages: continuation }, {
+      conversationKey: "fixture-session", capabilities, getReasoning: () => "prior reasoning",
+    });
+    assert.deepEqual(body.messages, [{ role: "assistant", content: null, tool_calls: calls, [field]: "prior reasoning" }]);
+  }
+});
+
+// The SHA-256 hex digest of the UTF-8 text "Answer text".
+const ANSWER_SHA256 = "b598a8f788b357e32fd08d3b9f0f5589a8447ce9abc464dcaeb8db0cd1ae5baf";
+const everyTurn: TogetherCapabilities = { ...TOGETHER_DEFAULT_CAPABILITIES, reasoningReplay: "every-turn" };
+const storedTextReasoning = new Map([[`fixture-session#text#${ANSWER_SHA256}`, "  text reasoning\n"]]);
+const textTurn = (content: AnthropicMessage["content"], options: Partial<TogetherRequestOptions> = {}) =>
+  translate({ messages: [{ role: "assistant", content }] }, {
+    conversationKey: "fixture-session", capabilities: everyTurn, getReasoning: (key) => storedTextReasoning.get(key), ...options,
+  }).body.messages;
+
+it("replays exact stored reasoning on a text-only turn of an every-turn row", () => {
+  for (const content of ["Answer text", [{ type: "text", text: "Answer text" }]]) {
+    assert.deepEqual(textTurn(content), [{ role: "assistant", content: "Answer text", reasoning_content: "  text reasoning\n" }]);
+  }
+});
+
+it("sends no text-turn reasoning without an exact text match in the same conversation", () => {
+  const cases: readonly [AnthropicMessage["content"], Partial<TogetherRequestOptions>][] = [
+    ["Answer texT", {}],
+    ["Answer text ", {}],
+    [[{ type: "text", text: "Answer text" }, { type: "text", text: "More" }], {}],
+    ["Answer text", { conversationKey: "other-session" }],
+  ];
+  for (const [content, options] of cases) {
+    const [turn] = textTurn(content, options);
+    assert.ok(turn !== undefined && !Object.hasOwn(turn, "reasoning_content") && !Object.hasOwn(turn, "reasoning"),
+      JSON.stringify(content));
+  }
+});
+
+it("does not look up text-turn reasoning for a tool-turns row", (t) => {
+  const getReasoning = t.mock.fn((key: string) => storedTextReasoning.get(key));
+  assert.deepEqual(textTurn("Answer text", { capabilities: TOGETHER_DEFAULT_CAPABILITIES, getReasoning }),
+    [{ role: "assistant", content: "Answer text" }]);
+  assert.equal(getReasoning.mock.callCount(), 0);
 });

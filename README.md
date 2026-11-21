@@ -15,8 +15,9 @@ permissions, and execution loop.
 
 - **Claude Code → Codex:** registered OpenAI models and aliases are translated to
   Responses. Other traffic continues to Anthropic as a raw relay.
-- **Claude Code → Together AI (paid, opt-in per model):** `together:<model-id>` names
-  are translated to Together Chat Completions and billed to your own Together API key.
+- **Claude Code → Together AI (paid, opt-in per model):** `together:<model-id>` names,
+  and the id or family name of the six registered Together models, are translated to
+  Together Chat Completions and billed to your own Together API key.
   Claude Code is the only supported client for this route; the Codex client integration
   does not route to Together. See [Together AI (paid API key)](#together-ai-paid-api-key).
 - **Claude Code → Kimi Code (opt-in):** with a `providers.kimi` block in your user
@@ -243,11 +244,14 @@ npm run doctor     # same as `subswitch doctor`
 
 > **This route costs money.** Together AI bills each request per token to your own
 > Together API key. It is the only paid destination in SubSwitch. SubSwitch uses it only
-> when a request names a `together:` model; all other traffic stays on your subscriptions.
+> when a request names a Together model: a `together:<model-id>` name, or the id or family
+> name of a [registered Together model](#together-models). All other traffic stays on
+> your subscriptions.
 
 Claude Code is the only supported client for this route. The Codex client integration
 does not route to Together. This section describes the configured behavior; a live
-check against the Together API is not done yet.
+check against the Together API is not done yet (see
+[Together live check](#together-live-check)).
 
 Set the model of a Claude Code subagent to `together:<model-id>`:
 
@@ -258,9 +262,14 @@ model: together:<model-id>   # replace with a Together model ID available to you
 ---
 ```
 
-- Only `together:<model-id>` names route to Together in this version. SubSwitch registers
-  no Together model IDs, so a bare Together ID does not route to Together.
-  `subswitch models` shows the `together:<model-id>` pass-through line with the output cap.
+- SubSwitch registers six Together models (see [Together models](#together-models)).
+  The full id, the family name, `together:<id>` and `together:<family>` of a row route
+  to Together. **A bare id or a family name of a row routes to the paid Together route
+  and spends your Together balance, the same as `together:<id>`.**
+- A Together model ID that is not in the table routes to Together only with the
+  `together:` prefix. Without the prefix, it does not route to Together.
+- `subswitch models` shows the six rows, then the `together:<model-id>` pass-through line
+  with the output cap.
 - The ID must start with a letter or digit, use only letters, digits and `. _ / : -`, and
   have at most 200 characters. Any other name after `together:` gets a local 400
   (`Invalid model id after the together: qualifier.`). Nothing goes upstream.
@@ -268,6 +277,28 @@ model: together:<model-id>   # replace with a Together model ID available to you
   (`<baseUrl>/chat/completions`) and translates the reply back to Anthropic Messages.
   It makes one attempt per request and does not retry. `count_tokens` gets a local
   estimate and makes no upstream call.
+
+### Together models
+
+| Model | Full id | Family | Context (tokens) | Max output (tokens) | Images | Price in / out (USD per 1M tokens) |
+|---|---|---|---|---|---|---|
+| Qwen3.8 Flash | `Qwen/Qwen3.8-Flash` | `qwen3.8-flash` | 1,000,000 | 16,384 (UNCONFIRMED) | yes (UNCONFIRMED) | 0.15 / 0.47 (UNCONFIRMED) |
+| DeepSeek V4 Pro | `deepseek-ai/DeepSeek-V4-Pro-0813` | `deepseek-v4-pro` | 1,048,576 | 16,384 (UNCONFIRMED) | no (UNCONFIRMED) | 1.32 / 3.96 (UNCONFIRMED) |
+| DeepSeek V4.1 Flash | `deepseek-ai/DeepSeek-V4.1-Flash-1017` | `deepseek-v4.1-flash` | 1,000,000 | 16,384 (UNCONFIRMED) | yes (UNCONFIRMED) | 0.30 / 1.20 (UNCONFIRMED) |
+| GLM-5.3 | `zai-org/GLM-5.3` | `glm-5.3` | 1,048,575 | 16,384 (UNCONFIRMED) | no (UNCONFIRMED) | 1.40 / 4.40 (UNCONFIRMED) |
+| GLM-5.3 Flash | `zai-org/GLM-5.3-Flash` | `glm-5.3-flash` | 1,048,575 | 16,384 (UNCONFIRMED) | yes (UNCONFIRMED) | 0.15 / 0.50 (UNCONFIRMED) |
+| Kimi K3.1 Pro | `moonshotai/Kimi-K3.1-Pro` | `kimi-k3.1-pro` | 1,048,576 | 16,384 (UNCONFIRMED) | yes (UNCONFIRMED) | 2.00 / 10.00 (UNCONFIRMED) |
+
+- The ids, context windows and prices come from Together's public model pages. The
+  live check has not run yet, so no price and no image value is confirmed. Each of
+  these values has the mark UNCONFIRMED. Check the price on Together's pricing page
+  before you use a model.
+- Together states no max output value for these models. SubSwitch uses its default
+  output cap, 16,384 tokens, as the max output of each row. This value is UNCONFIRMED
+  too. SubSwitch sends the smallest of the request `max_tokens`,
+  `providers.together.outputCap` and this value.
+- A request with an image to a row with images `no` gets a local 400
+  (`Together model does not support images`). Nothing goes upstream.
 
 ### Together key
 
@@ -341,14 +372,39 @@ messages, the tool definitions, the tool results (which can hold the contents of
 that tools read) and images. Together's terms and data policies apply to this data.
 Together thinking is not shown to the client. SubSwitch keeps the reasoning of a turn in
 process memory and sends it back to Together on the next request of the same
-conversation. Reasoning above the per-turn bound (`reasoningCache.maxTurnBytes`, 1 MiB by
-default), or in a request that SubSwitch cannot link to a conversation, is not kept and
-is not sent back.
+conversation:
+
+- Every Together model gets the reasoning of a turn with tool calls back with that turn.
+- Kimi K3.1 Pro also gets the reasoning of a text-only turn (a turn with no tool call)
+  back. SubSwitch sends it only when the text of that turn in the request is an exact
+  match of the stored answer. A changed character or an extra text block sends no
+  reasoning.
+- DeepSeek V4 Pro gets the reasoning back in the `reasoning` field of the assistant
+  message. All other models, an unlisted `together:` model too, get it in the
+  `reasoning_content` field.
+- Reasoning above the per-turn bound (`reasoningCache.maxTurnBytes`, 1 MiB by default),
+  or in a request that SubSwitch cannot link to a conversation, is not kept and is not
+  sent back.
+
+A model can use the whole `max_tokens` limit for reasoning and return no text and no tool
+call. SubSwitch then returns an error with type `invalid_request_error`, not an empty
+answer. `N` is the `max_tokens` value that SubSwitch sent to Together:
+
+```
+Together model used the whole max_tokens limit (N tokens) for reasoning and returned no answer. Raise max_tokens or providers.together.outputCap, or use a model that reasons less.
+```
+
+- A non-stream request gets a 502 with `x-should-retry: false`, so the client does not
+  retry.
+- A stream request gets an SSE `error` event with this text. The 200 headers are
+  already sent, so this reply can not carry `x-should-retry`.
+- When the reply has answer text, SubSwitch returns that text with
+  `stop_reason: "max_tokens"`, and no error.
 
 ### Together local access
 
 SubSwitch listens on `127.0.0.1` and has no local token. **Any local process on this
-machine can send a `together:` request to the proxy, and SubSwitch sends that request to
+machine can send a Together request to the proxy, and SubSwitch sends that request to
 Together with your key.** The [`Host`/`Origin` gate](#loopback-hostorigin-gate) stops web
 pages, not local processes. Keep the Together balance small, and stop `subswitch serve`
 when you do not use Together.
@@ -380,12 +436,24 @@ other host. Together charges more for the US-only host `us-api.together.ai`.
 are always accepted, for tests. A URL with userinfo, a query or a fragment fails at load.
 The [config reference](#config-reference) lists every `providers.together` key.
 
-A workspace file can name a `together:` model, for example in a project
-`.claude/agents/*.md` file or a project Claude Code settings file. When a key is
+A workspace file can name a Together model, for example in a project
+`.claude/agents/*.md` file or a project Claude Code settings file. The name can be a
+`together:` name, or the id or family name of a registered Together model. When a key is
 available, those requests spend your Together balance and send the conversation to
 Together. Before you use Claude Code in a cloned repository, check its agent files and
-settings for `together:` models. `subswitch doctor` lists a Together agent pin only when
-no usable key is found.
+settings for Together model names. `subswitch doctor` lists a Together agent pin only
+when no usable key is found.
+
+### Together live check
+
+`npm run probe:together` runs a bounded live check against the Together API. It sends
+paid requests with your key, so it needs your spend ceiling in USD before it starts.
+`npm test` and CI do not run it. See
+[Together live check (paid)](e2e/gates/README.md#together-live-check-paid) for the
+command, the bounds and the worst-case cost.
+
+The live check has not run yet. Until it runs, the prices, the image support and the max
+output of the [registered Together models](#together-models) stay UNCONFIRMED.
 
 ## Kimi Code (Kimi CLI sign-in)
 
@@ -806,7 +874,7 @@ All keys and their defaults:
 | `providers.codex.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` points at a host other than `chatgpt.com` or `auth.openai.com`. This prevents credential forwarding to an untrusted host. Set to `true` only when routing through a trusted proxy. Loopback addresses are always exempt. |
 | `providers.together.baseUrl` | `"https://api.together.ai/v1"` | Together AI base URL; requests go to `<baseUrl>/chat/completions`. **User config or `SUBSWITCH_CONFIG` only** — a project file that sets any `providers.together` key fails at load. HTTPS only (HTTP on loopback); no userinfo, query or fragment. |
 | `providers.together.allowInsecureBaseUrl` | `false` | **Security opt-in** — when `true`, `subswitch serve` also accepts `api-inference.together.ai` and `us-api.together.ai` on the default HTTPS port. Every other host, `api.together.xyz` included, stops the startup. Loopback addresses are always exempt. |
-| `providers.together.aliases` | `{}` | Alias targets must be registered Together model ids. This version registers none, so an alias is rejected with an `alias_rejected` warning; use `together:<model-id>`. |
+| `providers.together.aliases` | `{}` | Alias targets must be one of the six registered Together model ids (see [Together models](#together-models)). Any other target is rejected with an `alias_rejected` warning; use `together:<model-id>` for other Together models. |
 | `providers.together.outputCap` | `16384` | Maximum `max_tokens` sent to Together per request. Bounds output tokens only, not input tokens or spend. |
 | `providers.together.reasoningCache.maxEntries` | `1024` | Maximum LRU entries in the Together reasoning cache |
 | `providers.together.reasoningCache.maxBytes` | `16777216` (16 MiB) | Maximum total byte footprint of the Together reasoning cache |
@@ -1076,7 +1144,7 @@ how the request was dispatched. Valid values:
 | `anthropic:ambiguous` | Fail-open forward: two providers claim the same family name; relay forwards to Anthropic and emits `ambiguous_model_name` warn |
 | `anthropic:fallback` | Fail-open forward: colon-qualified name whose prefix is not a registered provider; relay forwards to Anthropic and emits `unknown_provider_qualifier` warn |
 | `codex:{endpoint}:{model}` | Request routed to the Codex provider leg (e.g. `codex:messages:gpt-5.6-sol`, `codex:count_tokens:gpt-5.6-sol`) |
-| `together:{endpoint}:{model}` | Request routed to the paid Together AI leg; `{model}` is the id after the `together:` prefix |
+| `together:{endpoint}:{model}` | Request routed to the paid Together AI leg; `{model}` is the full id of the registered row, or for an unlisted model the id after the `together:` prefix |
 | `kimi:{endpoint}:{model}` | Request routed to the Kimi leg (e.g. `kimi:messages:kimi-for-coding`). Without a `providers.kimi` block, the relay returned a synthesized 400 and sent nothing upstream |
 | `invalid_qualified` | Malformed model id after the `together:` prefix; relay returned a synthesized 400 and sent nothing upstream |
 | `host_rejected` | Request refused by the loopback `Host`/`Origin` gate before routing; relay returned a synthesized 403 |
@@ -1158,7 +1226,9 @@ End-to-end verification against the real CLI and real upstreams:
 - One subswitch instance holds the reasoning cache in memory; restarting it
   mid-conversation degrades the next Codex turn to a cache miss.
 - The Together AI route is not live-verified. Some Together wire details, such as
-  stream usage and `tool_choice` values, are not confirmed. The Together key stays in
+  stream usage and `tool_choice` values, are not confirmed. The prices, the image
+  support and the max output of the six registered Together models are UNCONFIRMED
+  until the live check runs. The Together key stays in
   process memory until `subswitch serve` stops, and the output cap does not bound input
   tokens.
 - The wire recorder is HTTP-only. It inspects explicit SSE responses and successful
@@ -1218,7 +1288,7 @@ Clients that talk to the proxy directly (Claude Code, `curl`) send a loopback
 `Host` and no `Origin` at all, so they are unaffected, and a page served from
 another loopback port keeps working — the gate stops the cross-site case, not
 local development. For the same reason, the gate does not stop a local process: any
-process on the machine can send a `together:` request that spends your Together key.
+process on the machine can send a Together request that spends your Together key.
 
 ## License
 

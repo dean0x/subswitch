@@ -17,8 +17,39 @@ import {
 } from "../../src/models.js";
 import { emptyAliases } from "../helpers/provider-aliases.js";
 
+// The Together catalog as [id, family], spelled here so the tests do not read the catalog under test.
+const TOGETHER_CATALOG = [
+  ["Qwen/Qwen3.8-Flash", "qwen3.8-flash"],
+  ["deepseek-ai/DeepSeek-V4-Pro-0813", "deepseek-v4-pro"],
+  ["deepseek-ai/DeepSeek-V4.1-Flash-1017", "deepseek-v4.1-flash"],
+  ["zai-org/GLM-5.3", "glm-5.3"],
+  ["zai-org/GLM-5.3-Flash", "glm-5.3-flash"],
+  ["moonshotai/Kimi-K3.1-Pro", "kimi-k3.1-pro"],
+] as const;
+const TOGETHER_IDS: ReadonlySet<string> = new Set(TOGETHER_CATALOG.map(([id]) => id));
+// Spelled out apart from the code under test. The efforts come from the Kimi Code
+// model docs; the Highspeed coding model has fixed thinking and takes no effort.
+const KIMI_IDS = ["k3.1-pro", "k3.1-pro-highspeed", "k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"];
+const KIMI_ID_SET: ReadonlySet<string> = new Set(KIMI_IDS);
+function expectedProvider(id: string): string {
+  if (TOGETHER_IDS.has(id)) return "together";
+  if (KIMI_ID_SET.has(id)) return "kimi";
+  return "codex";
+}
+
 describe("Together registry guards", () => {
   const vetted = { id: "fixture/vetted", provider: "together", family: "fixture-family", gen: [1] } satisfies ModelEntry;
+
+  it("routes each Together catalog row by its exact id, its family and the together: prefix", () => {
+    const { table } = buildRoutingTable(MODEL_REGISTRY, emptyAliases());
+    for (const [id, family] of TOGETHER_CATALOG) {
+      for (const name of [id, family, `together:${id}`, `together:${family}`]) {
+        assert.deepEqual(resolveModel(table, name), {
+          kind: "resolved", target: { id, provider: "together", family },
+        }, name);
+      }
+    }
+  });
 
   it("requires the catalog families to have one provider and no reserved names", () => {
     const build = buildRoutingTable([...MODEL_REGISTRY, vetted], emptyAliases());
@@ -50,9 +81,6 @@ describe("Together registry guards", () => {
 });
 
 describe("Kimi registry entries", () => {
-  // Spelled out apart from the code under test. The efforts come from the Kimi Code
-  // model docs; the Highspeed coding model has fixed thinking and takes no effort.
-  const KIMI_IDS = ["k3.1-pro", "k3.1-pro-highspeed", "k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"];
   const { table, ambiguousFamilies, reservedNameEntries } = buildRoutingTable(
     MODEL_REGISTRY, { ...emptyAliases(), kimi: { "kimi-fast": "k3.1-pro" } });
   const kimiTarget = (name: string) => {
@@ -229,12 +257,14 @@ describe("formatModelsReport", () => {
 
   it("includes a provider column in every row", () => {
     const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: emptyAliases() });
-    // Every row names the provider of its canonical registry entry as a padded column.
-    for (const line of result) {
-      const canonical = MODEL_REGISTRY.find((entry) => line.includes(`→  ${entry.id} `));
-      assert.ok(canonical !== undefined, `row must name a registry id: ${line}`);
-      assert.match(line, new RegExp(`\\s${canonical.provider}\\s`), `row must include provider column: ${line}`);
-    }
+    const providers = result.map((line) => {
+      const columns = /→\s+(\S+)\s+(\S+)\s+gen:/.exec(line);
+      assert.ok(columns !== null, `row must have canonical and provider columns: ${line}`);
+      assert.equal(columns[2], expectedProvider(columns[1]!), `row must name the provider of its model: ${line}`);
+      return columns[2];
+    });
+    assert.equal(providers.filter((provider) => provider === "together").length, TOGETHER_CATALOG.length);
+    assert.equal(providers.filter((provider) => provider === "kimi").length, KIMI_IDS.length);
   });
 
   it("labels derived registry aliases as '(derived)'", () => {
@@ -440,9 +470,10 @@ describe("buildAliasRows and buildModelRows — parity", () => {
   it("buildModelRows includes provider field for all entries", () => {
     const rows = buildModelRows(MODEL_REGISTRY, emptyAliases());
     for (const row of rows) {
-      assert.equal(row.provider, MODEL_REGISTRY.find((entry) => entry.id === row.id)?.provider, row.id);
+      assert.equal(row.provider, expectedProvider(row.id), row.id);
       assert.equal(row.source, "registry");
     }
+    assert.equal(rows.filter((row) => row.provider === "together").length, TOGETHER_CATALOG.length);
   });
 });
 

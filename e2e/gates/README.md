@@ -228,3 +228,92 @@ excluded from the installed package.
 `npm run probe:native-reverse` runs the experimental reverse harness in `native-reverse.ts`.
 `npm run probe:native-production` runs `native-production.ts`, the production gateway
 acceptance runner. These are live, credential-using gates and are separate from `npm test`.
+
+## Together live check (paid)
+
+`npm run probe:together` runs `together.ts`. It sends real paid requests to Together, so
+only the founder runs it. `npm test` and CI do not run it: the test glob holds only
+`test/unit` and `test/integration`, and the probe refuses to start when `CI` is set.
+
+```sh
+SUBSWITCH_TOGETHER_PROBE_ACK_USD=2.50 npm run probe:together
+```
+
+The probe loads the key through the product loader: `TOGETHER_API_KEY`, or the macOS
+Keychain item "Subswitch Together API key" (account `subswitch`). It never takes the key
+from argv and never prints it. Claude Code must be signed in, because the Part 1 parent
+uses the subscription. The Claude Code child gets no form of the `TOGETHER_API_KEY` name.
+
+Controls, in this order:
+
+1. Refuse when `CI` is not empty.
+2. Refuse when `SUBSWITCH_TOGETHER_PROBE_ACK_USD` is missing, does not match
+   `^\d+(\.\d{1,2})?$`, or is not above 0. The value is the spend ceiling in USD.
+3. Compute the worst case and refuse when it is above the ceiling. Then print the plan
+   line: the paid request count, the bounds and the worst case in USD.
+4. Load the key.
+5. Part 0 (free): read `GET /v1/models` once. Stop when a planned row has no live
+   input or output price that is a number at or above 0. The planned rows are the Part 1
+   and Part 2 rows and the six Part 3 rows. The probe prints
+   `{"success":false,"code":"live_price_missing","rows":["<id>",...]}` with the ids of
+   those rows, sends no paid request and exits 2. A catalog price is not confirmed, so it
+   does not replace a missing live price.
+6. Compute the worst case again at max(catalog price, live price), and refuse above the
+   ceiling before any paid request.
+
+The probe writes its own `SUBSWITCH_CONFIG` temp file (mode 0600). The file sets the
+Together base URL to the relay and `outputCap` to 4096. The probe sends one request at a
+time and removes its temp folder at the end.
+
+A loopback counting relay on 127.0.0.1 is the only path to Together. It forwards only the
+`authorization`, `content-type`, `accept` and `user-agent` headers, with no retry and no
+redirect. It refuses each of these with a local 400, which Claude Code does not retry:
+
+- a paid request above the cap of its part (request 19 of 18 gets a refusal);
+- a body above the bound of its part. The relay reads and drops a body above 1 MiB up to
+  32 MiB, then sends the 400 and closes the connection. Above 32 MiB, it closes the
+  connection with no reply;
+- a `max_tokens` value above the bound of its part, or no `max_tokens`;
+- a model that is not one of the six catalog rows;
+- an `n` value other than 1 (`choices`);
+- a top-level body field that the proxy translator and the Part 3 direct body do not
+  build (`body_field`). An `n` field of 1 is one of these;
+- an image or other content part that is not text, in Part 1 or Part 2, and more than
+  one in a Part 3 request;
+- in Part 1, a tool result above 4 KiB (`tool_result_bound`), or a tool result that does
+  not hold the exact fixture value of this run (`tool_result_marker`). The value is
+  `together-read-<uuid>`, with a new UUID for each run;
+- any other route, and a second model list.
+
+The report shows the code of each refusal in the `refused` field of its relay record. In
+Part 1, `--allowedTools` allows Read only for the absolute fixture path:
+`Read(//<temp folder>/work/check.txt)`.
+
+Not established: whether Claude Code applies the path-scoped Read rule to a sub-agent.
+The relay check on Part 1 tool results holds in any case: each tool result must be at most
+4 KiB and hold the exact fixture value of this run. No file holds that value before the
+run, because the probe makes a new UUID for each run.
+
+| Part | Requests | Body bound | max_tokens | Checks |
+|---|---|---|---|---|
+| 1 | 4 | first 128 KiB, later first + 64 KiB | 4,096 | Claude Code parent with a Read-only `together:moonshotai/Kimi-K3.1-Pro` sub-agent: tool call, tool result, continuation and stream |
+| 2 | 8 | 16 KiB | 2,048 | Kimi non-stream reply, mid-stream cancel, fabricated-key 401 and two-turn text replay; GLM-5.3 at max_tokens 16 (reasoning that fills max_tokens); DeepSeek V4 Pro forced zero-argument tool call and its continuation |
+| 3 | 6 | 8 KiB | 16 | One 8x8 PNG for each row. The two rows without image support go straight to the relay with a probe-built body |
+
+The worst case counts body bytes as input tokens and an image as at most 4,096 tokens. It
+uses the highest row price (Kimi K3.1 Pro: 2.00 USD in and 10.00 USD out for each 1M tokens):
+
+- Part 1: 4 × (196,608 × 2 + 4,096 × 10) / 1e6 = 1.736704
+- Part 2: 8 × (16,384 × 2 + 2,048 × 10) / 1e6 = 0.425984
+- Part 3: 6 × ((8,192 + 4,096) × 2 + 16 × 10) / 1e6 = 0.148416
+- Total: 2.311104 USD. Set the ceiling to 2.32 or more.
+
+The first output line is the plan. The last line is the report, or a refusal
+`{"success":false,"code":"<code>"}`. The report holds statuses, stop reasons, token counts,
+the replay field names, the raw tool `arguments` values and `finish_reason` values, the
+catalog and live price of each row, and the image status of each row. It holds no model
+text. The probe searches the report for the exact key before it prints it. On a match it
+prints only `{"success":false,"code":"key_in_report"}`.
+
+Exit codes: 0 when Part 1 passed with no relay refusal, 1 when a check failed, and 2 when a
+control refused or the run stopped.

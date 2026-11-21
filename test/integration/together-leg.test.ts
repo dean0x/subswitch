@@ -156,6 +156,49 @@ for (const maxBytes of [16 * 1024 * 1024, 8]) {
   });
 }
 
+for (const [id, replayed] of [["moonshotai/Kimi-K3.1-Pro", true], ["zai-org/GLM-5.3-Flash", false]] as const) {
+  it(`${replayed ? "replays" : "does not replay"} text-turn reasoning for ${id} on the next request`, async (t) => {
+    const thought = "Text turn reasoning.";
+    const stream = chatSse([chatChunk({ reasoning_content: thought }), chatChunk({ content: "Hello from the model" }, "stop"), "[DONE]"]);
+    const { post, together } = await fixture(t, sseHandler(stream));
+    const first = { ...REQUEST, model: `together:${id}` };
+    const answer = JSON.parse(await (await post(first)).text());
+    assert.deepEqual(answer.content, [{ type: "text", text: "Hello from the model" }]);
+    assert.doesNotMatch(JSON.stringify(answer), /Text turn reasoning/);
+    await (await post({ ...first, messages: [...first.messages, { role: "assistant", content: answer.content },
+      { role: "user", content: "Continue." }] })).text();
+    const replay = JSON.parse(together.requests[1]?.body.toString() ?? "{}");
+    assert.deepEqual(replay.messages[1], {
+      role: "assistant", content: "Hello from the model", ...(replayed ? { reasoning_content: thought } : {}),
+    });
+  });
+}
+
+it("reports reasoning that fills max_tokens with no answer as an error in both client modes", async (t) => {
+  const stream = chatSse([chatChunk({ reasoning_content: "Long reasoning." }), chatChunk({}, "length"), "[DONE]"]);
+  const { post, together } = await fixture(t, sseHandler(stream));
+  const error = { type: "error", error: { type: "invalid_request_error", message:
+    "Together model used the whole max_tokens limit (100 tokens) for reasoning and returned no answer. "
+    + "Raise max_tokens or providers.together.outputCap, or use a model that reasons less." } };
+  const streamed = await post({ ...REQUEST, stream: true });
+  assert.equal(streamed.status, 200);
+  assert.equal(await streamed.text(), `event: error\ndata: ${JSON.stringify(error)}\n\n`);
+  const folded = await post();
+  assert.equal(folded.status, 502);
+  assert.equal(folded.headers.get("x-should-retry"), "false");
+  assert.deepEqual(JSON.parse(await folded.text()), error);
+  assert.equal(together.requests.length, 2);
+});
+
+it("names the applied output cap, not the client max_tokens, when reasoning fills the limit", async (t) => {
+  const stream = chatSse([chatChunk({ reasoning_content: "Long reasoning." }), chatChunk({}, "length"), "[DONE]"]);
+  const { post, together } = await fixture(t, sseHandler(stream));
+  const response = await post({ ...REQUEST, max_tokens: 100_000 });
+  assert.equal(response.status, 502);
+  assert.match(JSON.parse(await response.text()).error.message, /whole max_tokens limit \(16384 tokens\) for reasoning/);
+  assert.equal(JSON.parse(together.requests[0]?.body.toString() ?? "{}").max_tokens, 16_384);
+});
+
 it("scrubs the loaded exact key at the shared error renderer", async (t) => {
   const { post } = await fixture(t, sseHandler(lateToolNames));
   assert.equal((await post()).status, 200);
