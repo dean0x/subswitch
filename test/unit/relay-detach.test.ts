@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmodSync, closeSync, fstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, fstatSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
@@ -159,9 +159,28 @@ for (const flag of ["verbose", "quiet"] as const) {
   });
 }
 
+it("leaves an unsafe record intact (TP-8 to TP-11)", async t => {
+  const f = fixture(t);
+  const boot = openBootLog(port, f.home);
+  assert.ok(boot.ok);
+  closeSync(boot.value);
+  const path = join(relayFolder(port, f.home), "relay.json");
+  const bytes = Buffer.from(JSON.stringify(record));
+  writeFileSync(path, bytes);
+  chmodSync(path, 0o644);
+  const classify: DetachDeps["classify"] = (p, deps) => classifyRelay(p, { ...deps, requestHealth: f.state.requestHealth });
+
+  const code = await detachRelay({ ...f.deps, classify });
+
+  assert.deepEqual([code, f.stdout, f.stderr, f.spawn.mock.callCount()], [1, [], ["subswitch: unsafe_path"], 0]);
+  const saved = lstatSync(path, { throwIfNoEntry: false });
+  assert.ok(saved !== undefined && saved.isFile(), "detach must keep the unsafe record file");
+  assert.equal(saved.mode & 0o7777, 0o644);
+  assert.deepEqual(readFileSync(path), bytes);
+});
+
 for (const [label, first, onExit, code, stdout, stderr] of [
   ["refuses a foreign port", { kind: "foreign" }, undefined, 1, [], ["subswitch: port_in_use"]],
-  ["leaves an unsafe record intact", { kind: "unverified", reason: "unsafe_path" }, undefined, 1, [], ["subswitch: unsafe_path"]],
   ["reports a legacy relay", { kind: "legacy" }, undefined, 0, [], ["subswitch: restart the legacy relay to get its pid"]],
   ["reports a version difference", verified(4567, "old"), undefined, 0, ["4567"], ["subswitch: the relay version differs from this CLI"]],
   ["reuses a verified relay", verified(4567), undefined, 0, ["4567"], []],
