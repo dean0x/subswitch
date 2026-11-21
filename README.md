@@ -163,8 +163,16 @@ Environment:
 
 | Command | Condition | Code |
 |---------|-----------|------|
-| `serve` | server listening | 0 (kept alive) |
-| `serve` | invalid `--port`, EADDRINUSE, config error | 1 |
+| `serve` | The relay stops normally after a stop signal. | 0 |
+| `serve` | Startup fails, shutdown times out or the relay exits after a fatal error. | 1 |
+| `serve --detach` | A verified relay responds to the health request. Stdout contains its PID. | 0 |
+| `serve --detach` | A legacy relay responds without a record. Stdout is empty. | 0 |
+| `serve --detach` | `port_in_use`: A foreign listener answers on the port. | 1 |
+| `serve --detach` | `child_exited`: The child cannot start or exits before it is ready. | 1 |
+| `serve --detach` | `not_ready`: The new relay is not ready within 8 seconds. | 1 |
+| `serve --detach` | `identity_mismatch`: The record or health response does not match the new relay. | 1 |
+| `serve --detach` | `unsafe_path`: A relay file or folder is not safe to use. | 1 |
+| `serve --detach` | The CLI reports an argument, port, config, platform or entry point error. | 1 |
 | `doctor` | all checks pass | 0 |
 | `doctor` | any check fails | 1 |
 | `init` | success (interactive, non-interactive, or dry-run) | 0 |
@@ -173,6 +181,29 @@ Environment:
 | unknown command or flag | always | 1 |
 
 `doctor` exits 1 whenever any preflight check fails — use it as a gate in scripts. `init` without `--yes` refuses to write anything when stdin is not a TTY (e.g. in CI) and exits 1 immediately with no filesystem side effects.
+
+### Start a relay in its own session
+
+On macOS and Linux, use `subswitch serve --detach` to start a relay in its own session.
+It can stay active after its launcher exits.
+Use `--port` to select the port. Without `--port`, detach ignores the project config port.
+The child uses the caller's current folder and can load other permitted project settings.
+
+For a new child, the launcher checks that the record and `GET /__subswitch/health`
+identify that child. The check uses the relay name, PID and nonce.
+If another verified relay starts first, the command can return that relay's PID.
+On success with a verified relay, stdout contains only the PID and a newline.
+If the version differs, stderr also shows a notice.
+For a legacy relay, stderr asks you to restart it to get the PID.
+
+On failure, stderr shows one of the reason codes above or a CLI error message.
+After a child exit, stderr can also show one sanitized line from `boot.log`.
+After `not_ready`, the child can stay active.
+The launcher sets `SUBSWITCH_MANAGED_BY=detach` for the child.
+For `serve` without `--detach`, leave this variable unset for foreground use.
+`detach` is the only value that `serve` accepts for this variable.
+
+See [Relay files and exit events](#relay-files-and-exit-events) for the record and logs.
 
 ### Recording real request limits
 
@@ -1065,6 +1096,37 @@ Color behavior is controlled by three environment variables (all standard):
 is not a TTY (useful in terminals that misreport TTY state); `CI` — also suppresses
 color and disables interactive `init` prompts (treated as a non-interactive
 environment).
+
+### Relay files and exit events
+
+The relay uses `~/.cache/subswitch/relay/<port>/relay.log` for the active log.
+`XDG_CACHE_HOME` does not change this path. The other relay files share this port folder.
+The port folder has mode `0700`. The relay creates its files with mode `0600`.
+
+| File | Contents |
+|------|----------|
+| `relay.json` | The relay record. The relay publishes it atomically after it binds the port. |
+| `relay.log` | The active relay log. Each line starts with an ISO 8601 time and has no color codes. |
+| `relay.1.log` to `relay.3.log` | Older logs, from newest to oldest. Normal writes limit each log to 4 MiB. |
+| `boot.log` | The detached child's stderr, which includes the ready banner. |
+
+The record fields are `schemaVersion`, `pid`, `port`, `version`, `startedAt`, `managedBy` and `nonce`.
+`schemaVersion` is `1`, and `managedBy` is `none` in both modes.
+Health returns the same `pid` and `nonce` as the record.
+At exit, the relay removes the record only if the nonce still matches.
+
+Foreground `serve` writes structured logs to stderr and `relay.log`.
+A detached relay writes structured logs only to `relay.log`.
+If a line would put the file queue over 256 KiB, the relay drops the line.
+The next successful write reports the number of dropped lines.
+If the file sink fails, the relay reports the fault once on stderr.
+
+| Exit event | Fields and order |
+|------------|------------------|
+| `relay_stopped` | Time, PID, exit code and signal for `SIGINT`, `SIGTERM` or `SIGHUP`. |
+| `relay_fatal` | Time and PID, with no error message or stack. A fatal error writes this line before `relay_stopped`, which has exit code 1 and no signal. |
+
+Use `relay.log` for exit events. A hard kill does not write an exit line or remove the record.
 
 ### `route` field values
 

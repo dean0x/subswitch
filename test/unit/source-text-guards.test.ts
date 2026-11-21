@@ -431,12 +431,12 @@ describe("source-text guards: the Kimi live check", () => {
   }
 });
 
-// G6: the public docs, the source and the Kimi check files hold no local text: no home
-// folder path, no workspace id and no path of a private planning folder. The paths of this
-// machine (its home folder and the folder that holds this repo) are checked as values too.
-const PUBLIC_TEXT = ["*.md", "e2e/**/*.md", "src/**/*.{ts,mts,cts,js,mjs,cjs}", "e2e/gates/kimi-*"];
+// G6: The docs, source and Kimi check files must not contain home paths,
+// workspace IDs or private plan paths. The guard also checks the local paths.
+const CLI_KNOWLEDGE = ".devflow/features/cli-ux/KNOWLEDGE.md";
+const PUBLIC_TEXT = ["*.md", "e2e/**/*.md", "src/**/*.{ts,mts,cts,js,mjs,cjs}", "e2e/gates/kimi-*", CLI_KNOWLEDGE];
 const PRIVATE_SHAPES: readonly RegExp[] = [
-  /\/(?:Users|home)\/[A-Za-z0-9._-]+\//,
+  /\/(?:Users|home)\/[A-Za-z0-9._-]+/,
   /\b[A-Za-z]:\\{1,2}Users\\{1,2}[A-Za-z0-9._-]+/,
   /\bwrkspc_[A-Za-z0-9]/,
   /\.devflow\/docs\/lanes\//,
@@ -451,14 +451,15 @@ const privateText = (text: string, paths: readonly string[] = machinePaths()): b
 describe("source-text guards: public text", () => {
   it("G6: no public doc, source file or Kimi check file holds local text", () => {
     const files = globSync(PUBLIC_TEXT, { cwd: REPO_DIR });
-    for (const name of ["README.md", "SECURITY.md", "CHANGELOG.md", "src/kimi-native-auth.ts", LIVE_CHECK]) {
+    for (const name of ["README.md", "SECURITY.md", "CHANGELOG.md", CLI_KNOWLEDGE,
+      "src/relay-detach.ts", "src/relay-record.ts", "src/kimi-native-auth.ts", LIVE_CHECK]) {
       assert.ok(files.includes(name), `The search must find ${name}`);
     }
     assert.deepEqual(files.filter((file) => privateText(readRepo(file))), [], "Remove the local text from these files");
   });
 
   it("G6 positive control: each shape and each machine path is found", () => {
-    for (const text of ["see /Users/someone/project", "in /home/someone/repo", "C:\\Users\\someone", "wrkspc_01ABC",
+    for (const text of ["see /Users/someone/project", "see /Users/someone", "in /home/someone/repo", "C:\\Users\\someone", "wrkspc_01ABC",
       "notes in .devflow/docs/lanes/plan.md", "the .orchestrator folder", `${homedir()}/project`, `${dirname(REPO_DIR)}/other`]) {
       assert.equal(privateText(text), true, text);
     }

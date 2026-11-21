@@ -25,20 +25,23 @@ update to the newest commit before reporting.
 
 ## Security model
 
-subswitch is a **loopback-only development proxy**. It binds `127.0.0.1` and its
-only clients are the developer's own tools on the same machine. It sits between
-Claude Code and its upstreams — `api.anthropic.com`, the Codex backend, only for
-requests that name a `together:` model the paid Together AI API, and only with a
-`providers.kimi` block the Kimi coding API — all reached over TLS.
+subswitch is a **loopback-only development proxy**. It binds `127.0.0.1`.
+It connects Claude Code to Anthropic and the Codex backend.
+It uses the paid Together AI API only for requests that name a `together:` model.
+The Kimi coding API requires a `providers.kimi` block. All upstream connections use TLS.
 
 Defense-in-depth controls built into the proxy:
 
-- **Loopback binding.** The server binds `127.0.0.1` and is never exposed to the
-  network. Claude Code requires a plain-HTTP local base URL; traffic to subswitch
-  never leaves the machine, and every upstream leg uses TLS. Loopback binding is not
-  authentication: subswitch has no local token, so any local process can send
-  requests through it, including paid Together requests (see
-  [Together AI API key](#together-ai-api-key)).
+- **Loopback binding.** The server binds `127.0.0.1` and does not listen on other interfaces.
+  Claude Code uses a plain HTTP local URL. Each upstream leg uses TLS.
+  Loopback is not authentication. The relay has no local token.
+  Any local process that can reach the port can use the relay, including paid Together requests.
+  See [Together AI API key](#together-ai-api-key).
+- **Private relay files.** The relay writes `relay.json` and `relay.log` under
+  `~/.cache/subswitch/relay/<port>/`. The port folder has mode `0700`.
+  The relay creates files with mode `0600`. A detached start also uses `boot.log` for stderr.
+  `GET /__subswitch/health` returns the relay PID and nonce. These fields identify the relay.
+  The relay does not use them for access control.
 - **Credentials never transit subswitch's config.** The Anthropic leg is a verbatim
   byte relay — `authorization` and every `anthropic-*` header pass through
   untouched. The Codex leg reads `~/.codex/auth.json` (written by the Codex CLI),
