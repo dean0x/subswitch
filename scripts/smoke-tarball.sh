@@ -11,6 +11,7 @@ SERVE_PID=""
 cleanup() {
   if [ -n "${SERVE_PID}" ]; then
     kill "${SERVE_PID}" 2>/dev/null || true
+    wait "${SERVE_PID}" || true
   fi
   rm -rf "${TMPDIR_INSTALL}"
 }
