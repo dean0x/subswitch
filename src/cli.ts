@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, withCredential, type CredentialKindTable, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
-import { liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";
+import { liveKimiStoreDeps, liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
   runInitInteractive,
@@ -25,8 +25,11 @@ import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
 import { createConsoleLogger } from "./logger.js";
 import { LimitRecorder, limitDirectory, withLimitRecorder, readLimitObservations } from "./limit-recorder.js";
+import { settleNativeRefreshes } from "./native-auth-coordination.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
+// Allow at least the full Kimi renewal deadline (20 s), including write-back.
+const NATIVE_REFRESH_SHUTDOWN_MS = 25_000;
 
 const out = (line: string): void => {
   process.stdout.write(`${line}\n`);
@@ -348,9 +351,13 @@ const serve = async (
   for (const id of PROVIDER_IDS) {
     const modelCount = routableModelCount(MODEL_REGISTRY, id);
     const credential = providerConfigFor(effectiveConfig, id);
-    const host = withCredential(credential, BANNER_HOST);
-    const hostSuffix = host !== "" ? `  → ${host}` : "";
-    errOut(`  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${hostSuffix}`);
+    // A provider without its block sends nothing, so its row names no host.
+    let suffix = "  (not turned on)";
+    if (credential.active) {
+      const host = withCredential(credential, BANNER_HOST);
+      suffix = host !== "" ? `  → ${host}` : "";
+    }
+    errOut(`  ${id.padEnd(8)}  ${modelCount} model${modelCount === 1 ? "" : "s"}${suffix}`);
   }
   if (effectiveConfig.codexIngress.enabled) {
     errOut(effectiveConfig.codexIngress.claude.enabled ? "  codex ingress  OpenAI passthrough + Claude model routing (HTTP/WebSocket)" :
@@ -359,11 +366,16 @@ const serve = async (
   errOut(`  run \`subswitch doctor\` to verify setup\n`);
 
   if (recorder) errOut("  limit observations: " + recorder.directory + " (view with subswitch limits --json)\n");
+  let stopping = false;
   const shutdown = (): void => {
+    if (stopping) return;
+    stopping = true;
+    const exitAfterRenewals = (code: number): Promise<never> =>
+      settleNativeRefreshes(NATIVE_REFRESH_SHUTDOWN_MS).then(() => process.exit(code));
     deps.logger.log("info", "shutting_down");
-    server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush()]).finally(() => process.exit(0)); });
+    server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush()]).finally(() => exitAfterRenewals(0)); });
     server.closeIdleConnections();
-    setTimeout(() => process.exit(1), SHUTDOWN_GRACE_MS).unref();
+    setTimeout(() => { void exitAfterRenewals(1); }, SHUTDOWN_GRACE_MS).unref();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
@@ -379,6 +391,8 @@ const doctor = async (result: LoadConfigResult, client: Client): Promise<void> =
     process.stdout.isTTY === true,
   );
 
+  // Doctor gets the Kimi store maker and the clock, not the fetch, so it can not renew a sign-in.
+  const { openStore, now } = liveKimiStoreDeps();
   process.exitCode = client === "codex" ? 0 : await runDoctor(
     result.config,
     result.configPaths.length ? result.configPaths.join(" + ") : result.configPath,
@@ -387,6 +401,7 @@ const doctor = async (result: LoadConfigResult, client: Client): Promise<void> =
       write: out,
       readAuthFile: (path) => readFile(path, "utf8"),
       togetherKeyReader: liveTogetherKeyReaderDeps(),
+      kimiStore: { openStore, now },
       httpGet: makeLiveHttpGet(),
       tlsConnect: makeLiveTlsConnect(),
       color,

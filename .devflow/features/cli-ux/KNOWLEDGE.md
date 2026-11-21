@@ -1,11 +1,11 @@
 ---
 feature: cli-ux
 name: CLI / init command / terminal UX
-description: "Use when changing the CLI, init wizard, doctor, logger output, log event names, config load, the models table or terminal UX (TTY, colors, dry-run). Keywords: cli, doctor, logger, providerEvents, agent-scan, config."
+description: "Use when changing the CLI, init wizard, doctor, serve banner, Kimi doctor row, probe:kimi, config load, models table or terminal UX (TTY, colors, dry-run). Keywords: cli, doctor, banner, optedIn, config."
 category: architecture
-directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/codex-doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts, src/provider-transport.ts]
+directories: [src/cli.ts, src/init.ts, src/doctor.ts, src/codex-doctor.ts, src/logger.ts, src/provider-events.ts, src/tty.ts, src/models.ts, src/agent-scan.ts, src/config.ts, src/server.ts, src/plain-object.ts, src/inbound-policy.ts, src/provider-transport.ts, e2e/gates/kimi-live-check.ts, test/helpers]
 created: 2026-07-23
-updated: 2026-11-20
+updated: 2026-11-21
 ---
 
 # CLI / init command / terminal UX
@@ -14,6 +14,14 @@ updated: 2026-11-20
 - **KB-INV-1** A new provider log event goes into the `ProviderEvents<P>` type and the `scopedEvents` table in `src/provider-events.ts`; the type pins the table, so do not quote a field count.
 - **KB-INV-2** `subswitch doctor` lists a Together agent pin only when no usable key is found; with a key, a workspace `together:` pin routes to Together and spends the user's balance.
 - **KB-INV-3** `src/doctor.ts` writes each provider auth line through `redactCredentials` at the write site, so a credential in an inspector line never reaches the terminal.
+- **KB-INV-4** `detectConfiguredProviders` in `src/config.ts` is the one owner of "the provider block exists". `resolveConfig` sets each `optedIn` from its set, `LoadConfigResult.configuredProviders` returns the same set, and `buildDeps` and doctor both read these two. No other code decides this.
+- **KB-INV-5** `ProviderRuntimeConfig.active` is false only for a provider that needs its block and has none (today Kimi, from `optedIn`). Then the serve banner, doctor and health do not read or stat its credential and do not probe its host.
+- **KB-INV-6** The doctor Kimi row only reads. With the block, it reads the file through the store, then shows the expiry and whether renewal is due (`kimiRenewalDue`). It never renews and makes no lock or marker. A store fault shows the fixed text of its code, with no path and no file text.
+- **KB-INV-7** The Kimi sign-in hint is `kimi login`. Only the `mainland-cn` region adds `--region mainland-cn`. `kimiCredentialFor` builds it, and Kimi has no host opt-in (`hostOptIn` false, https required).
+- **KB-INV-8** `npm run probe:kimi` has two modes. `--live` refuses under CI, without a TTY on stdin and stdout, and without the typed cap phrase. `--dry-run` skips that gate and the cooldown: it uses fake upstreams and a fabricated sign-in.
+- **KB-INV-9** The live check starts its client (Claude Code, or the fake client in the dry run) in a new temp folder that holds only a copy of `package.json`. The narrow allow rule (`Read(./package.json)`) stays as the second control. A `finally` path removes the folder with the scratch folder. The dry run uses the same path and runs in the suite in `test/integration/kimi-live-dry-run.test.ts`.
+- **KB-AP-1** Do not add a new check of "is the block there" next to `detectConfiguredProviders`, and do not read, stat or probe for a provider before you test `active`. A provider without its block must cause no file call under its home and no host probe.
+- **KB-AP-2** Do not write a "no file call" CLI test without a positive control. Use `recordFsUnder` in `test/helpers/cli-child.ts` and also run the same command with the block, so you see the recorder log the read.
 - The Rules list starts with this refresh. Older rules stay in `## Anti-Patterns` and `## Gotchas` below.
 
 ## Overview
@@ -221,6 +229,11 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 - An agent pin that resolves to Together with no key → `agent model: FAIL` (see agent-scan). With a usable key, doctor does not list the pin. A project `.claude/agents/*.md` file or a project Claude Code setting can name a `together:` model, so README and SECURITY.md tell users to check a cloned repository.
 - The hint comes from `togetherKeyHintFor(platform)`: on macOS it names the env var and the Keychain item; elsewhere it says "environment variable only on this platform".
 
+**Kimi (`oauth-file` kind, `inspectKimiAuth`).**
+- No `providers.kimi` block: the inspector returns `not-opted-in` before any I/O. The row reads `not turned on`, with a hint to add the block to the user configuration or a `SUBSWITCH_CONFIG` file. It is not a failure, and doctor makes no host probe for Kimi (`providerHosts` leaves the host empty when `active` is false).
+- With the block: the row shows the configured file path, `token expires:` and `renewal due:`. Doctor gets only the store maker and the clock (`kimiStore` in `DoctorIO`, built by `liveKimiStoreDeps` in `src/cli.ts`), not the fetch, so it can not renew.
+- Fault split: `invalid_record`, `unsafe_path`, `layout_unsupported` and `platform_unsupported` are an invalid file. `credential_missing` is a missing file. Other codes are an unreadable file. All with a block are failures. The login hint comes from `kimiCredentialFor`.
+
 ### src/agent-scan.ts — Agent frontmatter scanner
 
 `parseFrontmatterModel(text)` hand-rolled, no YAML dependency. `checkAgentModels(files, table, configuredProviders, registry, keyRequiredProviders)` maps to six finding kinds (`retired` among them, severity `"info"`). `provider_unconfigured` is `"info"`, except for a provider in `keyRequiredProviders`: doctor fills that set from the credential kind table (`api-key` only), because a pin is the explicit opt-in to a paid key. A malformed `together:` pin is `unresolvable` (`"fail"`).
@@ -292,6 +305,14 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 
 **KB-INV-3 — The doctor auth line is filtered where it is written.** The loop over `PROVIDER_IDS` in `src/doctor.ts` calls `io.write(redactCredentials(line))` for every provider auth result line. The inspectors do not filter their own lines. The filter matches the same exact values and Bearer and JWT patterns as the error render site (see the scrub scope above).
 
+**KB-INV-4, KB-INV-5, KB-AP-1 — The serve banner marks a provider without its block.** In `src/cli.ts`, the banner row of an inactive provider ends with `(not turned on)` and names no host. An active provider shows its host from `BANNER_HOST`. Health reports `configured: false` for an inactive provider and does not stat its file. Codex and Together are always active, so their rows do not change. `buildDeps` builds the Kimi provider only when `optedIn` is true, so doctor, banner, health and the server agree on one answer.
+
+**KB-INV-6, KB-INV-7 — One row, three read-only facts.** The Kimi doctor line goes through `redactCredentials` at the write site like every provider line (see KB-INV-3). A project config can not set the Kimi block, because the block turns on a sign-in route; see the config precedence section below.
+
+**KB-INV-8 — The live check is for the owner.** `e2e/gates/kimi-live-check.ts` runs from the repository root, with `subswitch serve` stopped, because it listens on the configured port. The user config must have no `providers.kimi` block: the opt-in block exists only in the in-process config of the check. The dry run makes its fabricated sign-in due, so it also runs the renewal path; the live mode renews only when the sign-in is due.
+
+**KB-AP-2 — The CLI child test helper.** `cliChildCommand` and `runCliChild` in `test/helpers/cli-child.ts` are the only way a test starts `src/cli.ts` (a source-text guard checks this). `recordFsUnder` takes a folder below the child home and logs each named file call at or inside it (`test/helpers/fs-path-recorder.ts`: first path argument only, not a sandbox). `test/integration/kimi-cli.test.ts` uses it: without the block, no call under the Kimi home; with the block, the read shows. The same file pins the banner rows and the `models` Kimi rows.
+
 **The byte-budget admission gate is gone. Any text describing a concurrency cap, byte-based admission, queueing, or a 503/529 from the relay is now false.** `"overloaded_error"` was removed from `AnthropicErrorType` — upstream 5xx including 529 maps to `"api_error"` via `upstreamStatusToAnthropicError`.
 
 **`FORCE_COLOR` beats `NO_COLOR` here — this inverts the no-color.org convention.** `FORCE_COLOR=1 NO_COLOR=1 subswitch models` emits ANSI. Do not "fix" it without a decision record.
@@ -333,14 +354,16 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 
 - `src/tty.ts` — `resolveColorEnabled(env, isTTY)` — single color-enable source of truth
 - `src/cli.ts` — Binary entry point; `parseCliArgs` → `CliCommand` union; exhaustive switch with `never` guard
-- `src/config.ts` — `FileConfig`/`Config` split; `z.strictObject` for all top-level sub-schemas; `isLoopbackHost` (exported, strict dotted-quad + localhost + ::1 only); https-or-loopback refinements; `LEGACY_KEY_ENTRIES` + `detectLegacyConfigKeys` — single hard-error mechanism; `resolveConfig` field-by-field; `enumerateDestinations` + `RoutingDestination`; totality anchors
+- `src/config.ts` — `detectConfiguredProviders` (one owner of "the block exists"), `optedIn`, `ProviderRuntimeConfig.active`, `kimiCredentialFor`; `FileConfig`/`Config` split; `z.strictObject` for all top-level sub-schemas; `isLoopbackHost` (exported, strict dotted-quad + localhost + ::1 only); https-or-loopback refinements; `LEGACY_KEY_ENTRIES` + `detectLegacyConfigKeys` — single hard-error mechanism; `resolveConfig` field-by-field; `enumerateDestinations` + `RoutingDestination`; totality anchors
 - `src/provider-events.ts` — `providerEvents<P extends ProviderId>`; template-literal `ProviderEvents<P>`; one event table that the type pins; compile-time log-injection control
 - `src/logger.ts` — `createConsoleLogger`; `FIELD_KEYS` bidirectional completeness check; `renderToken` strips all C0/DEL/C1 control characters then quotes — applied to values AND event token
 - `src/inbound-policy.ts` — `SERVER_TUNING` (exported); `applyInboundPolicy(server, logger)` (single entry point — applies tuning AND registers `clientError` handler); `appliedServers` WeakSet (idempotency guard); `hostGateVerdict(headers)` (pure, exported — wire-side Host/Origin gate); `responseForClientError(code)` (Object.hasOwn, prototype-safe); `writtenAtLastResponse` WeakMap (per-request reply guard, snapshots `socket.bytesWritten` at each response finish)
 - `src/server.ts` — `buildDeps(config, logger?)` — the one wiring site; `IngestError` (module-local, single variant `client_disconnected`); dispatch order: close listener → host gate → namespace → `readBodyForRouting` → exhaustive error switch → over-window routing → provider dispatch; `client_disconnected` log event for headerless close; `bodyMode` field (`buffered`/`streamed`); `anthropic:streamed`/`anthropic:streamed:unsniffed`/`anthropic:ambiguous`/`anthropic:fallback` route labels
 - `src/provider-transport.ts` — `drainRejectedUpload(req)` (exported; 2 s + 32 MiB bounds; 5 callers); `respondJson(res, status, body, extraHeaders?)` (extraHeaders spread before marker so marker always wins)
 - `src/errors.ts` — `ProxyError` (no `client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` single chokepoint
-- `src/doctor.ts` — `runDoctor`; `PROVIDER_AUTH_INSPECTORS` (exported totality anchor); `makeLiveListAgentFiles` (absolute-path resolution critical)
+- `src/doctor.ts` — `runDoctor`; `PROVIDER_AUTH_INSPECTORS` (exported totality anchor); `inspectKimiAuth` (read-only Kimi row); `makeLiveListAgentFiles` (absolute-path resolution critical)
+- `e2e/gates/kimi-live-check.ts` — `npm run probe:kimi`: `--live` (CI, TTY and phrase gate) and `--dry-run` (fakes)
+- `test/helpers/cli-child.ts`, `test/helpers/fs-path-recorder.ts` — the one CLI child starter and its file-call recorder; `test/integration/kimi-cli.test.ts` and `test/unit/kimi-doctor.test.ts` pin the Kimi banner and doctor rows
 - `src/init.ts` — Pure planning + `InitFsDeps` / `InitPrompts` seams; wizard prompts only port + settings-target
 - `src/agent-scan.ts` — `parseFrontmatterModel`; `checkAgentModels`; `unknown_provider` severity `"info"` (ADR-010)
 - `src/models.ts` — Pure registry; no repo imports; `MODEL_REGISTRY` (`retired`/`preview` flags, never delete an entry); `PROVIDER_IDS`, `DEFAULT_REASONING_EFFORTS`, `reasoningEffortsForModel`, `buildRoutingTable`, `resolveModel`, `isReservedAnthropicName` (two-arm `ANTHROPIC_NAME_RE`: prefix arm for `sonnet`/`opus`/`haiku`/`claude-`/`inherit`, exact-word arm for `fable`/`best`), `routableModelCount` (excludes retired)
@@ -366,7 +389,7 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 - PF-011: A green suite proves nothing until each control has been proven RED against the mutation it claims to catch.
 - PF-010: Zod strips unknown keys → a pre-restructure config parses clean while every setting silently reverts to defaults. `z.strictObject` now guards leaf sub-schemas; the raw pre-parse scans guard the outer structure.
 - PF-006: Doctor exits non-zero without live services; smoke uses `--version` not `doctor`; drives the `configuredProviders` severity split.
-- `.devflow/features/codex-leg/KNOWLEDGE.md` — Full model resolution contract, `buildHeaders`, the `ProviderEvents<P>` table, the runner's credential fault log, the `run-action` child env filter for the Together key, and the Codex handler/translator/auth side.
+- `.devflow/features/codex-leg/KNOWLEDGE.md` — Full model resolution contract, `buildHeaders`, the `ProviderEvents<P>` table, the runner's credential fault log, the `run-action` child env filter for the Together key, the Kimi sign-in store, `kimiRenewalDue` and renewal, and the Codex handler/translator/auth side.
 - `src/version.ts` — Source of `SUBSWITCH_VERSION` used by `--version`, doctor, `/__subswitch/health`, and `models --json`.
 
 ## Bidirectional ingress and configuration (2026-09-08)

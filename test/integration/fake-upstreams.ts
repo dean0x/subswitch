@@ -85,7 +85,8 @@ export interface SubswitchInstance {
  *   absent Codex and Claude auth files in a private folder.
  * @param options.logger - Send logs from the server and its handlers to this logger.
  * @param options.resolve - Use this resolver instead of the registry resolver.
- * @param options.providerDeps - Supply explicit provider deps. The default fake refuses Together store calls.
+ * @param options.providerDeps - Supply explicit provider deps. The default fakes refuse Together and Kimi store calls.
+ * @param options.fetchImpl - Send the explicit-route and Together requests through this fetch.
  * @param options.checkConfig - Check resolved config before the stores use it.
  *
  * Usage:
@@ -100,6 +101,7 @@ export const startSubswitch = async (
     logger?: Logger;
     resolve?: (name: string) => ModelResolution;
     providerDeps?: ProviderDeps;
+    fetchImpl?: typeof fetch;
     checkConfig?: (config: Config) => void;
   } = {},
 ): Promise<SubswitchInstance> => {
@@ -126,6 +128,7 @@ export const startSubswitch = async (
     const depsResult = buildTestDeps(configResult.value.config, options.logger, {
       refusedStoreCalls,
       ...(options.providerDeps === undefined ? {} : { providerDeps: options.providerDeps }),
+      ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
     });
     if (!depsResult.ok) throw new Error(`buildDeps rejected config: ${depsResult.error}`);
     const server = createProxyServer({

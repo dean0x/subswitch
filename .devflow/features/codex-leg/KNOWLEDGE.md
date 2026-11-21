@@ -1,11 +1,11 @@
 ---
 feature: codex-leg
-name: Translated provider legs (Codex and Together) and the shared request runner
-description: "Use when changing the Codex or Together leg, the shared runner, model resolution, conversation keys, provider log events or the Together key and child env. Keywords: codex, together, runTranslatedLeg, resolveModel."
+name: Registry leg (Codex, Together and Kimi translated legs)
+description: "Use when changing the Codex, Together or Kimi leg, the shared runner, model resolution, the Kimi sign-in store or renewal, provider events or the Together key. Keywords: kimi, codex, together, runTranslatedLeg."
 category: domain-knowledge
-directories: [src]
+directories: [src, test/integration, test/unit, test/helpers, e2e/gates]
 created: 2026-07-22
-updated: 2026-11-20
+updated: 2026-11-21
 ---
 
 # Codex Translation Leg (gpt-* → /responses)
@@ -19,8 +19,26 @@ updated: 2026-11-20
 - **KB-INV-4** `childEnvWithoutTogetherKey` drops every env name whose upper-case form equals `TOGETHER_API_KEY_ENV`; `KEY_NAME_CONSTANT_USES` in `test/unit/source-text-guards.test.ts` pins that line.
 - **KB-AP-3** Do not run a "no Keychain read" check on linux: the reader returns before exec there, so a zero-exec check cannot fail. Use platform `"darwin"`, env `{}` and a positive control.
 - **KB-INV-5** A workspace file can name a `together:` model and so spend the user's Together balance; `subswitch doctor` lists such a pin only when no usable key is found.
-- **KB-INV-6** A test that calls `buildDeps` directly uses `buildTestDeps` from `test/helpers/server-deps.ts`, and `startSubswitch` in `test/integration/fake-upstreams.ts` gives each instance absent Codex and Claude auth files in a private folder. Both refuse Together store calls, so a test never reads a real credential store.
+- **KB-INV-6** A test that calls `buildDeps` directly uses `buildTestDeps` from `test/helpers/server-deps.ts`, and `startSubswitch` in `test/integration/fake-upstreams.ts` gives each instance absent Codex and Claude auth files in a private folder. Both refuse Together and Kimi store calls (`refusingProviderDeps` records each call and throws), so a test never reads a real credential store.
 - **KB-INV-7** `forceRefresh` in `src/provider-auth.ts`: the manager bounds its own token request, body read and write-back, and never passes the caller signal to them. The refresh queue waits for the previous operation to settle, write-back included.
+- **KB-INV-8** The Kimi route is on only when a `providers.kimi` block is in the user config or in the file named by `SUBSWITCH_CONFIG`: `resolveConfig` sets `optedIn` from `detectConfiguredProviders`, and `buildDeps` calls `createKimiProvider` only when `optedIn` is true. Else `notOptedInHandler` gives a fixed local 400 and nothing reads the Kimi home.
+- **KB-INV-9** Only `liveKimiStoreDeps` in `src/server.ts` makes the file store (`createKimiNativeStore`); guard G2 in `test/unit/source-text-guards.test.ts` pins that. Making a store reads and writes nothing.
+- **KB-INV-10** The Kimi store takes the Kimi CLI lock folder with `mkdir` and keeps it fresh with a heartbeat at `KIMI_LOCK_HEARTBEAT_MS`, half of `KIMI_LOCK_STALE_MS`. It treats its own lock as lost before the CLI stale bound, removes only an empty stale folder, and on release removes only the folder it made. Each write calls `verify` first.
+- **KB-INV-11** `renewUnderLock` writes the marker as `prepared`, then as `pending`, each followed by `verify`, before the token request. A `pending` marker for the same grant gives `refresh_recovery_required` and sends nothing.
+- **KB-INV-12** A renewal that may have reached Kimi is never sent again, because Kimi can have rotated the grant. A backoff (marker `busy`) follows only a connect failure that proves no request left (`provedNotSent`, `NOT_SENT_CODES`) or a 429. Any other failure gives `refresh_recovery_required`.
+- **KB-INV-13** A complete 4xx reply with `invalid_grant` writes marker `denied`. A 401 or 403 with `invalid_client` or `unauthorized_client` and no token in the reply writes `rejected`. Each marker latches for that grant: later renewals give `reauthorization_required` or `client_rejected` and send nothing. A new CLI sign-in is a new grant (`kimiGrantOf`).
+- **KB-INV-14** A renewal runs when `kimiRenewalDue` is true (the CLI rule: the life that is left is below a floor or half of `expires_in`, whichever is larger; the exact floor is in `kimiRenewalDue`), or once for each access token that Kimi refused after a 401. `forceRefresh` without the failed bearer gives `refresh_required` and sends nothing.
+- **KB-INV-15** Keep-valid rule: after a renewal failure in `KEEP_VALID_BEARER` (lock_busy, refresh_busy, refresh_unavailable, refresh_recovery_required, timeout), a due bearer that is still usable and not refused serves the request, with a warn log. Any other failure, and a refused bearer, give the fixed error. This includes `client_rejected`: it is reported at once and does not wait for the bearer to expire.
+- **KB-INV-16** A caller signal ends only the wait of that caller. The renewal has its own deadline (`RENEWAL_DEADLINE_MS`), and the caller wait bound `WAIT_DEADLINE_MS` is above it. Managers of one file share one renewal through `coordinateNativeRefresh`, keyed by `store.coordinationKey` and the grant.
+- **KB-INV-17** Kimi failures are the closed table `KIMI_ERRORS` (`as const satisfies`): each code has a kind, a client status, fixed text, a hint and one event. Logs carry `errorCode` only. `KimiNativeError` has its code as message, so no path, record text or system error leaves the store module. A new failure needs a new row.
+- **KB-INV-18** A Kimi request goes to `baseUrl` plus `/messages?beta=true` (the base URL already ends in `/coding/v1`), with `redirect: "error"`, always as a stream. Headers are fixed: the Kimi bearer, `kimiIdentityHeaders`, content type, accept, `anthropic-version`, and `KIMI_ANTHROPIC_BETA` (an empty list). No client header and no client `metadata` reaches Kimi.
+- **KB-INV-19** Kimi thinking stays on the server. `buildKimiRequest` removes every client `thinking` and `redacted_thinking` block. The stream translator hides them, renumbers the visible blocks, and saves them in the `ReasoningCache` under `reasoningKey(conversationKey, first tool_use id)` only at a valid `message_stop`. The next request replays them before the content of that tool turn.
+- **KB-INV-20** A Kimi error reply is fixed text from `KIMI_REPLY_ERRORS` by error type; the Kimi body never enters it, and only a digits-only `retry-after` passes. The stream translator rebuilds each frame from known fields only, and turns an error frame or a protocol failure into fixed text.
+- **KB-INV-21** The Kimi `region` picks the hosts and the credential slot from `KIMI_REGION_TABLE`. `baseUrl` and `oauthTokenUrl` must be on the region host over https on the default port (a loopback address is for injected test deps only), and `authFile` must be an absolute normal `<home>/credentials/<slot>` for that region. The block has no host opt-in key.
+- **KB-INV-22** Kimi models route by exact id (no family alias, `gen: []`), and `PROVIDER_IDS` lists `kimi` last. A test fixture with the `FAKE-KIMI` marker lives only in a `kimi-*` test file (guard G4); a test of shared behaviour uses a Claude or Codex fixture, so removing a provider cannot remove a shared guard.
+- **KB-INV-23** The `serve` stop waits for open native renewals through write-back: `settleNativeRefreshes` (in `src/native-auth-coordination.ts`) resolves when no tracked renewal is open, or after `NATIVE_REFRESH_SHUTDOWN_MS` (in `src/cli.ts`, at least the full Kimi renewal deadline). With no open renewal it adds no delay. The first stop signal starts the stop; a later one does nothing.
+- **KB-AP-4** Do not write the Kimi CLI file without `lease.replace(expected, next)`: it writes only while the file text still equals `expected.raw`, keeps every key of the file, and never writes a record that the reader refuses. A blind write can undo a CLI rotation. After a rotation during the request, use the CLI record.
+- **KB-AP-5** Do not keep or log Kimi token text in the manager or in a log field. The manager holds only SHA-256 fingerprints of refused access tokens (bounded by `REFUSED_LIMIT`), and `registerExactCredential("kimi", token)` must hold each access token before a request; a token it cannot hold gives `invalid_record`.
 - The Rules list starts with this refresh. Older rules stay in `## Anti-Patterns` and `## Gotchas` below.
 
 ## Overview
@@ -29,7 +47,9 @@ subswitch translates Anthropic Messages API requests into OpenAI Responses API c
 
 The pipeline has three stages: **resolve** in `server.ts`, **route** in `router.ts`, and **send**. `codex-handler.ts` translates the request. `translated-leg.ts` sends it and manages the response. The router accepts a typed `ModelResolution`, not a raw string.
 
-**Together leg.** `together-handler.ts` uses the same runner to send Chat Completions requests to `<baseUrl>/chat/completions`. Each provider accessor carries a credential kind: `oauth-file` (Codex) or `api-key` (Together). A static key gets one attempt, no limit key and `redirect: "error"`. The request signal bounds the credential wait, so a client close ends a pending key read and no upstream request goes out. If the credential load rejects for a different cause, the runner logs the cause name only and replies 500 (see KB-INV-1).
+**Together leg.** `together-handler.ts` uses the same runner to send Chat Completions requests to `<baseUrl>/chat/completions`. Each provider accessor carries a credential kind: `oauth-file` (Codex and Kimi) or `api-key` (Together). A static key gets one attempt, no limit key and `redirect: "error"`. The request signal bounds the credential wait, so a client close ends a pending key read and no upstream request goes out. If the credential load rejects for a different cause, the runner logs the cause name only and replies 500 (see KB-INV-1).
+
+**Kimi leg.** `kimi-handler.ts` sends the client's Anthropic Messages request to the Kimi coding Messages endpoint on the same runner. The leg is opt-in and uses the user's own Kimi CLI sign-in file: Subswitch reads it, renews it under the CLI lock, and writes it back. It has no fallback route and no API-key mode. See `## Kimi Leg` below.
 
 **Governing principle (ADR-010):** a relay fronting an origin API must be indistinguishable from the origin. A bound that reclaims a provably dead connection is legitimate; a bound that can terminate a request the origin was about to answer, or emit a status the origin never sends, is a defect. This principle drove the removal of the byte-budget slot system and the **removal** (not deprecation) of the Anthropic-leg stream timeout.
 
@@ -282,6 +302,60 @@ IncomingMessage (Anthropic wire)
 | Over-window body (Codex-bound) | 413 with `request_too_large`. `drainRejectedUpload()` lets remaining upload drain via FIN rather than RST. The relay is the origin on the Codex leg and cannot translate a body it cannot hold — 413 is authoritative here (ADR-010). `IngestError` has no `body_too_large` variant; the 413 is emitted in the dispatch switch. |
 | `client_disconnected` | Client is gone — no HTTP response sent. Single variant of `IngestError` (module-local, `server.ts`). Excluded from `ProxyError` so `proxyErrorToAnthropic` can never be called with it. |
 
+## Kimi Leg
+
+The Kimi leg is the third translated leg on `runTranslatedLeg`. Kimi speaks the Anthropic Messages protocol, so the leg filters and renews more than it translates. It authenticates with the user's own Kimi CLI sign-in (the subscription sign-in rule): the metered API-key path is only for Together. The Kimi block is a credential-bearing config block, so it comes only from the user config or `SUBSWITCH_CONFIG`, and every URL it holds is checked against the region host at load and at startup.
+
+### Data flow
+
+```
+client /v1/messages (Kimi model, exact id or alias)
+  → resolveModel → provider "kimi" → deps.providers.kimi.handleMessages
+       not opted in → notOptedInHandler: fixed local 400, no file or network read
+  → createKimiHandler: parse request, canonical model, deriveConversationKey
+  → buildKimiRequest: strip client thinking + metadata, replay cached Kimi thinking, stream: true
+  → runTranslatedLeg (auth = createKimiAuth, redirect "error", abortOnResponseTimeout)
+       getCredentials → read file → renew if due → Bearer
+       upstream 401 → forceRefresh(refused bearer) → one renewal per refused token → one resend
+  → createKimiSseTranslator → client SSE frames (thinking hidden, fixed error text)
+```
+
+The handler is created once in `buildDeps` through `createKimiProvider`; it gets a `ReasoningCache` of its own, sized by `providers.kimi.reasoningCache`. `handleCountTokens` is a local estimate (`estimateTokens`), as on the other legs.
+
+### Sign-in store (`src/kimi-native-store.ts`)
+
+- **Paths.** `authFile` is `<home>/credentials/<slot>.json`. The lock target is `<home>/oauth/<slot>`, the lock folder is `<slot>.lock`, and the marker is `<slot>.subswitch-renewal.json`. `storePaths` accepts only an absolute, normal path; any other path fails each call with `unsafe_path`.
+- **Safe nodes.** Each folder from the root down is checked (`folderChain`): the owner is the user, no link, mode 0700 for the private folders and 0600 for the file, one name per file. A read fails with `changed` when the file or a folder above it changes during the read. Windows gives `platform_unsupported`.
+- **Reads make nothing.** `read` and `readMarker` create no file, folder or lock. Only `withLease` makes the `oauth` folder, the lock target and the lock folder.
+- **Lock.** `acquire` tries `mkdir` on the lock folder for a bounded time (`LOCK_WAIT_MS`, `LOCK_TRY_LIMIT`) and then gives `lock_busy`. `reclaimStale` removes a folder only when it is empty, older than the CLI stale bound, and the same node after a short pause. The heartbeat updates the mtime, and a failed pulse marks the lease lost, which aborts `lease.signal`.
+- **Write.** `atomicWrite` writes a 0600 temp file, syncs it, calls `verify`, runs the guard, calls `verify` again, renames, and syncs the folder. The file text is the CLI format (two-space JSON, trailing newline).
+- **Record.** `recordFault` needs the six fields of `KIMI_RECORD_FIELDS` with their types (a missing one is `layout_unsupported`), and two empty tokens mean the CLI marked a revoked sign-in (`reauthorization_required`). Other keys of the file are kept.
+
+### Renewal (`src/kimi-native-auth.ts`)
+
+`createKimiAuth` returns a `ProviderAuth<"kimi">` with `refreshable: true`, a random per-process `deviceId` for the identity headers, `getCredentials` and `forceRefresh`. The order in `load` is: read the file, decide whether a renewal is due, share one flight, apply the keep-valid rule, check that the bearer is usable (more than `USABLE_MARGIN_MS` left and not refused), register the token with the scrub, and return the bearer.
+
+Inside the lock, `renewUnderLock` reads the file again. If the sign-in is no longer due and the token was not refused, it returns that record with no request (a CLI rotation that landed first). Then it reads the marker, writes `prepared` and `pending`, and sends the form-encoded `refresh_token` grant with the public CLI client id, the identity headers, `redirect: "error"` and the lease signal. `settleReply` then decides, in this order: save the 429 backoff, read the body (bounded to `TOKEN_REPLY_MAX_BYTES`), adopt a CLI rotation, latch `denied` or `rejected`, map other non-2xx to `refresh_busy` (429) or `refresh_recovery_required`, and else validate the reply with `renewedRecord` (token charset, life bounds, token type, scope) and write it back. A reply that fails validation gives `refresh_recovery_required`; the old marker stays `pending`.
+
+The manager has two deadlines: the renewal (`RENEWAL_DEADLINE_MS`, under the lock and including the body read and write-back) and the caller wait (`WAIT_DEADLINE_MS`). A renewal that hits its deadline after the request was sent gives `refresh_recovery_required`; before the send it gives `timeout`.
+
+### Request and stream (`src/kimi-request.ts`, `src/kimi-stream.ts`)
+
+- The request keeps the client fields except `metadata`, replaces `model` with the canonical id, and sets `stream: true`. Both client modes use the upstream stream; the runner folds it with `aggregateFrames(frames, "kimi")` for a JSON reply. A JSON reply to a stream request is a fixed 502.
+- A client assistant turn that holds only thinking is dropped. The cached Kimi thinking comes first in the content of its tool turn, found by the first `tool_use` id of that turn. The cache entry must pass `isKimiThinkingBlock`, or nothing is replayed.
+- The translator accepts only `ping`, `message_start`, the block events, `message_delta`, `message_stop` and `error`; an unknown event is a warning and is dropped. A second `message_start`, a bad block index, an unsupported block or delta, an event over `maxSseEventBytes`, an open block at the end, or a stream that ends early gives one fixed `api_error` frame. The model name in `message_start` is the canonical id.
+- Kimi models are listed in `src/kimi-models.ts` from the public Kimi Code documentation; they are not live-verified on this route. A model with fixed thinking has an empty `reasoningEfforts` list.
+
+### Config and startup (`src/config.ts`, `src/server.ts`)
+
+`KimiProviderSchema` resolves each missing URL and the credential file from the region profile, then rejects a URL that is not on the region host and an `authFile` that is not the region slot. `ProviderRuntimeConfig.active` is false for a Kimi block that is absent, so doctor and health do not read, stat or probe anything for it. The startup sweep that vets credential URLs includes `providers.kimi.baseUrl` and `providers.kimi.oauthTokenUrl`; the error text names no host opt-in key for Kimi. `parseCredentialUrl` (renamed from the Together-only parser) is the shared URL parser.
+
+### Tests and gates
+
+- `test/integration/kimi-leg.test.ts` runs the real file store on a fabricated home, with fake upstreams for Kimi, the token service, Anthropic, Codex, Together and the OpenAI side. Its groups cover the opt-in gate, the leak rows, the Claude and Kimi session, renewal after a 401, no fallback and the Codex ingress. `test/integration/kimi-wiring.test.ts` covers the gate, the startup checks, the refusing defaults and the agreement of doctor and `buildDeps`.
+- `test/integration/fake-upstreams.ts` and `test/helpers/server-deps.ts` give every other test refusing Kimi deps (`refusingProviderDeps`) that record each store member, the queue key, fetch and the clock, and throw. Making the store is not a call.
+- `e2e/gates/kimi-live-check.ts` is the live check and its offline dry run. The live mode runs only by the owner, in the owner's own Terminal. It loads the user config as `run-action` does and needs that config to hold no `providers.kimi` block, which exists only in the in-process config of the check. Guard G5 in `source-text-guards.test.ts` keeps it from setting the Claude Code base URL or sign-in variables.
+
 ## Anti-Patterns
 
 **Aligning `/responses` headers to `codex exec` wire captures.** The parity gaps table in `e2e/README.md` documents analytics-endpoint headers from the wrong transport (avoids PF-005). Changing `buildHeaders` to match that table will break the working `/responses` HTTP leg. PF-005 forbids using the wrong-transport capture table to change header **names or values**; it does **not** govern header **order**.
@@ -329,6 +403,10 @@ IncomingMessage (Anthropic wire)
 **KB-AP-2 — Removing only the exact key name from the child env.** On Windows, env names ignore letter case, so `together_api_key` and `TOGETHER_API_KEY` are the same variable for the child. A `delete env.TOGETHER_API_KEY` keeps the other case forms, and the native client gets the metered key. Use `childEnvWithoutTogetherKey` in `src/run-action.ts`, and test it in `test/unit/run-action-env.test.ts`.
 
 **KB-AP-3 — A Keychain check that cannot fail.** On linux the Together key reader returns before it calls exec. Thus an "exec count is zero" check passes on linux for every code path. Run the check with platform `"darwin"` and env `{}`, so that each key read must go through the Keychain seam. Keep a positive control that proves the seam counts a read (see the `keychainOnly` fixture in `test/integration/together-leg.test.ts`).
+
+**KB-AP-4 — Writing the Kimi CLI file without the compare.** The Kimi CLI and Subswitch can both renew. `settleReply` first re-reads the file: if its grant is no longer the grant that Subswitch sent, the CLI rotated it, and Subswitch uses that record and logs `refreshTokenRotatedExternally`. `replace` then checks the raw file text twice (before the temp file and in the guard before the rename) and returns false when it changed. Dropping either check lets Subswitch overwrite a newer CLI sign-in with an older one.
+
+**KB-AP-5 — Letting a Kimi token reach a log, a reply or a scrub gap.** The manager keeps no token text. `registerExactCredential` takes the access token into the redaction slots (current and previous) before the bearer is returned, so a token that Kimi echoes in an error is scrubbed at the render site. Skipping the call, or returning a token that it refused, opens that gap. The leak rows in `test/integration/kimi-leg.test.ts` pin the surfaces.
 
 ## Gotchas
 
@@ -382,9 +460,19 @@ IncomingMessage (Anthropic wire)
 
 **Test suite must run alone; globs are flat and non-recursive.** Test globs are `test/unit/*.test.ts` and `test/integration/*.test.ts` — they do NOT descend into subdirectories. The suite has a hard 30 s per-test timeout and no fake timers. Wall-clock assertions flake when run alongside parallel processes (e.g. `tsc`). Always run the suite alone when validating timing-sensitive behavior.
 
+**KB-INV-11 / KB-INV-12 / KB-INV-13 — A latched marker blocks renewal until the grant changes.** The marker is keyed by the grant, a hash of the access token, the refresh token and the expiry. A `pending`, `denied` or `rejected` marker for the current grant stops each later renewal on every Subswitch process that uses this Kimi home. The only ways out are a new CLI sign-in (a new grant) or, for an unreadable marker, removing the file that ends in `.subswitch-renewal.json` (the `invalid_marker` hint says so). A fix that "retries once more" after an unknown result can spend a rotated refresh token and end the user's sign-in.
+
+**KB-INV-10 — Layout and lock edge cases fail closed.** A lock-target path that is a folder, a lock path that is a file, or the lock file of the archived Python CLI beside the sign-in file gives `layout_unsupported`. The Kimi CLI never cleans `<home>/oauth`, so the marker stays there. A lock that Subswitch lost during the request aborts the token request with `lock_lost`; the reply then tells the user to run the Kimi CLI once.
+
+**KB-INV-12 — A 429 backoff is saved before the body is read.** The 429 status alone proves the cooldown, so `settleReply` writes the `busy` marker first; a slow body then cannot use up the deadline and lose it. The backoff grows from `BACKOFF_BASE_MS` to `BACKOFF_CAP_MS` with the failure count, which the marker keeps up to `MAX_FAILURES`.
+
+**KB-INV-21 — A loopback Kimi URL is a startup error for the live store.** `buildDeps` refuses a loopback `baseUrl` or `oauthTokenUrl` unless the caller injected `providerDeps.kimi`; the error names the key and says to remove it. The config schema accepts loopback, so a loopback URL passes `loadConfig` and fails only at startup. Integration tests inject their own deps and a fetch that refuses every host but loopback.
+
+**KB-INV-19 — Thinking beyond the turn bound is dropped, not truncated.** Above `maxTurnBytes` the translator drops all thinking of that turn and reports the warning `thinking_too_large`; the next request then has no Kimi thinking to replay. A stop reason that is not in the known set maps to `end_turn` and reports `unknown_stop_reason`. The handler logs each warning as `translateWarning` with the warning as `errorCode`.
+
 ## Key Files
 
-- `src/server.ts` — Wiring site for resolve→route→send; `buildDeps` calls `buildRoutingTable` once and logs its diagnostics (`alias_rejected`, `alias_dangling_target`, `ambiguous_family`, `registry_entry_uses_reserved_name`, `registry_entry_unknown_effort`); `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; ambiguous fail-open policy; `IngestError` (server-local, single variant `client_disconnected`, not `ProxyError`); `readBodyForRouting` + over-window routing (Anthropic→stream, Codex→413); `drainRejectedUpload` in `dispatch().catch` for paused-req safety; `applyInboundPolicy` (from `src/inbound-policy.ts`) owns `SERVER_TUNING` + `clientError` handler
+- `src/server.ts` — Wiring site for resolve→route→send; `liveKimiStoreDeps` and `createKimiProvider` (built only when the Kimi block is opted in); the startup refusal of a loopback Kimi URL; `buildDeps` calls `buildRoutingTable` once and logs its diagnostics (`alias_rejected`, `alias_dangling_target`, `ambiguous_family`, `registry_entry_uses_reserved_name`, `registry_entry_unknown_effort`); `deps.resolve` closure; `deps.providers[decision.provider].handleMessages` dispatch; ambiguous fail-open policy; `IngestError` (server-local, single variant `client_disconnected`, not `ProxyError`); `readBodyForRouting` + over-window routing (Anthropic→stream, Codex→413); `drainRejectedUpload` in `dispatch().catch` for paused-req safety; `applyInboundPolicy` (from `src/inbound-policy.ts`) owns `SERVER_TUNING` + `clientError` handler
 - `src/models.ts` — Pure registry module (no repo imports); `MODEL_REGISTRY` (`gpt-6-astra` is the first entry with per-model `reasoningEfforts`), `PROVIDER_IDS`, `AliasesByProvider`, `DEFAULT_REASONING_EFFORTS`, `reasoningEffortsForModel`, `buildRoutingTable` (`unknownReasoningEfforts` diagnostic), `resolveModel`, `isReservedAnthropicName`, `routableModelCount`, `formatModelsReport`, `buildModelRows` (`ModelRow.reasoningEfforts`), `buildAliasRows`
 - `src/claude-models.ts` — Reverse-leg (Claude ingress) model registry; `buildOpenaiModelNamePredicate(registry)` derives `isOpenaiModelName` from `MODEL_REGISTRY` (mirror of PF-007 on the reverse leg — `astra` is now automatically reserved); `validClaudeAlias` (the only gate on `codexIngress.claude.aliases`); `claudeResolver`, `claudeModelRows`, `augmentCodexModels` (advertises each model's own `defaultEffort` as `default_reasoning_level`, levels low..max); `CLAUDE_MODELS` entries carry REQUIRED capability fields (`maxOutputTokens`, `thinkingAlwaysOn`, `forcedToolChoice`, `defaultEffort`); `claudeModel(id)` lookup; `isClaudeModelName` (the `claude-`/`claude:` namespace, case-insensitive) and `displayModelName` (bounded, charset-neutralized echo of a client-supplied name)
 - `src/router.ts` — Pure routing decision; accepts `ModelResolution` (not raw string); zero name matching; exhaustive switch; classification only — policy lives in server.ts
@@ -397,13 +485,20 @@ IncomingMessage (Anthropic wire)
 - `src/conversation-key.ts` — Deterministic v7-shaped UUID from sha256 of canonical request
 - `src/codex-response.ts` — `MAX_CONTENT_BLOCKS`; SSE parser (segment array; linear); Anthropic SSE translator state machine; `aggregateFrames`; `blockIndexByKey` NOT pruned on stop
 - `src/codex-auth.ts` — `CodexAuthManager`; all 7 auth events now table-derived via `events: ProviderEvents<"codex">`; `callTokenEndpoint` uses `AbortSignal.timeout(15_000)`; `forceRefresh()` 30s cooldown; `writeAtomic` self-heals EEXIST
-- `src/provider-events.ts` — `providerEvents<P>(id): ProviderEvents<P>`; one table of handler, runner and translator events (`credentialLoadFailed` included), `insecureBaseUrlScheme` and the auth events, pinned by the `ProviderEvents<P>` type; compile-time log-injection control
+- `src/provider-events.ts` — `providerEvents<P>(id): ProviderEvents<P>`; one table of handler, runner and translator events (`credentialLoadFailed` included), `insecureBaseUrlScheme` and the auth events, pinned by the `ProviderEvents<P>` type; `KIMI_EVENTS` adds the lock, recovery and credential-wait events under the `kimi_` prefix; compile-time log-injection control
 - `src/config.ts` — `providers.codex.streamIdleTimeoutMs` (default 300 s, live); `anthropic.streamIdleTimeoutMs` removed in 0.3.0 (ADR-010) — `removed`-kind row in `LEGACY_KEY_ENTRIES`, hard-errors on load; `anthropic.headerTimeoutMs` never shipped — rejected by `z.strictObject`, not in table; `LEGACY_KEY_ENTRIES` has a `moved` row for `limits.streamIdleTimeoutMs` → `providers.codex.streamIdleTimeoutMs`; `providers.codex.maxAggregateBytes` (64 MiB default); strict schemas via `z.strictObject`; `isLoopbackHost` (exact-form predicate, reused by `codex-recorder.ts`)
 - `src/errors.ts` — `ProxyError` union (auth/upstream/translate/timeout); `IngestError` is server-local (single variant `client_disconnected`, excluded from `ProxyError`); `AnthropicErrorType` includes `not_found_error`; `upstreamStatusToAnthropicError`; 504→timeout and 502→upstream are both intentional (ADR-010); `registerExactCredential` receives the loaded Together key, and `toAnthropicErrorBody` replaces that exact value in every error body it renders
 - `src/agent-scan.ts` — `unknown_provider` severity is `"info"`; `ambiguous` severity is `"fail"`; `provider_unconfigured` is `"fail"` only for a provider in `keyRequiredProviders` (Together)
 - `src/together-auth.ts` — Key loader: `TOGETHER_API_KEY` first, then on macOS only the Keychain item "Subswitch Together API key" (account `subswitch`) through `/usr/bin/security` with execFile, a 10 s timeout, an 8 KiB buffer and a HOME-only env. One shared read; a failed read is not kept. A missing or malformed key gives a marked local 401 that names the env var and the Keychain item, with no upstream request and no Anthropic fallback. The value is never echoed.
 - `src/together-handler.ts` — Together leg on the runner: outbound headers from an allow-list (Bearer key, content-type, accept, fixed user-agent); fixed error text with a strict code; 402 balance text; `x-should-retry: false` on 504, 524 and the runner timeout; local count_tokens estimate
 - `src/together-request.ts`, `src/together-response.ts` — Body allow-list with `max_tokens` clamped to the output cap (default 16384, user config only); stream translator with per-response tool ids
+- `src/kimi-native-store.ts` — The Kimi CLI file store: safe-node checks, the CLI lock with heartbeat, the renewal marker (`prepared`, `pending`, `denied`, `rejected`, `busy`), `lease.replace` write-back; rejects only with `KimiNativeError`
+- `src/kimi-native-auth.ts` — `createKimiAuth`: renewal rule, keep-valid rule, backoff, latched stops, shared flight, fingerprints of refused tokens; `KimiStoreDeps`
+- `src/kimi-handler.ts`, `src/kimi-request.ts`, `src/kimi-stream.ts` — The Kimi leg on the runner: fixed URL and headers, request filter with the thinking rule, stream translator, `KIMI_REPLY_ERRORS`
+- `src/kimi-errors.ts` — The closed `KIMI_ERRORS` table, `KimiNativeError`, `toKimiProxyError`
+- `src/kimi-constants.ts`, `src/kimi-models.ts` — CLI client id, identity headers, region table, lock bounds, record fields; the Kimi model list
+- `src/provider-opt-in.ts` — `notOptedInHandler`: the fixed local 400 for a provider whose block is absent
+- `test/integration/kimi-leg.test.ts`, `test/integration/kimi-wiring.test.ts` — The Kimi leg and wiring through the server on a fabricated Kimi home; `e2e/gates/kimi-live-check.ts` is the live check and dry run
 - `src/run-action.ts` — `childEnvWithoutTogetherKey(parent)` makes the native child env: it drops every name whose upper-case form equals `TOGETHER_API_KEY_ENV`, because Windows env names ignore letter case
 - `test/unit/source-text-guards.test.ts` — `KEY_NAME_CONSTANT_USES` lists each permitted source line that uses the Together key-name constant outside `src/together-auth.ts`
 - `test/tools/` — `sse-parser.bench.ts` (the only guard against an SSE-parser perf regression)
@@ -436,7 +531,8 @@ IncomingMessage (Anthropic wire)
 - PF-022: A one-way "we have replied" latch cannot guard teardown — `codex-recorder.ts`'s `failExchange` predicate is independent of `res.headersSent`
 - PF-023: Prose drifts — cited by the `gpt-6-astra` registry comment for why no registry-vs-native-fixture equality test exists
 - PF-026: A loopback predicate must not be a prefix test — `codex-recorder.ts` reuses `isLoopbackHost` from `src/config.ts` rather than a hand-rolled check
-- `.devflow/features/cli-ux/KNOWLEDGE.md` — CLI UX layer; `subswitch models` command; doctor agent-scan; N-provider fan-out; `ProviderEvents<P>` compile-time log-injection control
+- `.devflow/features/cli-ux/KNOWLEDGE.md` — CLI UX layer; `subswitch models` command; doctor agent-scan; N-provider fan-out; `ProviderEvents<P>` compile-time log-injection control; the doctor Kimi row and the serve banner mark for a provider without its block
+- Decisions that shape the Kimi leg, in words: sign-in credentials come from the user's subscription sign-in (Kimi: read, renew and write back the CLI file under its lock); every credential-bearing URL is vetted against its expected host at startup; credential-bearing config keys come only from the user config or `SUBSWITCH_CONFIG`; credentials are redacted once at the error render site; Kimi thinking replays from a bounded server-side cache; tests of shared behaviour stay out of provider-named test files.
 
 ## Native Codex → Claude ingress (2026-09-08)
 

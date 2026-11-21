@@ -4,8 +4,9 @@ import { homedir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
 import {
-  aliasesByProvider, codexCredentialFor, providerConfigFor, withCredential,
-  type CodexProviderConfig, type Config, type CredentialKindTable, type ProviderConfigs, type TogetherProviderConfig,
+  aliasesByProvider, codexCredentialFor, kimiCredentialFor, providerConfigFor, withCredential,
+  type CodexProviderConfig, type Config, type CredentialKindTable, type KimiProviderConfig, type ProviderConfigs,
+  type TogetherProviderConfig,
 } from "./config.js";
 import { inspectAuthFile, type AuthInspection } from "./codex-auth.js";
 import { isPlainObject } from "./plain-object.js";
@@ -14,6 +15,9 @@ import { err, ok, type Result } from "./result.js";
 import { createTogetherKeyReader, togetherKeyHintFor, type TogetherKeyReaderDeps } from "./together-auth.js";
 import { checkAgentModels } from "./agent-scan.js";
 import { redactCredentials } from "./errors.js";
+import { KIMI_ERRORS, kimiErrorCodeOf, type KimiErrorCode } from "./kimi-errors.js";
+import { kimiRenewalDue, type KimiStoreDeps } from "./kimi-native-auth.js";
+import type { KimiTokenRecord } from "./kimi-native-store.js";
 
 // ---------------------------------------------------------------------------
 // Per-provider auth inspection: neutral row types
@@ -49,6 +53,8 @@ export type OauthFileFault =
 
 /** What one provider's inspector found. Doctor writes the rows and decides the severity. */
 export type DoctorAuthInspection =
+  /** The provider needs its block and the block is absent: the inspector read and stat nothing. */
+  | { readonly kind: "not-opted-in" }
   | {
       readonly kind: "oauth-file";
       readonly authFile: string;
@@ -94,6 +100,41 @@ const inspectTogetherKey = async (_slice: TogetherProviderConfig, io: DoctorIO):
   return { kind: "api-key", key: result.ok ? { kind: "present", source: result.value.source } : { kind: result.error } };
 };
 
+/** The longest wait of the doctor Kimi read. */
+const KIMI_READ_MS = 5_000;
+/** Kimi store failures of a file that is there but can not be used. Other failures mean that doctor could not read it. */
+const KIMI_FILE_FAULTS: ReadonlySet<KimiErrorCode> = new Set<KimiErrorCode>([
+  "invalid_record", "unsafe_path", "layout_unsupported", "platform_unsupported",
+]);
+
+/** The Kimi record as a neutral row: only the expiry and whether a renewal is due. */
+const kimiAuthRow = (record: KimiTokenRecord, nowMs: number): DoctorAuthRow => ({
+  identity: [],
+  expiresAt: new Date(record.expires_at * 1000).toISOString(),
+  renewal: [{ label: "renewal due:", value: kimiRenewalDue(record, nowMs) ? "yes" : "no" }],
+});
+
+/**
+ * Without the block, the Kimi row reads and stats nothing. With it, the row reads the file
+ * through the Kimi store and its file checks. It never renews and makes no lock or marker.
+ */
+const inspectKimiAuth = async (slice: KimiProviderConfig, io: DoctorIO): Promise<DoctorAuthInspection> => {
+  if (!slice.optedIn) return { kind: "not-opted-in" };
+  const { authFile, loginCommand } = kimiCredentialFor(slice);
+  if (io.kimiStore === undefined) return { kind: "oauth-file", authFile, loginCommand, result: err({ kind: "unreadable", missing: false }) };
+  try {
+    const { record } = await io.kimiStore.openStore(authFile).read(AbortSignal.timeout(KIMI_READ_MS));
+    return { kind: "oauth-file", authFile, loginCommand, result: ok(kimiAuthRow(record, io.kimiStore.now())) };
+  } catch (error) {
+    // The store fails only with a fixed code, so the row holds no path or record text.
+    const code = kimiErrorCodeOf(error);
+    const fault: OauthFileFault = KIMI_FILE_FAULTS.has(code)
+      ? { kind: "invalid", message: `${KIMI_ERRORS[code].text} ${KIMI_ERRORS[code].hint}` }
+      : { kind: "unreadable", missing: code === "credential_missing" };
+    return { kind: "oauth-file", authFile, loginCommand, result: err(fault) };
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Per-provider auth inspector registry (totality anchor)
 //
@@ -108,6 +149,7 @@ export const PROVIDER_AUTH_INSPECTORS: {
 } = {
   codex: inspectCodexAuth,
   together: inspectTogetherKey,
+  kimi: inspectKimiAuth,
 };
 
 // ---------------------------------------------------------------------------
@@ -287,6 +329,8 @@ export interface DoctorIO {
   readonly write: (line: string) => void;
   readonly readAuthFile: (path: string) => Promise<string>;
   readonly togetherKeyReader?: TogetherKeyReaderDeps;
+  /** The Kimi store maker and the clock. Doctor gets no fetch, so it can not renew a sign-in. */
+  readonly kimiStore?: Pick<KimiStoreDeps, "openStore" | "now">;
   readonly httpGet: (url: string) => Promise<HttpGetResult>;
   readonly tlsConnect: (host: string, port: number) => Promise<TlsStatus>;
   readonly color: boolean;
@@ -417,6 +461,11 @@ export const runDoctor = async (
     const inspection = await inspectProvider(id);
     const optedIn = configuredProviderIds.has(id);
     switch (inspection.kind) {
+      case "not-opted-in": return {
+        lines: [row(`${id} auth:`, pc.dim("not turned on") +
+          ` (add a "providers.${id}" block to the user configuration or to a file selected with SUBSWITCH_CONFIG)`)],
+        failed: false, credentialUsable: false,
+      };
       case "oauth-file": return oauthFileCheck(id, inspection, optedIn);
       case "api-key": return apiKeyCheck(id, inspection, optedIn);
     }
@@ -430,7 +479,9 @@ export const runDoctor = async (
   // Resolve provider hosts up front so the probes can all be issued in parallel.
   // Only URL parsing is guarded here; a probe rejection must never be swallowed.
   const providerHosts = PROVIDER_IDS.map((id) => {
-    const { baseUrl } = providerConfigFor(config, id);
+    const { baseUrl, active } = providerConfigFor(config, id);
+    // A provider without its block gets no probe.
+    if (!active) return { id, host: "" };
     try {
       return { id, host: new URL(baseUrl).hostname };
     } catch {

@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cliChildCommand, cliChildFolders, readExecLog, runCliChild } from "../helpers/cli-child.js";
+import { cliChildCommand, cliChildFolders, offlineDoctorConfig, readExecLog, runCliChild } from "../helpers/cli-child.js";
 
 const PRELOAD = new URL("../helpers/deny-exec-file.ts", import.meta.url).href;
 const ATTEMPTS = fileURLToPath(new URL("../fixtures/child-process-attempts.ts", import.meta.url));
@@ -75,7 +75,9 @@ describe("CLI child helper", () => {
 
   it("refuses a test env that sets a folder variable or a config file outside the folder", async (t) => {
     const folders = await freshFolders(t);
-    for (const name of ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "SUBSWITCH_TEST_EXEC_LOG", "SUBSWITCH_TEST_EXEC_ALLOW"]) {
+    for (const name of [
+      "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "SUBSWITCH_TEST_EXEC_LOG", "SUBSWITCH_TEST_EXEC_ALLOW", "SUBSWITCH_TEST_FS_WATCH",
+    ]) {
       assert.throws(() => cliChildCommand(folders, ["models"], { env: { [name]: folders.home } }), new RegExp(name));
     }
     assert.throws(() => cliChildCommand(folders, ["models"], { env: { SUBSWITCH_CONFIG: join(tmpdir(), "config.json") } }),
@@ -145,6 +147,26 @@ describe("CLI child helper", () => {
     // On macOS, doctor attempts one Together key lookup.
     if (process.platform === "darwin") assert.deepEqual(log.slice(1), ["execFile /usr/bin/security"]);
     else assert.deepEqual(log.slice(1), []);
+  });
+
+  it("refuses a recordFsUnder folder that is not below the home folder or that holds the exec log", async (t) => {
+    const folders = await freshFolders(t);
+    for (const folder of [folders.home, dirname(folders.home), join(tmpdir(), "subswitch-outside")]) {
+      assert.throws(() => cliChildCommand(folders, ["doctor"], { recordFsUnder: folder }), /recordFsUnder/);
+    }
+    const command = cliChildCommand(folders, ["doctor"], { recordFsUnder: join(folders.home, ".codex") });
+    assert.equal(command.env["SUBSWITCH_TEST_FS_WATCH"], join(folders.home, ".codex"));
+  });
+
+  it("logs the named file calls of the child under recordFsUnder only (positive control)", { timeout: 30_000 }, async (t) => {
+    const folders = await cliChildFolders({ resolveTemp: true });
+    t.after(() => rm(folders.home, { recursive: true, force: true }));
+    await writeFile(folders.configFile, JSON.stringify(await offlineDoctorConfig()));
+    const codex = join(folders.home, ".codex");
+    const result = await runCliChild(folders, ["doctor"], { env: { NO_COLOR: "1" }, recordFsUnder: codex });
+    assert.equal(doctorRow(result.stdout, "codex.authFile:"), join(codex, "auth.json"), result.stdout + result.stderr);
+    const calls = (await readExecLog(folders)).filter((line) => line.startsWith("fs"));
+    assert.deepEqual(calls, [`fs/promises.readFile ${join(codex, "auth.json")}`]);
   });
 
   it("reads the user configuration from the fresh XDG_CONFIG_HOME when SUBSWITCH_CONFIG is empty", { timeout: 30_000 }, async (t) => {

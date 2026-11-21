@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_REASONING_EFFORTS,
   MODEL_REGISTRY,
+  PROVIDER_IDS,
   formatModelsReport,
   isReservedAnthropicName,
   buildAliasRows,
@@ -45,6 +46,67 @@ describe("Together registry guards", () => {
       { alias: "opus", target: vetted.id }, { alias: "fixture-pin", target: "claude-test" },
     ]);
     assert.deepEqual(resolveModel(build.table, "opus"), { kind: "unresolved" });
+  });
+});
+
+describe("Kimi registry entries", () => {
+  // Spelled out apart from the code under test. The efforts come from the Kimi Code
+  // model docs; the Highspeed coding model has fixed thinking and takes no effort.
+  const KIMI_IDS = ["k3.1-pro", "k3.1-pro-highspeed", "k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"];
+  const { table, ambiguousFamilies, reservedNameEntries } = buildRoutingTable(
+    MODEL_REGISTRY, { ...emptyAliases(), kimi: { "kimi-fast": "k3.1-pro" } });
+  const kimiTarget = (name: string) => {
+    const resolution = resolveModel(table, name);
+    return resolution.kind === "resolved" ? resolution.target : resolution;
+  };
+
+  it("adds kimi after codex and together, so codex stays first", () => {
+    assert.deepEqual([...PROVIDER_IDS], ["codex", "together", "kimi"]);
+  });
+
+  it("routes each Kimi id to the Kimi leg by bare id and by the kimi: qualifier", () => {
+    for (const id of KIMI_IDS) {
+      assert.deepEqual(kimiTarget(id), { id, provider: "kimi" }, id);
+      assert.deepEqual(kimiTarget(`kimi:${id}`), { id, provider: "kimi" }, `kimi:${id}`);
+    }
+  });
+
+  it("routes a configured Kimi alias to the Kimi leg", () => {
+    assert.deepEqual(kimiTarget("kimi-fast"), { id: "k3.1-pro", provider: "kimi" });
+    assert.deepEqual(kimiTarget("kimi:kimi-fast"), { id: "k3.1-pro", provider: "kimi" });
+  });
+
+  it("does not pass an unlisted id after the kimi: qualifier through to Kimi", () => {
+    assert.deepEqual(kimiTarget("kimi:not-a-kimi-model"), { kind: "unresolved" });
+  });
+
+  it("claims no Codex id or family and no reserved Anthropic name", () => {
+    const codex = MODEL_REGISTRY.filter((entry) => entry.provider === "codex");
+    const codexNames = new Set(codex.flatMap((entry) => [entry.id, ...(entry.family === undefined ? [] : [entry.family])]));
+    for (const { id, family } of MODEL_REGISTRY.filter((entry) => entry.provider === "kimi")) {
+      assert.equal(family, undefined, `${id} must route by exact id only`);
+      assert.equal(codexNames.has(id), false, `${id} must not be a Codex id or family`);
+      assert.equal(isReservedAnthropicName(id), false, `${id} must not be a reserved Anthropic name`);
+    }
+    // An exact id wins over a family, so a Kimi id equal to a family would take its traffic.
+    for (const family of new Set(codex.flatMap((entry) => entry.family === undefined ? [] : [entry.family]))) {
+      const target = kimiTarget(family);
+      assert.equal("provider" in target ? target.provider : target.kind, "codex", `${family} must stay on Codex`);
+    }
+    assert.deepEqual(ambiguousFamilies, []);
+    assert.deepEqual(reservedNameEntries, []);
+  });
+
+  it("lists exactly the six Kimi Code models as routable", () => {
+    assert.deepEqual(MODEL_REGISTRY.filter((entry) => entry.provider === "kimi").map((entry) => entry.id), KIMI_IDS);
+    assert.equal(routableModelCount(MODEL_REGISTRY, "kimi"), 6);
+  });
+
+  it("declares low, high and max efforts, and none for the fixed-thinking Highspeed coding model", () => {
+    for (const id of KIMI_IDS) {
+      const expected = id === "kimi-for-coding-highspeed" ? [] : ["low", "high", "max"];
+      assert.deepEqual(reasoningEffortsForModel(MODEL_REGISTRY, id), expected, id);
+    }
   });
 });
 
@@ -167,9 +229,11 @@ describe("formatModelsReport", () => {
 
   it("includes a provider column in every row", () => {
     const result = formatModelsReport({ registry: MODEL_REGISTRY, aliasesByProvider: emptyAliases() });
-    // Every row should contain "codex" since all registry entries are codex-provider.
+    // Every row names the provider of its canonical registry entry as a padded column.
     for (const line of result) {
-      assert.ok(line.includes("codex"), `row must include provider column: ${line}`);
+      const canonical = MODEL_REGISTRY.find((entry) => line.includes(`→  ${entry.id} `));
+      assert.ok(canonical !== undefined, `row must name a registry id: ${line}`);
+      assert.match(line, new RegExp(`\\s${canonical.provider}\\s`), `row must include provider column: ${line}`);
     }
   });
 
@@ -376,7 +440,7 @@ describe("buildAliasRows and buildModelRows — parity", () => {
   it("buildModelRows includes provider field for all entries", () => {
     const rows = buildModelRows(MODEL_REGISTRY, emptyAliases());
     for (const row of rows) {
-      assert.equal(row.provider, "codex");
+      assert.equal(row.provider, MODEL_REGISTRY.find((entry) => entry.id === row.id)?.provider, row.id);
       assert.equal(row.source, "registry");
     }
   });

@@ -1,12 +1,13 @@
 // Model registry and resolver for subswitch.
 import { isTogetherModelId, TOGETHER_MODELS } from "./together-models.js";
+import { KIMI_MODELS } from "./kimi-models.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/** Closed tuple of all supported provider identifiers. */
-export const PROVIDER_IDS = ["codex", "together"] as const;
+/** Closed tuple of all supported provider identifiers. Codex stays first; a new id goes last. */
+export const PROVIDER_IDS = ["codex", "together", "kimi"] as const;
 /**
  * Discriminator for provider-specific handler dispatch. A closed union ensures
  * `Record<ProviderId, ProviderHandler>` is a compile-time completeness proof
@@ -239,6 +240,11 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   { id: "gpt-5.5", provider: "codex", gen: [5, 5], retired: true },
   ...TOGETHER_MODELS.map(({ id, family }): ModelEntry => ({
     id, family, gen: [1], provider: "together",
+  })),
+  // Kimi models have no family alias and no generation order: each one routes by its
+  // exact id, so no bare Kimi name can take a Codex family.
+  ...KIMI_MODELS.map(({ id, reasoningEfforts }): ModelEntry => ({
+    id, gen: [], provider: "kimi", reasoningEfforts,
   })),
 ];
 

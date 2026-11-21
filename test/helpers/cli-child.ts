@@ -11,13 +11,16 @@
  * It is not a process sandbox. It does not cover the ChildProcess class form,
  * process.execve or grandchildren. The replacements do not preserve util.promisify.custom.
  * A run-action test can use allowNodeArgs to let an intercepted file-based call start
- * one exact Node command.
+ * one exact Node command. A test can use recordFsUnder to log the named file calls of the
+ * child in one folder of its home.
  */
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isPlainObject } from "../../src/plain-object.js";
 
 const CLI_ENTRY = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
 const TSX = import.meta.resolve("tsx");
@@ -25,7 +28,7 @@ const DENY_PRELOAD = new URL("./deny-exec-file.ts", import.meta.url).href;
 
 /** The variables that only the helper sets. */
 const HELPER_VARIABLES = [
-  "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "SUBSWITCH_TEST_EXEC_LOG", "SUBSWITCH_TEST_EXEC_ALLOW",
+  "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "SUBSWITCH_TEST_EXEC_LOG", "SUBSWITCH_TEST_EXEC_ALLOW", "SUBSWITCH_TEST_FS_WATCH",
 ] as const;
 const FIXTURE_FOLDER_VARIABLES = [
   "CODEX_HOME", "CLAUDE_CONFIG_DIR", "SUBSWITCH_LIMIT_DIR", "XDG_STATE_HOME", "XDG_DATA_HOME",
@@ -58,6 +61,12 @@ export interface CliChildOptions {
    * command: the exact arguments of the one process.execPath command that the child may start.
    */
   readonly allowNodeArgs?: readonly string[];
+  /**
+   * A folder below the home folder. The preload logs each call of the named file functions
+   * at or inside it to the exec log, as "<module>.<function> <path>". The exec log must not be
+   * in it.
+   */
+  readonly recordFsUnder?: string;
 }
 
 export interface CliChildCommand {
@@ -74,9 +83,12 @@ export interface CliChildResult {
   readonly stderr: string;
 }
 
-/** Make a fresh folder set for CLI children. */
-export const cliChildFolders = async (): Promise<CliChildFolders> => {
-  const home = await mkdtemp(join(tmpdir(), "subswitch-cli-child-"));
+/**
+ * Make a fresh folder set for CLI children. With `resolveTemp`, the home is below the
+ * temporary root with its links resolved, as the Kimi store checks need.
+ */
+export const cliChildFolders = async ({ resolveTemp = false }: { readonly resolveTemp?: boolean } = {}): Promise<CliChildFolders> => {
+  const home = await mkdtemp(join(resolveTemp ? await realpath(tmpdir()) : tmpdir(), "subswitch-cli-child-"));
   const folders: CliChildFolders = {
     home, configHome: join(home, "xdg-config"), cacheHome: join(home, "xdg-cache"),
     configFile: join(home, "subswitch-test-config.json"), execLog: join(home, "exec.log"),
@@ -88,6 +100,15 @@ export const cliChildFolders = async (): Promise<CliChildFolders> => {
 const isAtOrInside = (folder: string, path: string): boolean => {
   const rel = relative(folder, path);
   return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+};
+
+/** The absolute recordFsUnder folder: below the home folder, and without the exec log in it. */
+const recordedFolder = (folders: CliChildFolders, path: string): string => {
+  const folder = resolve(path);
+  if (folder === resolve(folders.home) || !isAtOrInside(folders.home, folder) || isAtOrInside(folder, folders.execLog)) {
+    throw new Error("recordFsUnder must name a folder below the CLI child home that does not hold the exec log");
+  }
+  return folder;
 };
 
 /** The program, arguments, folder and env that start the CLI with `cliArgs` in `folders`. */
@@ -114,6 +135,7 @@ export const cliChildCommand = (
     }
   }
   const allow = options.allowNodeArgs === undefined ? {} : { SUBSWITCH_TEST_EXEC_ALLOW: JSON.stringify(options.allowNodeArgs) };
+  const watch = options.recordFsUnder === undefined ? {} : { SUBSWITCH_TEST_FS_WATCH: recordedFolder(folders, options.recordFsUnder) };
   return {
     file: process.execPath,
     args: ["--import", TSX, "--import", DENY_PRELOAD, CLI_ENTRY, ...cliArgs],
@@ -121,7 +143,7 @@ export const cliChildCommand = (
     env: {
       PATH: process.env["PATH"], TMPDIR: process.env["TMPDIR"], ...extra, SUBSWITCH_CONFIG: config,
       HOME: folders.home, XDG_CONFIG_HOME: folders.configHome, XDG_CACHE_HOME: folders.cacheHome,
-      SUBSWITCH_TEST_EXEC_LOG: folders.execLog, ...allow,
+      SUBSWITCH_TEST_EXEC_LOG: folders.execLog, ...allow, ...watch,
     },
   };
 };
@@ -142,6 +164,26 @@ export const runCliChild = (
       else reject(error);
     });
   });
+};
+
+/**
+ * A config for a doctor child whose probes stay on the loopback host: a free port, and
+ * loopback base URLs for Anthropic, Codex and Together. Add more keys with `extra`.
+ */
+export const offlineDoctorConfig = async (extra: Readonly<Record<string, unknown>> = {}): Promise<Record<string, unknown>> => {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  const providers = isPlainObject(extra["providers"]) ? extra["providers"] : {};
+  return {
+    ...extra,
+    port,
+    anthropic: { baseUrl: "http://127.0.0.1:9" },
+    providers: {
+      codex: { baseUrl: "http://127.0.0.1:9/backend-api/codex" }, together: { baseUrl: "http://127.0.0.1:9/v1" }, ...providers,
+    },
+  };
 };
 
 /** The lines of the exec-deny preload log. "preload" first shows that the preload ran. */
