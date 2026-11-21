@@ -21,6 +21,9 @@ import { loadConfig, type Config } from "../../src/config.js";
 import { PROVIDER_IDS, type ProviderId, type RoutingTable } from "../../src/models.js";
 import { checkAgentModels } from "../../src/agent-scan.js";
 import { TOGETHER_API_KEY_ENV } from "../../src/together-auth.js";
+import { keychainBackedCodex, keychainCredential } from "../fixtures/native-keychain.js";
+import type { KeychainReaderDeps } from "../../src/keychain-read.js";
+import { buildTestDeps } from "../helpers/server-deps.js";
 
 describe("probeSubswitch", () => {
   it("returns running when the health endpoint responds with the subswitch shape", async () => {
@@ -166,6 +169,82 @@ const allPassIO = (lines: string[]) => ({
   // No agent files by default — tests that need agent scan behaviour inject their own.
   listAgentFiles: async (): Promise<readonly string[]> => [],
   readTextFile: async (): Promise<string> => "",
+});
+
+const keychainDoctor = async (active: boolean, stdout: string | undefined, loginCommand: string = keychainCredential.loginCommand) => {
+  const loaded = loadConfig({ configPath: "fixture", readFile: () => active ? '{"providers":{"codex":{}}}' : "{}", env: {} });
+  assert.ok(loaded.ok);
+  const { config, configuredProviders } = loaded.value;
+  const providerConfigFor = keychainBackedCodex(configuredProviders.has("codex"), { ...keychainCredential, loginCommand });
+  const server = buildTestDeps(config, { log: () => {} }, { providerConfigFor });
+  assert.ok(server.ok);
+  const destination = server.value.destinations.find((d) => d.id === "codex");
+  assert.ok(destination?.routing === "registry");
+  assert.equal(destination.active, active);
+  const lines: string[] = [];
+  const calls: (readonly [string, readonly string[]])[] = [];
+  const hosts: string[] = [];
+  const authReads: string[] = [];
+  const keychainReader: KeychainReaderDeps = {
+    platform: "darwin", env: {}, loginKeychainPath: "/fixture/login.keychain-db", setTimer: () => () => {},
+    exec: async (file, args) => { calls.push([file, args]); return { stdout: stdout ?? "" }; },
+  };
+  const code = await runDoctor(config, "fixture", true, {
+    ...allPassIO(lines), providerConfigFor, ...(stdout === undefined ? {} : { keychainReader }),
+    readAuthFile: async (path) => { authReads.push(path); return ""; },
+    tlsConnect: async (host) => { hosts.push(host); return { kind: "reachable" }; },
+    listAgentFiles: async () => ["/fixture/agent.md"],
+    readTextFile: async () => "---\nmodel: gpt-5.6-sol\n---\n",
+  }, configuredProviders);
+  assert.deepEqual(authReads, []);
+  return { code, calls, hosts, output: lines.join("\n") };
+};
+
+it("probes only Keychain attributes and shows the modification time when the block exists", async () => {
+  const fake = "FAKE-KEYCHAIN-OUTPUT";
+  const { code, calls, hosts, output } = await keychainDoctor(true,
+    `attributes:\n    "mdat"<timedate>=0x32303234303232393132333435365A00  "20240229123456Z\\000"\n${fake}\n`);
+  assert.deepEqual(calls, [["/usr/bin/security", [
+    "find-generic-password", "-s", "Fake Codex Sign-in", "-a", "fake-account", "/fixture/login.keychain-db",
+  ]]]);
+  assert.equal(code, 0);
+  assert.ok(hosts.includes("upstream.example.test"));
+  assert.match(output, /codex auth:\s+Keychain item found/);
+  assert.match(output, /Keychain modified:\s+2024-02-29T12:34:56\.000Z/);
+  assert.equal(output.includes(fake), false);
+  assert.doesNotMatch(output, /agent model:/);
+});
+
+it("does not probe an inactive Keychain provider and reports its workspace pin", async () => {
+  const { code, calls, hosts, output } = await keychainDoctor(false, "");
+  assert.deepEqual(calls, []);
+  assert.equal(hosts.includes("upstream.example.test"), false);
+  assert.match(output, /codex auth:\s+not turned on/);
+  assert.match(output, /agent model:\s+FAIL.*gpt-5\.6-sol.*provider is not configured/);
+  assert.equal(code, 1);
+});
+
+it("reports a missing Keychain probe without a credential read", async () => {
+  const { code, calls, output } = await keychainDoctor(true, undefined);
+  assert.equal(code, 1);
+  assert.deepEqual(calls, []);
+  assert.match(output, /codex auth:\s+UNAVAILABLE \(probe_unavailable .*fixture login/);
+});
+
+it("prints only a fixed failure code for malformed Keychain output", async () => {
+  const fake = "FAKE-MALFORMED-KEYCHAIN-OUTPUT";
+  const { code, output } = await keychainDoctor(true, fake);
+  assert.match(output, /codex auth:\s+UNAVAILABLE \(malformed .*fixture login/);
+  assert.equal(output.includes(fake), false);
+  assert.equal(code, 1);
+});
+
+it("redacts the Keychain auth row at the doctor write site", async () => {
+  const fake = "FAKE-KEYCHAIN-REDACTION-CONTROL";
+  assert.equal(registerExactCredential("codex", fake), true);
+  const { output } = await keychainDoctor(true, "", `fixture login ${fake}`);
+  assert.match(output, /codex auth:\s+UNAVAILABLE .*fixture login /);
+  assert.equal(output.includes(fake), false);
 });
 
 const failingProbeIO = (lines: string[]) => ({

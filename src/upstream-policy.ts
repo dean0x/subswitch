@@ -14,10 +14,12 @@ export const vetCredentialUrl = (options: {
   /** Refuse a plain http URL that is not loopback, even when allowOverride is set. */
   requireHttps?: boolean;
   together?: true;
+  /** Require the default host and port. Do not admit loopback or a host override. */
+  requireDefaultHost?: true;
   events: { insecureBaseUrlScheme: string; baseUrlHostRejected: string; baseUrlOverrideDetected: string };
 }): Result<void, string> => {
   const { path, logger, events } = options;
-  const url = options.together ? parseCredentialUrl(options.url) : new URL(options.url);
+  const url = options.together ? parseCredentialUrl(options.url) : URL.parse(options.url);
   if (options.together) {
     const defaultPort = url?.protocol === "https:" && !url.port;
     if (url && (isLoopbackHost(url.hostname) || (defaultPort && url.hostname === options.expectedHost))) return ok(undefined);
@@ -32,17 +34,20 @@ export const vetCredentialUrl = (options: {
     return err(`${path} is not an allowed Together URL. Use the default host${optIn}.`);
   }
   if (!url) return err(`${path} is not a valid URL.`);
-  if (isLoopbackHost(url.hostname)) return ok(undefined);
+  const loopback = isLoopbackHost(url.hostname);
+  if (loopback && !options.requireDefaultHost) return ok(undefined);
   if (url.protocol !== "https:") {
     if (options.requireHttps) {
       logger.log("error", events.insecureBaseUrlScheme, { path });
-      return err(`${path} must use https. Plain http is allowed only for a loopback address.`);
+      return err(options.requireDefaultHost ? `${path} must use https.` :
+        `${path} must use https. Plain http is allowed only for a loopback address.`);
     }
     logger.log("warn", events.insecureBaseUrlScheme);
   }
-  if (url.hostname === options.expectedHost && (!url.port || url.port === "443")) return ok(undefined);
-  if (!options.allowOverride) {
+  if (!loopback && url.hostname === options.expectedHost && (!url.port || url.port === "443")) return ok(undefined);
+  if (options.requireDefaultHost || !options.allowOverride) {
     logger.log("error", events.baseUrlHostRejected, { path });
+    if (options.requireDefaultHost) return err(`${path} must use the default host on port 443.`);
     const optIn = options.optInKey === undefined ? "Use the default host." :
       `Set "${options.optInKey}": true in the user configuration, or in a file selected with SUBSWITCH_CONFIG, to opt in.`;
     return err(

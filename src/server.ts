@@ -15,8 +15,8 @@ import { toAnthropicErrorBody, SYNTHESIZED_HEADER, SYNTHESIZED_MARKER } from "./
 import { applyInboundPolicy, hostGateVerdict, SERVER_TUNING } from "./inbound-policy.js";
 import { type Result, ok, err } from "./result.js";
 import {
-  aliasesByProvider, enumerateDestinations, providerConfigFor, withCredential, codexCredentialFor, isLoopbackHost,
-  type Config, type CredentialKindTable,
+  aliasesByProvider, enumerateDestinations, withCredential, codexCredentialFor, isLoopbackHost,
+  type Config, type CredentialKindTable, type providerConfigFor, type RoutingDestination,
 } from "./config.js";
 import { createConsoleLogger, type Logger } from "./logger.js";
 import { CLAUDE_EVENTS, OPENAI_EVENTS, ANTHROPIC_EVENTS, providerEvents } from "./provider-events.js";
@@ -33,7 +33,6 @@ import {
   buildRoutingTable,
   resolveModel as resolveModelFromTable,
   MODEL_REGISTRY,
-  PROVIDER_IDS,
   routableModelCount,
   type ModelResolution,
   type ProviderId,
@@ -55,6 +54,7 @@ export interface ServerDeps {
   readonly sharedRouting?: SharedRouting;
   readonly config: Config;
   readonly logger: Logger;
+  readonly destinations: readonly RoutingDestination[];
   readonly togetherEnv?: Readonly<NodeJS.ProcessEnv>;
   /** Privileged default leg — handles everything that is not POST /v1/messages*. */
   readonly forwardAnthropic: AnthropicForwarder;
@@ -171,7 +171,7 @@ const createTogetherProvider = (config: Config, logger: Logger, keyReaderDeps: T
 };
 
 type CredentialUrl = Pick<Parameters<typeof vetCredentialUrl>[0],
-  "url" | "expectedHost" | "allowOverride" | "refreshToken" | "requireHttps" | "together"> & {
+  "url" | "expectedHost" | "allowOverride" | "refreshToken" | "requireHttps" | "together" | "requireDefaultHost"> & {
   readonly key: string;
   /** The block has an allowInsecureBaseUrl key, so the host error can name it. */
   readonly hostOptIn: boolean;
@@ -186,6 +186,10 @@ const CREDENTIAL_URLS: CredentialKindTable<readonly CredentialUrl[]> = {
   ],
   "api-key": ({ baseUrl, defaultHost, allowInsecureBaseUrl }) => [
     { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: allowInsecureBaseUrl, hostOptIn: true, together: true },
+  ],
+  "native-keychain": ({ baseUrl, defaultHost }) => [
+    { url: baseUrl, expectedHost: defaultHost, key: "baseUrl", allowOverride: false, hostOptIn: false,
+      requireHttps: true, requireDefaultHost: true },
   ],
 };
 
@@ -205,7 +209,8 @@ const CREDENTIAL_URLS: CredentialKindTable<readonly CredentialUrl[]> = {
  * do not call `buildDeps` and are unaffected.
  */
 export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel),
-  routingOptions: { fetchImpl?: typeof fetch; providerDeps?: ProviderDeps } = {}): Result<ServerDeps, string> => {
+  routingOptions: { fetchImpl?: typeof fetch; providerDeps?: ProviderDeps; providerConfigFor?: typeof providerConfigFor } = {},
+): Result<ServerDeps, string> => {
 
   if (config.codexIngress.enabled && config.codexIngress.claude.enabled && !hasNativeDecoders())
     return err("Codex → Claude routing requires native zstd support. Use Node 22.15 or newer; forward routing remains available.");
@@ -223,8 +228,14 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
       logger, events: OPENAI_EVENTS });
     if (!result.ok) return result;
   }
-  for (const id of PROVIDER_IDS) {
-    const credential = providerConfigFor(config, id);
+  const configuredDestinations = enumerateDestinations(config);
+  // The handlers use config. An injected report must not replace the checks for their URLs.
+  const destinations = routingOptions.providerConfigFor === undefined ? configuredDestinations
+    : enumerateDestinations(config, routingOptions.providerConfigFor);
+  const urlsToVet = destinations === configuredDestinations ? configuredDestinations : [...configuredDestinations, ...destinations];
+  for (const destination of urlsToVet) {
+    if (destination.routing === "passthrough") continue;
+    const { id, credential } = destination;
     for (const { hostOptIn, ...url } of withCredential(credential, CREDENTIAL_URLS)) {
       const result = vetCredentialUrl({ ...url, path: `providers.${id}.${url.key}`,
         ...(hostOptIn ? { optInKey: `providers.${id}.allowInsecureBaseUrl` } : {}), logger, events: providerEvents(id) });
@@ -281,6 +292,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
   return ok({
     config,
     logger,
+    destinations,
     sharedRouting,
     forwardOpenai: config.codexIngress.enabled ? new CodexGateway({ config, logger, parentAuth: codexAuth, resolveClaude, sharedRouting,
       claudeAuth: new ClaudeAuthManager({ store: createClaudeCredentialStore(config.codexIngress.claude),
@@ -337,12 +349,12 @@ export const listenServer = (
  * Uses enumerateDestinations so the topology (Anthropic passthrough + registry
  * providers) is the single source of truth shared with models --json.  (ARCH-04)
  */
-const buildHealthBody = (config: Config, env: Readonly<NodeJS.ProcessEnv>): string =>
+const buildHealthBody = (config: Config, destinations: readonly RoutingDestination[], env: Readonly<NodeJS.ProcessEnv>): string =>
   JSON.stringify({
     name: SUBSWITCH_NAME,
     version: SUBSWITCH_VERSION,
     codexIngress: codexIngressHealth(config),
-    providers: enumerateDestinations(config).map((d) => {
+    providers: destinations.map((d) => {
       if (d.routing === "passthrough") {
         // Anthropic is always reachable — no auth file, no model list. (applies ADR-002)
         return { id: d.id, configured: true, modelCount: 0 };
@@ -353,6 +365,7 @@ const buildHealthBody = (config: Config, env: Readonly<NodeJS.ProcessEnv>): stri
         // A provider without its block is not configured, and health does not stat its file.
         ...(d.active ? withCredential<{ configured: boolean; keySource?: "env" | null }>(credential, {
           "oauth-file": ({ authFile }) => ({ configured: existsSync(authFile) }),
+          "native-keychain": () => ({ configured: true }),
           "api-key": () => {
             const configured = envKeyPresent(env);
             return { configured, keySource: configured ? "env" : null };
@@ -590,7 +603,7 @@ export const createProxyServer = (deps: ServerDeps): Server => {
       if (pathname.startsWith("/__subswitch/")) {
         if (req.method === "GET" && pathname === "/__subswitch/health") {
           res.writeHead(200, synthesizedHeaders());
-          res.end(buildHealthBody(config, deps.togetherEnv ?? {}));
+          res.end(buildHealthBody(config, deps.destinations, deps.togetherEnv ?? {}));
           return;
         }
         res.writeHead(404, synthesizedHeaders());

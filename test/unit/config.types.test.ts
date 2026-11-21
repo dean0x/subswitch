@@ -11,16 +11,26 @@
  * but the annotation is removed. That two-sidedness is what makes these lines a test
  * rather than a comment.
  */
-import { withCredential, type Config, type ProviderConfigs, type CodexProviderConfig, type CredentialKindTable, type providerConfigFor } from "../../src/config.js";
+import { withCredential, type Config, type ProviderConfigs, type CodexProviderConfig, type CredentialKindTable, type Credential } from "../../src/config.js";
 
-const credentialKindsRequireHandlers = (credential: ReturnType<typeof providerConfigFor>): string => {
-  // @ts-expect-error a credential kind with no handler must not compile.
-  const missingKind: CredentialKindTable<string> = { "oauth-file": (source) => source.authFile };
+const credentialKindsRequireHandlers = (credential: Credential): string => {
+  const existingKinds = {
+    "oauth-file": (source: Extract<typeof credential, { kind: "oauth-file" }>) => source.authFile,
+    "api-key": (source: Extract<typeof credential, { kind: "api-key" }>) => source.envName,
+  };
+  // @ts-expect-error a table without a native-keychain handler must not compile.
+  const missingKind: CredentialKindTable<string> = existingKinds;
   void missingKind;
 
   const complete: CredentialKindTable<string> = {
-    "oauth-file": (source) => source.authFile,
-    "api-key": (source) => source.envName,
+    ...existingKinds,
+    "native-keychain": (source) => {
+      // @ts-expect-error a native-keychain credential has no token URL.
+      void source.oauthTokenUrl;
+      // @ts-expect-error a native-keychain credential has no host override.
+      void source.allowInsecureBaseUrl;
+      return source.keychainService;
+    },
   };
   return withCredential(credential, complete);
 };
