@@ -301,11 +301,30 @@ const KIMI_FIXTURE_MARKER = /FAKE-KIMI/i;
 const KIMI_TEST_FILE = /(?:^|\/)kimi-[^/]*\.ts$/;
 const THIS_GUARD = "unit/source-text-guards.test.ts";
 const RELAY_CHILD_HELPER = "helpers/relay-child.ts";
-// Literal arrays only. The CLI runner's own tests exercise paths that fail before bind.
-const CLI_CHILD_ARRAY = /\b(?:cliChildCommand|runCliChild)\s*\([^,]*,\s*\[([^\]]*)\]/g;
+// Literal arrays only. The runCli wrapper takes the array as its first argument.
+const CLI_CHILD_ARRAY = /\b(?:runCli\s*\(|(?:cliChildCommand|runCliChild)\s*\([^,]*,)\s*\[([^\]]*)\](?:\s*\))?/g;
+// Help and version exit before command selection. The unknown option fixture fails in parseArgs.
+const NON_SERVE_ARGS = /^\s*(["'`])(?:--help|--version|--nope)\1\s*,?\s*$/;
 const serveLaunches = (source: string): string[] => [...source.matchAll(CLI_CHILD_ARRAY)]
-  .filter(([, args = ""]) => /^\s*(?:$|["'`]-)|(?:^|,)\s*(["'`])serve\1\s*(?:,|$)/.test(args))
+  .filter(([, args = ""]) => !NON_SERVE_ARGS.test(args) &&
+    /^\s*(?:$|["'`]-)|(?:^|,)\s*(["'`])serve\1\s*(?:,|$)/.test(args))
   .map(([call]) => call);
+
+// These exact calls in cli.test.ts fail port validation before bind. Each entry permits one call.
+const CLI_PORT_VALIDATION_CALLS = [
+  'runCli(["serve", "--port", "abc"])', // Reject a non-numeric port.
+  'runCli(["serve", "--port", "abc"])', // Check that the rejection has no ready banner.
+  'runCli(["serve", "--port", "99999"])', // Reject a port above 65535.
+];
+const unexpectedServeLaunches = (file: string, source: string): string[] => {
+  const allowed = file === "integration/cli.test.ts" ? [...CLI_PORT_VALIDATION_CALLS] : [];
+  return serveLaunches(source).filter((call) => {
+    const index = allowed.indexOf(call);
+    if (index < 0) return true;
+    allowed.splice(index, 1);
+    return false;
+  });
+};
 const healthProbe = (source: string): boolean => source.includes("/__subswitch/health") && /\b(?:fetch|get|request)\s*\(/.test(source);
 const RELAY_DETACH_SIGNAL = /\.\s*kill\s*\(|\[\s*["'`]kill["'`]\s*\]/;
 
@@ -314,8 +333,8 @@ describe("source-text guards: relay lifecycle", () => {
     const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: TEST_DIR });
     assert.ok(files.includes(RELAY_CHILD_HELPER));
     assert.deepEqual([...files].sort().flatMap((file) =>
-      [RELAY_CHILD_HELPER, THIS_GUARD, "integration/cli-child.test.ts"].includes(file) ? [] :
-        serveLaunches(readFileSync(join(TEST_DIR, file), "utf8")).map((call) => `${file}: ${call}`)), []);
+      [RELAY_CHILD_HELPER, THIS_GUARD].includes(file) ? [] :
+        unexpectedServeLaunches(file, readFileSync(join(TEST_DIR, file), "utf8")).map((call) => `${file}: ${call}`)), []);
   });
 
   it("G7 positive control: detects direct serve, empty and flag-first arrays", () => {
@@ -327,6 +346,13 @@ describe("source-text guards: relay lifecycle", () => {
     }
     assert.deepEqual(serveLaunches('runCliChild(folders, ["models", "--json"])'), []);
   });
+
+  for (const args of ['["serve"]', '[]', '["--verbose"]']) {
+    it(`G7 positive control: detects runCli(${args})`, () => {
+      const call = `runCli(${args})`;
+      assert.deepEqual(unexpectedServeLaunches("integration/cli.test.ts", call), [call]);
+    });
+  }
 
   it("G8: only the record module probes health for the relay lifecycle", () => {
     const files = globSync("**/relay-*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
