@@ -156,6 +156,7 @@ export const OPENAI_EVENTS = {
   compatOverWindowPassthrough: "codex_compat_over_window_passthrough", upstreamTimeout: "openai_upstream_timeout",
 } as const;
 export const ANTHROPIC_EVENTS = scopedEvents("anthropic");
+export const GEMINI_EVENTS = providerEvents("gemini");
 /**
  * Kimi leg events: the provider table, plus the events of the Kimi sign-in store and its
  * renewal. The type pins each added name to the `kimi_` prefix.
