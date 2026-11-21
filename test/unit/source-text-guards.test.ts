@@ -307,6 +307,18 @@ describe("source-text guards: provider fixtures", () => {
     assert.ok(marked.includes("integration/kimi-leg.test.ts"), "The marker search must find the Kimi leg fixtures");
     assert.deepEqual(marked.filter((file) => !KIMI_TEST_FILE.test(file)), [], "Move each Kimi fixture to a Kimi-named test file");
   });
+
+  for (const file of ["integration/kimi-leg.test.ts", "unit/kimi-native-auth.test.ts"]) {
+    it(`G4 control: accepts ${file}`, () => {
+      assert.match(file, KIMI_TEST_FILE);
+    });
+  }
+
+  for (const file of ["integration/together-leg.test.ts", "helpers/server-deps.ts", "unit/akimi-x.test.ts", "kimi/shared.test.ts"]) {
+    it(`G4 control: refuses ${file}`, () => {
+      assert.doesNotMatch(file, KIMI_TEST_FILE);
+    });
+  }
 });
 
 it("uses execFile with no shell for the Together Keychain read", () => {
@@ -320,17 +332,17 @@ it("uses execFile with no shell for the Together Keychain read", () => {
 });
 
 // G5: the Kimi live check never sets the Claude Code base URL or sign-in variables.
-// `run-action` sets the base URL for its own child, so the check needs neither name, and
-// the live run must use the sign-in that Claude Code already has.
+// `run-action` sets the base URL for its own child. The live run uses the sign-in
+// that Claude Code already has.
 const REPO_DIR = join(SRC_DIR, "..");
 const LIVE_CHECK = "e2e/gates/kimi-live-check.ts";
-const CLIENT_VARIABLE = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN)\b/;
-/** An object key, a property or index assignment, or a shell prefix that sets either name. */
-const CLIENT_VARIABLE_SET = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN)["'`]?\]?\s*(?::|=(?!=))/;
+const CLIENT_VARIABLE = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)\b/;
+/** An object key, a property or index assignment, or a shell prefix that sets one of these variables. */
+const CLIENT_VARIABLE_SET = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)["'`]?\]?\s*(?::|=(?!=))/;
 const readRepo = (name: string): string => readFileSync(join(REPO_DIR, name), "utf8");
 
 describe("source-text guards: the Kimi live check", () => {
-  it("G5: the live check names neither Claude Code variable, and no Kimi live file sets one", () => {
+  it("G5: the live check names no Claude Code override variable, and no Kimi live file sets one", () => {
     assert.doesNotMatch(readRepo(LIVE_CHECK), CLIENT_VARIABLE);
     const files = globSync("e2e/gates/kimi-live-*", { cwd: REPO_DIR });
     assert.ok(files.includes(LIVE_CHECK) && files.length > 1, "The search must find the live check and its fake client");
@@ -347,6 +359,13 @@ describe("source-text guards: the Kimi live check", () => {
       assert.doesNotMatch(text, CLIENT_VARIABLE_SET, text);
     }
   });
+
+  for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]) {
+    it(`G5 positive control: the patterns find a read and a write to ${name}`, () => {
+      assert.match(`const value = process.env.${name};`, CLIENT_VARIABLE);
+      assert.match(`env: { ${name}: value }`, CLIENT_VARIABLE_SET);
+    });
+  }
 });
 
 // G6: the public docs, the source and the Kimi check files hold no local text: no home
