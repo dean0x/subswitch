@@ -1,10 +1,10 @@
 /**
  * Kimi through the CLI child. Without the block, the doctor Kimi row makes no file call
  * under the Kimi home; with it, doctor reads the file through the store. The models
- * commands list the Kimi ids, and the serve banner names the Kimi host only with the block.
- * Each child has a fresh HOME below the resolved temporary root, so the Kimi home is a
- * fabricated folder. The doctor config keeps every probe on the loopback host, and the
- * serve child gets no request.
+ * commands list the Kimi ids. The serve banner names the Kimi host only with the block,
+ * and local health checks for the Kimi file only with the block. Each child has a fresh
+ * HOME below the resolved temporary root. The doctor probes and serve health requests
+ * stay on the loopback host.
  */
 import { describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
@@ -66,9 +66,17 @@ describe("CLI doctor Kimi row", () => {
     });
 });
 
-/** Start `serve` in the child, stop it after the ready banner, and return the Kimi banner line. */
-const kimiBannerLine = async (folders: CliChildFolders): Promise<string | undefined> => {
-  const command = cliChildCommand(folders, ["serve"], { env: { NO_COLOR: "1", SUBSWITCH_LIMIT_RECORDING: "0" } });
+/** Start `serve`, wait for its banner, and request local health before it stops. */
+const kimiBannerLine = async (
+  folders: CliChildFolders,
+  { config, recordFsUnder }: { readonly config: Readonly<Record<string, unknown>>; readonly recordFsUnder: string },
+): Promise<string | undefined> => {
+  const port = config["port"];
+  assert.ok(typeof port === "number" && port !== 4141, "serve must use a test port");
+  await writeFile(folders.configFile, JSON.stringify(config));
+  const command = cliChildCommand(folders, ["serve"], {
+    env: { NO_COLOR: "1", SUBSWITCH_LIMIT_RECORDING: "0" }, recordFsUnder,
+  });
   const child = spawn(command.file, command.args, { cwd: command.cwd, env: command.env, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += String(chunk); });
@@ -76,29 +84,39 @@ const kimiBannerLine = async (folders: CliChildFolders): Promise<string | undefi
   try {
     // At most 20 s: the banner ends with the doctor hint.
     for (let wait = 0; wait < 1000 && !stderr.includes("subswitch doctor") && child.exitCode === null; wait++) await delay(20);
+    assert.match(stderr, /subswitch ready/, stderr);
+    const health = await fetch(`http://127.0.0.1:${port}/__subswitch/health`, {
+      redirect: "error", signal: AbortSignal.timeout(2_000),
+    });
+    await health.body?.cancel();
+    assert.equal(health.status, 200, "local health must respond");
   } finally {
     child.kill("SIGTERM");
-    await exited;
+    const forceStop = setTimeout(() => child.kill("SIGKILL"), 2_000);
+    await exited.finally(() => clearTimeout(forceStop));
   }
-  assert.match(stderr, /subswitch ready/, stderr);
   return stderr.split("\n").find((line) => line.trimStart().startsWith("kimi "));
 };
 
-describe("CLI serve banner: Kimi", () => {
-  it("without the block, marks Kimi as not turned on and names no Kimi host", { timeout: 30_000 }, async (t) => {
-    const { folders } = await kimiChild(t);
-    await writeFile(folders.configFile, JSON.stringify(await offlineDoctorConfig()));
-    const line = await kimiBannerLine(folders);
+describe("CLI serve banner and health: Kimi", () => {
+  it("without the block, marks Kimi as not turned on and makes no file call", { timeout: 30_000 }, async (t) => {
+    const { folders, kimiHome } = await kimiChild(t);
+    const line = await kimiBannerLine(folders, { config: await offlineDoctorConfig(), recordFsUnder: kimiHome });
     assert.match(line ?? "", /not turned on/);
     assert.doesNotMatch(line ?? "", /kimi\.ai/);
+    const log = await readExecLog(folders);
+    assert.equal(log[0], "preload");
+    assert.deepEqual(log.filter((call) => call.startsWith("fs")), [], "no file call under the Kimi home");
   });
 
-  it("with the block, names the Kimi host (positive control)", { timeout: 30_000 }, async (t) => {
-    const { folders } = await kimiChild(t);
-    await writeFile(folders.configFile, JSON.stringify(await offlineDoctorConfig({ providers: { kimi: {} } })));
-    const line = await kimiBannerLine(folders);
+  it("with the block, names the Kimi host and checks for its file (positive control)", { timeout: 30_000 }, async (t) => {
+    const { folders, kimiHome, authFile } = await kimiChild(t);
+    const config = await offlineDoctorConfig({ providers: { kimi: {} } });
+    const line = await kimiBannerLine(folders, { config, recordFsUnder: kimiHome });
     assert.match(line ?? "", /→ api\.kimi\.ai$/);
     assert.doesNotMatch(line ?? "", /not turned on/);
+    const calls = await readExecLog(folders);
+    assert.ok(calls.includes(`fs.existsSync ${authFile}`), `health must check for the Kimi file; got:\n${calls.join("\n")}`);
   });
 });
 
