@@ -2,11 +2,10 @@ import { nativeCredential } from "../fixtures/native-profile.js";
 /** Synthetic providers and isolated diagnostic storage; never exhaust real quota. */
 import assert from "node:assert/strict";
 import http from "node:http";
-import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { gzipSync } from "node:zlib";
 import { describe, it } from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
@@ -22,6 +21,7 @@ import {
 } from "../../src/limit-recorder.js";
 import { nativeProcess } from "../../e2e/gates/native-process.js";
 import { cliChildCommand, cliChildFolders } from "../helpers/cli-child.js";
+import { startRelayChild } from "../helpers/relay-child.js";
 import type {
   LimitObservation,
   LimitContext,
@@ -271,65 +271,33 @@ describe("production native limit observation", () => {
   });
 });
 describe("explicit route observations and inspection", () => {
-  it("automatically records a naturally arriving failure in the serve entrypoint", async () => {
-    const folders = await cliChildFolders();
-    const dir = folders.home;
+  it("automatically records a naturally arriving failure in the serve entrypoint", async (t) => {
     const backend = http.createServer((_req, res) => {
       res.writeHead(429, { "retry-after": "60" });
       res.end(error);
     });
     const upstream = await listen(backend);
-    const reserve = http.createServer();
-    const reserved = await listen(reserve);
-    const port = new URL(reserved).port;
-    await close(reserve);
-    let child: ReturnType<typeof spawn> | undefined;
-    try {
-      await writeFile(
-        join(dir, "subswitch.config.json"),
-        JSON.stringify({
-          port: Number(port),
-          anthropic: { baseUrl: upstream },
-        }),
-      );
-      const command = cliChildCommand(folders, ["serve"], {
-        env: {
-          SUBSWITCH_CONFIG: join(dir, "subswitch.config.json"),
-          SUBSWITCH_LIMIT_RECORDING: "1",
-          SUBSWITCH_LIMIT_DIR: join(dir, "limits"),
-        },
-      });
-      child = spawn(command.file, command.args, {
-        cwd: command.cwd,
-        env: command.env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let stderr = "";
-      child.stderr!.on("data", (chunk) => {
-        stderr += String(chunk);
-      });
-      child.stdout!.on("data", () => undefined);
-      await until(() => stderr.includes("subswitch ready"));
-      const result = await get("http://127.0.0.1:" + port + "/v1/messages");
-      assert.equal(result.status, 429);
-      assert.equal(result.body.toString(), error);
-      const exited = once(child, "exit");
-      child.kill("SIGTERM");
-      const [code] = await exited;
-      assert.equal(code, 0);
-      const records = await readLimitObservations(join(dir, "limits", port));
-      assert.equal(records.length, 1);
-      assert.equal(records[0]!.status, 429);
-      assert.ok(!JSON.stringify(records).includes("private"));
-    } finally {
-      if (child && child.exitCode === null) {
-        const stopped = once(child, "exit");
-        child.kill("SIGKILL");
-        await stopped;
-      }
-      await close(backend);
-      await rm(dir, { recursive: true, force: true });
-    }
+    t.after(() => close(backend));
+    const relay = await startRelayChild({
+      config: { anthropic: { baseUrl: upstream } },
+      env: ({ home }) => ({
+        SUBSWITCH_CONFIG: join(home, "subswitch.config.json"),
+        SUBSWITCH_LIMIT_RECORDING: "1",
+        SUBSWITCH_LIMIT_DIR: join(home, "limits"),
+      }),
+    });
+    t.after(relay.cleanup);
+    await relay.waitFor("subswitch ready");
+    const result = await get("http://127.0.0.1:" + relay.port + "/v1/messages");
+    assert.equal(result.status, 429);
+    assert.equal(result.body.toString(), error);
+    relay.child.kill("SIGTERM");
+    const [code] = await relay.exited;
+    assert.equal(code, 0);
+    const records = await readLimitObservations(join(relay.folders.home, "limits", String(relay.port)));
+    assert.equal(records.length, 1);
+    assert.equal(records[0]!.status, 429);
+    assert.ok(!JSON.stringify(records).includes("private"));
   });
   function config() {
     const loaded = loadConfig({

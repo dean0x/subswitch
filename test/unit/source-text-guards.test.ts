@@ -315,12 +315,7 @@ describe("source-text guards: relay lifecycle", () => {
     assert.ok(files.includes(RELAY_CHILD_HELPER));
     assert.deepEqual([...files].sort().flatMap((file) =>
       [RELAY_CHILD_HELPER, THIS_GUARD, "integration/cli-child.test.ts"].includes(file) ? [] :
-        serveLaunches(readFileSync(join(TEST_DIR, file), "utf8")).map((call) => `${file}: ${call}`)), [
-      // Step 7 moves these calls. Keep exact call text and count until then.
-      'integration/kimi-cli.test.ts: cliChildCommand(folders, ["serve"]',
-      'integration/kimi-shutdown.test.ts: cliChildCommand(folders, ["serve"]',
-      'integration/limit-recording.test.ts: cliChildCommand(folders, ["serve"]',
-    ]);
+        serveLaunches(readFileSync(join(TEST_DIR, file), "utf8")).map((call) => `${file}: ${call}`)), []);
   });
 
   it("G7 positive control: detects direct serve, empty and flag-first arrays", () => {

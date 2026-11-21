@@ -93,12 +93,12 @@ export function createRelayLogger(options: RelayLogOptions): RelayLogger {
   };
 }
 
-export function writeStopLineSync(directory: string, fields: RelayStopFields): void {
+export function writeStopLineSync(directory: string | undefined, fields: RelayStopFields, copyToStderr = false): void {
   try {
     const { pid, exitCode, signal } = fields;
-    appendPrivateLineSync({ ...RELAY_LOG, directory }, isoLine(renderLogLine("info", "relay_stopped", {
-      pid, exitCode, ...(signal === undefined ? {} : { signal }),
-    })));
+    const line = isoLine(renderLogLine("info", "relay_stopped", { pid, exitCode, ...(signal === undefined ? {} : { signal }) }));
+    if (directory !== undefined) appendPrivateLineSync({ ...RELAY_LOG, directory }, line);
+    if (copyToStderr) process.stderr.write(line);
   } catch {
     // The exit path is best effort.
   }

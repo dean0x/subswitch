@@ -97,7 +97,9 @@ export function ensureRelayFolder(port: number, home: string): RelayPathResult<s
   return result.ok && result.value !== undefined ? ok(result.value) : err("unsafe_path");
 }
 
-export async function publishRelayRecord(port: number, home: string): Promise<RelayPathResult<RelayRecord>> {
+export const createRelayNonce = (): string => randomBytes(16).toString("hex");
+
+export async function publishRelayRecord(port: number, home: string, nonce?: string): Promise<RelayPathResult<RelayRecord>> {
   const folder = ensureRelayFolder(port, home);
   if (!folder.ok) return folder;
   const path = join(folder.value, RECORD_NAME);
@@ -105,7 +107,7 @@ export async function publishRelayRecord(port: number, home: string): Promise<Re
   try {
     const record: RelayRecord = {
       schemaVersion: 1, port, pid: process.pid, version: SUBSWITCH_VERSION, startedAt: new Date().toISOString(),
-      managedBy: "none", nonce: randomBytes(16).toString("hex"),
+      managedBy: "none", nonce: nonce ?? createRelayNonce(),
     };
     const name = `${path}.${randomUUID()}.tmp`;
     const file = await open(name, "wx", FILE_MODE);

@@ -11,7 +11,7 @@ import { cliChildCommand, cliChildFolders, type CliChildFolders } from "./cli-ch
 
 export interface RelayChildOptions {
   readonly config?: Readonly<Record<string, unknown>>;
-  readonly env?: Readonly<NodeJS.ProcessEnv>;
+  readonly env?: Readonly<NodeJS.ProcessEnv> | ((folders: CliChildFolders) => Readonly<NodeJS.ProcessEnv>);
   readonly extraImport?: string;
   /** A path below the test home, relative to that home or absolute. */
   readonly recordFsUnder?: string;
@@ -88,13 +88,15 @@ export async function startRelayChild(options: RelayChildOptions = {}): Promise<
   try {
     const port = await reservePort();
     await options.prepare?.(folders);
-    await writeFile(folders.configFile, JSON.stringify({ ...options.config, port }));
     const cliArgs = ["serve", "--port", String(port)];
     const childOptions = {
-      env: { ...options.env, SUBSWITCH_CONFIG: folders.configFile },
+      env: typeof options.env === "function" ? options.env(folders) : options.env ?? {},
       ...(options.recordFsUnder === undefined ? {} : { recordFsUnder: resolve(folders.home, options.recordFsUnder) }),
     };
     const command = cliChildCommand(folders, cliArgs, childOptions);
+    const configFile = command.env["SUBSWITCH_CONFIG"];
+    assert.ok(configFile, "Relay test needs an isolated config file");
+    await writeFile(resolve(command.cwd, configFile), JSON.stringify({ ...options.config, port }));
     const args = options.extraImport === undefined ? command.args :
       command.args.toSpliced(-cliArgs.length - 1, 0, "--import", options.extraImport);
     const env = options.detach ? cliChildCommand(folders, cliArgs, { ...childOptions, allowNodeArgs: args }).env : command.env;

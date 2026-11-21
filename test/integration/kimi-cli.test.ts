@@ -8,24 +8,20 @@
  */
 import { describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { KIMI_REGION_TABLE } from "../../src/kimi-constants.js";
 import { KIMI_MODELS } from "../../src/kimi-models.js";
 import {
-  cliChildCommand, cliChildFolders, offlineDoctorConfig, readExecLog, runCliChild, type CliChildFolders,
+  cliChildFolders, offlineDoctorConfig, readExecLog, runCliChild, type CliChildFolders,
 } from "../helpers/cli-child.js";
+import { startRelayChild } from "../helpers/relay-child.js";
 
 const SLOT = KIMI_REGION_TABLE.global.credentialFile;
 
-/** A CLI child folder set with a valid Kimi sign-in file in the default Kimi home. */
-const kimiChild = async (t: TestContext) => {
-  const folders = await cliChildFolders({ resolveTemp: true });
-  t.after(() => rm(folders.home, { recursive: true, force: true }));
-  const kimiHome = join(folders.home, ".kimi-code");
+const KIMI_HOME = ".kimi-code";
+const writeKimiFixture = async (folders: CliChildFolders) => {
+  const kimiHome = join(folders.home, KIMI_HOME);
   await mkdir(join(kimiHome, "credentials"), { recursive: true, mode: 0o700 });
   const authFile = join(kimiHome, "credentials", SLOT);
   const record = {
@@ -33,7 +29,13 @@ const kimiChild = async (t: TestContext) => {
     expires_at: Math.floor(Date.now() / 1000) + 3600, scope: "kimi-code", token_type: "Bearer", expires_in: 3600,
   };
   await writeFile(authFile, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
-  return { folders, kimiHome, authFile };
+  return { kimiHome, authFile };
+};
+
+const kimiChild = async (t: TestContext) => {
+  const folders = await cliChildFolders({ resolveTemp: true });
+  t.after(() => rm(folders.home, { recursive: true, force: true }));
+  return { folders, ...await writeKimiFixture(folders) };
 };
 
 /** The value of a doctor row such as "kimi auth:". */
@@ -66,42 +68,26 @@ describe("CLI doctor Kimi row", () => {
     });
 });
 
-/** Start `serve`, wait for its banner, and request local health before it stops. */
-const kimiBannerLine = async (
-  folders: CliChildFolders,
-  { config, recordFsUnder }: { readonly config: Readonly<Record<string, unknown>>; readonly recordFsUnder: string },
-): Promise<string | undefined> => {
-  const port = config["port"];
-  assert.ok(typeof port === "number" && port !== 4141, "serve must use a test port");
-  await writeFile(folders.configFile, JSON.stringify(config));
-  const command = cliChildCommand(folders, ["serve"], {
-    env: { NO_COLOR: "1", SUBSWITCH_LIMIT_RECORDING: "0" }, recordFsUnder,
+const kimiBannerLine = async (t: TestContext, config: Readonly<Record<string, unknown>>) => {
+  const relay = await startRelayChild({
+    config, env: { NO_COLOR: "1", SUBSWITCH_LIMIT_RECORDING: "0" }, recordFsUnder: KIMI_HOME,
+    prepare: async (folders) => { await writeKimiFixture(folders); },
   });
-  const child = spawn(command.file, command.args, { cwd: command.cwd, env: command.env, stdio: ["ignore", "ignore", "pipe"] });
-  let stderr = "";
-  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-  const exited = once(child, "exit");
-  try {
-    // At most 20 s: the banner ends with the doctor hint.
-    for (let wait = 0; wait < 1000 && !stderr.includes("subswitch doctor") && child.exitCode === null; wait++) await delay(20);
-    assert.match(stderr, /subswitch ready/, stderr);
-    const health = await fetch(`http://127.0.0.1:${port}/__subswitch/health`, {
-      redirect: "error", signal: AbortSignal.timeout(2_000),
-    });
-    await health.body?.cancel();
-    assert.equal(health.status, 200, "local health must respond");
-  } finally {
-    child.kill("SIGTERM");
-    const forceStop = setTimeout(() => child.kill("SIGKILL"), 2_000);
-    await exited.finally(() => clearTimeout(forceStop));
-  }
-  return stderr.split("\n").find((line) => line.trimStart().startsWith("kimi "));
+  t.after(relay.cleanup);
+  await relay.waitFor("run `subswitch doctor`");
+  assert.match(relay.stderr, /subswitch ready/, relay.stderr);
+  const health = await fetch(`http://127.0.0.1:${relay.port}/__subswitch/health`, {
+    redirect: "error", signal: AbortSignal.timeout(2_000),
+  });
+  await health.body?.cancel();
+  assert.equal(health.status, 200, "local health must respond");
+  const line = relay.stderr.split("\n").find((row) => row.trimStart().startsWith("kimi "));
+  return { line, folders: relay.folders };
 };
 
 describe("CLI serve banner and health: Kimi", () => {
   it("without the block, marks Kimi as not turned on and makes no file call", { timeout: 30_000 }, async (t) => {
-    const { folders, kimiHome } = await kimiChild(t);
-    const line = await kimiBannerLine(folders, { config: await offlineDoctorConfig(), recordFsUnder: kimiHome });
+    const { line, folders } = await kimiBannerLine(t, await offlineDoctorConfig());
     assert.match(line ?? "", /not turned on/);
     assert.doesNotMatch(line ?? "", /kimi\.ai/);
     const log = await readExecLog(folders);
@@ -110,9 +96,8 @@ describe("CLI serve banner and health: Kimi", () => {
   });
 
   it("with the block, names the Kimi host and checks for its file (positive control)", { timeout: 30_000 }, async (t) => {
-    const { folders, kimiHome, authFile } = await kimiChild(t);
-    const config = await offlineDoctorConfig({ providers: { kimi: {} } });
-    const line = await kimiBannerLine(folders, { config, recordFsUnder: kimiHome });
+    const { line, folders } = await kimiBannerLine(t, await offlineDoctorConfig({ providers: { kimi: {} } }));
+    const authFile = join(folders.home, KIMI_HOME, "credentials", SLOT);
     assert.match(line ?? "", /→ api\.kimi\.ai$/);
     assert.doesNotMatch(line ?? "", /not turned on/);
     const calls = await readExecLog(folders);

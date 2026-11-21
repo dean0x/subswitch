@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { CLIENT_IDS, parseClientSelection, selectedClients, type ClientId, type ClientSelection as Client } from "./clients.js";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
@@ -24,7 +25,9 @@ import { claudeModelRows } from "./claude-models.js";
 import { routingDiscovery } from "./routing/routing-discovery.js";
 import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
-import { createConsoleLogger } from "./logger.js";
+import { createRelayLogger, writeFatalLineSync, writeStopLineSync, type RelayStopFields } from "./relay-log.js";
+import { createRelayNonce, ensureRelayFolder, publishRelayRecord, relayFolder, removeOwnRelayRecord } from "./relay-record.js";
+import { appendRotatingPrivateFile } from "./private-file.js";
 import { LimitRecorder, limitDirectory, withLimitRecorder, readLimitObservations } from "./limit-recorder.js";
 import { settleNativeRefreshes } from "./native-auth-coordination.js";
 
@@ -282,6 +285,12 @@ const serve = async (
   portStr?: string,
 ): Promise<void> => {
   const { config, configPath, fileFound } = result;
+  const managedBy = process.env["SUBSWITCH_MANAGED_BY"];
+  if (managedBy !== undefined && managedBy !== "detach") {
+    fail("SUBSWITCH_MANAGED_BY must be unset or detach");
+    return;
+  }
+  const detached = managedBy === "detach";
 
   // Validate --port if given, with byte-identical wording to init port validation. [F3/F15]
   let effectivePort = config.port;
@@ -306,15 +315,22 @@ const serve = async (
 
   const effectiveConfig = { ...config, logLevel, port: effectivePort };
 
-  const baseLogger = createConsoleLogger(logLevel);
-  const recorder = process.env["SUBSWITCH_LIMIT_RECORDING"] === "0" ? undefined : new LimitRecorder(limitDirectory(effectivePort), baseLogger);
-  const depsResult = buildDeps(effectiveConfig, recorder ? withLimitRecorder(baseLogger, recorder) : baseLogger);
+  const home = homedir();
+  const pid = process.pid;
+  const nonce = createRelayNonce();
+  const relayLog = createRelayLogger({
+    directory: relayFolder(effectivePort, home), minLevel: logLevel, mode: detached ? "detach" : "foreground",
+    append: (target, lines) => ensureRelayFolder(effectivePort, home).ok
+      ? appendRotatingPrivateFile(target, lines) : Promise.reject(new Error("relay log unavailable")),
+  });
+  const recorder = process.env["SUBSWITCH_LIMIT_RECORDING"] === "0" ? undefined : new LimitRecorder(limitDirectory(effectivePort), relayLog.logger);
+  const depsResult = buildDeps(effectiveConfig, recorder ? withLimitRecorder(relayLog.logger, recorder) : relayLog.logger);
   if (!depsResult.ok) {
     fail(depsResult.error);
     return;
   }
   const deps = depsResult.value;
-  const server = createProxyServer(deps);
+  const server = createProxyServer({ ...deps, identity: { pid, nonce } });
   const listenResult = await listenServer(server, effectiveConfig.port, "127.0.0.1");
   if (!listenResult.ok) {
     if (listenResult.error.code === "EADDRINUSE") {
@@ -324,6 +340,28 @@ const serve = async (
     }
     return;
   }
+  const published = await publishRelayRecord(effectivePort, home, nonce);
+  if (!published.ok) {
+    if (detached) {
+      server.close();
+      server.closeAllConnections();
+      fail("relay record unavailable");
+      return;
+    }
+    errOut("subswitch: relay record unavailable");
+  }
+  let stopSignal: RelayStopFields["signal"];
+  process.once("exit", (exitCode) => {
+    removeOwnRelayRecord(effectivePort, home, nonce);
+    const folder = ensureRelayFolder(effectivePort, home);
+    writeStopLineSync(folder.ok ? folder.value : undefined, { pid, exitCode, ...(stopSignal ? { signal: stopSignal } : {}) }, !detached);
+  });
+  process.once("uncaughtExceptionMonitor", () => {
+    const folder = ensureRelayFolder(effectivePort, home);
+    if (folder.ok) writeFatalLineSync(folder.value, pid);
+  });
+  if (published.ok) deps.logger.log("info", "relay_started", { pid, version: SUBSWITCH_VERSION });
+
   let removeActionControl: (() => Promise<void>) | undefined;
   if (effectiveConfig.configVersion === 2 && deps.sharedRouting) {
     try { removeActionControl = await publishActionControl(effectiveConfig.port, deps.sharedRouting.actions.capability); }
@@ -349,19 +387,19 @@ const serve = async (
   errOut(`  run \`subswitch doctor\` to verify setup\n`);
 
   if (recorder) errOut("  limit observations: " + recorder.directory + " (view with subswitch limits --json)\n");
-  let stopping = false;
-  const shutdown = (): void => {
-    if (stopping) return;
-    stopping = true;
+  const shutdown = (signal: NonNullable<RelayStopFields["signal"]>): void => {
+    if (stopSignal !== undefined) return;
+    stopSignal = signal;
     const exitAfterRenewals = (code: number): Promise<never> =>
       settleNativeRefreshes(NATIVE_REFRESH_SHUTDOWN_MS).then(() => process.exit(code));
     deps.logger.log("info", "shutting_down");
-    server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush()]).finally(() => exitAfterRenewals(0)); });
+    server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush(), relayLog.flush()]).finally(() => exitAfterRenewals(0)); });
     server.closeIdleConnections();
     setTimeout(() => { void exitAfterRenewals(1); }, SHUTDOWN_GRACE_MS).unref();
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => shutdown(signal));
+  }
 };
 
 // ---------------------------------------------------------------------------
