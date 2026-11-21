@@ -33,11 +33,19 @@ const startHealthProxy = (baseUrl: string, authFileName = "missing.json") =>
 
 for (const active of [true, false]) {
   it(`reports a Keychain provider configured=${active} without credential I/O`, async (t) => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    assert.ok(platform);
+    Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+    t.after(() => { Object.defineProperty(process, "platform", platform); });
+
     const loaded = loadConfig({ configPath: "fixture", env: {}, readFile: () => JSON.stringify({
       providers: { codex: { authFile: join(authDir, "missing.json") } },
     }) });
     assert.ok(loaded.ok);
-    const exec = t.mock.method(childProcess, "execFile", () => undefined);
+    const exec = t.mock.method(childProcess, "execFile", (...args: unknown[]) => {
+      const callback = args.at(-1);
+      if (typeof callback === "function") callback(new Error("Unexpected execFile call"), "", "");
+    });
     syncBuiltinESMExports();
     t.after(() => { exec.mock.restore(); syncBuiltinESMExports(); });
     const refusedStoreCalls: string[] = [];
