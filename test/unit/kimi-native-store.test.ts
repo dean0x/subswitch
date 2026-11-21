@@ -272,6 +272,20 @@ describe("Kimi native store: CLI lock", () => {
     assert.ok(seen.advancedMs >= 2_000, `the heartbeat moved the lock mtime (${seen.advancedMs} ms)`);
   });
 
+  it("refuses the write-back when its own lock is too old", async (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
+    const { file, lock, store } = await kimiHome(t);
+    const before = await readFile(file);
+    await rejectsWith(store.withLease(signal(), async (lease) => {
+      const snapshot = await lease.read();
+      // Age the same folder past the 4.5 s lease bound but below the 5 s CLI bound.
+      const old = new Date(Date.now() - 4_750);
+      await utimes(lock, old, old);
+      return lease.replace(snapshot, { ...snapshot.record, expires_at: snapshot.record.expires_at + 1 });
+    }), "lock_lost");
+    assert.deepEqual(await readFile(file), before);
+  });
+
   it("refuses the write-back after a takeover and leaves the successor lock in place", async (t) => {
     const { file, lock, store } = await kimiHome(t);
     const before = await readFile(file, "utf8");
