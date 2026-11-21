@@ -1,13 +1,14 @@
 // Model registry and resolver for subswitch.
 import { isTogetherModelId, TOGETHER_MODELS } from "./together-models.js";
 import { KIMI_MODELS } from "./kimi-models.js";
+import { GEMINI_MODELS } from "./gemini-models.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /** Closed tuple of all supported provider identifiers. Codex stays first; a new id goes last. */
-export const PROVIDER_IDS = ["codex", "together", "kimi"] as const;
+export const PROVIDER_IDS = ["codex", "together", "kimi", "gemini"] as const;
 /**
  * Discriminator for provider-specific handler dispatch. A closed union ensures
  * `Record<ProviderId, ProviderHandler>` is a compile-time completeness proof
@@ -124,7 +125,7 @@ export interface RoutingTableBuild {
  * - resolved: name mapped to a concrete destination.
  * - ambiguous: family name claimed by multiple providers; caller should error with provider list.
  * - unresolved: name not found.
- * - invalid_qualified: a Together-qualified name with a malformed id.
+ * - invalid_qualified: a malformed Together id or an unlisted Gemini-qualified name.
  * - unknown_qualifier: name looks like provider:id but the prefix is not in PROVIDER_IDS.
  *   Distinguishable from unresolved so Phase D can emit "unknown provider 'X'" vs "unknown model".
  */
@@ -132,7 +133,7 @@ export type ModelResolution =
   | { readonly kind: "resolved"; readonly target: ResolvedModel }
   | { readonly kind: "ambiguous"; readonly name: string; readonly providers: readonly ProviderId[] }
   | { readonly kind: "unresolved" }
-  | { readonly kind: "invalid_qualified" }
+  | { readonly kind: "invalid_qualified"; readonly provider?: "gemini" }
   | { readonly kind: "unknown_qualifier"; readonly qualifier: string };
 
 // ---------------------------------------------------------------------------
@@ -246,6 +247,7 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   ...KIMI_MODELS.map(({ id, reasoningEfforts }): ModelEntry => ({
     id, gen: [], provider: "kimi", reasoningEfforts,
   })),
+  ...GEMINI_MODELS.map((id): ModelEntry => ({ id, gen: [], provider: "gemini" })),
 ];
 
 // ---------------------------------------------------------------------------
@@ -742,6 +744,7 @@ export const resolveModel = (table: RoutingTable, name: string): ModelResolution
         if (!isTogetherModelId(id)) return { kind: "invalid_qualified" };
         return { kind: "resolved", target: { id, provider: prefix } };
       }
+      if (prefix === "gemini") return { kind: "invalid_qualified", provider: "gemini" };
       return { kind: "unresolved" };
     }
     // Unknown prefix — not a provider name → distinguishable from "model not found" (F5)

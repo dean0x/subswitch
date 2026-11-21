@@ -50,9 +50,11 @@ const codexSlice: CodexProviderConfig = {
   allowInsecureBaseUrl: false,
 };
 
-const providerConfigsIsTotalOverProviderId = (together: ProviderConfigs["together"], kimi: ProviderConfigs["kimi"]): void => {
+const providerConfigsIsTotalOverProviderId = (
+  together: ProviderConfigs["together"], kimi: ProviderConfigs["kimi"], gemini: ProviderConfigs["gemini"],
+): void => {
   // A record covering every ProviderId is the only accepted shape.
-  const complete: ProviderConfigs = { codex: codexSlice, together, kimi };
+  const complete: ProviderConfigs = { codex: codexSlice, together, kimi, gemini };
   void complete;
 
   // @ts-expect-error a ProviderId with no slice must not compile.

@@ -61,7 +61,7 @@ describe("Kimi registry entries", () => {
   };
 
   it("adds kimi after codex and together, so codex stays first", () => {
-    assert.deepEqual([...PROVIDER_IDS], ["codex", "together", "kimi"]);
+    assert.deepEqual(PROVIDER_IDS.slice(0, 3), ["codex", "together", "kimi"]);
   });
 
   it("routes each Kimi id to the Kimi leg by bare id and by the kimi: qualifier", () => {
@@ -107,6 +107,18 @@ describe("Kimi registry entries", () => {
       const expected = id === "kimi-for-coding-highspeed" ? [] : ["low", "high", "max"];
       assert.deepEqual(reasoningEffortsForModel(MODEL_REGISTRY, id), expected, id);
     }
+  });
+});
+
+describe("Gemini registry", () => {
+  it("adds gemini after every existing provider", () => {
+    assert.equal(PROVIDER_IDS.at(-1), "gemini");
+  });
+
+  it("lists zero Gemini models and refuses an unlisted Gemini qualifier locally", () => {
+    const { table } = buildRoutingTable(MODEL_REGISTRY, emptyAliases());
+    assert.deepEqual(MODEL_REGISTRY.filter((entry) => entry.provider === "gemini"), []);
+    assert.deepEqual(resolveModel(table, "gemini:fixture-unlisted"), { kind: "invalid_qualified", provider: "gemini" });
   });
 });
 

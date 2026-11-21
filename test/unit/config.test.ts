@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { IncomingMessage, ServerResponse } from "node:http";
+import { Socket } from "node:net";
+import { runDoctor } from "../../src/doctor.js";
+import { buildTestDeps, refusingProviderDeps } from "../helpers/server-deps.js";
 import {
   loadConfig,
   detectLegacyConfigKeys,
@@ -248,6 +252,122 @@ describe("Kimi config block", () => {
       const result = loadKimi({ aliases });
       assert.ok(!result.ok, `${JSON.stringify(aliases)} must fail the load`);
       assert.match(result.error.message, /providers\.kimi\.aliases/);
+    }
+  });
+});
+
+describe("Gemini config block", () => {
+  const userPath = "/fixture/user.json";
+  const selectedPath = "/fixture/selected.json";
+  const loadGemini = (gemini: unknown, env: Record<string, string> = { SUBSWITCH_CONFIG: selectedPath }) =>
+    loadConfig({ cwd: "/fixture/project", globalConfigPath: userPath, env,
+      readFile: (path) => path === (env["SUBSWITCH_CONFIG"] ?? userPath)
+        ? JSON.stringify({ providers: { gemini } }) : missingFile() });
+
+  it("refuses the whole project block even when empty or null", () => {
+    for (const gemini of [{}, null]) {
+      const result = loadConfig({ cwd: "/fixture/project", globalConfigPath: false, env: {},
+        readFile: () => JSON.stringify({ providers: { gemini } }) });
+      assert.ok(!result.ok);
+      assert.match(result.error.message, /providers\.gemini not allowed in project configuration/);
+    }
+  });
+
+  it("refuses unknown keys, host and credential overrides, and renewal settings at load", () => {
+    for (const gemini of [
+      { allowInsecureBaseUrl: true }, { typo: true }, { optedIn: true },
+      { defaultHost: "other.example.test" }, { keychainService: "other" }, { keychainAccount: "other" },
+      { loginCommand: "other" }, { renewal: "none" }, { agyPath: "/fixture/agy" },
+    ]) {
+      const result = loadGemini(gemini);
+      assert.ok(!result.ok, `must refuse ${Object.keys(gemini).join(", ")}`);
+      assert.match(result.error.message, /^invalid config: providers\.gemini:/);
+    }
+  });
+
+  it("opts in only for a literal block in the user config or SUBSWITCH_CONFIG", () => {
+    for (const [result, optedIn] of [
+      [loadGemini(undefined, {}), false],
+      [loadGemini({}, {}), true],
+      [loadGemini({}), true],
+    ] as const) {
+      assert.ok(result.ok, !result.ok ? result.error.message : undefined);
+      assert.equal(result.value.configuredProviders.has("gemini"), optedIn);
+      assert.equal(result.value.config.providers.gemini.optedIn, optedIn);
+      assert.equal(providerConfigFor(result.value.config, "gemini").active, optedIn);
+    }
+  });
+
+  it("uses fixed Keychain metadata and allows only the base URL to change", () => {
+    for (const [settings, baseUrl] of [
+      [{}, "https://daily-cloudcode-pa.googleapis.com"],
+      [{ baseUrl: "https://daily-cloudcode-pa.googleapis.com:443/" }, "https://daily-cloudcode-pa.googleapis.com:443/"],
+    ] as const) {
+      const result = loadGemini(settings);
+      assert.ok(result.ok, !result.ok ? result.error.message : undefined);
+      assert.deepEqual(providerConfigFor(result.value.config, "gemini"), {
+        displayName: "Gemini", active: true, kind: "native-keychain", baseUrl,
+        defaultHost: "daily-cloudcode-pa.googleapis.com", keychainService: "gemini", keychainAccount: "antigravity",
+        loginCommand: "agy", renewal: "none",
+      });
+    }
+  });
+
+  it("carries aliases, timeouts and signature cache bounds through config load", () => {
+    const settings = {
+      aliases: { "fixture-pin": "fixture-target" }, requestTimeoutMs: 111, streamIdleTimeoutMs: 222,
+      signatureCache: { maxEntries: 3, maxBytes: 444 },
+    };
+    const result = loadGemini(settings);
+    assert.ok(result.ok, !result.ok ? result.error.message : undefined);
+    const { config } = result.value;
+    assert.deepEqual(aliasesByProvider(config).gemini, settings.aliases);
+    assert.equal(config.providers.gemini.requestTimeoutMs, settings.requestTimeoutMs);
+    assert.equal(config.providers.gemini.streamIdleTimeoutMs, settings.streamIdleTimeoutMs);
+    assert.deepEqual(config.providers.gemini.signatureCache, settings.signatureCache);
+  });
+
+  it("refuses an unapproved Gemini host or port at startup without an opt-in hint", () => {
+    for (const host of ["127.0.0.1", "daily-cloudcode-pa.googleapis.com:8443", "other.example.test"]) {
+      const result = loadGemini({ baseUrl: `https://${host}` });
+      assert.ok(result.ok, !result.ok ? result.error.message : undefined);
+      assert.deepEqual(buildTestDeps(result.value.config, { log: () => {} }), {
+        ok: false, error: "providers.gemini.baseUrl must use the default host on port 443.",
+      });
+    }
+  });
+
+  it("gives a fixed local reply for both endpoints and agrees with doctor on opt-in", async (t) => {
+    for (const optedIn of [false, true]) {
+      const result = loadGemini(optedIn ? {} : undefined);
+      assert.ok(result.ok, !result.ok ? result.error.message : undefined);
+      const { config, configPath, fileFound, configuredProviders } = result.value;
+      const refused: string[] = [];
+      const deps = buildTestDeps(config, { log: () => {} }, { refusedStoreCalls: refused });
+      assert.ok(deps.ok);
+      const handler = deps.value.providers.gemini;
+      assert.ok(handler);
+      const req = new IncomingMessage(new Socket());
+      for (const endpoint of ["messages", "count_tokens"]) {
+        const res = new ServerResponse(req);
+        const end = t.mock.method(res, "end", () => res);
+        if (endpoint === "messages") await handler.handleMessages(req, res, Buffer.alloc(0), {}, "fixture-target");
+        else handler.handleCountTokens(req, res, Buffer.alloc(0));
+        assert.equal(res.statusCode, optedIn ? 503 : 400);
+        assert.equal(end.mock.callCount(), 1);
+        assert.match(String(end.mock.calls[0]?.arguments[0]), optedIn ? /Gemini requests are unavailable.*agy/ : /Gemini is not turned on/);
+      }
+      req.destroy();
+      const lines: string[] = [];
+      await runDoctor(config, configPath, fileFound, {
+        write: (line) => lines.push(line), color: false, readAuthFile: async () => "{}",
+        togetherKeyReader: refusingProviderDeps(refused).together,
+        httpGet: async () => ({ ok: false, connectionRefused: true }),
+        tlsConnect: async () => ({ kind: "reachable" }), listAgentFiles: async () => [], readTextFile: async () => "",
+      }, configuredProviders);
+      assert.match(lines.join("\n"), optedIn ? /gemini auth:\s+UNAVAILABLE \(probe_unavailable .*agy/ : /gemini auth:\s+not turned on/);
+      // Doctor checks the unrelated Together row. The Gemini route has no credential reader.
+      assert.deepEqual(refused, ["together.exec"]);
     }
   });
 });

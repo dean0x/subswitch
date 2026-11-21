@@ -34,6 +34,7 @@ export const refusingProviderDeps = (refused: string[]): ProviderDepsById => ({
     },
   },
   kimi: refusingKimiDeps(refused),
+  gemini: undefined,
 });
 
 type TestOptions = NonNullable<Parameters<typeof buildDeps>[2]> & { readonly refusedStoreCalls?: string[] };

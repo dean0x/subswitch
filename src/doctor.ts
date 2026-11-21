@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve as pathResolve } from "node:path";
 import { createColors } from "picocolors";
 import {
-  aliasesByProvider, codexCredentialFor, kimiCredentialFor, providerConfigFor, withCredential,
+  aliasesByProvider, codexCredentialFor, geminiRuntimeConfigFor, kimiCredentialFor, providerConfigFor, withCredential,
   type CodexProviderConfig, type Config, type CredentialKindTable, type KimiProviderConfig, type ProviderConfigs,
   type ProviderRuntimeConfig, type TogetherProviderConfig,
 } from "./config.js";
@@ -165,6 +165,7 @@ export const PROVIDER_AUTH_INSPECTORS: {
   codex: inspectCodexAuth,
   together: inspectTogetherKey,
   kimi: inspectKimiAuth,
+  gemini: (slice, io) => inspectNativeKeychain(geminiRuntimeConfigFor(slice), io.keychainReader),
 };
 
 // ---------------------------------------------------------------------------

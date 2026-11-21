@@ -13,6 +13,7 @@ import { ownValue } from "./plain-object.js";
 import { TOGETHER_API_KEY_ENV, TOGETHER_KEYCHAIN_SERVICE } from "./together-auth.js";
 import { TOGETHER_DEFAULT_OUTPUT_CAP } from "./together-request.js";
 import { KIMI_CREDENTIALS_FOLDER, KIMI_DEFAULT_HOME, KIMI_REGION_TABLE, KIMI_REGIONS } from "./kimi-constants.js";
+import { GEMINI_DEFAULT_HOST, GEMINI_KEYCHAIN_ACCOUNT, GEMINI_KEYCHAIN_SERVICE, GEMINI_LOGIN_COMMAND } from "./gemini-constants.js";
 
 export const DEFAULT_PORT = 4141 as const;
 
@@ -379,6 +380,17 @@ const KimiProviderSchema = z.strictObject({
   return resolved;
 });
 
+const GeminiProviderSchema = z.strictObject({
+  baseUrl: CredentialUrlSchema.default(`https://${GEMINI_DEFAULT_HOST}`),
+  aliases: AliasesSchema,
+  requestTimeoutMs: z.number().int().positive().max(2_147_483_647).default(600_000),
+  streamIdleTimeoutMs: z.number().int().positive().max(2_147_483_647).default(300_000),
+  signatureCache: z.strictObject({
+    maxEntries: z.number().int().positive().default(1024),
+    maxBytes: z.number().int().positive().default(16 * MIB),
+  }).prefault({}),
+});
+
 /**
  * Per-provider file schemas, keyed by ProviderId.
  *
@@ -391,6 +403,7 @@ const PROVIDER_SCHEMAS = {
   codex: z.preprocess((raw) => injectKind(raw, "codex"), CodexProviderSchema).prefault({ kind: "codex" }),
   together: z.preprocess((raw) => injectKind(raw, "together"), TogetherProviderSchema).prefault({ kind: "together" }),
   kimi: z.preprocess((raw) => injectKind(raw, "kimi"), KimiProviderSchema).prefault({ kind: "kimi" }),
+  gemini: GeminiProviderSchema.prefault({}),
 } satisfies { readonly [K in ProviderId]: z.ZodType };
 
 const ProvidersSchema = z.object(PROVIDER_SCHEMAS).prefault({});
@@ -535,6 +548,7 @@ interface ProviderConfigShape {
   readonly codex: CodexProviderConfig;
   readonly together: TogetherProviderConfig;
   readonly kimi: KimiProviderConfig;
+  readonly gemini: GeminiProviderConfig;
 }
 
 export type TogetherProviderConfig = Readonly<Omit<z.infer<typeof TogetherProviderSchema>, "kind">>;
@@ -544,6 +558,11 @@ export type TogetherProviderConfig = Readonly<Omit<z.infer<typeof TogetherProvid
  * only when a `providers.kimi` block is in the user configuration or in SUBSWITCH_CONFIG.
  */
 export type KimiProviderConfig = Readonly<Omit<z.infer<typeof KimiProviderSchema>, "kind">> & {
+  readonly optedIn: boolean;
+};
+
+export type GeminiProviderConfig = Readonly<Omit<z.infer<typeof GeminiProviderSchema>, "signatureCache">> & {
+  readonly signatureCache: Readonly<z.infer<typeof GeminiProviderSchema>["signatureCache"]>;
   readonly optedIn: boolean;
 };
 
@@ -634,6 +653,13 @@ export type Credential =
       readonly renewal: "none";
     };
 
+type GeminiCredential = Extract<Credential, { kind: "native-keychain" }> & {
+  readonly defaultHost: typeof GEMINI_DEFAULT_HOST;
+  readonly keychainService: typeof GEMINI_KEYCHAIN_SERVICE;
+  readonly keychainAccount: typeof GEMINI_KEYCHAIN_ACCOUNT;
+  readonly loginCommand: typeof GEMINI_LOGIN_COMMAND;
+};
+
 type CredentialKind = Credential["kind"];
 
 export type CredentialKindTable<R> = {
@@ -691,6 +717,18 @@ export const kimiCredentialFor = (provider: KimiProviderConfig): Extract<Credent
   requireHttps: true,
 });
 
+export const geminiRuntimeConfigFor = (provider: GeminiProviderConfig): GeminiCredential & Pick<ProviderRuntimeConfig, "displayName" | "active"> => ({
+  displayName: "Gemini",
+  active: provider.optedIn,
+  kind: "native-keychain",
+  baseUrl: provider.baseUrl,
+  defaultHost: GEMINI_DEFAULT_HOST,
+  keychainService: GEMINI_KEYCHAIN_SERVICE,
+  keychainAccount: GEMINI_KEYCHAIN_ACCOUNT,
+  loginCommand: GEMINI_LOGIN_COMMAND,
+  renewal: "none",
+});
+
 /**
  * Total map from ProviderId to its config slice.
  *
@@ -720,6 +758,7 @@ const PROVIDER_CONFIG_ACCESSORS: Readonly<Record<ProviderId, (config: Config) =>
     active: config.providers.kimi.optedIn,
     ...kimiCredentialFor(config.providers.kimi),
   }),
+  gemini: ({ providers: { gemini } }) => geminiRuntimeConfigFor(gemini),
 };
 
 /**
@@ -744,6 +783,7 @@ export const aliasesByProvider = (config: Config): AliasesByProvider => ({
   codex: config.providers.codex.aliases,
   together: config.providers.together.aliases,
   kimi: config.providers.kimi.aliases,
+  gemini: config.providers.gemini.aliases,
 });
 
 // ---------------------------------------------------------------------------
@@ -974,6 +1014,7 @@ const PROVIDER_RESOLVERS: {
     reasoningCache: file.reasoningCache,
     optedIn,
   }),
+  gemini: (file, optedIn) => ({ ...file, optedIn }),
 };
 
 /**
@@ -1004,6 +1045,7 @@ export const resolveConfig = (file: FileConfig, configuredProviders: ReadonlySet
     codex: PROVIDER_RESOLVERS.codex(file.providers.codex, configuredProviders.has("codex")),
     together: PROVIDER_RESOLVERS.together(file.providers.together, configuredProviders.has("together")),
     kimi: PROVIDER_RESOLVERS.kimi(file.providers.kimi, configuredProviders.has("kimi")),
+    gemini: PROVIDER_RESOLVERS.gemini(file.providers.gemini, configuredProviders.has("gemini")),
   },
   limits: {
     maxBufferedBodyBytes: file.limits.maxBufferedBodyBytes,
@@ -1093,9 +1135,8 @@ const detectConfiguredProviders = (raw: unknown): ReadonlySet<ProviderId> => {
 /**
  * Dotted keys that a project `subswitch.config.json` can not set: explicit profiles
  * and routes, the whole Together block (it selects a paid key and its host), the whole
- * Kimi block (its presence turns on a sign-in route, and it selects the region, the
- * credential file and the hosts), every
- * sign-in address, every key that selects a credential file or folder, and every
+ * Kimi and Gemini blocks (their presence turns on a sign-in route), every sign-in
+ * address, every key that selects a credential file or folder, and every
  * `allowInsecureBaseUrl` opt-in. Only the user configuration or a
  * file selected with SUBSWITCH_CONFIG sets them, so a file in the current folder can
  * not change where subswitch sends a sign-in or which credential it loads.
@@ -1109,6 +1150,7 @@ const PROJECT_REFUSED_KEYS: readonly string[] = [
   "routes",
   "providers.together",
   "providers.kimi",
+  "providers.gemini",
   "anthropic.baseUrl",
   "anthropic.allowInsecureBaseUrl",
   ...PROVIDER_IDS.flatMap(id => [

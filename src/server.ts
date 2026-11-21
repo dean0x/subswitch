@@ -8,6 +8,7 @@ import { createTogetherHandler } from "./together-handler.js";
 import { createKimiAuth, type KimiStoreDeps } from "./kimi-native-auth.js";
 import { createKimiNativeStore } from "./kimi-native-store.js";
 import { createKimiHandler } from "./kimi-handler.js";
+import { GEMINI_LOGIN_COMMAND } from "./gemini-constants.js";
 import http from "node:http";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, Server } from "node:http";
@@ -49,6 +50,14 @@ import { codexIngressHealth } from "./codex-health.js";
 import { SharedRouting } from "./routing/shared-routing.js";
 import { RoutingError } from "./routing/routing-types.js";
 import { object as routingObject } from "./plain-object.js";
+
+const GEMINI_UNAVAILABLE_BODY = toAnthropicErrorBody("api_error",
+  `Gemini requests are unavailable in this build. The ${GEMINI_LOGIN_COMMAND} sign-in is not used.`);
+
+const geminiUnavailableHandler: ProviderHandler = {
+  handleMessages: async (_req, res) => { respondJson(res, 503, GEMINI_UNAVAILABLE_BODY); },
+  handleCountTokens: (_req, res) => { respondJson(res, 503, GEMINI_UNAVAILABLE_BODY); },
+};
 
 export interface ServerDeps {
   readonly sharedRouting?: SharedRouting;
@@ -109,6 +118,7 @@ export interface ProviderDepsById {
   readonly codex: undefined;
   readonly together: TogetherKeyReaderDeps;
   readonly kimi: KimiStoreDeps;
+  readonly gemini: undefined;
 }
 
 /** Injected provider deps, by provider id. buildDeps uses the live deps for a missing entry. */
@@ -310,6 +320,7 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
       // Without the block, the fixed local error makes no store and reads no credential, file or network.
       kimi: config.providers.kimi.optedIn ? createKimiProvider(config, logger, kimiDeps ?? liveKimiStoreDeps())
         : notOptedInHandler("Kimi", "kimi"),
+      gemini: config.providers.gemini.optedIn ? geminiUnavailableHandler : notOptedInHandler("Gemini", "gemini"),
     },
     togetherEnv: keyReaderDeps.env,
     resolve: (name) => resolveModelFromTable(table, name),
@@ -365,7 +376,7 @@ const buildHealthBody = (config: Config, destinations: readonly RoutingDestinati
         // A provider without its block is not configured, and health does not stat its file.
         ...(d.active ? withCredential<{ configured: boolean; keySource?: "env" | null }>(credential, {
           "oauth-file": ({ authFile }) => ({ configured: existsSync(authFile) }),
-          "native-keychain": () => ({ configured: true }),
+          "native-keychain": () => ({ configured: d.id !== "gemini" }),
           "api-key": () => {
             const configured = envKeyPresent(env);
             return { configured, keySource: configured ? "env" : null };
@@ -733,8 +744,12 @@ export const createProxyServer = (deps: ServerDeps): Server => {
         case "invalid_qualified": {
           route = "invalid_qualified";
           model = undefined;
-          res.writeHead(400, synthesizedHeaders());
-          res.end(toAnthropicErrorBody("invalid_request_error", "Invalid model id after the together: qualifier."));
+          if (decision.provider === "gemini") {
+            respondJson(res, 503, GEMINI_UNAVAILABLE_BODY);
+          } else {
+            res.writeHead(400, synthesizedHeaders());
+            res.end(toAnthropicErrorBody("invalid_request_error", "Invalid model id after the together: qualifier."));
+          }
           if (ingest.value.kind === "over_window") drainRejectedUpload(req);
           return;
         }

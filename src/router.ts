@@ -4,7 +4,7 @@ export type Route =
   | { readonly kind: "provider"; readonly provider: ProviderId; readonly model: string; readonly endpoint: "messages" | "count_tokens" }
   | { readonly kind: "anthropic" }
   | { readonly kind: "ambiguous"; readonly name: string; readonly providers: readonly ProviderId[] }
-  | { readonly kind: "invalid_qualified" }
+  | Extract<ModelResolution, { kind: "invalid_qualified" }>
   /** Colon-separated name whose prefix is not a known provider (e.g. "kimee:k2"). */
   | { readonly kind: "unknown_provider"; readonly qualifier: string };
 
