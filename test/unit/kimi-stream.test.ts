@@ -165,3 +165,50 @@ it("fails closed on data that is not JSON or a stream that does not start with m
   assertFailure((await translate("event: message_start\ndata: {not json\n\n")).frames, "Kimi stream contained data that is not JSON");
   assertFailure((await translate(textBlock(0, "early"))).frames, "Kimi stream did not start with message_start");
 });
+
+const invalidIndex = "Kimi stream contained an invalid content block index";
+const failureCases = [
+  ["fails closed on a second message_start", [messageStart], "Kimi stream contained a second message_start"],
+  ["fails closed on a negative block index", textBlock(-1, "invalid"), invalidIndex],
+  ["fails closed on a reused text block index", [...textBlock(0, "first"), ...textBlock(0, "second")], invalidIndex],
+  ["fails closed when a text block reuses a hidden index", [
+    ...thinkingBlock(0, "hidden thought", "hidden signature"), ...textBlock(0, "visible"),
+  ], invalidIndex],
+  ["fails closed on a stop for a closed block", [
+    ...textBlock(0, "done"), { type: "content_block_stop", index: 0 },
+  ], "Kimi stream closed a content block that is not open"],
+] as const;
+
+for (const [name, events, message] of failureCases) {
+  it(name, async () => {
+    const { frames } = await translate([messageStart, ...events, ...finish("end_turn")]);
+    assertFailure(frames, message);
+  });
+}
+
+it("fails closed on a complete event above the byte limit without sending its text", async () => {
+  const text = "é".repeat(600);
+  const { frames } = await translate([messageStart, ...textBlock(0, text), ...finish("end_turn")], { maxEventBytes: 1024 });
+  assertFailure(frames, "Kimi stream exceeded the event byte limit");
+  assert.equal(frames.join("").includes(text), false);
+});
+
+it("fails closed on an event with no JSON type", async () => {
+  const { frames } = await translate(`${sse([messageStart])}event: ping\ndata: {}\n\n${sse(finish("end_turn"))}`);
+  assertFailure(frames, "Kimi stream contained an event without a type");
+});
+
+it("omits an unknown event and reports unknown_event without a terminal error", async () => {
+  const { frames, warnings } = await translate([messageStart, { type: "fixture_unknown_event" }, ...finish("end_turn")]);
+  assert.deepEqual(warnings, ["unknown_event"]);
+  assert.deepEqual(payloads(frames).map((event) => event.type), ["message_start", "message_delta", "message_stop"]);
+});
+
+it("maps an unknown stop reason to end_turn and reports unknown_stop_reason", async () => {
+  const { frames, warnings } = await translate([messageStart, ...finish("fixture_unknown_reason")]);
+  const result = folded(frames);
+  assert.deepEqual(warnings, ["unknown_stop_reason"]);
+  assert.equal(frames.at(-1), 'event: message_stop\ndata: {"type":"message_stop"}\n\n');
+  assert.equal(result.kind, "message");
+  assert.equal(result.message["stop_reason"], "end_turn");
+});
