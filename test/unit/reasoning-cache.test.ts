@@ -89,6 +89,23 @@ describe("ReasoningCache", () => {
     assert.deepEqual(cache.get("c"), [7, 8, 9]);
   });
 
+  it("charges the key and value to the strict byte budget", () => {
+    const cache = new ReasoningCache(4, 10, true);
+    cache.put("éé", [1]);
+    cache.put("abcd", [2]);
+    assert.equal(cache.get("éé"), undefined);
+    assert.deepEqual(cache.get("abcd"), [2]);
+    assert.equal(cache.byteSize, 7);
+  });
+
+  it("does not replay an old value after an oversized replacement", () => {
+    const cache = new ReasoningCache(2, 10, true);
+    cache.put("a", [1]);
+    cache.put("a", ["a longer value"]);
+    assert.equal(cache.get("a"), undefined);
+    assert.equal(cache.byteSize, 0);
+  });
+
   it("tracks totalBytes correctly on key overwrite", () => {
     const cache = new ReasoningCache(100, 1000);
     cache.put("a", [1, 2, 3]); // JSON.stringify = "[1,2,3]" = 7 bytes

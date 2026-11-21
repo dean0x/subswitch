@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstatSync, readdirSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +32,11 @@ it("TP-47/48: attaches to the fake Gemini route and records its cancel and clean
     if (!line.startsWith(prefix)) return;
     clientFolder = line.slice(prefix.length);
     assert.deepEqual(readdirSync(clientFolder), ["package.json"]);
-    assert.throws(() => lstatSync(join(clientFolder ?? "", "..", "home", ".config", "subswitch", "config.json")), { code: "ENOENT" });
+    const userConfigDir = join(clientFolder, "..", "home", ".config", "subswitch");
+    assert.throws(() => lstatSync(join(userConfigDir, "config.json")), { code: "ENOENT" });
+    // Without the explicit dry-run config, run-action would read this invalid fixture and fail to attach.
+    mkdirSync(userConfigDir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(userConfigDir, "config.json"), "not JSON", { mode: 0o600, flag: "wx" });
   };
   const code = await main(["--dry-run", "--evidence-root", root], {
     env: { CI: "true" }, stdinIsTTY: false, stdoutIsTTY: false,

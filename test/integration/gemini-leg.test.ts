@@ -113,11 +113,11 @@ for (const source of ["generate", "stream", "bootstrap"] as const) {
         const frames = events(await first.text());
         assert.deepEqual(frames.at(-1), { type: "error", error: blocked });
       } else if (source === "bootstrap") {
-        await assertError(first, 500, { type: "api_error", message: "Gemini could not prepare the request." });
+        await assertError(first, 500, { type: "api_error", message: "Gemini could not prepare the request. Check your account, then restart Subswitch." });
       } else {
         await assertError(first, 403, blocked);
       }
-      assert.deepEqual(codes, ["account_blocked"]);
+      assert.deepEqual(codes, [source === "bootstrap" ? "bootstrap_blocked" : "account_blocked"]);
       assert.deepEqual(fake.execs, ["probe", "readSecret"]);
       const paths = source === "bootstrap" ? [BOOTSTRAP] : [BOOTSTRAP, GENERATE];
       assert.deepEqual(fake.upstream.requests.map(({ url }) => url), paths);

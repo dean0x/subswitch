@@ -489,6 +489,7 @@ that `SUBSWITCH_CONFIG` names. A project `subswitch.config.json` that sets
 
 The opt-in Gemini route is for Claude Code on macOS only. It does not work with the Codex client.
 The route is not ready for live use. It still needs confirmed model IDs and request details.
+The codec refuses images, unsupported system content and tool results marked as errors.
 
 Google's terms do not allow third-party tools such as Subswitch to use the Gemini subscription sign-in, and if you turn this route on, that choice is yours.
 

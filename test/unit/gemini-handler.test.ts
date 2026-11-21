@@ -182,6 +182,29 @@ it("clears the project after a generate 4xx and checks the project again on the 
   assert.deepEqual(calls.map(call => call.url), [bootstrapUrl, generateUrl, bootstrapUrl, generateUrl]);
 });
 
+it("keeps a rejected credential load at 500 without its cause text", async () => {
+  const rejected = async () => { throw new Error("fixture private error"); };
+  const { send, logs } = rig(async () => reply(), { auth: {
+    refreshable: true, getCredentials: rejected, forceRefresh: rejected,
+  } });
+  const res = await send();
+  assert.equal(res.status, 500);
+  assert.match(res.body, /Gemini could not load the sign-in/);
+  assert.doesNotMatch(JSON.stringify(logs) + res.body, /fixture private error/);
+});
+
+it("renders a transport interruption through the fixed Gemini error table in both reply modes", async () => {
+  for (const stream of [false, true]) {
+    const { send } = rig(async () => new Response(new ReadableStream({
+      start(controller) { controller.error(new Error("private transport detail")); },
+    })));
+    const res = await send({ ...request, stream });
+    assert.equal(res.status, stream ? 200 : 502);
+    assert.match(res.body, /Gemini did not complete the request\. Retry later\./);
+    assert.doesNotMatch(res.body, /private transport detail/);
+  }
+});
+
 it("keeps count_tokens local and refuses requests when not opted in", async () => {
   const active = rig(async () => reply());
   const count = new ClientResponse();

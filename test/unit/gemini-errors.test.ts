@@ -48,15 +48,16 @@ it("passes only a bounded digit-only retry-after header", () => {
 it("uses a closed table with fixed client and log mappings", () => {
   assert.deepEqual(Object.keys(GEMINI_ERRORS).sort(), [
     "RESOURCE_EXHAUSTED", "TOS_VIOLATION", "UNSUPPORTED_CLIENT", "VALIDATION_REQUIRED", "account_blocked",
-    "cancelled", "denied", "exec_failed", "image_unsupported", "invalid_record", "invalid_request", "malformed",
-    "missing", "output_too_large", "rate_limited", "sign_in_again", "signature_missing", "timeout",
+    "bootstrap_blocked", "bootstrap_busy", "bootstrap_cancelled", "bootstrap_credential", "bootstrap_project", "bootstrap_response",
+    "bootstrap_timeout", "bootstrap_transport", "cancelled", "credential_failed", "denied", "exec_failed", "image_unsupported", "invalid_record", "invalid_request", "malformed",
+    "missing", "output_too_large", "rate_limited", "request_timeout", "sign_in_again", "signature_missing", "timeout",
     "unsupported_platform", "upstream_error",
   ]);
   for (const code of Object.keys(GEMINI_ERRORS) as (keyof typeof GEMINI_ERRORS)[]) {
     const entry = GEMINI_ERRORS[code];
     const error = toGeminiProxyError(code);
     assert.equal(proxyErrorToAnthropic(error).status, entry.status);
-    assert.match(entry.event, /^gemini_(?:upstream_error|credential_load_failed|token_refresh_failed|translate_warning)$/);
+    assert.match(entry.event, /^gemini_(?:upstream_error|credential_load_failed|token_refresh_failed|translate_warning|stream_interrupted)$/);
     assert.equal(error.message, `${entry.text} ${entry.hint}`);
   }
 });

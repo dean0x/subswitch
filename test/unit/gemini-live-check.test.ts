@@ -44,16 +44,42 @@ it("TP-45: reserves bootstrap, generation, tokens and cancel before the send bou
   const probe = make("probe", 21);
   await probe(BOOTSTRAP_URL, init);
   for (let i = 0; i < 3; i += 1) await probe(GENERATE_URL, init);
-  await assert.rejects(probe(BOOTSTRAP_URL, init), { message: "cost_cap" });
-  await assert.rejects(probe(GENERATE_URL, init), { message: "cost_cap" });
-  await assert.rejects(probe(BOOTSTRAP_URL.replace("loadCodeAssist", "onboardUser"), init), { message: "cost_cap" });
-  await assert.rejects(make("probe", 1, 0, true)(GENERATE_URL, init), { message: "cost_cap" });
+  assert.equal(ledger.used.probe.generate, 3);
   assert.equal(sent, 4);
   const session = make("session", 341, 170, true);
   for (let i = 0; i < 6; i += 1) await session(GENERATE_URL, init);
-  await assert.rejects(session(GENERATE_URL, init), { message: "cost_cap" });
   assert.equal(sent, 10);
   assert.deepEqual(ledger.reserveCancel(), { ok: true, value: undefined });
+  await assert.rejects(session(GENERATE_URL, init), { message: "cost_cap" });
+  assert.deepEqual(ledger.reserveCancel(), { ok: false, error: "cost_cap" });
+});
+
+it("stops active and later calls after the first refused operation", async () => {
+  const ledger = createLedger();
+  const signals: AbortSignal[] = [];
+  const send = cappedFetch(ledger, () => ({ phase: "probe", output: 1, thinking: 0, tools: false,
+    deadline: performance.now() + 5000 }), async (_url, init) => {
+    assert.ok(init?.signal);
+    signals.push(init.signal);
+    return new Response(null);
+  });
+  const init = { method: "POST", body: "{}" };
+  await send(BOOTSTRAP_URL, init);
+  await assert.rejects(send(BOOTSTRAP_URL.replace("loadCodeAssist", "onboardUser"), init), { message: "cost_cap" });
+  await assert.rejects(send(GENERATE_URL, init), { message: "cost_cap" });
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0]?.aborted, true);
+});
+
+it("refuses extra operations independently of the other caps", () => {
+  const budget = { phase: "probe", output: 1, thinking: 0, tools: false, deadline: performance.now() + 5000 } as const;
+  for (const kind of ["load", "generate"] as const) {
+    const ledger = createLedger();
+    for (let i = 0; i < (kind === "load" ? 1 : 3); i++) assert.ok(ledger.reserve(kind, budget).ok);
+    assert.deepEqual(ledger.reserve(kind, budget), { ok: false, error: "cost_cap" });
+  }
+  const ledger = createLedger();
+  assert.ok(ledger.reserveCancel().ok);
   assert.deepEqual(ledger.reserveCancel(), { ok: false, error: "cost_cap" });
 });
 
@@ -84,6 +110,15 @@ it("TP-45: caps total output and thinking tokens across sends", async () => {
     await assert.rejects(send(GENERATE_URL, init), { message: "cost_cap" });
     assert.equal(sent, 1);
   }
+});
+
+it("rejects a redirected reply before the byte counter can hide its origin", async () => {
+  const ledger = createLedger();
+  const redirected = Object.defineProperty(new Response("fixture"), "redirected", { value: true });
+  const send = cappedFetch(ledger, () => ({ phase: "probe", output: 1, thinking: 0, tools: false,
+    deadline: performance.now() + 5000 }), async () => redirected);
+  await assert.rejects(send(BOOTSTRAP_URL, { method: "POST", body: "{}" }), { message: "broken_cap" });
+  assert.equal(ledger.failure, "broken_cap");
 });
 
 it("TP-45: bounds the total probe reply bytes at 1 MiB", async () => {

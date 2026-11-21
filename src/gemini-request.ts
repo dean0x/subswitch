@@ -1,5 +1,5 @@
 import { buildInstructions } from "./anthropic-parse.js";
-import type { AnthropicMessage, AnthropicRequest } from "./anthropic-wire-types.js";
+import { AnthropicRequestSchema, type AnthropicMessage, type AnthropicRequest } from "./anthropic-wire-types.js";
 import type { GeminiErrorCode } from "./gemini-errors.js";
 import { isPlainObject } from "./plain-object.js";
 import type { ReasoningCache } from "./reasoning-cache.js";
@@ -60,6 +60,18 @@ export interface GeminiRequestFrame {
 }
 
 const invalid = err("invalid_request" as const);
+
+// Ingress limits bytes. Bound nesting too, before the conversation key or the wire body needs a JSON serializer.
+const withinDepth = (value: unknown, remaining: number): boolean => {
+  if (value === null || typeof value !== "object") return true;
+  return remaining > 0 && Object.values(value).every(child => withinDepth(child, remaining - 1));
+};
+
+export const parseGeminiInput = (value: unknown): RequestResult<AnthropicRequest> => {
+  if (!withinDepth(value, 128)) return invalid;
+  const parsed = AnthropicRequestSchema.safeParse(value);
+  return parsed.success ? ok(parsed.data) : invalid;
+};
 const imageUnsupported = err("image_unsupported" as const);
 const signatureMissing = err("signature_missing" as const);
 const nonempty = (value: unknown): value is string => typeof value === "string" && value !== "";
@@ -114,9 +126,9 @@ const toolOutput = (content: unknown): RequestResult<string> => {
   return ok(texts.join("\n"));
 };
 
-const mapResult = (block: Block, calls: ReadonlyMap<string, Call>): RequestResult<Part> => {
-  const clientId = block["tool_use_id"];
-  const call = nonempty(clientId) ? calls.get(clientId) : undefined;
+const mapResult = (block: Block, call: Call | undefined): RequestResult<Part> => {
+  // No qualified part represents a tool failure. Never report one as a successful result.
+  if (block["is_error"] !== undefined && block["is_error"] !== false) return invalid;
   if (call === undefined) return invalid;
   const output = toolOutput(block["content"]);
   if (!output.ok) return output;
@@ -126,6 +138,7 @@ const mapResult = (block: Block, calls: ReadonlyMap<string, Call>): RequestResul
 const mapMessages = (messages: readonly AnthropicMessage[], options: GeminiRequestOptions): RequestResult<Content[]> => {
   const contents: Content[] = [];
   const calls = new Map<string, Call>();
+  const wireIds = new Set<string>();
   for (const { role, content } of messages) {
     if (role !== "assistant" && role !== "user") return invalid;
     const defaultRole = role === "assistant" ? "model" : "user";
@@ -151,16 +164,21 @@ const mapMessages = (messages: readonly AnthropicMessage[], options: GeminiReque
           break;
         case "tool_use": {
           const clientId = block["id"];
-          if (role !== "assistant" || !nonempty(clientId) || calls.has(clientId)) return invalid;
+          if (role !== "assistant" || !nonempty(clientId)) return invalid;
           const part = mapCall(block, options);
           if (!part.ok) return part;
-          calls.set(clientId, part.value.functionCall);
+          const call = part.value.functionCall;
+          if (wireIds.has(call.id)) return invalid;
+          wireIds.add(call.id);
+          calls.set(clientId, call);
           append("model", part.value);
           break;
         }
         case "tool_result": {
-          if (role !== "user") return invalid;
-          const part = mapResult(block, calls);
+          const id = block["tool_use_id"];
+          if (role !== "user" || !nonempty(id)) return invalid;
+          const part = mapResult(block, calls.get(id));
+          calls.delete(id);
           if (!part.ok) return part;
           append("model", part.value);
           break;
@@ -177,6 +195,8 @@ export const buildGeminiRequest = (input: AnthropicRequest, options: GeminiReque
   if ((Array.isArray(input.system) && input.system.some(isImage)) || input.messages.some(({ content }) => hasImage(content))) {
     return imageUnsupported;
   }
+  if (Array.isArray(input.system) && input.system.some(block => block["type"] !== "thinking" && block["type"] !== "redacted_thinking" &&
+    (block["type"] !== "text" || typeof block["text"] !== "string"))) return invalid;
   const contents = mapMessages(input.messages, options);
   if (!contents.ok) return contents;
   const instructions = buildInstructions(input.system);

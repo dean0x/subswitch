@@ -22,7 +22,7 @@ import { globSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
-import { GEMINI_TERMS } from "../../src/gemini-constants.js";
+import { GEMINI_TERMS, GEMINI_USER_AGENT } from "../../src/gemini-constants.js";
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../src");
 
@@ -366,6 +366,13 @@ it("G7: Gemini source has no Keychain mutations, client secrets or refresh grant
   assert.doesNotMatch("refresh_token: z.string()", GEMINI_GRANT);
 });
 
+// The tag workflow runs these tests before it builds or publishes the package.
+it("requires a qualified Gemini user agent for a release tag", {
+  skip: !process.env["GITHUB_REF"]?.startsWith("refs/tags/v") && "not a release tag",
+}, () => {
+  assert.notEqual(GEMINI_USER_AGENT, "subswitch-gemini-unqualified", "Qualify the Gemini user agent before release");
+});
+
 it("TP-41: the Gemini terms sentence appears once in source and once in the README", () => {
   const prefix = "Google's terms do not allow third-party tools such as Subswitch";
   const occurrences = (text: string) => text.split(prefix).length - 1;
@@ -422,7 +429,7 @@ describe("source-text guards: the provider live checks", () => {
 // G6: the public docs, the source and the Kimi check files hold no local text: no home
 // folder path, no workspace id and no path of a private planning folder. The paths of this
 // machine (its home folder and the folder that holds this repo) are checked as values too.
-const PUBLIC_TEXT = ["*.md", "e2e/**/*.md", "src/**/*.{ts,mts,cts,js,mjs,cjs}", "e2e/gates/kimi-*"];
+const PUBLIC_TEXT = ["*.md", "e2e/**/*.md", "src/**/*.{ts,mts,cts,js,mjs,cjs}", "e2e/gates/{kimi,gemini}-*", "e2e/gates/live-check-common.ts"];
 const PRIVATE_SHAPES: readonly RegExp[] = [
   /\/(?:Users|home)\/[A-Za-z0-9._-]+\//,
   /\b[A-Za-z]:\\{1,2}Users\\{1,2}[A-Za-z0-9._-]+/,
@@ -437,9 +444,10 @@ const privateText = (text: string, paths: readonly string[] = machinePaths()): b
   PRIVATE_SHAPES.some((shape) => shape.test(text)) || paths.some((path) => text.includes(path));
 
 describe("source-text guards: public text", () => {
-  it("G6: no public doc, source file or Kimi check file holds local text", () => {
+  it("G6: no public doc, source file or provider check file holds local text", () => {
     const files = globSync(PUBLIC_TEXT, { cwd: REPO_DIR });
-    for (const name of ["README.md", "SECURITY.md", "CHANGELOG.md", "src/kimi-native-auth.ts", LIVE_CHECK]) {
+    for (const name of ["README.md", "SECURITY.md", "CHANGELOG.md", "src/kimi-native-auth.ts", LIVE_CHECK,
+      "e2e/gates/gemini-live-check.ts", "e2e/gates/live-check-common.ts"]) {
       assert.ok(files.includes(name), `The search must find ${name}`);
     }
     assert.deepEqual(files.filter((file) => privateText(readRepo(file))), [], "Remove the local text from these files");

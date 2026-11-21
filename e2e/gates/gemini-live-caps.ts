@@ -39,12 +39,19 @@ export const createLedger = (initial: Counts = emptyCounts()) => {
   let used = { ...initial, probe: { ...initial.probe }, session: { ...initial.session } };
   let bytes = 0;
   let failure: CapCode | undefined;
-  const refuse = (code: CapCode): Result<never, CapCode> => { failure ??= code; return err(code); };
+  const stop = new AbortController();
+  const refuse = (code: CapCode): Result<never, CapCode> => {
+    failure ??= code;
+    stop.abort(new Error(failure));
+    return err(failure);
+  };
 
   return {
     get used(): Counts { return { ...used, probe: { ...used.probe }, session: { ...used.session } }; },
     get failure(): CapCode | undefined { return failure; },
+    signal: stop.signal,
     reserve(kind: "load" | "generate", budget: RequestBudget): Result<void, CapCode> {
+      if (failure !== undefined) return err(failure);
       if (!CountsSchema.safeParse(used).success || !Number.isSafeInteger(budget.output) || budget.output < 1 ||
         !Number.isSafeInteger(budget.thinking) || budget.thinking < 0 || !Number.isFinite(budget.deadline)) return refuse("broken_cap");
       if (performance.now() >= budget.deadline || (budget.phase === "probe" && budget.tools)) return refuse("cost_cap");
@@ -58,12 +65,14 @@ export const createLedger = (initial: Counts = emptyCounts()) => {
       return ok(undefined);
     },
     reserveCancel(): Result<void, CapCode> {
+      if (failure !== undefined) return err(failure);
       if (!CountsSchema.safeParse(used).success) return refuse("broken_cap");
       if (used.cancel >= CAPS.cancel) return refuse("cost_cap");
       used = { ...used, cancel: used.cancel + 1 };
       return ok(undefined);
     },
     reserveBytes(size: number): Result<void, CapCode> {
+      if (failure !== undefined) return err(failure);
       if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(bytes) || bytes < 0) return refuse("broken_cap");
       if (size > PROBE_BYTES - bytes) return refuse("cost_cap");
       bytes += size;
@@ -89,8 +98,13 @@ export const cappedFetch = (ledger: Ledger, current: () => RequestBudget | undef
     const time = Math.min(budget.phase === "probe" ? PROBE_MS : REQUEST_MS, Math.ceil(budget.deadline - performance.now()));
     if (time < 1 || init.signal?.aborted) { ledger.refuse("cost_cap"); throw new Error("cost_cap"); }
     const deadline = AbortSignal.timeout(time);
-    const signal = init.signal == null ? deadline : AbortSignal.any([init.signal, deadline]);
+    const signal = AbortSignal.any([deadline, ledger.signal, ...(init.signal == null ? [] : [init.signal])]);
     const response = await transport(input, { ...init, redirect: "error", signal });
+    if (response.redirected) {
+      void response.body?.cancel().catch(() => undefined);
+      ledger.refuse("broken_cap");
+      throw new Error("broken_cap");
+    }
     if (budget.phase !== "probe" || response.body === null) return response;
     const readable = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {

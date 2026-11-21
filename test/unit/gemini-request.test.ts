@@ -3,7 +3,7 @@ import { it } from "node:test";
 import type { AnthropicRequest } from "../../src/anthropic-wire-types.js";
 import { proxyErrorToAnthropic } from "../../src/errors.js";
 import { toGeminiProxyError } from "../../src/gemini-errors.js";
-import { buildGeminiRequest, geminiClientToolId, geminiSignatureKey } from "../../src/gemini-request.js";
+import { buildGeminiRequest, geminiClientToolId, geminiSignatureKey, parseGeminiInput } from "../../src/gemini-request.js";
 import { ReasoningCache } from "../../src/reasoning-cache.js";
 
 const call = (id: string, name = "lookup") => ({ type: "tool_use", id, name, input: { query: name } });
@@ -127,6 +127,40 @@ it("uses fixed errors for an unmatched result and an unqualified content block",
   const { build } = rig();
   for (const block of [result("client value"), { type: "document", source: "client value" }]) {
     assert.deepEqual(build(request([{ role: "user", content: [block] }])), { ok: false, error: "invalid_request" });
+  }
+});
+
+it("refuses duplicate wire call IDs and duplicate results", () => {
+  const { build } = rig();
+  const encoded = geminiClientToolId("a", false);
+  assert.deepEqual(build(request([{ role: "assistant", content: [call("a"), call(encoded)] }])),
+    { ok: false, error: "invalid_request" });
+  assert.deepEqual(build(request([{ role: "assistant", content: [call(encoded)] },
+    { role: "user", content: [result(encoded), result(encoded)] }])), { ok: false, error: "invalid_request" });
+});
+
+it("refuses a failed tool result instead of sending it as a success", () => {
+  const { build } = rig();
+  const withResult = (is_error: unknown) => request([
+    { role: "assistant", content: [call("fixture-call")] },
+    { role: "user", content: [{ ...result("fixture-call"), is_error }] },
+  ]);
+  assert.ok(build(withResult(false)).ok);
+  for (const flag of [true, "false"]) assert.deepEqual(build(withResult(flag)), { ok: false, error: "invalid_request" });
+});
+
+it("bounds request nesting before the codec or conversation key uses it", () => {
+  let input: object = {};
+  for (let i = 0; i < 128; i++) input = { item: input };
+  const message = (value: object) => request([{ role: "assistant", content: [{ ...call("a"), input: value }] }]);
+  assert.ok(parseGeminiInput(message({ item: 1 })).ok);
+  assert.deepEqual(parseGeminiInput(message(input)), { ok: false, error: "invalid_request" });
+});
+
+it("refuses unsupported system content instead of dropping an instruction", () => {
+  const { build } = rig();
+  for (const block of [{ type: "document" }, { type: "text", text: 1 }]) {
+    assert.deepEqual(build({ ...request([]), system: [text("retain this"), block] }), { ok: false, error: "invalid_request" });
   }
 });
 

@@ -234,7 +234,7 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 - With the block: the row shows the configured file path, `token expires:` and `renewal due:`. Doctor gets only the store maker and the clock (`kimiStore` in `DoctorIO`, built by `liveKimiStoreDeps` in `src/cli.ts`), not the fetch, so it can not renew.
 - Fault split: `invalid_record`, `unsafe_path`, `layout_unsupported` and `platform_unsupported` are an invalid file. `credential_missing` is a missing file. Other codes are an unreadable file. All with a block are failures. The login hint comes from `kimiCredentialFor`.
 
-**Read-only Keychain (`native-keychain` kind).** No provider uses this kind yet. Doctor probes only attributes and reports the modification time. It makes no probe for an inactive provider. Health reports whether the provider is active, with no Keychain access.
+**Read-only Keychain (`native-keychain` kind).** Gemini uses this kind. Doctor probes only attributes and reports the modification time. It makes no probe for an inactive provider. Health reports whether the provider is active, with no Keychain access.
 
 ### src/agent-scan.ts — Agent frontmatter scanner
 

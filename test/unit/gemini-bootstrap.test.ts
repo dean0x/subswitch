@@ -5,8 +5,8 @@ import { PassThrough } from "node:stream";
 import { it } from "node:test";
 import { gzipSync } from "node:zlib";
 import { createGeminiAuth } from "../../src/gemini-auth.js";
-import { createGeminiBootstrap, geminiPrepareErrorCodes, type GeminiBootstrapDeps } from "../../src/gemini-bootstrap.js";
-import { createGeminiAccountBlockLatch } from "../../src/gemini-errors.js";
+import { createGeminiBootstrap, type GeminiBootstrapDeps } from "../../src/gemini-bootstrap.js";
+import { createGeminiAccountBlockLatch, geminiPrepareErrorCodes } from "../../src/gemini-errors.js";
 import type { ProviderCredential } from "../../src/provider-auth.js";
 import { err, ok } from "../../src/result.js";
 import { runTranslatedLeg } from "../../src/translated-leg.js";
@@ -178,6 +178,20 @@ it("does not cancel a flight while another request waits for it", async (t) => {
   resolve(projectResponse());
   assert.deepEqual(await waiting, ok(project));
   assert.equal(fetchRaw.mock.callCount(), 1);
+});
+
+it("keeps a bootstrap account refusal even after the caller leaves", async () => {
+  const { promise, resolve } = deferred<Response>();
+  const { loadProject, accountBlock } = rig(async () => promise);
+  const client = new AbortController();
+  const waiting = loadProject(first, client.signal);
+  await Promise.resolve();
+  client.abort();
+  assert.deepEqual(await waiting, failed("bootstrap_cancelled"));
+  resolve(new Response(null, { status: 403 }));
+  await new Promise<void>(done => setImmediate(done));
+  assert.ok(accountBlock.isBlocked());
+  assert.deepEqual(await loadProject(second, activeSignal()), failed("account_blocked"));
 });
 
 it("does not cache a 401 from loadCodeAssist", async () => {

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { abortable } from "./abortable.js";
 import { decodeBody } from "./content-encoding.js";
 import { GEMINI_BOOTSTRAP_PATH, GEMINI_DEFAULT_HOST } from "./gemini-constants.js";
-import type { GeminiAccountBlockLatch } from "./gemini-errors.js";
+import type { GeminiAccountBlockLatch, GeminiPrepareCode } from "./gemini-errors.js";
 import type { ProviderCredential } from "./provider-auth.js";
 import { err, ok, type Result } from "./result.js";
 import type { PrepareBodyError } from "./translated-leg.js";
@@ -19,12 +19,6 @@ const DEADLINE = Symbol("Gemini bootstrap deadline");
 const UNQUALIFIED_BOOTSTRAP_BODY = "{}";
 // [D4] Replace this extractor with the qualified project field and schema.
 const extractUnqualifiedProject = (_body: unknown): undefined => undefined;
-
-const ERROR_CODES = [
-  "account_blocked", "bootstrap_busy", "bootstrap_cancelled", "bootstrap_credential",
-  "bootstrap_project", "bootstrap_response", "bootstrap_timeout", "bootstrap_transport",
-] as const;
-export const geminiPrepareErrorCodes: ReadonlySet<string> = new Set(ERROR_CODES);
 
 export interface GeminiBootstrapDeps {
   readonly accountBlock: GeminiAccountBlockLatch;
@@ -45,7 +39,7 @@ interface Flight {
 }
 type Entry = Flight | { readonly kind: "project"; readonly id: string };
 
-const failed = (errorCode: (typeof ERROR_CODES)[number]) => err({ kind: "failed" as const, errorCode });
+const failed = (errorCode: GeminiPrepareCode) => err({ kind: "failed" as const, errorCode });
 
 const accessToken = (credential: Credential): string | undefined => {
   const header = credential.authHeaders.authorization;
@@ -88,6 +82,12 @@ export const createGeminiBootstrap = ({ accountBlock, fetchRaw, clock,
       method: "POST", redirect: "error", signal, body: UNQUALIFIED_BOOTSTRAP_BODY,
       headers: { authorization: `Bearer ${access}`, "content-type": "application/json", "accept-encoding": "identity" },
     });
+    // A refusal applies to the account even if the last waiter has left.
+    if (response.status === 403) {
+      discard(response.body);
+      accountBlock.block();
+      return failed("account_blocked");
+    }
     if (signal.aborted) {
       discard(response.body);
       return failed("bootstrap_cancelled");
@@ -99,11 +99,6 @@ export const createGeminiBootstrap = ({ accountBlock, fetchRaw, clock,
     if (!response.ok) {
       discard(response.body);
       if (response.status === 401) return err({ kind: "unauthorized" });
-      if (response.status === 403) {
-        // No qualified reason parser exists yet. Treat every bootstrap 403 as an unknown 403.
-        accountBlock.block();
-        return failed("account_blocked");
-      }
       return failed("bootstrap_response");
     }
     try {

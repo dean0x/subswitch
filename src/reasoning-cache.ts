@@ -18,8 +18,8 @@ const computeBytes = (items: readonly unknown[]): number => JSON.stringify(items
  * `get` refreshes recency but never removes: Claude Code may retry a request and
  * re-ask for the same call_id.
  *
- * Edge case: a single oversized entry (bytes > maxBytes) degenerates the cache to
- * 1 entry — strictly better than a guaranteed miss.
+ * The default mode retains one oversized entry. Strict mode counts the UTF-8 bytes
+ * of each key and its serialized items. An oversized replacement leaves a cache miss.
  */
 export class ReasoningCache {
   private readonly entries = new Map<string, CacheEntry>();
@@ -35,8 +35,7 @@ export class ReasoningCache {
   }
 
   put(callId: string, items: readonly unknown[]): void {
-    const bytes = this.strictByteBound ? Buffer.byteLength(JSON.stringify(items)) : computeBytes(items);
-    if (this.strictByteBound && bytes > this.maxBytes) return;
+    const bytes = this.strictByteBound ? Buffer.byteLength(callId) + Buffer.byteLength(JSON.stringify(items)) : computeBytes(items);
 
     // Remove existing entry first so a key overwrite correctly subtracts its old bytes.
     const existing = this.entries.get(callId);
@@ -45,6 +44,7 @@ export class ReasoningCache {
       this.entries.delete(callId);
     }
 
+    if (this.strictByteBound && bytes > this.maxBytes) return;
     this.entries.set(callId, { items, bytes });
     this.totalBytes += bytes;
 

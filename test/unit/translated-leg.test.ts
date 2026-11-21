@@ -55,6 +55,14 @@ const response = (): ServerResponse => {
   return res;
 };
 
+it("limits aggregate frames by UTF-8 bytes", async () => {
+  const res = response();
+  await runTranslatedLeg(res, options({ maxAggregateBytes: 3, fetchImpl: async () => new Response("éé"),
+    aggregateFrames: () => assert.fail("An incomplete response must not reach the aggregator"),
+  }));
+  assert.equal(res.statusCode, 502);
+});
+
 it("sets the close listener before credential load", async () => {
   const res = response();
   const { auth } = options();

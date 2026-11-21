@@ -55,8 +55,8 @@ export interface TranslatedLegOptions<C> {
   readonly prepareBody?: (credential: C, signal: AbortSignal) => Promise<Result<object, PrepareBodyError>>;
   /** Fixed diagnostic codes from the provider. Other preparation failures log "unknown". */
   readonly prepareErrorCodes?: ReadonlySet<string>;
-  /** Fixed client text for a preparation failure, not an auth failure. */
-  readonly prepareFailureMessage?: string;
+  /** A provider can replace the runner's local failures with its own closed error table. */
+  readonly renderRunnerError?: (error: ProxyError, diagnostic?: string) => ProxyError;
   readonly buildHeaders: (credential: C) => Record<string, string>;
   readonly createTranslator: () => { readonly parser: Transform; readonly translator: Transform };
   readonly aggregateFrames: (frames: readonly string[]) => Result<AggregateOutcome, ProxyError>;
@@ -71,7 +71,11 @@ export interface TranslatedLegOptions<C> {
 type ReplyError = (error: ProxyError) => void;
 type FramePipeline = readonly [Readable, Transform, Transform];
 
-const timeoutError = (name: string): ProxyError => ({ kind: "timeout", message: `${name} request timed out` });
+const runnerError = <C>(options: TranslatedLegOptions<C>, error: ProxyError, diagnostic?: string): ProxyError =>
+  options.renderRunnerError?.(error, diagnostic) ?? error;
+
+const timeoutError = <C>(options: TranslatedLegOptions<C>): ProxyError =>
+  runnerError(options, { kind: "timeout", message: `${options.name} request timed out` });
 
 const errorName = (cause: unknown): string => cause instanceof Error ? cause.name : "unknown";
 
@@ -83,10 +87,9 @@ const prepareRejectionCode = (cause: unknown): string => {
   return PREPARE_ERROR_NAMES.has(name) ? name : "unknown";
 };
 
-const credentialLoadFailure = <C>(options: TranslatedLegOptions<C>, errorCode: string,
-  message = `${options.name} credential load failed`): ProxyError => {
+const credentialLoadFailure = <C>(options: TranslatedLegOptions<C>, errorCode: string): ProxyError => {
   options.logger.log("error", options.events.credentialLoadFailed, { model: options.model, errorCode });
-  return { kind: "upstream", status: 500, message };
+  return runnerError(options, { kind: "upstream", status: 500, message: `${options.name} credential load failed` }, errorCode);
 };
 
 /** End the wait on abort, even if the operation does not stop. */
@@ -103,7 +106,7 @@ const waitForAuthStep = async <C, T, E>(res: ServerResponse, options: Translated
   }
   if (res.destroyed || res.writableEnded) return;
   if (signal.aborted) {
-    replyError(timeoutError(options.name));
+    replyError(timeoutError(options));
     return;
   }
   if (failure !== undefined) replyError(failure);
@@ -128,14 +131,13 @@ const requestAttempt = async <C>(res: ServerResponse, options: TranslatedLegOpti
       prepareRejectionCode);
     if (prepared === undefined || res.destroyed || res.writableEnded) return;
     if (signal.aborted) {
-      replyError(timeoutError(name));
+      replyError(timeoutError(options));
       return;
     }
     if (!prepared.ok) {
       if (prepared.error.kind === "unauthorized") return "unauthorized";
       const { errorCode } = prepared.error;
-      replyError(credentialLoadFailure(options, options.prepareErrorCodes?.has(errorCode) ? errorCode : "unknown",
-        options.prepareFailureMessage));
+      replyError(credentialLoadFailure(options, options.prepareErrorCodes?.has(errorCode) ? errorCode : "unknown"));
       return;
     }
     body = prepared.value;
@@ -151,7 +153,7 @@ const requestAttempt = async <C>(res: ServerResponse, options: TranslatedLegOpti
     });
   } catch {
     if (!res.writableEnded && !res.destroyed) {
-      replyError(signal.aborted ? timeoutError(name) : { kind: "upstream", message: `${name} upstream unreachable` });
+      replyError(signal.aborted ? timeoutError(options) : runnerError(options, { kind: "upstream", message: `${name} upstream unreachable` }));
     }
   }
 };
@@ -169,7 +171,7 @@ const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOpt
     if (response === undefined) return;
     if (response !== "unauthorized" && (response.status !== 401 || attempt + 1 === maxAttempts)) return response;
     if (attempt + 1 === maxAttempts) {
-      replyError({ kind: "auth", message: `${name} request unauthorized` });
+      replyError(runnerError(options, { kind: "auth", message: `${name} request unauthorized` }));
       return;
     }
     logger.log("warn", events.upstream401Refreshing, { model });
@@ -195,7 +197,7 @@ const relayUpstreamError = async <C>(res: ServerResponse, options: TranslatedLeg
   const detail = options.abortOnResponseTimeout ? await peekErrorBody(upstream, signal)
     : await readBoundedText(upstream.body, ERROR_BODY_PEEK_BYTES);
   if (options.abortOnResponseTimeout && signal.aborted) {
-    replyError(timeoutError(options.name));
+    replyError(timeoutError(options));
     return;
   }
   if (limitKey !== undefined) {
@@ -207,6 +209,10 @@ const relayUpstreamError = async <C>(res: ServerResponse, options: TranslatedLeg
   const error = options.renderUpstreamError(upstream.status, detail, upstream.headers);
   respondJson(res, error.status, toAnthropicErrorBody(error.type, error.message), error.headers);
 };
+
+const streamFailure = <C>(options: TranslatedLegOptions<C>, signal: AbortSignal): ProxyError =>
+  signal.aborted && options.renderRunnerError !== undefined ? timeoutError(options)
+    : runnerError(options, { kind: "upstream", message: `${options.name} stream interrupted` });
 
 const streamFrames = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, streams: FramePipeline,
   signal: AbortSignal): Promise<void> => {
@@ -222,7 +228,8 @@ const streamFrames = async <C>(res: ServerResponse, options: TranslatedLegOption
   } catch {
     options.logger.log("warn", options.events.streamInterrupted, { model: options.model });
     if (!res.writableEnded && !res.destroyed) {
-      res.write(toAnthropicErrorSse("api_error", `${options.name} stream interrupted`));
+      const error = streamFailure(options, signal);
+      res.write(toAnthropicErrorSse("api_error", error.message));
       res.end();
     }
   }
@@ -236,7 +243,7 @@ const collectFrames = async <C>(res: ServerResponse, options: TranslatedLegOptio
     await pipeline(...streams, async (source) => {
       for await (const chunk of source) {
         const frame = String(chunk);
-        framesBytes += frame.length;
+        framesBytes += Buffer.byteLength(frame);
         // Reject the pipeline immediately at the bound. Do not aggregate partial frames.
         if (framesBytes > options.maxAggregateBytes) throw new Error("sse_aggregate_too_large");
         frames.push(frame);
@@ -244,8 +251,8 @@ const collectFrames = async <C>(res: ServerResponse, options: TranslatedLegOptio
     });
   } catch {
     replyError(signal.aborted && options.abortOnResponseTimeout
-      ? timeoutError(options.name)
-      : { kind: "upstream", message: `${options.name} stream interrupted` });
+      ? timeoutError(options)
+      : streamFailure(options, signal));
     return;
   }
   const aggregated = options.aggregateFrames(frames);
@@ -283,13 +290,13 @@ export const runTranslatedLeg = async <C>(res: ServerResponse, options: Translat
       return;
     }
     if (upstream.body === null) {
-      replyError({ kind: "upstream", message: `${options.name} upstream returned an empty body` });
+      replyError(runnerError(options, { kind: "upstream", message: `${options.name} upstream returned an empty body` }));
       return;
     }
     if (options.renderJsonResponse && upstream.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() === "application/json") {
       const detail = await peekErrorBody(upstream, controller.signal);
       if (controller.signal.aborted) {
-        replyError(timeoutError(options.name));
+        replyError(timeoutError(options));
         return;
       }
       const error = options.renderJsonResponse(detail);

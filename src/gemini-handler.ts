@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { AnthropicRequestSchema } from "./anthropic-wire-types.js";
 import { estimateTokens } from "./codex-request.js";
 import { aggregateFrames } from "./codex-response.js";
 import type { GeminiProviderConfig } from "./config.js";
 import { deriveConversationKey } from "./conversation-key.js";
-import { createGeminiBootstrap, geminiPrepareErrorCodes, type GeminiBootstrapDeps } from "./gemini-bootstrap.js";
+import { createGeminiBootstrap, type GeminiBootstrapDeps } from "./gemini-bootstrap.js";
 import { GEMINI_USER_AGENT } from "./gemini-constants.js";
-import { GEMINI_ERRORS, renderGeminiUpstreamError, toGeminiProxyError, type GeminiErrorCode } from "./gemini-errors.js";
-import { buildGeminiRequest } from "./gemini-request.js";
+import { GEMINI_ERRORS, geminiPrepareErrorCodes, renderGeminiRunnerError, renderGeminiUpstreamError, toGeminiProxyError, type GeminiErrorCode } from "./gemini-errors.js";
+import { buildGeminiRequest, parseGeminiInput } from "./gemini-request.js";
 import { createGeminiSseTranslator } from "./gemini-response.js";
 import type { Logger } from "./logger.js";
 import type { ProviderAuth, ProviderCredential } from "./provider-auth.js";
@@ -51,7 +50,8 @@ const fixedRunnerLogger = (logger: Logger): Logger => ({
     if (event === GEMINI_EVENTS.upstreamError) return; // The provider renderer reports the fixed code.
     if (event === GEMINI_EVENTS.credentialLoadFailed) {
       const code = fields?.errorCode;
-      logger.log(level, event, { errorCode: code !== undefined && geminiPrepareErrorCodes.has(code) ? code : "unknown" });
+      const diagnostic = code !== undefined && geminiPrepareErrorCodes.has(code) ? code : "credential_failed";
+      logger.log(level, event, { errorCode: diagnostic === "account_blocked" ? "bootstrap_blocked" : diagnostic });
       return;
     }
     logger.log(level, event, { errorCode: event === GEMINI_EVENTS.upstream401Refreshing ? "sign_in_again" : "upstream_error" });
@@ -78,9 +78,9 @@ export const createGeminiHandler = (deps: GeminiHandlerDeps): ProviderHandler =>
         logCode(logger, code);
         respondProxyError(res, toGeminiProxyError(code));
       };
-      const parsed = AnthropicRequestSchema.safeParse(parsedBody);
-      if (!parsed.success) { refuse("invalid_request"); return; }
-      const request = { ...parsed.data, model };
+      const parsed = parseGeminiInput(parsedBody);
+      if (!parsed.ok) { refuse(parsed.error); return; }
+      const request = { ...parsed.value, model };
       const conversationKey = deriveConversationKey(request);
       // A pure preflight must succeed before the runner loads credentials.
       const translated = buildGeminiRequest(request, { signatures, ...(conversationKey === undefined ? {} : { conversationKey }) });
@@ -101,7 +101,7 @@ export const createGeminiHandler = (deps: GeminiHandlerDeps): ProviderHandler =>
         requestTimeoutMs: provider.requestTimeoutMs, streamIdleTimeoutMs: provider.streamIdleTimeoutMs,
         maxAggregateBytes: MAX_AGGREGATE_BYTES, logger: runnerLogger, events: GEMINI_EVENTS, auth,
         redirect: "error", abortOnResponseTimeout: true, prepareErrorCodes: geminiPrepareErrorCodes,
-        prepareFailureMessage: "Gemini could not prepare the request.",
+        renderRunnerError: renderGeminiRunnerError,
         async prepareBody(credential, signal) {
           const project = await bootstrap.loadProject(credential, signal);
           if (!project.ok) return project;

@@ -5,7 +5,7 @@ type GeminiErrorClass =
   | { readonly kind: "auth"; readonly status: 401 }
   | { readonly kind: "timeout"; readonly status: 504 }
   | { readonly kind: "translate"; readonly status: 400 }
-  | { readonly kind: "upstream"; readonly status: 403 | 409 | 429 | 502 | 503 };
+  | { readonly kind: "upstream"; readonly status: 403 | 409 | 429 | 500 | 502 | 503 };
 
 type GeminiErrorEntry = GeminiErrorClass & {
   readonly text: string;
@@ -17,7 +17,24 @@ const SIGN_IN = "Sign in again with `agy` in your own Terminal.";
 const RETRY = "Retry the request.";
 const RESTART = "Check your account, then restart Subswitch.";
 
+// Preparation diagnostics share the runner's fixed 500 contract. No wire text enters this table.
+const preparation = (hint: string) => ({ kind: "upstream", status: 500, event: GEMINI_EVENTS.credentialLoadFailed,
+  text: "Gemini could not prepare the request.", hint } as const);
+const BOOTSTRAP_ERRORS = {
+  bootstrap_busy: preparation(RETRY), bootstrap_cancelled: preparation(RETRY), bootstrap_credential: preparation(SIGN_IN),
+  bootstrap_project: preparation("Check for a Subswitch update."), bootstrap_response: preparation(RETRY),
+  bootstrap_timeout: preparation(RETRY), bootstrap_transport: preparation(RETRY),
+};
+export type GeminiPrepareCode = keyof typeof BOOTSTRAP_ERRORS | "account_blocked";
+export const geminiPrepareErrorCodes: ReadonlySet<string> = new Set([...Object.keys(BOOTSTRAP_ERRORS), "account_blocked"]);
+
 export const GEMINI_ERRORS = {
+  ...BOOTSTRAP_ERRORS,
+  request_timeout: { kind: "timeout", status: 504, event: GEMINI_EVENTS.streamInterrupted,
+    text: "The Gemini request timed out.", hint: RETRY },
+  bootstrap_blocked: preparation(RESTART),
+  credential_failed: { kind: "upstream", status: 500, event: GEMINI_EVENTS.credentialLoadFailed,
+    text: "Gemini could not load the sign-in.", hint: SIGN_IN },
   unsupported_platform: {
     kind: "auth", status: 401, event: GEMINI_EVENTS.credentialLoadFailed,
     text: "Gemini sign-in is not available on this platform.", hint: "Use the Gemini route on macOS.",
@@ -107,6 +124,18 @@ export const toGeminiProxyError = (code: GeminiErrorCode): ProxyError => {
   const entry: GeminiErrorEntry = GEMINI_ERRORS[code];
   const message = `${entry.text} ${entry.hint}`;
   return entry.kind === "upstream" ? { kind: "upstream", status: entry.status, message } : { kind: entry.kind, message };
+};
+
+/** Runner failures have no qualified upstream detail. Keep its preparation status and fixed diagnostics. */
+export const renderGeminiRunnerError = (error: ProxyError, diagnostic?: string): ProxyError => {
+  if (diagnostic === "account_blocked") return toGeminiProxyError("bootstrap_blocked");
+  if (diagnostic !== undefined && Object.hasOwn(BOOTSTRAP_ERRORS, diagnostic)) {
+    return toGeminiProxyError(diagnostic as keyof typeof BOOTSTRAP_ERRORS);
+  }
+  if (diagnostic !== undefined) return toGeminiProxyError("credential_failed");
+  if (error.kind === "timeout") return toGeminiProxyError("request_timeout");
+  if (error.kind === "auth") return toGeminiProxyError("sign_in_again");
+  return toGeminiProxyError("upstream_error");
 };
 
 export interface GeminiAccountBlockLatch {
