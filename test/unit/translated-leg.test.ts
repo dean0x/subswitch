@@ -4,6 +4,7 @@ import { Socket } from "node:net";
 import { PassThrough, Transform } from "node:stream";
 import { it } from "node:test";
 import type { LimitObservation } from "../../src/limit-observation.js";
+import type { Logger } from "../../src/logger.js";
 import { err, ok } from "../../src/result.js";
 import { runTranslatedLeg, type TranslatedLegOptions } from "../../src/translated-leg.js";
 import { sampleLimitKey } from "../fixtures/limit-context.js";
@@ -124,6 +125,32 @@ it("logs the cause name and returns a 500 without a fetch when the credential so
   ]);
 });
 
+for (const step of ["getCredentials", "forceRefresh"] as const) {
+  it(`logs unknown and returns a fixed 500 when ${step} rejects with text`, async (t) => {
+    const rejectedText = "FAKE-CREDENTIAL-TEXT";
+    const res = response();
+    const end = t.mock.method(res, "end");
+    const log = t.mock.fn<Logger["log"]>();
+    const fetchImpl = t.mock.fn(async () => new Response("denied", { status: 401 }));
+    const refreshable = step === "forceRefresh";
+    await runTranslatedLeg(res, options({
+      auth: { ...options().auth, refreshable, [step]: () => Promise.reject(rejectedText) },
+      logger: { log }, fetchImpl,
+    }));
+
+    assert.equal(res.statusCode, 500);
+    assert.equal(end.mock.calls[0]?.arguments[0],
+      '{"type":"error","error":{"type":"api_error","message":"fixture credential load failed"}}');
+    assert.equal(fetchImpl.mock.callCount(), refreshable ? 1 : 0);
+    const logs = log.mock.calls.map(({ arguments: args }) => args);
+    assert.equal(JSON.stringify(logs).includes(rejectedText), false, "log fields must not contain the rejection text");
+    const failures = logs.filter(([level, event]) => level !== "warn" || event !== "fixture_upstream_401_refreshing");
+    assert.deepEqual(failures, [
+      ["error", "fixture_credential_load_failed", { model: "fixture-model", errorCode: "unknown" }],
+    ]);
+  });
+}
+
 for (const rejectedBy of ["prepareBody", "upstream"] as const) {
   it(`prepares the body again with the refreshed credential after a 401 from ${rejectedBy}`, async (t) => {
     const res = response();
@@ -187,6 +214,25 @@ for (const [refreshable, rejects] of [
     assert.deepEqual(logs, [
       ...(refreshable ? ["fixture_upstream_401_refreshing"] : []),
       ...(rejects.at(-1) === "upstream" ? ["fixture_upstream_error"] : []),
+    ]);
+  });
+}
+
+for (const hasCodeSet of [false, true]) {
+  it(`logs unknown and returns a 500 for an undeclared prepareBody code (code set: ${hasCodeSet})`, async (t) => {
+    const res = response();
+    const log = t.mock.fn<Logger["log"]>();
+    const prepareErrorCodes = new Set(["fixture_failed"]);
+
+    await runTranslatedLeg(res, options({
+      prepareBody: async () => err({ kind: "failed", errorCode: "fixture_undeclared" }),
+      ...(hasCodeSet ? { prepareErrorCodes } : {}),
+      logger: { log },
+    }));
+
+    assert.equal(res.statusCode, 500);
+    assert.deepEqual(log.mock.calls.map(({ arguments: args }) => args), [
+      ["error", "fixture_credential_load_failed", { model: "fixture-model", errorCode: "unknown" }],
     ]);
   });
 }
