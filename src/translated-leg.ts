@@ -51,8 +51,10 @@ export interface TranslatedLegOptions<C> {
     readonly forceRefresh: (signal: AbortSignal, failed: C) => Promise<Result<C, ProxyError>>;
   };
   readonly fetchImpl: typeof fetch;
-  /** Use fixed error codes. An unauthorized result shares the upstream 401 retry budget. */
+  /** An unauthorized result shares the upstream 401 retry budget. */
   readonly prepareBody?: (credential: C, signal: AbortSignal) => Promise<Result<object, PrepareBodyError>>;
+  /** Fixed diagnostic codes from the provider. Other preparation failures log "unknown". */
+  readonly prepareErrorCodes?: ReadonlySet<string>;
   readonly buildHeaders: (credential: C) => Record<string, string>;
   readonly createTranslator: () => { readonly parser: Transform; readonly translator: Transform };
   readonly aggregateFrames: (frames: readonly string[]) => Result<AggregateOutcome, ProxyError>;
@@ -69,6 +71,14 @@ type FramePipeline = readonly [Readable, Transform, Transform];
 
 const timeoutError = (name: string): ProxyError => ({ kind: "timeout", message: `${name} request timed out` });
 
+const ERROR_NAMES = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError",
+  "AggregateError", "AbortError", "TimeoutError"]);
+
+const authErrorName = (cause: unknown): string => {
+  const name = cause instanceof Error ? cause.name : "unknown";
+  return ERROR_NAMES.has(name) ? name : "unknown";
+};
+
 const credentialLoadFailure = <C>(options: TranslatedLegOptions<C>, errorCode: string): ProxyError => {
   options.logger.log("error", options.events.credentialLoadFailed, { model: options.model, errorCode });
   return { kind: "upstream", status: 500, message: `${options.name} credential load failed` };
@@ -80,10 +90,10 @@ const waitForAuthStep = async <C, T, E>(res: ServerResponse, options: Translated
   let result: Result<T, E> | undefined;
   let failure: ProxyError | undefined;
   try {
-    result = await abortable(start(), signal);
+    if (!res.destroyed && !res.writableEnded && !signal.aborted) result = await abortable(start(), signal);
   } catch (cause) {
     // A cancelled wait is not a fault. The cause message can hold a credential.
-    if (!signal.aborted) failure = credentialLoadFailure(options, cause instanceof Error ? cause.name : "unknown");
+    if (!signal.aborted) failure = credentialLoadFailure(options, authErrorName(cause));
   }
   if (res.destroyed || res.writableEnded) return;
   if (signal.aborted) {
@@ -116,7 +126,8 @@ const requestAttempt = async <C>(res: ServerResponse, options: TranslatedLegOpti
     }
     if (!prepared.ok) {
       if (prepared.error.kind === "unauthorized") return "unauthorized";
-      replyError(credentialLoadFailure(options, prepared.error.errorCode));
+      const { errorCode } = prepared.error;
+      replyError(credentialLoadFailure(options, options.prepareErrorCodes?.has(errorCode) ? errorCode : "unknown"));
       return;
     }
     body = prepared.value;
@@ -154,7 +165,9 @@ const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOpt
       return;
     }
     logger.log("warn", events.upstream401Refreshing, { model });
-    if (response !== "unauthorized") await response.body?.cancel().catch(() => undefined);
+    if (response !== "unauthorized" && response.body !== null) {
+      await abortable(response.body.cancel(), signal).catch(() => undefined);
+    }
     // The refresh gets the request signal for its waits only, so a sent refresh still completes and is saved.
     const refreshed = await waitForCredential(res, options, () => auth.forceRefresh(signal, credential), signal, replyError);
     if (refreshed === undefined) return;

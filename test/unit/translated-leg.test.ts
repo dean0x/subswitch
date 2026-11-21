@@ -200,7 +200,7 @@ for (const failure of ["result", "rejection", "throw"] as const) {
     };
 
     await runTranslatedLeg(res, options({
-      auth: { ...options().auth, refreshable: true }, prepareBody, fetchImpl,
+      auth: { ...options().auth, refreshable: true }, prepareBody, prepareErrorCodes: new Set(["fixture_failed"]), fetchImpl,
       logger: { log: (level, event, fields) => logs.push({ level, event, fields }) },
     }));
 
@@ -214,6 +214,40 @@ for (const failure of ["result", "rejection", "throw"] as const) {
     }]);
   });
 }
+
+for (const source of ["result", "exception"] as const) {
+  it(`does not report undeclared text from a preparation ${source}`, async () => {
+    const res = response();
+    const codes: unknown[] = [];
+    const prepareBody = async () => {
+      const detail = "FAKE-PREPARE-DETAIL";
+      if (source === "exception") throw Object.assign(new Error(detail), { name: detail });
+      return err({ kind: "failed" as const, errorCode: detail });
+    };
+    await runTranslatedLeg(res, options({
+      prepareBody, logger: { log: (_level, _event, fields) => codes.push(fields?.errorCode) },
+    }));
+    assert.equal(res.statusCode, 500);
+    assert.equal(codes.length, 1);
+    assert.equal(codes[0] === "unknown", true);
+  });
+}
+
+it("does not start another credential step after close while it discards a 401", async (t) => {
+  const res = response();
+  const prepareBody = t.mock.fn(async () => ok({ input: "prepared" }));
+  const forceRefresh = t.mock.fn(async () => ok("renewed"));
+  const fetchImpl = t.mock.fn(async () => new Response(new ReadableStream({
+    cancel: () => { res.emit("close"); return new Promise<void>(() => {}); },
+  }), { status: 401 }));
+  await runTranslatedLeg(res, options({
+    auth: { ...options().auth, refreshable: true, forceRefresh }, prepareBody, fetchImpl,
+  }));
+  assert.equal(res.statusCode, 504);
+  assert.equal(forceRefresh.mock.callCount(), 0);
+  assert.equal(prepareBody.mock.callCount(), 1);
+  assert.equal(fetchImpl.mock.callCount(), 1);
+});
 
 it("ends a pending prepareBody wait on close with a timeout and no log or fetch", { timeout: 1000 }, async (t) => {
   const res = response();

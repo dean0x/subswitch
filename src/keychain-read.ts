@@ -87,14 +87,19 @@ const parseModificationTime = (stdout: string): KeychainResult<{ readonly modifi
   return ok({ modifiedAtMs });
 };
 
+// A selector must name an item. Keep option and command names out of both argument slots.
+const isItemName = (value: string): boolean => value.trim().length > 0
+  && !/^(?:-|(?:add|delete)(?:-|$))|[\x00-\x1f\x7f]/.test(value);
+
 export const createKeychainReader = (deps: KeychainReaderDeps) => {
   const run = async <T>(
     item: KeychainItem, reveal: boolean, parse: (stdout: string) => KeychainResult<T>,
   ): Promise<KeychainResult<T>> => {
     if (deps.platform !== "darwin") return err("unsupported_platform");
     const path = deps.loginKeychainPath;
-    if (!path.startsWith("/")) return err("malformed");
-    const find: FindArgs = ["find-generic-password", "-s", item.service, "-a", item.account];
+    const { service, account } = item;
+    if (!path.startsWith("/") || !isItemName(service) || !isItemName(account)) return err("malformed");
+    const find: FindArgs = ["find-generic-password", "-s", service, "-a", account];
     const args: KeychainArgs = reveal ? [...find, "-w", path] : [...find, path];
     const controller = new AbortController();
     const { signal } = controller;

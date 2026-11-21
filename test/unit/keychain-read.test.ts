@@ -74,6 +74,19 @@ it("rejects an option in place of the Keychain path without exec", async () => {
   assert.equal(calls.length, 0);
 });
 
+it("requires a service and account name before either Keychain operation", async () => {
+  const { readSecret, probe, calls, timers } = harness();
+  for (const field of ["service", "account"] as const) {
+    for (const value of ["", " ", "-g", "-U", "add-generic-password", "delete-generic-password", "a\0b"]) {
+      const invalid = { ...item, [field]: value };
+      assertError(await readSecret(invalid), "malformed");
+      assertError(await probe(invalid), "malformed");
+    }
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(timers.length, 0);
+});
+
 it("returns before exec or a timer on an unsupported platform", async () => {
   const { readSecret, probe, calls, timers } = harness({ platform: "linux" });
   assertError(await readSecret(item), "unsupported_platform");

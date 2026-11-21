@@ -28,6 +28,16 @@ for (const host of ["other.example.test", "upstream.example.test:8443", "127.0.0
   });
 }
 
+it("checks the actual provider URLs even with injected report metadata", () => {
+  const loaded = loadConfig({ configPath: "fixture", env: {}, readFile: () => JSON.stringify({
+    providers: { codex: { oauthTokenUrl: "https://other.example.test/token" } },
+  }) });
+  assert.ok(loaded.ok);
+  const result = buildTestDeps(loaded.value.config, { log: () => {} }, { providerConfigFor: keychainBackedCodex(true) });
+  assert.ok(!result.ok);
+  assert.match(result.error, /^providers\.codex\.oauthTokenUrl /);
+});
+
 it("starts with only the approved Keychain base URL and no token URL", () => {
   assert.equal(startWithKeychainUrl("https://upstream.example.test/v1").ok, true);
 });

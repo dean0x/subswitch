@@ -171,7 +171,7 @@ const allPassIO = (lines: string[]) => ({
   readTextFile: async (): Promise<string> => "",
 });
 
-const keychainDoctor = async (active: boolean, stdout: string, loginCommand: string = keychainCredential.loginCommand) => {
+const keychainDoctor = async (active: boolean, stdout: string | undefined, loginCommand: string = keychainCredential.loginCommand) => {
   const loaded = loadConfig({ configPath: "fixture", readFile: () => active ? '{"providers":{"codex":{}}}' : "{}", env: {} });
   assert.ok(loaded.ok);
   const { config, configuredProviders } = loaded.value;
@@ -187,10 +187,10 @@ const keychainDoctor = async (active: boolean, stdout: string, loginCommand: str
   const authReads: string[] = [];
   const keychainReader: KeychainReaderDeps = {
     platform: "darwin", env: {}, loginKeychainPath: "/fixture/login.keychain-db", setTimer: () => () => {},
-    exec: async (file, args) => { calls.push([file, args]); return { stdout }; },
+    exec: async (file, args) => { calls.push([file, args]); return { stdout: stdout ?? "" }; },
   };
   const code = await runDoctor(config, "fixture", true, {
-    ...allPassIO(lines), providerConfigFor, keychainReader,
+    ...allPassIO(lines), providerConfigFor, ...(stdout === undefined ? {} : { keychainReader }),
     readAuthFile: async (path) => { authReads.push(path); return ""; },
     tlsConnect: async (host) => { hosts.push(host); return { kind: "reachable" }; },
     listAgentFiles: async () => ["/fixture/agent.md"],
@@ -222,6 +222,13 @@ it("does not probe an inactive Keychain provider and reports its workspace pin",
   assert.match(output, /codex auth:\s+not turned on/);
   assert.match(output, /agent model:\s+FAIL.*gpt-5\.6-sol.*provider is not configured/);
   assert.equal(code, 1);
+});
+
+it("reports a missing Keychain probe without a credential read", async () => {
+  const { code, calls, output } = await keychainDoctor(true, undefined);
+  assert.equal(code, 1);
+  assert.deepEqual(calls, []);
+  assert.match(output, /codex auth:\s+UNAVAILABLE \(probe_unavailable .*fixture login/);
 });
 
 it("prints only a fixed failure code for malformed Keychain output", async () => {

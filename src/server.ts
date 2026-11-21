@@ -228,8 +228,12 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
       logger, events: OPENAI_EVENTS });
     if (!result.ok) return result;
   }
-  const destinations = enumerateDestinations(config, routingOptions.providerConfigFor);
-  for (const destination of destinations) {
+  const configuredDestinations = enumerateDestinations(config);
+  // The handlers use config. An injected report must not replace the checks for their URLs.
+  const destinations = routingOptions.providerConfigFor === undefined ? configuredDestinations
+    : enumerateDestinations(config, routingOptions.providerConfigFor);
+  const urlsToVet = destinations === configuredDestinations ? configuredDestinations : [...configuredDestinations, ...destinations];
+  for (const destination of urlsToVet) {
     if (destination.routing === "passthrough") continue;
     const { id, credential } = destination;
     for (const { hostOptIn, ...url } of withCredential(credential, CREDENTIAL_URLS)) {

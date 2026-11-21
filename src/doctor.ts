@@ -156,7 +156,7 @@ const inspectNativeKeychain = async (
 // One inspector per ProviderId, keyed by id: a ProviderId without an entry is a
 // tsc error. Each inspector takes its own provider's config slice and the doctor
 // io, and does its own credential read, so each provider applies its own store
-// checks. runDoctor calls every inspector through this record, by id.
+// checks. The shared Keychain arm uses the credential kind; the other arms use this record.
 // ---------------------------------------------------------------------------
 
 export const PROVIDER_AUTH_INSPECTORS: {
