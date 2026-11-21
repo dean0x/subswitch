@@ -15,10 +15,8 @@ const MAX_DECODED_BYTES = 256 * 1024;
 const MAX_LINEAGES = 16;
 const DEADLINE = Symbol("Gemini bootstrap deadline");
 
-// [D4] Replace the placeholder body with the qualified request fields.
-const UNQUALIFIED_BOOTSTRAP_BODY = "{}";
-// [D4] Replace this extractor with the qualified project field and schema.
-const extractUnqualifiedProject = (_body: unknown): undefined => undefined;
+// Synthetic request body for tests that inject a project extractor.
+const FIXTURE_BOOTSTRAP_BODY = "{}";
 
 export interface GeminiBootstrapDeps {
   readonly accountBlock: GeminiAccountBlockLatch;
@@ -73,13 +71,14 @@ const readWire = async (response: Response, signal: AbortSignal): Promise<Buffer
   }
 };
 
-export const createGeminiBootstrap = ({ accountBlock, fetchRaw, clock,
-  extractProjectId = extractUnqualifiedProject }: GeminiBootstrapDeps) => {
+export const createGeminiBootstrap = ({ accountBlock, fetchRaw, clock, extractProjectId }: GeminiBootstrapDeps) => {
   const entries = new Map<string, Entry>();
 
   const exchange = async (access: string, signal: AbortSignal): Promise<ProjectResult> => {
+    // [D4] Keep live bootstrap off until the request body and project field are qualified.
+    if (extractProjectId === undefined) return failed("bootstrap_project");
     const response = await fetchRaw(LOAD_CODE_ASSIST_URL, {
-      method: "POST", redirect: "error", signal, body: UNQUALIFIED_BOOTSTRAP_BODY,
+      method: "POST", redirect: "error", signal, body: FIXTURE_BOOTSTRAP_BODY,
       headers: { authorization: `Bearer ${access}`, "content-type": "application/json", "accept-encoding": "identity" },
     });
     // A refusal applies to the account even if the last waiter has left.

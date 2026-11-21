@@ -74,9 +74,13 @@ it("refuses a new lineage at the flight limit but accepts it after a flight ends
   assert.equal(fetchRaw.mock.callCount(), 17);
 });
 
-it("refuses unqualified project fields with a fixed code", async () => {
-  const { loadProject } = rig(async () => Response.json({ fixture: project }));
-  assert.deepEqual(await loadProject(first, activeSignal()), failed("bootstrap_project"));
+it("does not send a bootstrap request without a project extractor", async (t) => {
+  const fetchRaw = t.mock.fn(async () => projectResponse());
+  assert.deepEqual(await rig(fetchRaw).loadProject(first, activeSignal()), failed("bootstrap_project"));
+  assert.equal(fetchRaw.mock.callCount(), 0);
+
+  assert.deepEqual(await rig(fetchRaw, validProject).loadProject(first, activeSignal()), ok(project));
+  assert.equal(fetchRaw.mock.callCount(), 1);
 });
 
 it("refuses an oversized compressed body without a content length", async () => {
@@ -140,7 +144,7 @@ it("cancels a body that does not finish by the deadline", async () => {
   const { loadProject, deadlines } = rig(async () => new Response(new ReadableStream<Uint8Array>({
     pull() { onRead(); return new Promise(() => {}); },
     cancel() { cancelled = true; },
-  }, { highWaterMark: 0 })));
+  }, { highWaterMark: 0 })), validProject);
   const pending = loadProject(first, activeSignal());
   await started;
   for (const fire of deadlines.keys()) fire();
@@ -154,7 +158,7 @@ it("cancels a lone request and does not use the transport for pre-aborted reques
     sentSignal = init?.signal;
     return new Promise(() => {});
   });
-  const { loadProject, deadlines } = rig(fetchRaw);
+  const { loadProject, deadlines } = rig(fetchRaw, validProject);
   const request = new AbortController();
   const pending = loadProject(first, request.signal);
   await Promise.resolve();
@@ -182,7 +186,7 @@ it("does not cancel a flight while another request waits for it", async (t) => {
 
 it("keeps a bootstrap account refusal even after the caller leaves", async () => {
   const { promise, resolve } = deferred<Response>();
-  const { loadProject, accountBlock } = rig(async () => promise);
+  const { loadProject, accountBlock } = rig(async () => promise, validProject);
   const client = new AbortController();
   const waiting = loadProject(first, client.signal);
   await Promise.resolve();

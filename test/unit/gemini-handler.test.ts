@@ -102,11 +102,11 @@ it("rejects an image or a missing signature before any Keychain read or HTTP cal
   assert.deepEqual(calls, []);
 });
 
-it("does not generate when the default bootstrap extractor refuses the project", async () => {
+it("sends neither bootstrap nor generate without a project extractor", async () => {
   const { send, calls, logs } = rig(async () => reply(), {}, false);
   const res = await send();
   assert.equal(res.status, 500);
-  assert.deepEqual(calls.map(call => call.url), [bootstrapUrl]);
+  assert.deepEqual(calls, []);
   assert.deepEqual(logs, [{ event: "gemini_credential_load_failed", fields: { errorCode: "bootstrap_project" } }]);
 });
 

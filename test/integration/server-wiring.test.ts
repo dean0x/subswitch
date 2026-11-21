@@ -45,7 +45,7 @@ const geminiReader = (calls: string[]) => {
   });
 };
 
-it("starts Gemini without I/O and keeps the unqualified project refusal local to bootstrap", async (t) => {
+it("starts Gemini without I/O and sends nothing without a project extractor", async (t) => {
   const calls: string[] = [];
   const codes: string[] = [];
   const proxy = await startSubswitch(geminiConfig, {
@@ -65,7 +65,7 @@ it("starts Gemini without I/O and keeps the unqualified project refusal local to
   assert.equal(reply.status, 500);
   assert.deepEqual(await reply.json(), { type: "error", error: { type: "api_error", message: "Gemini could not prepare the request. Check for a Subswitch update." } });
   assert.deepEqual(codes, ["bootstrap_project"]);
-  assert.deepEqual(calls, ["probe", "readSecret", `${geminiOrigin}/v1internal:loadCodeAssist`]);
+  assert.deepEqual(calls, ["probe", "readSecret"]);
 });
 
 it("keeps Gemini bootstrap response bytes raw and does not follow a redirect", async (t) => {
