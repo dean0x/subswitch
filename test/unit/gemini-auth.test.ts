@@ -106,8 +106,21 @@ it("uses the offset and fraction in the expiry and ignores expires_in", async ()
   state.now += 1;
   assert.deepEqual(await auth.getCredentials(), signInAgain);
   assert.deepEqual(ops(), ["probe", "read", "read"]);
-  state.secret = record({ expiry: "2030-12-31T23:01:00.5-01:00" });
+  assert.deepEqual(await auth.getCredentials(), signInAgain);
+  assert.deepEqual(ops(), ["probe", "read", "read"]);
+  state.secret = record({ expiry: "2030-12-31T23:02:00.5-01:00" });
+  state.now += 60_000;
+  state.modified = "20310101000100Z";
   assert.deepEqual(await auth.getCredentials(), credential());
+  assert.deepEqual(ops(), ["probe", "read", "read", "probe", "read"]);
+});
+
+it("uses the next clock tick for a sub-millisecond expiry", async () => {
+  const { auth, state } = harness();
+  state.secret = record({ expiry: "2031-01-01T00:00:00.000000001Z" });
+  assert.deepEqual(await auth.getCredentials(), credential());
+  state.now++;
+  assert.deepEqual(await auth.getCredentials(), signInAgain);
 });
 
 it("rejects non-RFC 3339 fields and impossible dates instead of normalizing them", async () => {
@@ -120,18 +133,19 @@ it("rejects non-RFC 3339 fields and impossible dates instead of normalizing them
   }
 });
 
-it("registers each value with the Gemini scrub before use and refuses either rejected value", async () => {
-  const calls: [string, string][] = [];
-  const { auth } = harness("darwin", (source, value) => {
-    calls.push([source, value]);
-    return registerExactCredential(source, value);
-  });
+it("keeps both tokens from the current and previous sign-in after rotation and re-read", async () => {
+  const { auth, state } = harness();
+  const nextRefresh = `FAKE-GEMINI-REFRESH-TWO-${randomUUID()}`;
   assert.deepEqual(await auth.getCredentials(), credential());
-  assert.deepEqual(calls.sort((a, b) => a[1].localeCompare(b[1])), [["gemini", access], ["gemini", refresh]]);
-  assert.equal(redactCredentials(`${access} ${refresh}`), "<redacted> <redacted>");
-  for (const refused of [access, refresh]) {
-    const { auth: other } = harness("darwin", (_source, value) => value !== refused);
-    assert.deepEqual(await other.getCredentials(), invalid);
+  state.secret = record({ access_token: rotated, refresh_token: nextRefresh });
+  for (let read = 0; read < 2; read++) {
+    assert.deepEqual(await auth.forceRefresh(undefined, failed), credential(rotated));
+    assert.equal(redactCredentials(`${access} ${refresh} ${rotated} ${nextRefresh}`), "<redacted> <redacted> <redacted> <redacted>");
+  }
+  for (const badToken of [{ access_token: "FAKE-short" }, { refresh_token: "FAKE-short" }]) {
+    state.secret = record({ access_token: `FAKE-NEW-${randomUUID()}`, refresh_token: `FAKE-NEW-${randomUUID()}`, ...badToken });
+    assert.deepEqual(await auth.forceRefresh(undefined, failed), invalid);
+    assert.equal(redactCredentials(`${access} ${refresh} ${rotated} ${nextRefresh}`), "<redacted> <redacted> <redacted> <redacted>");
   }
 });
 
@@ -185,8 +199,13 @@ it("lets a missing item recover without a restart", async () => {
   } });
   assert.match(JSON.stringify(logs), /"errorCode":"missing"/);
   state.failure = undefined;
+  assert.deepEqual(await auth.getCredentials(), { ok: false, error: {
+    kind: "auth", message: "Subswitch did not find the Gemini sign-in in Keychain. Sign in again with `agy` in your own Terminal.",
+  } });
+  assert.deepEqual(ops(), ["probe", "read"]);
+  state.now += 60_000;
   assert.deepEqual(await auth.getCredentials(), credential());
-  assert.deepEqual(ops(), ["probe", "read", "read"]);
+  assert.deepEqual(ops(), ["probe", "read", "probe", "read"]);
 });
 
 it("shares first use and due probes, and reads only when modification data changes", async () => {
@@ -213,8 +232,13 @@ it("probes and re-reads once after a 401, refuses the same token, and accepts a 
     [signInAgain, signInAgain]);
   assert.deepEqual(ops(), ["probe", "read", "probe", "read"]);
   assert.deepEqual(await auth.getCredentials(), signInAgain);
+  assert.deepEqual(ops(), ["probe", "read", "probe", "read"]);
   state.secret = record({ access_token: rotated });
   assert.deepEqual(await auth.forceRefresh(undefined, failed), credential(rotated));
+  const nextFailed: ProviderCredential<"gemini"> = { provider: "gemini", authHeaders: { authorization: `Bearer ${rotated}` } };
+  assert.deepEqual(await auth.forceRefresh(undefined, nextFailed), signInAgain);
+  // A late 401 for the first token must not make the second token usable again.
+  assert.deepEqual(await auth.forceRefresh(undefined, failed), signInAgain);
 });
 
 it("uses the same account block in the error mapper and auth, even if auth has a cached token", async () => {

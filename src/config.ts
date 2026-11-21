@@ -5,7 +5,7 @@ import { z } from "zod";
 import { type Result, ok, err } from "./result.js";
 import type { ProxyError } from "./errors.js";
 import type { LogLevel } from "./logger.js";
-import { isReservedAnthropicName, PROVIDER_IDS, type ProviderId, type AliasesByProvider } from "./models.js";
+import { isReservedAnthropicName, MODEL_REGISTRY, PROVIDER_IDS, type ProviderId, type AliasesByProvider } from "./models.js";
 import { validClaudeAlias } from "./claude-models.js";
 import { AccessProfilesSchema, RoutesSchema, validateExplicitConfig } from "./routing/routing-config.js";
 import type { AccessProfile, RoutePolicy } from "./routing/routing-types.js";
@@ -170,8 +170,8 @@ const AnthropicSchema = z
 // Both sides are bounded to 200 chars: an alias target flows into the outbound request
 // body and the `route` log field, so an unbounded one would be a config-side hole in the
 // request-side limits. Those limits are: ModelPeekSchema caps a plain `model` at 200
-// chars; a `together:` name of any length reaches the resolver, which accepts its id only
-// under the 200-char Together id grammar; the server clears `model` for an invalid
+// chars; Together and Gemini qualifiers of any length reach the resolver for a local
+// decision. The server clears `model` for an invalid
 // qualified name before it logs; and the logger strips control characters from each value.
 const AliasesSchema = z
   .record(z.string().min(1).max(200), z.string().min(1).max(200))
@@ -382,7 +382,9 @@ const KimiProviderSchema = z.strictObject({
 
 const GeminiProviderSchema = z.strictObject({
   baseUrl: CredentialUrlSchema.default(`https://${GEMINI_DEFAULT_HOST}`),
-  aliases: AliasesSchema,
+  aliases: AliasesSchema.refine(aliases => Object.entries(aliases).every(([name, target]) =>
+    !MODEL_REGISTRY.some(entry => entry.provider !== "gemini" && (entry.id === name || entry.id === target))),
+  { message: "Gemini aliases cannot use another provider's model ID." }),
   requestTimeoutMs: z.number().int().positive().max(2_147_483_647).default(600_000),
   streamIdleTimeoutMs: z.number().int().positive().max(2_147_483_647).default(300_000),
   signatureCache: z.strictObject({
@@ -1177,7 +1179,7 @@ const PROJECT_REFUSED_KEYS: readonly string[] = [
  *   2. `SUBSWITCH_CONFIG` env var (tilde-expanded)
  *   3. implicit user config merged under `<cwd>/subswitch.config.json` (permitted project fields win)
  *
- * Profiles, routes, the Together and Kimi blocks, sign-in addresses, credential file and folder
+ * Profiles, routes, the Together, Kimi and Gemini blocks, sign-in addresses, credential file and folder
  * keys, and the `allowInsecureBaseUrl` opt-ins (PROJECT_REFUSED_KEYS) require a user
  * or explicit config. Project files that declare any of these keys fail before the
  * merge, even for empty values.

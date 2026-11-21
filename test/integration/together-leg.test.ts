@@ -169,7 +169,10 @@ it("keeps the loaded key redacted when every other credential source rotates", a
   // Two new values fill the current and the previous slot of each other source. The key
   // stays redacted only when the Together reader registers it under its own source.
   for (const source of PROVIDER_IDS.filter((id) => id !== "together")) {
-    for (const rotation of [1, 2]) assert.ok(registerExactCredential(source, `FAKE-OTHER-SOURCE-${source}-rotation-${rotation}`));
+    for (const rotation of [1, 2]) {
+      const value = `FAKE-OTHER-SOURCE-${source}-rotation-${rotation}`;
+      assert.ok(source === "gemini" ? registerExactCredential(source, value, `${value}-refresh`) : registerExactCredential(source, value));
+    }
   }
   assert.equal(JSON.parse(toAnthropicErrorBody("api_error", `A ${key} B`)).error.message, "A <redacted> B");
 });

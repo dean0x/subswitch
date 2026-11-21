@@ -39,8 +39,7 @@ export type AnthropicRequest = z.infer<typeof AnthropicRequestSchema>;
 export type AnthropicMessage = z.infer<typeof AnthropicMessageSchema>;
 export type AnthropicTool = z.infer<typeof AnthropicToolSchema>;
 
-// Pass Together-qualified names to the resolver, even if the id exceeds its limit.
-// The resolver must distinguish a malformed Together name from a missing model.
+// A qualified name with a local refusal must reach the resolver even when it exceeds the plain-name limit.
 export const ModelPeekSchema = z.object({
-  model: z.string().max(200).or(z.string().startsWith("together:")),
+  model: z.string().max(200).or(z.string().startsWith("together:")).or(z.string().startsWith("gemini:")),
 });

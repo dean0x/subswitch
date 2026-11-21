@@ -721,6 +721,12 @@ export const resolveModel = (table: RoutingTable, name: string): ModelResolution
     return { kind: "resolved", target: model };
   }
 
+  // A Gemini qualifier can select only a Gemini target, even when a different provider declares the name as an alias.
+  if (name.startsWith("gemini:")) {
+    const target = table.byQualified.get(name);
+    return target?.provider === "gemini" ? { kind: "resolved", target } : { kind: "invalid_qualified", provider: "gemini" };
+  }
+
   // Rule 2: alias (Map built with Object.hasOwn — prototype-pollution safe at build time)
   // Alias resolution is exactly ONE hop: if target is itself an alias we do NOT follow it.
   const aliasModel = table.byAlias.get(name);
@@ -744,7 +750,6 @@ export const resolveModel = (table: RoutingTable, name: string): ModelResolution
         if (!isTogetherModelId(id)) return { kind: "invalid_qualified" };
         return { kind: "resolved", target: { id, provider: prefix } };
       }
-      if (prefix === "gemini") return { kind: "invalid_qualified", provider: "gemini" };
       return { kind: "unresolved" };
     }
     // Unknown prefix — not a provider name → distinguishable from "model not found" (F5)

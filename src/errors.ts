@@ -32,29 +32,25 @@ const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g;
 const MIN_EXACT_CREDENTIAL_LENGTH = 16;
 const MAX_EXACT_CREDENTIAL_LENGTH = 8192;
 
+type CredentialValues = readonly [string] | readonly [string, string];
 interface ExactCredentialSlots {
-  readonly current: string;
-  readonly previous: string | undefined;
+  readonly current: CredentialValues;
+  readonly previous?: CredentialValues;
 }
 
-/** One entry per provider id, so the scrub holds at most two values per provider. */
 const exactCredentials = new Map<ProviderId, ExactCredentialSlots>();
 
-/**
- * Add the exact value of a loaded credential to the scrub of {@link redactCredentials}.
- *
- * Each source has one current and one previous slot. A new value moves the current
- * value to the previous slot and drops the older one, so an error from a request that
- * used the previous value is still redacted. A rotation of one source never drops the
- * value of another source.
- *
- * Returns false for a value outside 16 to 8192 characters. The scrub does not hold that
- * value, so the caller must refuse the credential.
- */
-export const registerExactCredential = (source: ProviderId, value: string): boolean => {
-  if (value.length < MIN_EXACT_CREDENTIAL_LENGTH || value.length > MAX_EXACT_CREDENTIAL_LENGTH) return false;
+/** Keep the current and previous credential per source. Register a Gemini pair as one unit. */
+export const registerExactCredential = (...args:
+  [source: Exclude<ProviderId, "gemini">, value: string] | [source: "gemini", access: string, refresh: string]
+): boolean => {
+  const [source, value, refresh] = args;
+  const current: CredentialValues = refresh === undefined ? [value] : [value, refresh];
+  if (current.some(token => token.length < MIN_EXACT_CREDENTIAL_LENGTH || token.length > MAX_EXACT_CREDENTIAL_LENGTH)) return false;
   const slots = exactCredentials.get(source);
-  if (slots?.current !== value) exactCredentials.set(source, { current: value, previous: slots?.current });
+  if (slots?.current[0] !== value || slots.current[1] !== refresh) {
+    exactCredentials.set(source, slots ? { current, previous: slots.current } : { current });
+  }
   return true;
 };
 
@@ -74,8 +70,8 @@ export const registerExactCredential = (source: ProviderId, value: string): bool
  */
 export const redactCredentials = (text: string): string => {
   for (const { current, previous } of exactCredentials.values()) {
-    text = text.replaceAll(current, "<redacted>");
-    if (previous !== undefined) text = text.replaceAll(previous, "<redacted>");
+    for (const token of current) text = text.replaceAll(token, "<redacted>");
+    if (previous) for (const token of previous) text = text.replaceAll(token, "<redacted>");
   }
   return text.replace(BEARER_PATTERN, "Bearer <redacted>").replace(JWT_PATTERN, "<redacted-jwt>");
 };

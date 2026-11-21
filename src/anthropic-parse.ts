@@ -46,7 +46,7 @@ const MODEL_SNIFF_REGEX =
  *
  * Returns the unescaped model name string on a match, or `undefined` when:
  *   - the buffer does not begin with `{"model": ...`,
- *   - the value exceeds 200 characters and has no Together qualifier,
+ *   - the value exceeds 200 characters and has neither a Together nor a Gemini qualifier,
  *   - the captured literal is malformed JSON (JSON.parse throws), or
  *   - the buffer is empty.
  *

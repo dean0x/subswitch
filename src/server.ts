@@ -376,7 +376,7 @@ const buildHealthBody = (config: Config, destinations: readonly RoutingDestinati
         // A provider without its block is not configured, and health does not stat its file.
         ...(d.active ? withCredential<{ configured: boolean; keySource?: "env" | null }>(credential, {
           "oauth-file": ({ authFile }) => ({ configured: existsSync(authFile) }),
-          "native-keychain": () => ({ configured: d.id !== "gemini" }),
+          "native-keychain": () => ({ configured: true }),
           "api-key": () => {
             const configured = envKeyPresent(env);
             return { configured, keySource: configured ? "env" : null };

@@ -14,6 +14,7 @@ const ITEM = { service: GEMINI_KEYCHAIN_SERVICE, account: GEMINI_KEYCHAIN_ACCOUN
 const PREFIX = "go-keyring-base64:";
 const PROBE_INTERVAL_MS = 60_000;
 const MAX_ACCESS_LENGTH = 8192;
+const REFUSED_LIMIT = 16;
 const BEARER_VALUE = /^[A-Za-z0-9._~+/-]+=*$/;
 const RFC3339 = /^(\d{4}-\d{2}-\d{2})[Tt](\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(?:[Zz]|([+-])([01]\d|2[0-3]):([0-5]\d))$/;
 const RecordSchema = z.object({ token: z.object({
@@ -32,7 +33,7 @@ type SignInResult = Result<Snapshot, GeminiErrorCode>;
 export interface GeminiAuthDeps {
   readonly reader: ReturnType<typeof createKeychainReader>;
   readonly now: () => number;
-  readonly register: (source: "gemini", value: string) => ReturnType<typeof registerExactCredential>;
+  readonly register: (source: "gemini", access: string, refresh: string) => ReturnType<typeof registerExactCredential>;
   readonly accountBlock: GeminiAccountBlockLatch;
   readonly logger: Logger;
 }
@@ -46,7 +47,9 @@ const expiryMs = (value: string): number | undefined => {
   const wallMs = Date.parse(iso);
   if (!Number.isFinite(wallMs) || new Date(wallMs).toISOString() !== iso) return undefined;
   const offsetMs = (Number(hours) * 60 + Number(minutes)) * 60_000;
-  return wallMs + (sign === "-" ? offsetMs : -offsetMs) + Number(`0.${fraction}`) * 1000;
+  // The clock counts whole milliseconds. Expire at its first tick at or after the instant.
+  const fractionMs = Math.ceil(Number(fraction.padEnd(9, "0")) / 1_000_000);
+  return wallMs + (sign === "-" ? offsetMs : -offsetMs) + fractionMs;
 };
 
 const parseRecord = (value: string, register: GeminiAuthDeps["register"]): SignInResult => {
@@ -66,8 +69,7 @@ const parseRecord = (value: string, register: GeminiAuthDeps["register"]): SignI
   const { access_token: access, refresh_token: refresh, expiry } = parsed.data.token;
   const expiresAtMs = expiryMs(expiry);
   if (expiresAtMs === undefined) return err("invalid_record");
-  // The scrub keeps two exact values per source. Keep the access token in its current slot.
-  if (!register("gemini", refresh) || !register("gemini", access)) return err("invalid_record");
+  if (!register("gemini", access, refresh)) return err("invalid_record");
   return ok({ access, expiresAtMs });
 };
 
@@ -75,21 +77,26 @@ const fingerprint = (value: string): string => createHash("sha256").update(value
 
 /** Read one account. A 401 allows a re-read, not renewal or a write to Keychain. */
 export const createGeminiAuth = ({ reader, now, register, accountBlock, logger }: GeminiAuthDeps): ProviderAuth<"gemini"> => {
-  let snapshot: Snapshot | undefined;
+  let cached: SignInResult | undefined;
   let modifiedAt: number | undefined;
   let nextProbeAt = -Infinity;
   let readLatch: KeychainReadError | undefined;
-  let refused: string | undefined;
+  const refused = new Set<string>();
   let flight: { readonly forced: boolean; readonly result: Promise<SignInResult> } | undefined;
 
   const blockedCode = (): GeminiErrorCode | undefined => accountBlock.isBlocked() ? "account_blocked" : readLatch;
   const failedRead = (code: KeychainReadError): SignInResult => {
-    snapshot = undefined;
+    modifiedAt = undefined;
     if (keychainReadErrors[code].latchUntilRestart) readLatch = code;
-    return err(code);
+    cached = err(code);
+    return cached;
   };
-  const isRefused = (access: string, callerRefused = refused): boolean =>
-    callerRefused !== undefined && fingerprint(access) === callerRefused;
+  const rememberRefusal = (digest: string): void => {
+    refused.delete(digest);
+    refused.add(digest);
+    const oldest = refused.values().next();
+    if (refused.size > REFUSED_LIMIT && !oldest.done) refused.delete(oldest.value);
+  };
 
   const load = async (forced: boolean): Promise<SignInResult> => {
     const initialBlock = blockedCode();
@@ -98,27 +105,25 @@ export const createGeminiAuth = ({ reader, now, register, accountBlock, logger }
       nextProbeAt = now() + PROBE_INTERVAL_MS;
       const probe = await reader.probe(ITEM);
       if (!probe.ok) return failedRead(probe.error);
-      if (modifiedAt !== probe.value.modifiedAtMs) snapshot = undefined;
+      if (modifiedAt !== probe.value.modifiedAtMs) cached = undefined;
       modifiedAt = probe.value.modifiedAtMs;
     }
     if (accountBlock.isBlocked()) return err("account_blocked");
-    if (!forced && snapshot !== undefined && snapshot.expiresAtMs > now()) return ok(snapshot);
-    snapshot = undefined;
+    if (!forced && cached !== undefined && (!cached.ok || cached.value.expiresAtMs > now())) return cached;
     const secret = await reader.readSecret(ITEM);
     if (!secret.ok) return failedRead(secret.error);
     if (accountBlock.isBlocked()) return err("account_blocked");
     const parsed = parseRecord(secret.value, register);
-    if (!parsed.ok) return parsed;
-    if (parsed.value.expiresAtMs <= now() || isRefused(parsed.value.access)) return err("sign_in_again");
-    snapshot = parsed.value;
-    return parsed;
+    cached = parsed.ok && (parsed.value.expiresAtMs <= now() || refused.has(fingerprint(parsed.value.access)))
+      ? err("sign_in_again") : parsed;
+    return cached;
   };
 
   const singleFlight = (forced: boolean): Promise<SignInResult> => {
     const previous = flight;
     if (previous !== undefined && (!forced || previous.forced)) return previous.result;
     // A 401 must cause a new probe and read. If an ordinary load is active, queue one forced load.
-    const result = Promise.resolve(previous?.result).then(() => load(forced)).finally(() => {
+    const result = Promise.resolve(previous?.result).then(() => load(forced)).catch(() => failedRead("exec_failed")).finally(() => {
       if (flight?.result === result) flight = undefined;
     });
     flight = { forced, result };
@@ -138,7 +143,7 @@ export const createGeminiAuth = ({ reader, now, register, accountBlock, logger }
     if (initialBlock !== undefined) return failure(initialBlock);
     const auth = failed?.authHeaders["authorization"];
     const callerRefused = auth?.startsWith("Bearer ") ? fingerprint(auth.slice(7)) : undefined;
-    if (callerRefused !== undefined) refused = callerRefused;
+    if (callerRefused !== undefined) rememberRefusal(callerRefused);
     const pending = singleFlight(forced);
     let loaded: SignInResult;
     try {
@@ -151,7 +156,8 @@ export const createGeminiAuth = ({ reader, now, register, accountBlock, logger }
     if (finalBlock !== undefined) return failure(finalBlock);
     if (!loaded.ok) return failure(loaded.error);
     const { access, expiresAtMs } = loaded.value;
-    if (expiresAtMs <= now() || isRefused(access) || isRefused(access, callerRefused)) return failure("sign_in_again");
+    const digest = fingerprint(access);
+    if (expiresAtMs <= now() || refused.has(digest) || digest === callerRefused) return failure("sign_in_again");
     return ok({ provider: "gemini", authHeaders: { authorization: `Bearer ${access}` } });
   };
 

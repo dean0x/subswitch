@@ -115,6 +115,11 @@ describe("Gemini registry", () => {
     assert.equal(PROVIDER_IDS.at(-1), "gemini");
   });
 
+  it("does not let another provider claim a Gemini-qualified alias", () => {
+    const { table } = buildRoutingTable(MODEL_REGISTRY, { ...emptyAliases(), codex: { "gemini:fixture": "gpt-6.2-sol" } });
+    assert.deepEqual(resolveModel(table, "gemini:fixture"), { kind: "invalid_qualified", provider: "gemini" });
+  });
+
   it("lists zero Gemini models and refuses an unlisted Gemini qualifier locally", () => {
     const { table } = buildRoutingTable(MODEL_REGISTRY, emptyAliases());
     assert.deepEqual(MODEL_REGISTRY.filter((entry) => entry.provider === "gemini"), []);

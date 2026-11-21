@@ -199,7 +199,7 @@ Per-command flag validation walks `parseArgs` **tokens**, not `values`. The main
 
 `ProxyError` (no `body_too_large`/`client_disconnected`); `AnthropicErrorType` (includes `not_found_error`; `overloaded_error` removed — upstream 5xx incl. 529 → `api_error`); `SYNTHESIZED_HEADER`/`SYNTHESIZED_MARKER` exported as single chokepoint for `x-subswitch-synthesized`; `redactCredentials` inside `toAnthropicErrorBody` (ADR-008).
 
-The scrub matches exact values only if a caller registers them. It keeps one current and one previous value per provider ID. In production, only `src/server.ts` registers a value: the Together key. If registration fails, the server treats the key as malformed. The scrub also matches Bearer and JWT patterns.
+The scrub keeps the current and previous credential per provider ID. Gemini registers the access and refresh tokens as one pair. Together registers its API key. Kimi registers its access token. Each caller refuses a credential that the scrub cannot hold. The scrub also matches Bearer and JWT patterns.
 
 ### src/init.ts — Functional-core / imperative-shell
 
