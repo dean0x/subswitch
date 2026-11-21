@@ -25,15 +25,16 @@ update to the newest commit before reporting.
 
 ## Security model
 
-subswitch is a **loopback-only development proxy**. It binds `127.0.0.1`.
-It connects Claude Code to Anthropic and the Codex backend.
+subswitch is a **loopback-only development proxy**. Its intended clients are the developer's own tools on the same machine.
+It connects Claude Code to `api.anthropic.com` and the Codex backend.
 It uses the paid Together AI API only for requests that name a `together:` model.
 The Kimi coding API requires a `providers.kimi` block. All upstream connections use TLS.
 
 Defense-in-depth controls built into the proxy:
 
 - **Loopback binding.** The server binds `127.0.0.1` and does not listen on other interfaces.
-  Claude Code uses a plain HTTP local URL. Each upstream leg uses TLS.
+  Claude Code uses a plain HTTP local URL. Client traffic to subswitch stays on the machine.
+  Each upstream leg uses TLS.
   Loopback is not authentication. The relay has no local token.
   Any local process that can reach the port can use the relay, including paid Together requests.
   See [Together AI API key](#together-ai-api-key).
