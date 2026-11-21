@@ -96,7 +96,7 @@ export const FIELD_KEYS = [
  * Real values (model ids, route names, event names, status codes) contain none of
  * these characters, so this is a no-op on every log line the tree emits.
  */
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+export const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
 
 const renderToken = (value: string): string => {
   const safe = value.replace(CONTROL_CHARS, "");

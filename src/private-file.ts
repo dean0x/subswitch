@@ -39,12 +39,14 @@ function assertPrivateFolder(stat: Stats): void {
   }
 }
 
-function assertPrivateFile(stat: Stats): void {
+export function isPrivateFile(stat: Stats): boolean {
   const uid = process.getuid?.();
-  if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 ||
-      (uid !== undefined && uid !== stat.uid)) {
-    throw new Error("unsafe_private_file");
-  }
+  return stat.isFile() && stat.nlink === 1 && (stat.mode & 0o077) === 0 &&
+    (uid === undefined || uid === stat.uid);
+}
+
+function assertPrivateFile(stat: Stats): void {
+  if (!isPrivateFile(stat)) throw new Error("unsafe_private_file");
 }
 
 async function rotate(target: PrivateFileRotation, active: string): Promise<void> {
