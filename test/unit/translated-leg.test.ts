@@ -284,7 +284,7 @@ for (const source of ["result", "exception"] as const) {
   });
 }
 
-it("does not start another credential step after close while it discards a 401", async (t) => {
+it("does not start another credential step after close while it discards a 401", { timeout: 1000 }, async (t) => {
   const res = response();
   const prepareBody = t.mock.fn(async () => ok({ input: "prepared" }));
   const forceRefresh = t.mock.fn(async () => ok("renewed"));
