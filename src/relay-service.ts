@@ -263,15 +263,20 @@ export async function installService(d: ServiceDeps): Promise<0 | 1> {
   const stopped = probe.kind === "verified" && probe.record.managedBy === "none";
   if (stopped && await d.stop(port) !== 0) return fail(d, `could not stop the detached relay on port ${port}`);
 
-  const published = await publishPlist(d, port, path, data, job.value === 0);
-  if (!published.ok) return fail(d, published.error);
+  const stopNote = stopped ? "; the earlier detached relay was stopped" : "";
+  const replaceJob = job.value === 0;
+  const published = await publishPlist(d, port, path, data, replaceJob);
+  if (!published.ok) return fail(d, `${published.error}${stopNote}`);
   const bootstrap = await run(d, ["bootstrap", serviceDomain(d), path]);
   if (bootstrap.ok && bootstrap.value === 0 && await waitForService(d, port)) {
     if (ca !== undefined) d.out(`Service NODE_EXTRA_CA_CERTS: ${ca}`);
     return 0;
   }
   const rollback = await removeService(d);
-  return fail(d, `the launchd relay did not start${stopped ? "; the earlier detached relay was stopped" : ""}${rollback.ok ? "" : `; rollback failed: ${rollback.error}`}`);
+  const startError = `the launchd relay did not start${stopNote}`;
+  if (!rollback.ok) return fail(d, `${startError}; rollback failed: ${rollback.error}`);
+  const removedNote = replaceJob ? "; the earlier service was removed; run install again with the earlier settings" : "";
+  return fail(d, `${startError}${removedNote}`);
 }
 
 async function publishPlist(d: ServiceDeps, port: number, path: string, data: string, replaceJob: boolean): Promise<Result<void, string>> {

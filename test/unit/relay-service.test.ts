@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -34,7 +35,7 @@ function fixture(t: TestContext) {
   const configPath = join(home, ".config", "subswitch", "config.json");
   const execPath = join(home, "node's & tools", "node");
   const entry = join(home, 'entry <&> ".js');
-  mkdirSync(join(home, ".config", "subswitch"), { recursive: true });
+  mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
   mkdirSync(join(execPath, ".."));
   writeFileSync(configPath, JSON.stringify({ port: PORT }), { mode: 0o600 });
   writeFileSync(execPath, "");
@@ -146,7 +147,7 @@ for (const [kind, prepare] of Object.entries(caCases)) {
     const f = fixture(t);
     const source = join(f.deps.home, "source.pem");
     const ca = join(f.deps.home, "certs", "extra", "ca.pem");
-    mkdirSync(dirname(ca), { recursive: true });
+    mkdirSync(dirname(ca), { recursive: true, mode: 0o700 });
     writeFileSync(source, "test CA file", { mode: 0o600 });
     prepare(ca, source);
 
@@ -178,6 +179,54 @@ it("refuses the pinned config on the next start if a parent folder becomes writa
   assert.equal(loadServiceConfig(f.configPath, UID).ok, false);
 });
 
+it("refuses a config file owned by another user even if root owns its parents", async (t) => {
+  const f = fixture(t);
+  assert.equal(loadServiceConfig(f.configPath, UID).ok, true);
+  const statPath = fs.lstatSync;
+  const statMock = t.mock.method(fs, "lstatSync", (path: Parameters<typeof lstatSync>[0]) => {
+    const stat = statPath(path, { throwIfNoEntry: false });
+    // Model root-owned parents without changes to their real ownership.
+    return stat && typeof path === "string" && f.configPath.startsWith(`${path}${sep}`)
+      ? Object.assign(stat, { uid: 0 }) : stat;
+  });
+  syncBuiltinESMExports();
+  t.after(() => { statMock.mock.restore(); syncBuiltinESMExports(); });
+
+  assert.equal(await f.install({ uid: UID + 1 }), 1);
+  assert.match(f.errors.at(-1) ?? "", /regular user-owned config file/);
+  assert.deepEqual(f.events, []);
+  assert.equal(existsSync(f.plist), false);
+});
+
+it("refuses a hard-linked config file", async (t) => {
+  const f = fixture(t);
+  const link = join(f.deps.home, "config-link.json");
+  linkSync(f.configPath, link);
+
+  assert.equal(await f.install(), 1);
+  assert.match(f.errors.at(-1) ?? "", /regular user-owned config file with one link/);
+  assert.deepEqual(f.events, []);
+  assert.equal(existsSync(f.plist), false);
+
+  unlinkSync(link);
+  assert.equal(await f.install(), 0);
+});
+
+it("refuses install when LaunchAgents allows writes by other users", async (t) => {
+  const f = fixture(t);
+  const agents = dirname(f.plist);
+  mkdirSync(agents, { recursive: true, mode: 0o755 });
+  chmodSync(agents, 0o777);
+
+  assert.equal(await f.install(), 1);
+  assert.match(f.errors.at(-1) ?? "", /unsafe LaunchAgents folder/);
+  assert.deepEqual(f.calls, []);
+  assert.equal(existsSync(f.plist), false);
+
+  chmodSync(agents, 0o755);
+  assert.equal(await f.install(), 0);
+});
+
 it("stops a verified detached relay and unloads an old job before bootstrap", async (t) => {
   const f = fixture(t);
   assert.equal(await f.install(), 0);
@@ -202,6 +251,16 @@ it("does not publish a plist or bootstrap if the detached relay cannot stop", as
   assert.equal(existsSync(f.boot), false);
 });
 
+it("reports the publish error and the prior stop when the boot log cannot open", async (t) => {
+  const f = fixture(t);
+  mkdirSync(f.boot, { recursive: true, mode: 0o700 });
+
+  assert.equal(await f.install({ probe: async () => verified("none") }), 1);
+  assert.deepEqual(f.events, ["vet", "print", "stop"]);
+  assert.deepEqual(f.errors, ["subswitch: cannot open the service boot log; the earlier detached relay was stopped"]);
+  assert.equal(existsSync(f.plist), false);
+});
+
 it("refuses a non-macOS request before it touches service files or runs dependencies", async (t) => {
   const f = fixture(t);
   const bad = { platform: "linux", home: join(f.deps.home, "missing") } as const;
@@ -215,7 +274,7 @@ it("refuses a non-macOS request before it touches service files or runs dependen
 it("uses the pinned explicit config and refuses an Anthropic host before any write", async (t) => {
   const f = fixture(t);
   const configPath = join(f.deps.home, "selected.json");
-  writeFileSync(configPath, JSON.stringify({ port: PORT, anthropic: { baseUrl: "https://other.example" } }));
+  writeFileSync(configPath, JSON.stringify({ port: PORT, anthropic: { baseUrl: "https://other.example" } }), { mode: 0o600 });
   const result = await f.install({ configPath, vet: server.vetConfig });
   assert.equal(result, 1);
   assert.match(f.errors.join("\n"), /anthropic\.baseUrl/);
@@ -235,12 +294,12 @@ it("refuses relative and control paths, writable config, symlink parents and sym
   chmodSync(f.configPath, 0o600);
   assert.equal(existsSync(join(f.deps.home, "Library")), false);
   const library = join(f.deps.home, "Library");
-  mkdirSync(library);
+  mkdirSync(library, { mode: 0o755 });
   const agents = join(library, "LaunchAgents");
   symlinkSync(f.deps.home, agents);
   assert.equal(await f.install(), 1);
   unlinkSync(agents);
-  mkdirSync(agents);
+  mkdirSync(agents, { mode: 0o755 });
   symlinkSync(f.configPath, f.plist);
   assert.equal(await f.install(), 1);
   assert.equal(lstatSync(f.plist).isSymbolicLink(), true);
@@ -282,8 +341,32 @@ for (const stage of ["bootstrap", "verify"] as const) {
     assert.equal(existsSync(f.boot), true);
     assert.equal(f.errors.length, 1);
     assert.match(f.errors[0] ?? "", /earlier detached relay was stopped/);
+    assert.doesNotMatch(f.errors[0] ?? "", /earlier service was removed/);
     assert.equal(f.deps.monotonic(), stage === "verify" ? 8_000 : 0);
     assert.ok(probes <= 42);
+  });
+}
+
+for (const rollbackFails of [false, true]) {
+  it(`reports ${rollbackFails ? "a rollback failure without a removal claim" : "the removal and how to reinstall"} after a failed reinstall`, async (t) => {
+    const f = fixture(t);
+    assert.equal(await f.install(), 0);
+    assert.equal(existsSync(f.plist), true);
+    const probe = t.mock.fn<ServiceDeps["probe"]>(async () => noListener);
+    probe.mock.mockImplementationOnce(f.deps.probe);
+    let bootouts = 0;
+    const runner: ServiceDeps["runner"] = (...args) => {
+      if (args[1][0] === "bootout" && ++bootouts === 2 && rollbackFails) return Promise.resolve(err("failed"));
+      return f.deps.runner(...args);
+    };
+
+    assert.equal(await f.install({ probe, runner }), 1);
+    assert.equal(existsSync(f.plist), rollbackFails);
+    assert.equal(bootouts, 2);
+    assert.equal(f.deps.monotonic(), 8_000);
+    assert.deepEqual(f.errors, [rollbackFails
+      ? "subswitch: the launchd relay did not start; rollback failed: launchctl bootout failed"
+      : "subswitch: the launchd relay did not start; the earlier service was removed; run install again with the earlier settings"]);
   });
 }
 
@@ -314,6 +397,34 @@ it("unloads an installed job, removes its plist and keeps its logs; a second uni
     ["/bin/launchctl", "bootout", JOB], ["/bin/launchctl", "print", JOB],
     ["/bin/launchctl", "bootout", JOB], ["/bin/launchctl", "print", JOB],
   ]);
+});
+
+it("preserves the plist on uninstall when LaunchAgents allows writes by other users", async (t) => {
+  const f = fixture(t);
+  assert.equal(await f.install(), 0);
+  const original = readFileSync(f.plist, "utf8");
+  chmodSync(dirname(f.plist), 0o777);
+
+  assert.equal(await f.uninstall(), 1);
+  assert.match(f.errors.at(-1) ?? "", /unsafe LaunchAgents folder/);
+  assert.equal(readFileSync(f.plist, "utf8"), original);
+
+  chmodSync(dirname(f.plist), 0o755);
+  assert.equal(await f.uninstall(), 0);
+  assert.equal(existsSync(f.plist), false);
+});
+
+it("preserves the plist if another user requests uninstall (a plist-only owner test needs root)", async (t) => {
+  const f = fixture(t);
+  assert.equal(await f.install(), 0);
+  const original = readFileSync(f.plist, "utf8");
+
+  assert.equal(await f.uninstall({ uid: UID + 1 }), 1);
+  assert.match(f.errors.at(-1) ?? "", /unsafe LaunchAgents folder/);
+  assert.equal(readFileSync(f.plist, "utf8"), original);
+
+  assert.equal(await f.uninstall(), 0);
+  assert.equal(existsSync(f.plist), false);
 });
 
 it("preserves a plist with a different label and reports a launchctl error or 45 second timeout", async (t) => {

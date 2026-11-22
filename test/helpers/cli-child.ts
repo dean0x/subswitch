@@ -91,7 +91,7 @@ export const cliChildFolders = async ({ resolveTemp = true }: { readonly resolve
     home, configHome: join(home, "xdg-config"), cacheHome: join(home, "xdg-cache"),
     configFile: join(home, "subswitch-test-config.json"), execLog: join(home, "exec.log"),
   };
-  await writeFile(folders.configFile, "{}");
+  await writeFile(folders.configFile, "{}", { mode: 0o600 });
   return folders;
 };
 
