@@ -40,7 +40,10 @@ The CLI is a thin dispatcher — its only job is to parse flags, route to the ri
 
 ```
 subswitch [command] [flags]
-  serve     (default) — start the MITM proxy
+  serve     (default) — start the proxy
+  stop      — stop a foreground or detached relay
+  service install   — install the macOS login service
+  service uninstall — remove the macOS login service
   doctor    — preflight health checks; exits non-zero on any failure
   init      — interactive or non-interactive first-time setup
   models    — show effective alias table (registry × aliases), then the
@@ -52,6 +55,8 @@ The CLI handles `--help` and `--version` before it selects a command. Both exit 
 `init` does not need an existing config file. `doctor`, foreground `serve` and `models` load config before they run.
 On supported platforms, the detach launcher always loads config with project ports off.
 After a successful load, the launcher uses the explicit `--port` if the caller gives one. A new child loads its own config.
+If the macOS service plist exists, detach waits for a launchd relay on the selected port. It does not start a child.
+Without `--port`, stop ignores the project config port and uses `4141` if config load fails.
 
 **USAGE invariant.** The `USAGE` constant in `src/cli.ts` must stay byte-identical to the CLI reference block in the README. If you update one, update the other.
 
@@ -125,6 +130,9 @@ Key exports: `PROVIDER_IDS`, `ProviderId`, `AliasesByProvider`, `MODEL_REGISTRY`
 `parseCliArgs` returns a discriminated `CliCommand` union. Flag sets per command:
 
 - `serve`: `verbose`, `quiet`, `port`, `detach`
+- `stop`: `port`, `by`
+- `service install`: `port`, `config`
+- `service uninstall`: no command flags
 - `doctor`: `client` (defaults to `all`; reverse checks run when configured)
 - `models`: `json`, `client` (defaults to `claude-code`)
 - `init`: `yes`, `dry-run`, `port`, `settings-target`, `client` (defaults to `claude-code`)
@@ -270,19 +278,31 @@ The logger writes `level=<L> event=<E> key=value …` and uses only fields in `F
 
 ## Exit-code Contract
 
+Detach and stop check the PID and nonce in the relay's health response against its record.
+To verify a relay, they also require a live record PID.
+
 | Command | Condition | Exit code |
 |---------|-----------|-----------|
 | `serve` | The relay stops normally after a stop signal. | 0 |
 | `serve` | Startup fails, shutdown times out or the relay exits after a fatal error. | 1 |
-| `serve --detach` | A verified relay responds to the health request. Stdout contains its PID. | 0 |
-| `serve --detach` | A legacy relay responds without a record. Stdout is empty. | 0 |
-| `serve --detach` | `port_in_use`: A foreign listener answers on the port. | 1 |
+| `serve --detach` | The command finds a verified relay. Stdout contains its PID. | 0 |
+| `serve --detach` | A legacy relay responds without a record and there is no service plist. Stdout is empty. | 0 |
+| `serve --detach` | `port_in_use`: A different listener answers on the port. | 1 |
 | `serve --detach` | `child_exited`: The child cannot start or exits before it is ready. | 1 |
 | `serve --detach` | `not_ready`: The new relay is not ready within 8 seconds. | 1 |
-| `serve --detach` | `identity_mismatch`: The record or health response does not match the new relay. | 1 |
-| `serve --detach` | `unsafe_path`: A relay file or folder is not safe to use. | 1 |
+| `serve --detach` | `identity_mismatch`: The new relay's record or health response does not match, or its record PID is not live. | 1 |
+| `serve --detach` | `unsafe_path`: The command cannot use a relay file or folder. | 1 |
+| `serve --detach` | `service_not_ready`: The macOS service plist exists, but the command finds no verified launchd relay on the selected port within 8 seconds. | 1 |
 | `serve --detach` | The CLI reports an argument, port, config, platform or entry point error. | 1 |
-| Command that loads config | Unknown config key or provider block | 1 (config load fails) |
+| `stop` | The relay is inactive or exits. The wait also ends with 0 if the PID check returns `EPERM`. | 0 |
+| `stop` | The relay is legacy or uses launchd, or a different listener answers. | 1 |
+| `stop` | The record is unreadable, or the relay is unverified and the command cannot confirm that its PID is absent. | 1 |
+| `stop` | Invalid arguments, unavailable requester data, a request or signal error, a PID check error, or a timeout. | 1 |
+| `service install` | The command writes and loads the plist and finds a verified launchd relay. | 0 |
+| `service install` | The command cannot complete the install. | 1 |
+| `service uninstall` | No service exists, or the command unloads the service and removes its plist. | 0 |
+| `service uninstall` | The command fails, for example if launchctl cannot confirm unload or the plist cannot be removed. | 1 |
+| Commands that require config load success | Unknown config key or provider block | 1 |
 | `doctor` | All checks pass / any check fails | 0 / 1 |
 | `init` | Files written | 0 |
 | `init` | User cancelled, or refused (non-TTY, no `--yes`) | 1 |

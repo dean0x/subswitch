@@ -487,7 +487,8 @@ describe("source-text guards: public text", () => {
   it("G6: no public doc, source file or Kimi check file holds local text", () => {
     const files = globSync(PUBLIC_TEXT, { cwd: REPO_DIR });
     for (const name of ["README.md", "SECURITY.md", "CHANGELOG.md", CLI_KNOWLEDGE,
-      "src/relay-detach.ts", "src/relay-record.ts", "src/kimi-native-auth.ts", LIVE_CHECK]) {
+      "src/cli.ts", "src/logger.ts", "src/server.ts", "src/relay-detach.ts", "src/relay-exec.ts", "src/relay-log.ts",
+      "src/relay-record.ts", "src/relay-service.ts", "src/relay-stop.ts", "src/kimi-native-auth.ts", LIVE_CHECK]) {
       assert.ok(files.includes(name), `The search must find ${name}`);
     }
     assert.deepEqual(files.filter((file) => privateText(readRepo(file))), [], "Remove the local text from these files");
@@ -498,7 +499,8 @@ describe("source-text guards: public text", () => {
       "notes in .devflow/docs/lanes/plan.md", "the .orchestrator folder", `${homedir()}/project`, `${dirname(REPO_DIR)}/other`]) {
       assert.equal(privateText(text), true, text);
     }
-    for (const text of ["~/.kimi-code/credentials", ".devflow/docs/usability/run/", "$HOME/.config/subswitch/config.json", "/home/<user>/.cache"]) {
+    for (const text of ["~/.kimi-code/credentials", "~/Library/LaunchAgents/com.subswitch.relay.plist",
+      ".devflow/docs/usability/run/", "$HOME/.config/subswitch/config.json", "/home/<user>/.cache"]) {
       assert.equal(privateText(text), false, text);
     }
     // A machine path that no shape matches is found only through the machine path values.

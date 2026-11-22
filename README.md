@@ -173,18 +173,30 @@ Environment:
 
 **Exit codes:**
 
+Detach and stop check the PID and nonce in the relay's health response against its record.
+To verify a relay, they also require a live record PID.
+
 | Command | Condition | Code |
 |---------|-----------|------|
 | `serve` | The relay stops normally after a stop signal. | 0 |
 | `serve` | Startup fails, shutdown times out or the relay exits after a fatal error. | 1 |
-| `serve --detach` | A verified relay responds to the health request. Stdout contains its PID. | 0 |
-| `serve --detach` | A legacy relay responds without a record. Stdout is empty. | 0 |
-| `serve --detach` | `port_in_use`: A foreign listener answers on the port. | 1 |
+| `serve --detach` | The command finds a verified relay. Stdout contains its PID. | 0 |
+| `serve --detach` | A legacy relay responds without a record and there is no service plist. Stdout is empty. | 0 |
+| `serve --detach` | `port_in_use`: A different listener answers on the port. | 1 |
 | `serve --detach` | `child_exited`: The child cannot start or exits before it is ready. | 1 |
 | `serve --detach` | `not_ready`: The new relay is not ready within 8 seconds. | 1 |
-| `serve --detach` | `identity_mismatch`: The record or health response does not match the new relay. | 1 |
-| `serve --detach` | `unsafe_path`: A relay file or folder is not safe to use. | 1 |
+| `serve --detach` | `identity_mismatch`: The new relay's record or health response does not match, or its record PID is not live. | 1 |
+| `serve --detach` | `unsafe_path`: The command cannot use a relay file or folder. | 1 |
+| `serve --detach` | `service_not_ready`: The macOS service plist exists, but the command finds no verified launchd relay on the selected port within 8 seconds. | 1 |
 | `serve --detach` | The CLI reports an argument, port, config, platform or entry point error. | 1 |
+| `stop` | The relay is inactive or exits. The wait also ends with 0 if the PID check returns `EPERM`. | 0 |
+| `stop` | The relay is legacy or uses launchd, or a different listener answers. | 1 |
+| `stop` | The record is unreadable, or the relay is unverified and the command cannot confirm that its PID is absent. | 1 |
+| `stop` | Invalid arguments, unavailable requester data, a request or signal error, a PID check error, or a timeout. | 1 |
+| `service install` | The command writes and loads the plist and finds a verified launchd relay. | 0 |
+| `service install` | The command cannot complete the install. | 1 |
+| `service uninstall` | No service exists, or the command unloads the service and removes its plist. | 0 |
+| `service uninstall` | The command fails, for example if launchctl cannot confirm unload or the plist cannot be removed. | 1 |
 | `doctor` | all checks pass | 0 |
 | `doctor` | any check fails | 1 |
 | `init` | success (interactive, non-interactive, or dry-run) | 0 |
@@ -198,25 +210,64 @@ Environment:
 
 On macOS and Linux, use `subswitch serve --detach` to start a relay in its own session.
 It can stay active after its launcher exits.
-Use `--port` to select the port. Without `--port`, detach ignores the project config port.
-The child uses the caller's current folder and can load other permitted project settings.
+Use `--port` to select the port. Detach ignores the project config port.
+The child uses the caller's current folder and can load other project settings.
 
-For a new child, the launcher checks that the record and `GET /__subswitch/health`
-identify that child. The check uses the relay name, PID and nonce.
-The launcher returns a PID only if that process is still active.
-If another verified relay starts first, the command can return that relay's PID.
+If the macOS service plist exists, detach waits up to 8 seconds for the launchd relay on the selected port.
+It does not start a child. Select the service port with `--port` if it differs from your config port.
+
 On success with a verified relay, stdout contains only the PID and a newline.
+If another verified relay starts first, detach can print that relay's PID.
 If the version differs, stderr also shows a notice.
-For a legacy relay, stderr asks you to restart it to get the PID.
+For a legacy relay without the service plist, stderr asks you to restart it to get the PID.
 
 On failure, stderr shows one of the reason codes above or a CLI error message.
-After a child exit, stderr can also show one sanitized line from `boot.log`.
+After a child exit, stderr can also show a line from `boot.log`.
 After `not_ready`, the child can stay active.
-The launcher sets `SUBSWITCH_MANAGED_BY=detach` for the child.
-For `serve` without `--detach`, leave this variable unset for foreground use.
-`detach` is the only value that `serve` accepts for this variable.
 
-See [Relay files and exit events](#relay-files-and-exit-events) for the record and logs.
+Leave `SUBSWITCH_MANAGED_BY` unset for foreground use.
+The detach launcher sets `detach`. The login service sets `launchd`.
+`serve` accepts only those two values or an unset variable.
+
+### Stop a relay
+
+Use `subswitch stop` for a foreground or detached relay with a current record.
+Use `--port <n>` if the relay uses a different port.
+Without `--port`, stop uses the config port, but ignores the project port.
+If config load fails, stop uses port `4141`.
+
+`stop` writes `stop-request.json` before it sends `SIGTERM` to a verified relay.
+Use `--by <label>` to add a label to the request.
+The command waits up to 35 seconds for the relay to exit. It does not send a second signal.
+To stop a login service relay, use `subswitch service uninstall` instead.
+
+### macOS login service
+
+Use `subswitch service install` to install and start one service per user.
+The service starts at login and restarts after an unsuccessful exit.
+
+Use a regular config file that you own and that only you can modify.
+The default file is `~/.config/subswitch/config.json`. An empty JSON object uses defaults.
+Use `--config <path>` to select a different absolute path.
+Install ignores the project config and does not use `SUBSWITCH_CONFIG` to select the file.
+Use `--port <n>` to override the config port.
+Install can stop a verified foreground or detached relay on that port.
+
+The service plist is `~/Library/LaunchAgents/com.subswitch.relay.plist`.
+Install sets the Node and CLI paths, config path and port in the plist.
+Run install again if those paths or the port change.
+For Together requests, use the [Keychain item](#together-key), not `TOGETHER_API_KEY`.
+
+To restart the installed service, run:
+
+```sh
+launchctl kickstart -k "gui/$(id -u)/com.subswitch.relay"
+```
+
+Use `subswitch service uninstall` to unload the service and remove its plist.
+The command keeps the logs. See [Relay files and exit events](#relay-files-and-exit-events).
+
+Live macOS checks for install, restart, uninstall and Keychain access are manual and have no results yet.
 
 ### Recording real request limits
 
@@ -330,10 +381,10 @@ Never type the key on the command line.
 security add-generic-password -s "Subswitch Together API key" -a subswitch -w
 ```
 
-- Set `TOGETHER_API_KEY` only in the environment that starts `subswitch serve`. Do not
-  put it in Claude Code settings or in a shell profile that Claude Code and its tools
-  also load. `subswitch run-action` removes `TOGETHER_API_KEY` from the environment of
-  the native client that it starts.
+- For a manual relay start, set `TOGETHER_API_KEY` only in the environment that starts `subswitch serve`.
+  Do not put it in Claude Code settings or in a shared shell profile.
+  `subswitch run-action` removes it from the native client's environment.
+- For the macOS login service, use the Keychain item. The installer does not copy `TOGETHER_API_KEY` from your shell.
 - When `TOGETHER_API_KEY` is set, SubSwitch uses it and does not read the Keychain, even
   when the value is malformed.
 - SubSwitch reads the key once, on the first Together request, and keeps it in process
@@ -395,8 +446,8 @@ is not sent back.
 SubSwitch listens on `127.0.0.1` and has no local token. **Any local process on this
 machine can send a `together:` request to the proxy, and SubSwitch sends that request to
 Together with your key.** The [`Host`/`Origin` gate](#loopback-hostorigin-gate) stops web
-pages, not local processes. Keep the Together balance small, and stop `subswitch serve`
-when you do not use Together.
+pages, not local processes. Keep the Together balance small.
+When you do not use Together, stop the relay. For the login service, use `subswitch service uninstall`.
 
 ### Together configuration
 
@@ -1122,7 +1173,8 @@ Only the owner can have write access to the folders from the home folder to the 
 | `relay.json` | The relay record. The relay publishes it atomically after it binds the port. |
 | `relay.log` | The active relay log. Each line starts with an ISO 8601 time and has no color codes. |
 | `relay.1.log` to `relay.3.log` | Older logs, from newest to oldest. Normal writes limit each log to 4 MiB. |
-| `boot.log` | The detached child's stderr, which includes the ready banner. |
+| `boot.log` | Stderr from detached and launchd relays, with the ready banner. |
+| `stop-request.json` | The target, requester, time and optional `--by` label from `subswitch stop`. |
 
 The record fields are `schemaVersion`, `pid`, `port`, `version`, `startedAt`, `managedBy` and `nonce`.
 `schemaVersion` is `1`. `managedBy` is `launchd` for a launchd relay and `none` otherwise.
