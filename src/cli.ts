@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { CLIENT_IDS, parseClientSelection, selectedClients, type ClientId, type ClientSelection as Client } from "./clients.js";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -689,11 +690,11 @@ const main = async (): Promise<void> => {
           verbose: command.verbose, quiet: command.quiet,
           ...(command.port === undefined ? {} : { port: command.port }),
           node: { execPath: process.execPath, execArgv: process.execArgv, entry: process.argv[1], env: process.env },
-          clock: { after: (ms, run) => {
+          clock: { now: () => performance.now(), after: (ms, run) => {
             const timer = setTimeout(run, ms);
             return () => clearTimeout(timer);
           } },
-          spawn: spawnRelay, classify: classifyRelay, readRecord: readRelayRecord, loadConfig, out, errOut, fail,
+          plistExists: existsSync, spawn: spawnRelay, classify: classifyRelay, readRecord: readRelayRecord, loadConfig, out, errOut, fail,
         });
         return;
       }
