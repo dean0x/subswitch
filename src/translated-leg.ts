@@ -2,6 +2,7 @@ import type { ServerResponse } from "node:http";
 import { Readable, type Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { z } from "zod";
 import { abortable } from "./abortable.js";
 import {
   SYNTHESIZED_HEADER, SYNTHESIZED_MARKER, toAnthropicErrorBody, toAnthropicErrorSse,
@@ -9,11 +10,16 @@ import {
 } from "./errors.js";
 import { observeReadableSse } from "./limit-http-observer.js";
 import { recordLimitFailure, type LimitContext } from "./limit-observation.js";
-import type { Logger } from "./logger.js";
+import type { LoggedUpstreamErrorType, Logger } from "./logger.js";
 import { createFrameWriter, readBoundedBody, readBoundedText, respondJson, respondProxyError } from "./provider-transport.js";
 import type { Result } from "./result.js";
 
 const ERROR_BODY_PEEK_BYTES = 2048;
+const UpstreamErrorBodySchema = z.object({ error: z.object({ type: z.string() }) });
+const UpstreamErrorTypeSchema = z.enum([
+  "invalid_request_error", "authentication_error", "permission_error", "not_found_error",
+  "request_too_large", "rate_limit_error", "api_error", "overloaded_error",
+]);
 
 type AggregateOutcome =
   | { readonly kind: "message"; readonly message: Record<string, unknown> }
@@ -63,6 +69,7 @@ export interface TranslatedLegOptions<C> {
   readonly proxyErrorHeaders?: (kind: ProxyError["kind"]) => Record<string, string> | undefined;
   readonly redirect: "follow" | "error";
   readonly abortOnResponseTimeout?: true;
+  readonly logUpstreamErrorType?: true;
   readonly renderJsonResponse?: (detail: string) => UpstreamError;
 }
 
@@ -185,6 +192,15 @@ const requestUpstream = async <C>(res: ServerResponse, options: TranslatedLegOpt
 const peekErrorBody = async (response: Response, signal: AbortSignal): Promise<string> =>
   (await readBoundedBody(response.body, ERROR_BODY_PEEK_BYTES, signal).catch(() => undefined))?.text ?? "";
 
+const classifyUpstreamErrorType = (detail: string): LoggedUpstreamErrorType => {
+  let value: unknown;
+  try { value = JSON.parse(detail); } catch { return "none"; }
+  const body = UpstreamErrorBodySchema.safeParse(value);
+  if (!body.success) return "none";
+  const type = UpstreamErrorTypeSchema.safeParse(body.data.error.type);
+  return type.success ? type.data : "other";
+};
+
 const relayUpstreamError = async <C>(res: ServerResponse, options: TranslatedLegOptions<C>, upstream: Response,
   signal: AbortSignal, replyError: ReplyError): Promise<void> => {
   const { logger, limitKey, events, model } = options;
@@ -199,7 +215,10 @@ const relayUpstreamError = async <C>(res: ServerResponse, options: TranslatedLeg
       { transport: "http", status: upstream.status, committed: false, headers: upstream.headers,
         text: detail, truncated: Buffer.byteLength(detail) >= ERROR_BODY_PEEK_BYTES });
   }
-  logger.log("warn", events.upstreamError, { model, status: upstream.status });
+  logger.log("warn", events.upstreamError, {
+    model, status: upstream.status,
+    ...(options.logUpstreamErrorType ? { upstreamErrorType: classifyUpstreamErrorType(detail) } : {}),
+  });
   const error = options.renderUpstreamError(upstream.status, detail, upstream.headers);
   respondJson(res, error.status, toAnthropicErrorBody(error.type, error.message), error.headers);
 };

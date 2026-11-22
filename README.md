@@ -496,6 +496,15 @@ stream, a refused connection or a sign-in problem. SubSwitch does not send the r
 Anthropic or to another provider, and it does not retry, except for the one renewal after
 a 401.
 
+The Kimi route refuses `tool_choice` type `"tool"` with a local HTTP 400. Types `"auto"`,
+`"any"` and `"none"` pass through unchanged. The live check sends only `"auto"`.
+No live run tested `"any"` or `"none"`.
+
+The `kimi_request_rejected` warning has `errorCode=forced_tool_choice` for this refusal.
+The `kimi_upstream_error` warning includes `upstreamErrorType`: a known Anthropic error
+type, `other` for an unknown type string, or `none` when the first 2 KiB of the body is
+not a JSON object with a string `error.type`.
+
 ### Kimi data
 
 Each Kimi request sends the conversation to Kimi: the system prompt, the messages, the tool
