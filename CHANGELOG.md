@@ -56,7 +56,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to the Kimi coding Messages API. Without the block, a Kimi model name gets a local
   400 and Subswitch reads no Kimi file. Claude Code is the only supported client for
   this route. The tests use simulated Kimi servers; live behavior against Kimi is not
-  verified yet.
+  verified yet. The route returns a local 400 for `tool_choice` type `"tool"` and logs
+  known upstream error types.
 - Sign in with `kimi login` in your own Terminal. Subswitch reads the sign-in file of
   the Kimi CLI (versions 0.38.0 to 2.7.2), renews it when it is due or once after a
   401, and writes it back under the Kimi CLI lock. Subswitch never runs the Kimi CLI.
@@ -72,10 +73,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `npm run probe:kimi` runs the Kimi live check. `--dry-run` uses only fakes and the
   loopback host. `--live` is for the owner: it needs a terminal and a typed phrase, and
   it caps every request.
-
-### Fixed
-
-- The Kimi route returns a local 400 for a forced tool choice and logs known upstream error types.
 
 ## [0.8.0] - 2026-11-19
 

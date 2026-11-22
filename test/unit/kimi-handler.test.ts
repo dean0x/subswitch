@@ -172,6 +172,28 @@ it("refuses a forced tool choice before it reads the sign-in or sends a request"
   assert.deepEqual(logs, ["level=warn event=kimi_request_rejected model=kimi:kimi-for-coding errorCode=forced_tool_choice"]);
 });
 
+it("returns a generic request error for a string tool_choice before sign-in or send", async () => {
+  const { send, sent, credentialCalls } = rig([() => sseResponse(textReply)]);
+  const res = await send(request({ tools: [tool], tool_choice: "tool" }));
+
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(JSON.parse(res.body), { type: "error", error: {
+    type: "invalid_request_error", message: "request body is not a valid messages request",
+  } });
+  assert.equal(credentialCalls(), 0);
+  assert.equal(sent.length, 0);
+});
+
+it("passes a numeric tool choice type through unchanged", async () => {
+  const { send, sent, credentialCalls } = rig([() => sseResponse(textReply)]);
+  const res = await send(request({ tools: [tool], tool_choice: { type: 5 } }));
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(credentialCalls(), 1);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0]?.body["tool_choice"], { type: 5 });
+});
+
 for (const type of ["auto", "any", "none", undefined] as const) {
   it(`passes ${type ?? "absent"} tool choice through unchanged`, async () => {
     const { send, sent } = rig([() => sseResponse(textReply)]);
@@ -342,11 +364,19 @@ it("replies to a Kimi failure with fixed text and sends nothing to another route
   assert.equal(JSON.stringify({ body: res.body, logs }).includes(ACCESS), false);
 });
 
+const errorSuffix = '"}}';
+const longErrorBody = '{"error":{"type":"invalid_request_error","message":"'
+  .padEnd(3 * 1024 - errorSuffix.length, "x") + errorSuffix;
+
 for (const [name, body, expected] of [
   ["an allow-listed type", '{"error":{"type":"overloaded_error"}}', "overloaded_error"],
   ["an unknown string type", '{"error":{"type":"unlisted_fixture_type"}}', "other"],
+  ["the constructor type", '{"error":{"type":"constructor"}}', "other"],
+  ["the __proto__ type", '{"error":{"type":"__proto__"}}', "other"],
   ["a non-JSON body", "fixture text", "none"],
   ["a missing type", '{"error":{}}', "none"],
+  ["a numeric type", '{"error":{"type":5}}', "none"],
+  ["a 3 KiB JSON body that exceeds the peek", longErrorBody, "none"],
 ] as const) {
   it(`logs ${expected} for ${name} in a Kimi HTTP error`, async () => {
     const { send, logs } = rig([() => new Response(body, { status: 400 })]);
@@ -368,6 +398,12 @@ it("omits the Kimi HTTP error message from every log line and the client reply",
   assert.equal(res.statusCode, 400);
   assert.equal(res.body.includes(marker), false);
   assert.equal(logs.some((line) => line.includes(marker)), false);
+  assert.deepEqual(JSON.parse(res.body), { type: "error", error: {
+    type: "invalid_request_error", message: "Kimi refused the request as not valid.",
+  } });
+  assert.deepEqual(logs, [
+    "level=warn event=kimi_upstream_error model=kimi:kimi-for-coding status=400 upstreamErrorType=invalid_request_error",
+  ]);
 });
 
 it("passes only a retry-after of digits", async () => {
