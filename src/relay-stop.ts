@@ -1,6 +1,9 @@
 import { DEFAULT_PORT } from "./config.js";
 import { PortSchema } from "./init.js";
-import { classifyRelay, StopRequestLabelSchema, writeStopRequest, type ClassifyRelayDeps, type StopRequest } from "./relay-record.js";
+import {
+  classifyRelay, removeOwnStopRequest, StopRequestLabelSchema, writeStopRequest,
+  type ClassifyRelayDeps, type RelayRecord, type StopRequest,
+} from "./relay-record.js";
 
 const POLL_MS = 200;
 const WAIT_MS = 35_000;
@@ -66,10 +69,12 @@ export async function stopRelay(d: StopRelayDeps): Promise<0 | 1> {
   const parsed = PortSchema.safeParse(d.port ?? (loaded?.ok ? loaded.value.config.port : DEFAULT_PORT));
   if (!parsed.success) return fail("invalid --port: expected an integer between 1 and 65535");
   const port = parsed.data;
-  const inactive = (): 0 => {
-    d.out(`No relay is active on port ${port}.`);
+  const reportGone = (refused: boolean): 0 => {
+    d.out(refused ? `No relay is active on port ${port}.` :
+      `The recorded relay on port ${port} has exited. The port may still be in use.`);
     return 0;
   };
+  const differentListener = () => fail(`a different listener uses port ${port}`);
   const identify = () => classifyRelay(port, {
     home: d.home, requestHealth: d.requestHealth, confirmIdle: true,
     isAlive: (pid) => {
@@ -80,12 +85,13 @@ export async function stopRelay(d: StopRelayDeps): Promise<0 | 1> {
   const check = await identify();
 
   switch (check.kind) {
-    case "none": return inactive();
+    case "none": return reportGone(true);
     case "legacy": return fail(`relay on port ${port} has no record; restart it before you use stop`);
-    case "foreign": return fail(`a different listener uses port ${port}`);
+    case "foreign": return differentListener();
     case "unverified":
       if (check.reason === "unsafe_path") return fail(`unsafe_path: cannot read relay record on port ${port}`);
-      return signalRelay(d, check.record.pid, 0) === "missing" ? inactive() : fail(`relay on port ${port} is unverified`);
+      if (signalRelay(d, check.record.pid, 0) !== "missing") return fail(`relay on port ${port} is unverified`);
+      return check.reason === "no_answer" ? reportGone(check.refused === true) : differentListener();
     case "verified": break;
     default: return check satisfies never;
   }
@@ -103,14 +109,23 @@ export async function stopRelay(d: StopRelayDeps): Promise<0 | 1> {
   if (!written.ok) return fail(`could not write stop request on port ${port}`);
   d.errOut(`subswitch: stop request ${JSON.stringify(written.value)}`);
 
+  const sameTarget = (record: RelayRecord): boolean => record.pid === pid && record.nonce === nonce && record.managedBy === managedBy;
   // The record or listener can change while the request write awaits disk I/O.
   const latest = await identify();
-  if (latest.kind !== "verified" || latest.record.pid !== pid || latest.record.nonce !== nonce || latest.record.managedBy !== managedBy) {
-    return signalRelay(d, pid, 0) === "missing" ? inactive() : fail(`relay on port ${port} changed before stop`);
+  if (latest.kind !== "verified" || !sameTarget(latest.record)) {
+    void removeOwnStopRequest(port, d.home, written.value);
+    const noAnswer = latest.kind === "unverified" && latest.reason === "no_answer" && sameTarget(latest.record) ? latest : undefined;
+    if ((latest.kind === "none" || noAnswer !== undefined) && signalRelay(d, pid, 0) === "missing") {
+      return reportGone(latest.kind === "none" || noAnswer?.refused === true);
+    }
+    return fail(`relay on port ${port} changed before stop`);
   }
   const sent = signalRelay(d, pid, "SIGTERM");
   if (sent === "missing") return 0;
-  if (sent !== "ok") return fail(`could not signal the relay on port ${port}`);
+  if (sent !== "ok") {
+    void removeOwnStopRequest(port, d.home, written.value);
+    return fail(`could not signal the relay on port ${port}`);
+  }
   const wait = await waitForExit(d, pid);
   if (wait === "exited") return 0;
   if (wait === "failed") return fail(`could not check the relay on port ${port}`);

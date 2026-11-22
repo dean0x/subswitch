@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync, statSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { loadConfig } from "../../src/config.js";
+import { writeStopRequest } from "../../src/relay-record.js";
 import { stopRelay, type StopRelayDeps } from "../../src/relay-stop.js";
 
 const PORT = 23123;
@@ -147,15 +148,30 @@ for (const [name, health] of [
   });
 }
 
-for (const [name, health] of [["no answer", false], ["matching health", identity]] as const) {
-  it(`does not signal a dead pid with ${name}`, async (t) => {
-    const f = await fixture(t, { health, kill: () => { throw osError("ESRCH"); } });
-    assert.equal(await f.run(), 0);
-    assert.deepEqual(f.calls, name === "matching health" ? [[PID, 0], [PID, 0]] : [[PID, 0]]);
-    assert.deepEqual(f.stdout, [`No relay is active on port ${PORT}.`]);
-    assert.throws(() => statSync(f.requestPath), { code: "ENOENT" });
-  });
-}
+it("reports an idle port when the recorded pid is dead and the connection is refused", async (t) => {
+  const f = await fixture(t, { health: false, kill: () => { throw osError("ESRCH"); } });
+  assert.equal(await f.run(), 0);
+  assert.deepEqual(f.calls, [[PID, 0]]);
+  assert.deepEqual(f.stdout, [`No relay is active on port ${PORT}.`]);
+  assert.throws(() => statSync(f.requestPath), { code: "ENOENT" });
+});
+
+it("refuses to signal a listener with matching health but a dead recorded pid", async (t) => {
+  const f = await fixture(t, { kill: () => { throw osError("ESRCH"); } });
+  assert.equal(await f.run(), 1);
+  assert.deepEqual(f.stderr, [`subswitch: a different listener uses port ${PORT}`]);
+  assert.deepEqual(f.stdout, []);
+  assert.ok(f.calls.every(([, signal]) => signal === 0));
+  assert.throws(() => statSync(f.requestPath), { code: "ENOENT" });
+});
+
+it("reports a dead recorded pid without a claim that the port is idle after a probe timeout", async (t) => {
+  const f = await fixture(t, { kill: () => { throw osError("ESRCH"); } });
+  assert.equal(await f.run({ requestHealth: async () => { throw osError("ETIMEDOUT"); } }), 0);
+  assert.deepEqual(f.stdout, [`The recorded relay on port ${PORT} has exited. The port may still be in use.`]);
+  assert.deepEqual(f.calls, [[PID, 0]]);
+  assert.throws(() => statSync(f.requestPath), { code: "ENOENT" });
+});
 
 for (const code of ["EPERM", "EIO"]) {
   it(`refuses an unverified pid when the lookup returns ${code}`, async (t) => {
@@ -190,15 +206,81 @@ it("does not call an unanswered listener idle without a record", async (t) => {
   assert.equal(f.stdout.length, 0);
 });
 
-it("does not send SIGTERM if the listener changes during request publication", async (t) => {
-  const f = await fixture(t);
-  let written = false;
+it("refuses to signal a verified replacement when the original pid is gone", async (t) => {
+  const replacement = { ...identity, pid: PID + 10, nonce: "12".repeat(16) };
+  let replaced = false;
+  const f = await fixture(t, { kill: (pid) => !replaced || pid === replacement.pid });
   assert.equal(await f.run({
-    errOut: () => { written = true; },
-    requestHealth: async () => Response.json(written ? { name: "other" } : identity),
+    requestHealth: async () => {
+      if (f.stderr.length === 0) return Response.json(identity);
+      replaced = true;
+      await writeFile(f.recordPath, JSON.stringify({
+        schemaVersion: 1, pid: replacement.pid, port: PORT, version: VERSION,
+        startedAt: AT, managedBy: "none", nonce: replacement.nonce,
+      }));
+      return Response.json(replacement);
+    },
   }), 1);
-  assert.equal(written, true);
+  assert.equal(replaced, true);
+  assert.equal(f.stderr.at(-1), `subswitch: relay on port ${PORT} changed before stop`);
+  assert.deepEqual(f.stdout, []);
   assert.ok(f.calls.every(([, signal]) => signal === 0));
+});
+
+it("reports an idle port after the second probe confirms a refused connection and the original pid is gone", async (t) => {
+  let refused = false;
+  const f = await fixture(t, { kill: () => !refused });
+  assert.equal(await f.run({
+    requestHealth: async () => {
+      if (f.stderr.length === 0) return Response.json(identity);
+      refused = true;
+      throw osError("ECONNREFUSED");
+    },
+  }), 0);
+  assert.deepEqual(f.stdout, [`No relay is active on port ${PORT}.`]);
+  await assert.rejects(lstat(f.requestPath), { code: "ENOENT" });
+});
+
+it("removes its request without SIGTERM if the listener changes after the write", async (t) => {
+  const f = await fixture(t);
+  assert.equal(await f.run({
+    requestHealth: async () => Response.json(f.stderr.length === 0 ? identity : { name: "other" }),
+  }), 1);
+  assert.equal(f.stderr.at(-1), `subswitch: relay on port ${PORT} changed before stop`);
+  assert.ok(f.calls.every(([, signal]) => signal === 0));
+  await assert.rejects(lstat(f.requestPath), { code: "ENOENT" });
+});
+
+it("leaves a newer request from a different caller for the same relay", async (t) => {
+  const f = await fixture(t);
+  const newer = {
+    targetPid: PID, nonce: NONCE, requesterPid: CALLER + 10, requesterPpid: PPID, uid: UID, requestedAt: AT,
+  };
+  assert.equal(await f.run({
+    requestHealth: async () => {
+      if (f.stderr.length === 0) return Response.json(identity);
+      assert.ok((await writeStopRequest(PORT, f.home, newer)).ok);
+      return Response.json({ name: "other" });
+    },
+  }), 1);
+  assert.ok(existsSync(f.requestPath), "the newer request must remain");
+  assert.deepEqual(JSON.parse(readFileSync(f.requestPath, "utf8")), newer);
+});
+
+it("keeps the refusal when cleanup cannot read a link in place of the request", async (t) => {
+  const f = await fixture(t);
+  const target = join(f.home, "request-target.json");
+  assert.equal(await f.run({
+    requestHealth: async () => {
+      if (f.stderr.length === 0) return Response.json(identity);
+      await writeFile(target, readFileSync(f.requestPath), { mode: 0o600 });
+      await unlink(f.requestPath);
+      await symlink(target, f.requestPath);
+      return Response.json({ name: "other" });
+    },
+  }), 1);
+  assert.equal(f.stderr.at(-1), `subswitch: relay on port ${PORT} changed before stop`);
+  assert.ok((await lstat(f.requestPath)).isSymbolicLink());
 });
 
 it("does not write or signal when the requester uid is unavailable", async (t) => {
@@ -251,7 +333,12 @@ for (const [code, exit] of [["ESRCH", 0], ["EPERM", 1]] as const) {
     assert.deepEqual(f.calls, [[PID, 0], [PID, 0], [PID, "SIGTERM"]]);
     assert.deepEqual(f.delays, []);
     assert.ok(!f.stderr.join("\n").includes("private OS details"));
-    assert.ok(!Object.hasOwn(JSON.parse(readFileSync(f.requestPath, "utf8")), "label"));
+    if (code === "EPERM") {
+      assert.equal(f.stderr.at(-1), `subswitch: could not signal the relay on port ${PORT}`);
+      await assert.rejects(lstat(f.requestPath), { code: "ENOENT" });
+    } else {
+      assert.ok(!Object.hasOwn(JSON.parse(readFileSync(f.requestPath, "utf8")), "label"));
+    }
   });
 }
 

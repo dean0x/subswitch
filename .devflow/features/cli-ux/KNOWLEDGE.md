@@ -294,10 +294,11 @@ To verify a relay, they also require a live record PID.
 | `serve --detach` | `unsafe_path`: The command cannot use a relay file or folder. | 1 |
 | `serve --detach` | `service_not_ready`: The macOS service plist exists, but the command finds no verified launchd relay on the selected port within 8 seconds. | 1 |
 | `serve --detach` | The CLI reports an argument, port, config, platform or entry point error. | 1 |
-| `stop` | The relay is inactive or exits. The wait also ends with 0 if the PID check returns `EPERM`. | 0 |
-| `stop` | The relay is legacy or uses launchd, or the command cannot verify the listener on the port. | 1 |
-| `stop` | The record is unreadable, or the relay is unverified and the command cannot confirm that its PID is absent. | 1 |
-| `stop` | Invalid arguments, unavailable requester data, a request or signal error, a PID check error, or a timeout. | 1 |
+| `stop` | The relay exits, or the PID check during the wait returns `EPERM`. | 0 |
+| `stop` | The connection is refused and no record exists, or the recorded PID is absent and the probe gets no answer. | 0 |
+| `stop` | The relay is legacy or uses launchd, a different listener uses the port, or the relay changes before the signal. | 1 |
+| `stop` | The record is unreadable, or an unanswered probe does not let the command confirm that the relay is absent. | 1 |
+| `stop` | Invalid arguments, unavailable requester data, a request, signal or PID check error, or a stop wait timeout. | 1 |
 | `service install` | The command writes and loads the plist and finds a verified launchd relay. | 0 |
 | `service install` | The command cannot complete the install. | 1 |
 | `service uninstall` | No service exists, or the command unloads the service and removes its plist. | 0 |

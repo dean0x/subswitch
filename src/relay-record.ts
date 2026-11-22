@@ -70,7 +70,8 @@ type RelayPathResult<T> = Result<T, "unsafe_path">;
 export type RelayClassification =
   | { readonly kind: "none" | "legacy" | "foreign" }
   | { readonly kind: "unverified"; readonly reason: "unsafe_path" }
-  | { readonly kind: "unverified"; readonly reason: "identity_mismatch" | "no_answer"; readonly record: RelayRecord }
+  | { readonly kind: "unverified"; readonly reason: "identity_mismatch"; readonly record: RelayRecord }
+  | { readonly kind: "unverified"; readonly reason: "no_answer"; readonly record: RelayRecord; readonly refused?: true }
   | { readonly kind: "verified"; readonly record: RelayRecord; readonly version: string };
 export interface ClassifyRelayDeps {
   readonly home: string;
@@ -214,6 +215,13 @@ export async function writeStopRequest(
   return writePrivateRecord(join(folder.value, STOP_REQUEST_NAME), parsed.data);
 }
 
+function readStopRequestAt(path: string): RelayPathResult<StopRequest | undefined> {
+  return readRecordJson(path, (data) => {
+    const parsed = StopRequestSchema.safeParse(data);
+    return parsed.success ? ok(parsed.data) : err("unsafe_path");
+  });
+}
+
 /** Consume the file once. The caller checks the signal and request age before use. */
 export function readStopRequest(
   port: number, home: string, targetPid: number, nonce: string,
@@ -221,10 +229,7 @@ export function readStopRequest(
   const folder = checkFolder(port, home, false);
   if (!folder.ok || folder.value === undefined) return folder.ok ? ok(undefined) : folder;
   const path = join(folder.value, STOP_REQUEST_NAME);
-  const result = readRecordJson(path, (data) => {
-    const parsed = StopRequestSchema.safeParse(data);
-    return parsed.success ? ok(parsed.data) : err("unsafe_path");
-  });
+  const result = readStopRequestAt(path);
   if (!result.ok) {
     unlinkRecord(path);
     return result;
@@ -235,6 +240,21 @@ export function readStopRequest(
   if (!removed.value) return ok(undefined);
   const { targetPid: pid, nonce: savedNonce, ...requester } = result.value;
   return ok(pid === targetPid && savedNonce === nonce ? requester : undefined);
+}
+
+export function removeOwnStopRequest(port: number, home: string, request: StopRequest): RelayPathResult<boolean> {
+  const folder = checkFolder(port, home, false);
+  if (!folder.ok) return folder;
+  if (folder.value === undefined) return ok(false);
+  const path = join(folder.value, STOP_REQUEST_NAME);
+  const result = readStopRequestAt(path);
+  if (!result.ok) return result;
+  const saved = result.value;
+  // The nonce identifies the relay, not the caller. Compare the entire request.
+  if (saved === undefined || saved.nonce !== request.nonce || saved.targetPid !== request.targetPid ||
+      saved.requesterPid !== request.requesterPid || saved.requesterPpid !== request.requesterPpid ||
+      saved.uid !== request.uid || saved.requestedAt !== request.requestedAt || saved.label !== request.label) return ok(false);
+  return unlinkRecord(path);
 }
 
 function unlinkRecord(path: string): RelayPathResult<boolean> {
@@ -324,7 +344,9 @@ export async function classifyRelay(port: number, deps: ClassifyRelayDeps): Prom
   if (!current.ok) return { kind: "unverified", reason: current.error };
   const probe = await probeHealth(port, deps);
   if (!probe.answered) {
-    if (current.value !== undefined) return { kind: "unverified", reason: "no_answer", record: current.value };
+    if (current.value !== undefined) {
+      return { kind: "unverified", reason: "no_answer", record: current.value, ...(probe.refused ? { refused: true } : {}) };
+    }
     return { kind: deps.confirmIdle && !probe.refused ? "foreign" : "none" };
   }
   // A relay can publish or replace the record while the health request is in flight.
