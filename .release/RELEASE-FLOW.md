@@ -58,10 +58,14 @@ Run these in order before pushing the release tag:
    `smoke-tarball.sh` packs the package, installs the tarball into a temp directory, runs
    `subswitch --version`, then starts `subswitch serve` and polls the health endpoint.
 
-6. **NPM_TOKEN secret**: confirm it exists in the GitHub repo before pushing the tag:
-   ```
-   gh secret list
-   ```
+6. **npm trusted publisher**: the publish uses npm trusted publishing (OIDC). No npm token
+   secret is used. Before the first tag push with this setup, confirm that the npm package
+   settings for `subswitch` have a trusted publisher with these values:
+   - Provider: GitHub Actions
+   - Organization or user: `dean0x`
+   - Repository: `subswitch`
+   - Workflow filename: `release.yml`
+   - Environment: empty (the job uses no GitHub environment)
 
 ---
 
@@ -112,8 +116,10 @@ CI job. Do not remove `prepublishOnly`.
    that file; consult it for the exact sequence. The invariants that matter:
    - A **tag guard** hard-fails (exit 1) if the tag version does not match `package.json`
    - A **lockfile guard** hard-fails if `package-lock.json` fields lag `package.json`
-   - **Provenance signing** is on via `id-token: write` — published artifacts carry npm attestations
-   - The Publish step runs `npm publish --provenance --access public`, which fires both
+   - **Trusted publishing and provenance** use `id-token: write`: npm signs in with the
+     workflow identity, and published artifacts carry npm attestations
+   - The Publish step runs `npx -y npm@11.19.1 publish --provenance --access public`. Trusted
+     publishing needs npm 11.5.1 or newer, and Node 22 has npm 10. The publish fires both
      `prepublishOnly` (`npm run check`) and `prepack` (`npm run build`) hooks before publishing
 
 ---
@@ -151,11 +157,3 @@ After the tag is pushed, in order:
    ```
    The `awk` command extracts the section body for `## [X.Y.Z]` — stopping at the next
    `## [` header (or EOF for the oldest entry) without dropping the final line.
-
----
-
-## Known Future Improvements
-
-- Migrate `release.yml` from the `NPM_TOKEN` classic token to npm OIDC trusted publishing.
-  Status: not started as of v0.3.0. On completion: delete the `NPM_TOKEN` GitHub secret and
-  drop the `NODE_AUTH_TOKEN` env block from the Publish step.

@@ -61,7 +61,8 @@ jobs:
       - name: Smoke test tarball
         run: ./scripts/smoke-tarball.sh
 
+      # npm trusted publishing: npm signs in with the workflow identity (OIDC).
+      # No npm token is used. Trusted publishing needs npm 11.5.1 or newer, and
+      # Node 22 has npm 10, so this step runs a pinned npm 11 through npx.
       - name: Publish
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npx -y npm@11.19.1 publish --provenance --access public
