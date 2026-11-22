@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { homedir, userInfo } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { DEFAULT_PORT, userConfigPath } from "../../src/config.js";
 import { classifyRelay, readRelayRecord } from "../../src/relay-record.js";
 import { cliChildCommand, cliChildFolders, type CliChildFolders } from "./cli-child.js";
+import { reserveTestPort } from "./test-port.js";
 
 export interface RelayChildOptions {
   readonly config?: Readonly<Record<string, unknown>>;
@@ -36,18 +36,6 @@ export interface RelayChild {
 const STOP_MS = 7_000;
 const DETACH_LAUNCH_MS = 12_000;
 const OUTPUT_CAP = 256 * 1024;
-
-async function reservePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((done, fail) => {
-    server.once("error", fail);
-    server.listen(0, "127.0.0.1", done);
-  });
-  const address = server.address();
-  await new Promise<void>((done, fail) => server.close((error) => error ? fail(error) : done()));
-  assert.ok(address && typeof address !== "string");
-  return address.port;
-}
 
 async function waitUntil(predicate: () => boolean, ms: number): Promise<boolean> {
   const stepMs = 20;
@@ -137,11 +125,21 @@ export async function startRelayChild(options: RelayChildOptions = {}): Promise<
   const folders = await cliChildFolders({ resolveTemp: true });
   assertIsolatedRelayTarget(folders.home, realHome);
   assertIsolatedRelayTarget(folders.home, envHome);
-  const removeHome = () => rm(folders.home, { recursive: true, force: true });
+  const claims: Awaited<ReturnType<typeof reserveTestPort>>[] = [];
+  const reserve = async () => {
+    const claim = await reserveTestPort();
+    claims.push(claim);
+    return claim.port;
+  };
+  const removeHomeAndRelease = async () => {
+    try { await rm(folders.home, { recursive: true, force: true }); }
+    finally { for (const claim of claims) claim.release(); }
+  };
   try {
     const portFromConfig = options.detach === true && options.portFromConfig === true;
-    // Reserve both ports together. The exec allow-list permits only the port under test.
-    const [port, otherPort] = await Promise.all([reservePort(), options.detach && !portFromConfig ? reservePort() : undefined]);
+    // The exec allow-list permits only the port under test.
+    const port = await reserve();
+    const otherPort = options.detach && !portFromConfig ? await reserve() : undefined;
     assertIsolatedRelayTarget(folders.home, realHome, ...(otherPort === undefined ? [port] : [port, otherPort]));
     assert.notEqual(port, otherPort, "The option port must differ from the config port");
     await options.prepare?.(folders);
@@ -187,7 +185,7 @@ export async function startRelayChild(options: RelayChildOptions = {}): Promise<
           }
         }
       } finally {
-        await removeHome();
+        await removeHomeAndRelease();
       }
     };
     let cleanup: Promise<void> | undefined;
@@ -200,7 +198,7 @@ export async function startRelayChild(options: RelayChildOptions = {}): Promise<
       cleanup: () => cleanup ??= stop(),
     };
   } catch (error) {
-    await removeHome();
+    await removeHomeAndRelease();
     throw error;
   }
 }

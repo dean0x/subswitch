@@ -16,11 +16,11 @@
  */
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
-import { createServer, type AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isPlainObject } from "../../src/plain-object.js";
+import { reserveTestPort } from "./test-port.js";
 
 const CLI_ENTRY = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
 const TSX = import.meta.resolve("tsx");
@@ -165,14 +165,11 @@ export const runCliChild = (
 };
 
 /**
- * A config for a doctor child whose probes stay on the loopback host: a free port, and
- * loopback base URLs for Anthropic, Codex and Together. Add more keys with `extra`.
+ * A config for a doctor child with loopback probes. The test process holds the port claim
+ * until exit. Add more keys with `extra`.
  */
 export const offlineDoctorConfig = async (extra: Readonly<Record<string, unknown>> = {}): Promise<Record<string, unknown>> => {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as AddressInfo;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  const { port } = await reserveTestPort();
   const providers = isPlainObject(extra["providers"]) ? extra["providers"] : {};
   return {
     ...extra,
