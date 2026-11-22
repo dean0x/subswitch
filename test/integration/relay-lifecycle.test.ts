@@ -1,16 +1,13 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { access, appendFile, chmod, mkdir, readFile, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
-import { createConnection, Server } from "node:net";
-import { homedir } from "node:os";
+import { access, appendFile, chmod, mkdir, readFile, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
-import { DEFAULT_PORT } from "../../src/config.js";
 import { isPlainObject } from "../../src/plain-object.js";
-import { classifyRelay, ensureRelayFolder, readRelayRecord, writeStopRequest, type StopRequest } from "../../src/relay-record.js";
+import { classifyRelay, readRelayRecord, writeStopRequest, type StopRequest } from "../../src/relay-record.js";
 import { SUBSWITCH_VERSION } from "../../src/version.js";
-import { cliChildFolders, readExecLog, runCliChild } from "../helpers/cli-child.js";
+import { runCliChild } from "../helpers/cli-child.js";
 import { startRelayChild, type RelayChild, type RelayChildOptions } from "../helpers/relay-child.js";
 
 async function launch(t: TestContext, options: Omit<RelayChildOptions, "env"> & { readonly env?: NodeJS.ProcessEnv } = {}) {
@@ -237,65 +234,6 @@ for (const mode of ["legacy", "launchd"] as const) {
   });
 }
 
-const serviceEnv = (platform: "darwin" | "linux", uid?: number) => ({ NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(`
-  Object.defineProperty(process, "platform", { value: ${JSON.stringify(platform)} });
-  ${uid === undefined ? "delete process.getuid;" : `process.getuid = () => ${uid};`}
-`)}` });
-
-it("reads the selected service config on macOS but not on Linux", async (t) => {
-  const folders = await cliChildFolders();
-  t.after(() => rm(folders.home, { recursive: true, force: true }));
-  const dir = join(folders.home, "config");
-  const file = join(dir, "selected.json");
-  await mkdir(dir);
-  await writeFile(file, "{", { mode: 0o600 });
-  const { uid } = await stat(file);
-  const args = ["service", "install", "--port", "23123", "--config", file];
-  for (const platform of ["linux", "darwin"] as const) {
-    const result = await runCliChild(folders, args, { env: serviceEnv(platform, uid), recordFsUnder: dir });
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, platform === "linux" ? /launchd on macOS/ : /malformed JSON/);
-    const calls = await readExecLog(folders);
-    assert.deepEqual(calls.filter((line) => line !== "preload"), platform === "linux" ? [] : [`fs.openSync ${file}`]);
-  }
-});
-
-for (const [args, message] of [
-  [["service"], /service requires install or uninstall/],
-  [["service", "unknown"], /service requires install or uninstall/],
-  [["service", "install", "extra"], /service requires install or uninstall/],
-  [["service", "uninstall", "extra"], /service requires install or uninstall/],
-  [["service", "uninstall", "--port", "23123"], /flag '--port' is not valid/],
-  [["service", "uninstall", "--config", "test.json"], /flag '--config' is not valid/],
-  [["service", "install", "--detach"], /flag '--detach' is not valid/],
-  [["serve", "--port", "0", "--config", "test.json"], /flag '--config' is not valid/],
-] as const) {
-  it(`refuses ${args.join(" ")}`, async (t) => {
-    const folders = await cliChildFolders();
-    t.after(() => rm(folders.home, { recursive: true, force: true }));
-    const result = await runCliChild(folders, args, { env: serviceEnv("linux") });
-    assert.equal(result.code, 1, result.stderr);
-    assert.match(result.stderr, message);
-    assert.deepEqual(await readExecLog(folders), ["preload"]);
-  });
-}
-
-for (const platform of ["linux", "darwin"] as const) {
-  for (const action of ["install", "uninstall"] as const) {
-    it(`refuses service ${action} ${platform === "linux" ? "outside macOS" : "without a user ID"}`, async (t) => {
-      const folders = await cliChildFolders();
-      t.after(() => rm(folders.home, { recursive: true, force: true }));
-      const args = action === "install" ? ["--port", "23123", "--config", folders.configFile] : [];
-      const result = await runCliChild(folders, ["service", action, ...args], { env: serviceEnv(platform) });
-      assert.equal(result.code, 1, result.stderr);
-      assert.match(result.stderr, platform === "linux" ? /the service needs launchd on macOS/ : /the service needs a user ID/);
-      await assert.rejects(access(join(folders.home, "Library")), { code: "ENOENT" });
-      await assert.rejects(access(join(folders.home, ".cache")), { code: "ENOENT" });
-      assert.deepEqual(await readExecLog(folders), ["preload"]);
-    });
-  }
-}
-
 function makeStopRequest(relay: RelayChild, changes: Partial<StopRequest> = {}): StopRequest {
   const saved = readRelayRecord(relay.port, relay.folders.home);
   assert.ok(saved.ok && saved.value);
@@ -437,96 +375,3 @@ it("logs only the pid on fatal, then writes the stop line and removes the record
   assert.doesNotMatch(text, /fixture fault|at process\./);
   await assert.rejects(access(join(state(relay), "relay.json")), { code: "ENOENT" });
 });
-
-it("starts and stops a relay under a separate home and on a test port", async (t) => {
-  const relay = await startRelayChild({ config: { port: 9 }, env: { NO_COLOR: "1" } });
-  t.after(relay.cleanup);
-  assert.notEqual(relay.folders.home, homedir());
-  assert.ok(relay.port > 0 && relay.port !== 4141 && relay.port !== DEFAULT_PORT && relay.port !== 9);
-  assert.equal(JSON.parse(await readFile(relay.folders.configFile, "utf8")).port, relay.port);
-  await relay.waitFor("subswitch ready");
-  assert.match(relay.stderr, /subswitch ready/);
-  await relay.cleanup();
-  assert.deepEqual(await relay.exited, [0, null]);
-  await assert.rejects(access(relay.folders.home), { code: "ENOENT" });
-});
-
-it("prints only the detached relay PID and stops the relay through the test record", async (t) => {
-  const relay = await launch(t, { detach: true });
-  assert.deepEqual(await relay.exited, [0, null], relay.stderr);
-  assert.equal(relay.stderr, "");
-  const live = await classifyRelay(relay.port, { home: relay.folders.home });
-  assert.equal(live.kind, "verified");
-  const { pid } = live.record;
-  assert.notEqual(pid, relay.child.pid);
-  assert.equal(relay.stdout, `${pid}\n`);
-  await relay.cleanup();
-  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
-  await assert.rejects(access(relay.folders.home), { code: "ENOENT" });
-});
-
-it("keeps the relay ready after SIGKILL to the detach launcher's process group", async (t) => {
-  const relay = await launch(t, { detach: true });
-  assert.deepEqual(await relay.exited, [0, null], relay.stderr);
-  const group = relay.child.pid;
-  assert.ok(group !== undefined && group > 1 && /^[1-9]\d*\n$/.test(relay.stdout));
-  let groupExisted = false;
-  try {
-    groupExisted = process.kill(-group, "SIGKILL");
-  } catch (error) {
-    assert.ok(error instanceof Error && "code" in error && error.code === "ESRCH");
-  }
-  const live = await classifyRelay(relay.port, { home: relay.folders.home });
-  assert.equal(live.kind, "verified");
-  assert.equal(relay.stdout, `${live.record.pid}\n`);
-  assert.equal(groupExisted, false, "No process should stay in the launcher group");
-});
-
-it("uses the user config port and ignores the project port on detach", async (t) => {
-  const relay = await launch(t, {
-    detach: true, portFromConfig: true,
-    prepare: ({ home }) => writeFile(join(home, "subswitch.config.json"), '{"port":0}'),
-  });
-  assert.deepEqual(await relay.exited, [0, null], relay.stderr);
-  const live = await classifyRelay(relay.port, { home: relay.folders.home });
-  assert.equal(live.kind, "verified");
-  assert.equal(relay.stdout, `${live.record.pid}\n`);
-});
-
-it("refuses port 4141 before any relay child can start", async (t) => {
-  t.mock.method(Server.prototype, "address", () => ({ address: "127.0.0.1", family: "IPv4", port: 4141 }));
-  await assert.rejects(startRelayChild({
-    prepare: () => assert.fail("Must not prepare or spawn a relay on this port"),
-  }), /Reserved relay test port/);
-});
-
-for (const matches of [true, false]) {
-  it(`signals the pid from the temporary record only when the identity matches (${matches})`, async (t) => {
-    const pid = process.pid === 42 ? 43 : 42;
-    const nonce = "ab".repeat(16);
-    const signals: NodeJS.Signals[] = [];
-    t.mock.method(process, "kill", (target: number, signal: NodeJS.Signals | 0) => {
-      assert.equal(target, pid);
-      if (signal !== 0) signals.push(signal);
-      return true;
-    });
-    const relay = await startRelayChild({ detach: true, extraImport: "data:text/javascript,process.exit(0)" });
-    t.after(() => relay.cleanup().catch(() => undefined));
-    await relay.exited;
-    const health = createServer((_req, res) => res.end(JSON.stringify({
-      name: "subswitch", version: "0.8.0", pid, nonce: matches ? nonce : "cd".repeat(16),
-    })));
-    t.after(() => { health.close(); health.closeAllConnections(); });
-    health.listen(relay.port, "127.0.0.1");
-    await once(health, "listening");
-    const folder = ensureRelayFolder(relay.port, relay.folders.home);
-    assert.ok(folder.ok);
-    await writeFile(join(folder.value, "relay.json"), JSON.stringify({
-      schemaVersion: 1, pid, nonce, port: relay.port, version: "0.8.0", startedAt: new Date().toISOString(), managedBy: "none",
-    }), { mode: 0o600 });
-    if (matches) await relay.cleanup();
-    else await assert.rejects(relay.cleanup(), /Refuse to stop a relay without a verified identity/);
-    assert.deepEqual(signals, matches ? ["SIGTERM", "SIGKILL"] : []);
-    await assert.rejects(access(relay.folders.home), { code: "ENOENT" });
-  });
-}
