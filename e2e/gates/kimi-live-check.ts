@@ -523,8 +523,10 @@ const fakeKimiTransport: typeof fetch = async (input, init) => {
   const body = parseObject(String(init?.body));
   if (url !== KIMI_MESSAGES_URL || body === undefined) return jsonResponse(404, { type: "error", error: { type: "not_found_error", message: "fake" } });
   const choice = isPlainObject(body["tool_choice"]) ? body["tool_choice"] : undefined;
-  const block = choice?.["type"] === "tool"
-    ? { type: "tool_use", id: `toolu_${randomUUID().replaceAll("-", "")}`, name: choice["name"], input: { key: "color" } }
+  const tools = body["tools"];
+  const hasProbeTool = Array.isArray(tools) && tools.some((tool: unknown) => isPlainObject(tool) && tool["name"] === PROBE_TOOL.name);
+  const block = choice?.["type"] === "auto" && hasProbeTool
+    ? { type: "tool_use", id: `toolu_${randomUUID().replaceAll("-", "")}`, name: PROBE_TOOL.name, input: { key: "color" } }
     : { type: "text", text: holdsToolResult(body) ? "blue" : "ready" };
   const events = replyEvents(String(body["model"]), block);
   const held = JSON.stringify(body["messages"]).includes(CANCEL_ASK.content);
@@ -706,7 +708,7 @@ async function runProbes(origin: string, ledger: CapLedger): Promise<ProbeResult
   await probe("stream", "/v1/messages", { ...base, stream: true, messages: [ASK] }, streamPassed);
   await probe("json", "/v1/messages", { ...base, stream: false, messages: [ASK] }, (text) => jsonMessage(text) !== undefined);
   const callText = await probe("tool_call", "/v1/messages", { ...base, stream: false, tools: [PROBE_TOOL],
-    tool_choice: { type: "tool", name: PROBE_TOOL.name }, messages: [TOOL_ASK] }, (text) => toolUse(jsonMessage(text)) !== undefined);
+    tool_choice: { type: "auto" }, messages: [TOOL_ASK] }, (text) => toolUse(jsonMessage(text)) !== undefined);
   const call = callText === undefined ? undefined : jsonMessage(callText);
   const use = toolUse(call);
   if (call !== undefined && use !== undefined) {
