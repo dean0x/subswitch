@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import { access, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { it } from "node:test";
+import { before, it } from "node:test";
 import { cliChildFolders, readExecLog, runCliChild } from "../helpers/cli-child.js";
+
+// Fill the tsx cache on the host platform so esbuild uses the installed binary.
+before(async () => {
+  const folders = await cliChildFolders();
+  try {
+    const result = await runCliChild(folders, ["--version"]);
+    assert.equal(result.code, 0, result.stderr);
+  } finally {
+    await rm(folders.home, { recursive: true, force: true });
+  }
+});
 
 const serviceEnv = (platform: "darwin" | "linux", uid?: number) => ({ NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(`
   Object.defineProperty(process, "platform", { value: ${JSON.stringify(platform)} });
