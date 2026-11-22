@@ -1,6 +1,22 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createConsoleLogger } from "../../src/logger.js";
+import { createConsoleLogger, renderLogLine } from "../../src/logger.js";
+import { SUBSWITCH_VERSION } from "../../src/version.js";
+
+it("renders a plain line with only the allowed fields", () => {
+  const fields = { pid: 42, signal: "SIGHUP", exitCode: 0, version: SUBSWITCH_VERSION, other: "omit" } as const;
+  assert.equal(
+    renderLogLine("info", "relay\x1b stopped", fields),
+    `level=info event="relay stopped" pid=42 signal=SIGHUP exitCode=0 version=${SUBSWITCH_VERSION}`,
+  );
+});
+
+it("preserves the console format for a quoted event and its fields", () => {
+  const lines: string[] = [];
+  const logger = createConsoleLogger("info", (line) => lines.push(line), true);
+  logger.log("info", "a b", { status: 200 });
+  assert.match(lines[0] ?? "", /^\x1b\[2m\d{2}:\d{2}:\d{2}\x1b\[22m level=\x1b\[36minfo\x1b\[39m event=\x1b\[1m"a b"\x1b\[22m status=200$/);
+});
 
 describe("createConsoleLogger", () => {
   it("filters below the minimum level", () => {

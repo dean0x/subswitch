@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -9,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { KIMI_REGION_TABLE } from "../../src/kimi-constants.js";
 import { isPlainObject } from "../../src/plain-object.js";
 import { messageFrames, nativeEvents } from "../fixtures/native-messages.js";
-import { cliChildCommand, cliChildFolders, offlineDoctorConfig, type CliChildFolders } from "../helpers/cli-child.js";
+import { startRelayChild, type RelayChildOptions } from "../helpers/relay-child.js";
 import { sseHandler, startFakeUpstream } from "./fake-upstreams.js";
 
 const PROFILE = KIMI_REGION_TABLE.global;
@@ -38,38 +37,22 @@ const useLoopbackFetch = (target: string): void => {
   };
 };
 
-const fixture = async (t: TestContext) => {
-  const folders = await cliChildFolders({ resolveTemp: true });
-  t.after(() => rm(folders.home, { recursive: true, force: true }));
-  const credentials = join(folders.home, ".kimi-code", "credentials");
-  const authFile = join(credentials, PROFILE.credentialFile);
-  await mkdir(credentials, { recursive: true, mode: 0o700 });
-  await writeFile(authFile, JSON.stringify({ ...tokens(1, 3600), expires_at: Math.floor(Date.now() / 1000) - 1 }), { mode: 0o600 });
-  const { port } = await offlineDoctorConfig();
-  assert.ok(typeof port === "number");
-  assert.notEqual(port, 4141);
-  await writeFile(folders.configFile, JSON.stringify({ port, logLevel: "info", providers: { kimi: {} } }));
-  return { folders, authFile, port };
+const KIMI_HOME = ".kimi-code";
+const authPath = (home: string) => join(home, KIMI_HOME, "credentials", PROFILE.credentialFile);
+const fixture: RelayChildOptions["prepare"] = async ({ home }) => {
+  await mkdir(join(home, KIMI_HOME, "credentials"), { recursive: true, mode: 0o700 });
+  await writeFile(authPath(home), JSON.stringify({ ...tokens(1, 3600), expires_at: Math.floor(Date.now() / 1000) - 1 }), { mode: 0o600 });
 };
 
-const startServe = async (t: TestContext, folders: CliChildFolders, upstream: string) => {
-  const command = cliChildCommand(folders, ["serve"], { env: { [UPSTREAM_ENV]: upstream, NO_COLOR: "1", SUBSWITCH_LIMIT_RECORDING: "0" } });
-  // Preload this file after tsx and before the CLI entry and its serve argument.
-  const args = command.args.toSpliced(-2, 0, "--import", import.meta.url);
-  const child = spawn(command.file, args, { cwd: command.cwd, env: command.env, stdio: ["ignore", "ignore", "pipe"] });
-  let stderr = "";
-  child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
-  const exited = new Promise<readonly [number | null, NodeJS.Signals | null]>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code, signal) => resolve([code, signal]));
+const startServe = async (t: TestContext, upstream: string, prepare = fixture) => {
+  const relay = await startRelayChild({
+    config: { logLevel: "info", providers: { kimi: {} } },
+    env: { [UPSTREAM_ENV]: upstream, NO_COLOR: "1", SUBSWITCH_LIMIT_RECORDING: "0" },
+    extraImport: import.meta.url, prepare,
   });
-  t.after(async () => { child.kill("SIGKILL"); await exited; });
-  const waitForLog = async (text: string): Promise<void> => {
-    for (let check = 0; check < 400 && child.exitCode === null && child.signalCode === null && !stderr.includes(text); check++) await delay(20);
-    assert.ok(stderr.includes(text), `Expected ${text} in child output:\n${stderr}`);
-  };
-  await waitForLog("run `subswitch doctor`");
-  return { child, exited, waitForLog };
+  t.after(relay.cleanup);
+  await relay.waitFor("run `subswitch doctor`");
+  return relay;
 };
 
 const postMessage = (port: number, signal: AbortSignal): Promise<Response> => fetch(`http://127.0.0.1:${port}/v1/messages`, {
@@ -96,7 +79,6 @@ const readRecord = async (path: string): Promise<Readonly<Record<string, unknown
 };
 
 const checkShutdown = async (t: TestContext, forceExit: boolean): Promise<void> => {
-  const { folders, authFile, port } = await fixture(t);
   let receiveReply!: (release: () => void) => void;
   const held = new Promise<() => void>((resolve) => { receiveReply = resolve; });
   const messages = sseHandler(messageFrames(nativeEvents([{ type: "text", text: "Kimi fixture reply" }])).join(""));
@@ -111,7 +93,8 @@ const checkShutdown = async (t: TestContext, forceExit: boolean): Promise<void> 
     else respond(3, 3600);
   });
   t.after(() => fake.close());
-  const { child, exited, waitForLog } = await startServe(t, folders, fake.url);
+  const { child, exited, waitFor: waitForLog, folders, port } = await startServe(t, fake.url);
+  const authFile = authPath(folders.home);
   if (forceExit) await holdConnection(t, port);
 
   const cancel = new AbortController();
@@ -131,11 +114,11 @@ const checkShutdown = async (t: TestContext, forceExit: boolean): Promise<void> 
   assert.equal(record["access_token"], access(2));
   assert.deepEqual(exit, [forceExit ? 1 : 0, null]);
 
-  const next = await startServe(t, folders, fake.url);
-  const response = await postMessage(port, AbortSignal.timeout(4000));
+  const next = await startServe(t, fake.url, ({ home }) => cp(join(folders.home, KIMI_HOME), join(home, KIMI_HOME), { recursive: true }));
+  const response = await postMessage(next.port, AbortSignal.timeout(4000));
   assert.equal(response.status, 200);
   assert.match(await response.text(), /event: message_stop/);
-  assert.equal((await readRecord(authFile))["refresh_token"], grant(3));
+  assert.equal((await readRecord(authPath(next.folders.home)))["refresh_token"], grant(3));
   const sentGrants = fake.requests.filter((sent) => sent.url === TOKEN_PATH)
     .map((sent) => new URLSearchParams(sent.body.toString()).get("refresh_token"));
   assert.deepEqual(sentGrants, [grant(1), grant(2)], "the old marker does not block the next grant");
@@ -150,8 +133,7 @@ if (upstream !== undefined) {
   it("SIGTERM saves the renewal after the caller disconnects", { timeout: 28_000 }, (t) => checkShutdown(t, false));
   it("SIGTERM saves the renewal even when an open socket forces exit", { timeout: 28_000 }, (t) => checkShutdown(t, true));
   it("SIGTERM exits promptly without a renewal", { timeout: 12_000 }, async (t) => {
-    const { folders } = await fixture(t);
-    const { child, exited } = await startServe(t, folders, "http://127.0.0.1:9");
+    const { child, exited } = await startServe(t, "http://127.0.0.1:9");
     assert.ok(child.kill("SIGTERM"));
     assert.deepEqual(await Promise.race([exited, delay(2000, "not stopped", { ref: false })]), [0, null]);
   });

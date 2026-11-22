@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { CLIENT_IDS, parseClientSelection, selectedClients, type ClientId, type ClientSelection as Client } from "./clients.js";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
@@ -24,7 +25,11 @@ import { claudeModelRows } from "./claude-models.js";
 import { routingDiscovery } from "./routing/routing-discovery.js";
 import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
-import { createConsoleLogger } from "./logger.js";
+import { detachRelay } from "./relay-detach.js";
+import { spawnRelay } from "./relay-exec.js";
+import { createRelayLogger, writeFatalLineSync, writeStopLineSync, type RelayStopFields } from "./relay-log.js";
+import { classifyRelay, createRelayNonce, ensureRelayFolder, publishRelayRecord, readRelayRecord, relayFolder, removeOwnRelayRecord } from "./relay-record.js";
+import { appendRotatingPrivateFile } from "./private-file.js";
 import { LimitRecorder, limitDirectory, withLimitRecorder, readLimitObservations } from "./limit-recorder.js";
 import { settleNativeRefreshes } from "./native-auth-coordination.js";
 
@@ -74,6 +79,7 @@ Flags (serve):
       --verbose    Set log level to debug for this run
       --quiet      Set log level to warn for this run
       --port <n>   Override listen port (default: ${DEFAULT_PORT})
+      --detach     Start the proxy in its own session and print its PID
 
 Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
@@ -111,7 +117,7 @@ Environment:
 type CliCommand =
   | { readonly kind: "help" }
   | { readonly kind: "version" }
-  | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly port?: string }
+  | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly detach: boolean; readonly port?: string }
   | { readonly kind: "doctor"; readonly client: Client }
   | { readonly kind: "models"; readonly json: boolean; readonly client: Client; readonly schemaVersion?: 3 }
   | { readonly kind: "limits"; readonly json: boolean; readonly port?: string }
@@ -120,7 +126,7 @@ type CliCommand =
 
 // Flag sets per command — used for per-command validation (A3.19)
 const GLOBAL_FLAGS = new Set(["help", "version"]);
-const SERVE_FLAGS = new Set(["verbose", "quiet", "port"]);
+const SERVE_FLAGS = new Set(["verbose", "quiet", "port", "detach"]);
 const DOCTOR_FLAGS = new Set(["client"]);
 const MODELS_FLAGS = new Set(["json", "client", "schema-version"]);
 const LIMITS_FLAGS = new Set(["json", "port"]);
@@ -149,6 +155,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
         // serve flags
         verbose:           { type: "boolean" },
         quiet:             { type: "boolean" },
+        detach:            { type: "boolean" },
         // init flags
         yes:               { type: "boolean", short: "y" },
         "dry-run":         { type: "boolean" },
@@ -237,6 +244,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
           kind: "serve",
           verbose: values.verbose === true,
           quiet: values.quiet === true,
+          detach: values.detach === true,
           ...(typeof values.port === "string" ? { port: values.port } : {}),
         },
       };
@@ -282,6 +290,7 @@ const serve = async (
   portStr?: string,
 ): Promise<void> => {
   const { config, configPath, fileFound } = result;
+  const detached = process.env["SUBSWITCH_MANAGED_BY"] === "detach";
 
   // Validate --port if given, with byte-identical wording to init port validation. [F3/F15]
   let effectivePort = config.port;
@@ -306,15 +315,23 @@ const serve = async (
 
   const effectiveConfig = { ...config, logLevel, port: effectivePort };
 
-  const baseLogger = createConsoleLogger(logLevel);
-  const recorder = process.env["SUBSWITCH_LIMIT_RECORDING"] === "0" ? undefined : new LimitRecorder(limitDirectory(effectivePort), baseLogger);
-  const depsResult = buildDeps(effectiveConfig, recorder ? withLimitRecorder(baseLogger, recorder) : baseLogger);
+  const home = homedir();
+  const pid = process.pid;
+  const nonce = createRelayNonce();
+  const relayLog = createRelayLogger({
+    directory: relayFolder(effectivePort, home), minLevel: logLevel, mode: detached ? "detach" : "foreground",
+    append: (target, lines) => ensureRelayFolder(effectivePort, home).ok
+      ? appendRotatingPrivateFile(target, lines) : Promise.reject(new Error("relay log unavailable")),
+  });
+  const recorder = process.env["SUBSWITCH_LIMIT_RECORDING"] === "0" ? undefined : new LimitRecorder(limitDirectory(effectivePort), relayLog.logger);
+  const depsResult = buildDeps(effectiveConfig, recorder ? withLimitRecorder(relayLog.logger, recorder) : relayLog.logger);
   if (!depsResult.ok) {
     fail(depsResult.error);
     return;
   }
   const deps = depsResult.value;
-  const server = createProxyServer(deps);
+  let ready = false;
+  const server = createProxyServer({ ...deps, identity: { pid, nonce }, healthReady: () => ready });
   const listenResult = await listenServer(server, effectiveConfig.port, "127.0.0.1");
   if (!listenResult.ok) {
     if (listenResult.error.code === "EADDRINUSE") {
@@ -324,11 +341,56 @@ const serve = async (
     }
     return;
   }
+  const published = await publishRelayRecord(effectivePort, home, nonce);
+  if (!published.ok) {
+    if (detached) {
+      server.close();
+      server.closeAllConnections();
+      fail("relay record unavailable");
+      return;
+    }
+    errOut("subswitch: relay record unavailable");
+  }
+  let triedRecordCleanup = false;
+  const removeRelayRecordOnce = (): void => {
+    // Do not retry record cleanup after the port is free.
+    if (triedRecordCleanup) return;
+    triedRecordCleanup = true;
+    removeOwnRelayRecord(effectivePort, home, nonce);
+  };
+  let stopSignal: RelayStopFields["signal"];
+  process.once("exit", (exitCode) => {
+    removeRelayRecordOnce();
+    const folder = ensureRelayFolder(effectivePort, home);
+    writeStopLineSync(folder.ok ? folder.value : undefined, { pid, exitCode, ...(stopSignal ? { signal: stopSignal } : {}) }, !detached);
+  });
+  process.once("uncaughtExceptionMonitor", () => {
+    const folder = ensureRelayFolder(effectivePort, home);
+    if (folder.ok) writeFatalLineSync(folder.value, pid);
+  });
+  deps.logger.log("info", "relay_started", { pid, version: SUBSWITCH_VERSION });
+
   let removeActionControl: (() => Promise<void>) | undefined;
   if (effectiveConfig.configVersion === 2 && deps.sharedRouting) {
     try { removeActionControl = await publishActionControl(effectiveConfig.port, deps.sharedRouting.actions.capability); }
-    catch (error) { server.close(); throw error; }
+    catch (error) { removeRelayRecordOnce(); server.close(); throw error; }
   }
+  const shutdown = (signal: NonNullable<RelayStopFields["signal"]>): void => {
+    if (stopSignal !== undefined) return;
+    stopSignal = signal;
+    const exitAfterRenewals = (code: number): Promise<never> =>
+      settleNativeRefreshes(NATIVE_REFRESH_SHUTDOWN_MS).then(() => process.exit(code));
+    deps.logger.log("info", "shutting_down");
+    removeRelayRecordOnce();
+    server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush(), relayLog.flush()]).finally(() => exitAfterRenewals(0)); });
+    server.closeIdleConnections();
+    setTimeout(() => { void exitAfterRenewals(1); }, SHUTDOWN_GRACE_MS).unref();
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(signal, () => shutdown(signal));
+  }
+  ready = true;
+
   deps.logger.log("info", "config_loaded", {
     path: configPath,
     eventType: fileFound ? "loaded" : "defaults",
@@ -349,19 +411,6 @@ const serve = async (
   errOut(`  run \`subswitch doctor\` to verify setup\n`);
 
   if (recorder) errOut("  limit observations: " + recorder.directory + " (view with subswitch limits --json)\n");
-  let stopping = false;
-  const shutdown = (): void => {
-    if (stopping) return;
-    stopping = true;
-    const exitAfterRenewals = (code: number): Promise<never> =>
-      settleNativeRefreshes(NATIVE_REFRESH_SHUTDOWN_MS).then(() => process.exit(code));
-    deps.logger.log("info", "shutting_down");
-    server.close(() => { void Promise.all([removeActionControl?.(), recorder?.flush()]).finally(() => exitAfterRenewals(0)); });
-    server.closeIdleConnections();
-    setTimeout(() => { void exitAfterRenewals(1); }, SHUTDOWN_GRACE_MS).unref();
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
 };
 
 // ---------------------------------------------------------------------------
@@ -559,7 +608,26 @@ const main = async (): Promise<void> => {
       return;
 
     case "serve": {
-      const configResult = loadConfig();
+      const managedBy = process.env["SUBSWITCH_MANAGED_BY"];
+      if (managedBy !== undefined && managedBy !== "detach") {
+        fail("SUBSWITCH_MANAGED_BY must be unset or detach");
+        return;
+      }
+      if (command.detach) {
+        process.exitCode = await detachRelay({
+          platform: process.platform, home: homedir(),
+          verbose: command.verbose, quiet: command.quiet,
+          ...(command.port === undefined ? {} : { port: command.port }),
+          node: { execPath: process.execPath, execArgv: process.execArgv, entry: process.argv[1], env: process.env },
+          clock: { after: (ms, run) => {
+            const timer = setTimeout(run, ms);
+            return () => clearTimeout(timer);
+          } },
+          spawn: spawnRelay, classify: classifyRelay, readRecord: readRelayRecord, loadConfig, out, errOut, fail,
+        });
+        return;
+      }
+      const configResult = loadConfig({ allowProjectPort: process.env["SUBSWITCH_MANAGED_BY"] !== "detach" });
       if (!configResult.ok) {
         fail(configResult.error.message);
         return;

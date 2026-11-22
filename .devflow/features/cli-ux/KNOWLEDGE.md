@@ -48,7 +48,10 @@ subswitch [command] [flags]
               --json  Output model registry as JSON (no color, no TTY check)
 ```
 
-Global flags (`--help/-h`, `--version/-v`) are handled before subcommand dispatch and always exit 0. `init` is the only subcommand dispatched BEFORE `loadConfig()` — it must not depend on a pre-existing config file. `doctor`, `serve`, and `models` all call `loadConfig()` before dispatching.
+The CLI handles `--help` and `--version` before it selects a command. Both exit 0.
+`init` does not need an existing config file. `doctor`, foreground `serve` and `models` load config before they run.
+On supported platforms, the detach launcher always loads config with project ports off.
+After a successful load, the launcher uses the explicit `--port` if the caller gives one. A new child loads its own config.
 
 **USAGE invariant.** The `USAGE` constant in `src/cli.ts` must stay byte-identical to the CLI reference block in the README. If you update one, update the other.
 
@@ -121,7 +124,7 @@ Key exports: `PROVIDER_IDS`, `ProviderId`, `AliasesByProvider`, `MODEL_REGISTRY`
 
 `parseCliArgs` returns a discriminated `CliCommand` union. Flag sets per command:
 
-- `serve`: `verbose`, `quiet`, `port`
+- `serve`: `verbose`, `quiet`, `port`, `detach`
 - `doctor`: `client` (defaults to `all`; reverse checks run when configured)
 - `models`: `json`, `client` (defaults to `claude-code`)
 - `init`: `yes`, `dry-run`, `port`, `settings-target`, `client` (defaults to `claude-code`)
@@ -250,7 +253,10 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 
 ### src/logger.ts — Structured key=value logger
 
-Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields are serialized by iterating `FIELD_KEYS` in order — any field NOT in `FIELD_KEYS` is silently dropped (the compliance redaction boundary).
+The console logger defaults to stderr. With color enabled, it adds a `[HH:MM:SS]` prefix.
+Foreground `serve` also writes to `relay.log`. Detached `serve` writes structured logs to that file only.
+The relay file logger adds an ISO 8601 time and does not use color.
+The logger writes `level=<L> event=<E> key=value …` and uses only fields in `FIELD_KEYS`, in that order.
 
 **`FIELD_KEYS` now has a bidirectional compile-time completeness check:**
 - `as const satisfies readonly (keyof LogFields)[]` — every listed key must exist in `LogFields`.
@@ -266,10 +272,17 @@ Emits to stderr. Format: `[HH:MM:SS] level=<L> event=<E> key=value …`. Fields 
 
 | Command | Condition | Exit code |
 |---------|-----------|-----------|
-| `serve` | Listening successfully | 0 (never exits — waits for signal) |
-| `serve` | Port in use / bad config | 1 |
-| any | Unrecognised config key (legacy or unknown provider block) | 1 (load fails before dispatch) |
-| any | Typo'd leaf key in strict schema | 1 (load fails before dispatch) |
+| `serve` | The relay stops normally after a stop signal. | 0 |
+| `serve` | Startup fails, shutdown times out or the relay exits after a fatal error. | 1 |
+| `serve --detach` | A verified relay responds to the health request. Stdout contains its PID. | 0 |
+| `serve --detach` | A legacy relay responds without a record. Stdout is empty. | 0 |
+| `serve --detach` | `port_in_use`: A foreign listener answers on the port. | 1 |
+| `serve --detach` | `child_exited`: The child cannot start or exits before it is ready. | 1 |
+| `serve --detach` | `not_ready`: The new relay is not ready within 8 seconds. | 1 |
+| `serve --detach` | `identity_mismatch`: The record or health response does not match the new relay. | 1 |
+| `serve --detach` | `unsafe_path`: A relay file or folder is not safe to use. | 1 |
+| `serve --detach` | The CLI reports an argument, port, config, platform or entry point error. | 1 |
+| Command that loads config | Unknown config key or provider block | 1 (config load fails) |
 | `doctor` | All checks pass / any check fails | 0 / 1 |
 | `init` | Files written | 0 |
 | `init` | User cancelled, or refused (non-TTY, no `--yes`) | 1 |

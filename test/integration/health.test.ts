@@ -1,4 +1,4 @@
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -72,6 +72,39 @@ for (const active of [true, false]) {
     assert.equal(exec.mock.callCount(), 1, "the mock must see calls through the named import");
   });
 }
+
+const identity = { pid: process.pid, nonce: "ab".repeat(16) };
+
+async function healthUrl(t: TestContext, withIdentity: boolean): Promise<string> {
+  const loaded = loadConfig({ configPath: "fixture", env: {}, readFile: () => JSON.stringify({
+    providers: { codex: { authFile: join(authDir, "missing.json") } },
+  }) });
+  assert.ok(loaded.ok);
+  const built = buildTestDeps(loaded.value.config, { log: () => {} });
+  assert.ok(built.ok);
+  const server = createProxyServer(withIdentity ? { ...built.value, identity } : built.value);
+  assert.ok((await listenServer(server, 0, "127.0.0.1")).ok);
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  return `http://127.0.0.1:${address.port}/__subswitch/health`;
+}
+
+it("adds the relay pid and nonce without changing the other health bytes", async (t) => {
+  const plain = await fetch(await healthUrl(t, false));
+  const identified = await fetch(await healthUrl(t, true));
+  assert.equal(plain.status, 200);
+  assert.equal(identified.status, 200);
+  const body = await plain.text();
+  assert.doesNotMatch(body, /"(?:pid|nonce)":/);
+  assert.equal(await identified.text(), `${body.slice(0, -1)},"pid":${identity.pid},"nonce":"${identity.nonce}"}`);
+});
+
+it("does not expose the relay identity to an origin outside loopback", async (t) => {
+  const response = await fetch(await healthUrl(t, true), { headers: { Origin: "http://outside.invalid" } });
+  assert.equal(response.status, 403);
+  assert.doesNotMatch(await response.text(), /"(?:pid|nonce)":/);
+});
 
 describe("__subswitch health namespace", () => {
   it("GET /__subswitch/health returns 200 with name+version and does NOT forward to Anthropic", async () => {

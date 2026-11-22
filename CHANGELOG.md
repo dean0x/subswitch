@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `subswitch serve --detach` starts a relay in its own session on macOS and Linux.
+  It prints the PID of a verified relay on stdout.
+- Each relay port has a record and a rotating log in `~/.cache/subswitch/relay/<port>/`.
+  Detached starts also save stderr to `boot.log`. The relay log records stops and fatal errors.
+- `GET /__subswitch/health` includes the relay PID and nonce.
 - **Together AI route for Claude Code (paid, opt-in per model).** A Claude Code
   request for `together:<model-id>` goes to Together Chat Completions with your own
   Together API key. Together bills each request per token. Only `together:<model-id>`
