@@ -15,7 +15,7 @@ import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 
 const RECORD_NAME = "relay.json";
 const STOP_REQUEST_NAME = "stop-request.json";
-const BOOT_NAME = "boot.log";
+export const BOOT_LOG_NAME = "boot.log";
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
 const RECORD_BYTES = 4 * 1024;
@@ -335,16 +335,16 @@ export async function classifyRelay(port: number, deps: ClassifyRelayDeps): Prom
 }
 
 /** The caller owns the returned descriptor. */
-export function openBootLog(port: number, home: string): RelayPathResult<number> {
+export function openBootLog(port: number, home: string, options: { readonly truncate?: false } = {}): RelayPathResult<number> {
   const folder = ensureRelayFolder(port, home);
   if (!folder.ok) return folder;
   try {
-    const fd = openSync(join(folder.value, BOOT_NAME), constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | NOFOLLOW, FILE_MODE);
+    const fd = openSync(join(folder.value, BOOT_LOG_NAME), constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | NOFOLLOW, FILE_MODE);
     let keep = false;
     try {
       if (!isPrivateFile(fstatSync(fd))) return err("unsafe_path");
       // Truncate only after fstat accepts the file. O_TRUNC acts before that check.
-      ftruncateSync(fd, 0);
+      if (options.truncate !== false) ftruncateSync(fd, 0);
       keep = true;
       return ok(fd);
     } finally {
@@ -359,7 +359,7 @@ export function readBootTail(port: number, home: string): RelayPathResult<string
   const folder = checkFolder(port, home, false);
   if (!folder.ok) return folder;
   if (folder.value === undefined) return ok(undefined);
-  return withPrivateReader(join(folder.value, BOOT_NAME), (fd, size) => {
+  return withPrivateReader(join(folder.value, BOOT_LOG_NAME), (fd, size) => {
     const start = Math.max(0, size - BOOT_TAIL_BYTES);
     // The byte before the window tells us whether it starts on a line boundary.
     const guard = start === 0 ? 0 : 1;
