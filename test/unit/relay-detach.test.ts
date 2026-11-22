@@ -56,16 +56,95 @@ function fixture(t: TestContext) {
   const state: { record?: RelayRecord; requestHealth: NonNullable<Parameters<typeof classifyRelay>[1]["requestHealth"]> } = {
     requestHealth: async () => Response.json(health),
   };
+  const plistExists = t.mock.fn<DetachDeps["plistExists"]>(() => false);
   const readRecord = t.mock.fn<DetachDeps["readRecord"]>(() => ok(state.record));
   const classify = t.mock.fn<DetachDeps["classify"]>((p, deps) => deps.record
-    ? classifyRelay(p, { ...deps, requestHealth: state.requestHealth }) : Promise.resolve(answers.shift() ?? { kind: "none" }));
+    ? classifyRelay(p, { ...deps, requestHealth: state.requestHealth, isAlive: (pid) => pid === record.pid })
+    : Promise.resolve(answers.shift() ?? { kind: "none" }));
   const stdout: string[] = [], stderr: string[] = [], errors: string[] = [];
   const deps: DetachDeps = {
-    platform: "linux", home, clock, spawn, loadConfig, classify, readRecord,
+    platform: "linux", home, clock, spawn, loadConfig, classify, readRecord, plistExists,
     node: { execPath: "/node", execArgv: [], entry: "/subswitch-entry", env: {} },
     out: line => { stdout.push(line); }, errOut: line => { stderr.push(line); }, fail: line => { errors.push(line); },
   };
-  return { deps, home, path, clock, child, spawn, loadConfig, answers, state, readRecord, classify, stdout, stderr, errors };
+  return { deps, home, path, clock, child, spawn, loadConfig, answers, state, readRecord, classify, plistExists, stdout, stderr, errors };
+}
+
+it("waits for a verified launchd relay without a spawn (TP-21)", async t => {
+  const f = fixture(t);
+  f.spawn.mock.mockImplementation(() => err("child_exited"));
+  f.plistExists.mock.mockImplementation(() => true);
+  f.answers.push({ kind: "none" }, { kind: "verified", record: { ...record, managedBy: "launchd" }, version: SUBSWITCH_VERSION });
+
+  const settled = t.mock.fn();
+  void detachRelay({ ...f.deps, platform: "darwin" }).then(settled);
+  await setImmediate();
+  await f.clock.advance(100);
+
+  assert.deepEqual([settled.mock.calls.map(call => call.arguments), f.stdout, f.stderr, f.spawn.mock.callCount()],
+    [[[0]], ["1234"], [], 0]);
+  assert.deepEqual(f.plistExists.mock.calls.map(call => call.arguments), [[join(f.home, "Library", "LaunchAgents", "com.subswitch.relay.plist")]]);
+});
+
+for (const [label, managedBy, alive, nonce] of [
+  ["a foreground relay", "none", true, health.nonce],
+  ["a dead record PID", "launchd", false, health.nonce],
+  ["a health nonce mismatch", "launchd", true, "b".repeat(32)],
+] as const) {
+  it(`reports service_not_ready for ${label} (TP-22)`, async t => {
+    const f = fixture(t);
+    f.spawn.mock.mockImplementation(() => err("child_exited"));
+    f.plistExists.mock.mockImplementation(() => true);
+    f.classify.mock.mockImplementation((p, deps) => classifyRelay(p, {
+      ...deps, record: { ...record, managedBy }, isAlive: () => alive,
+      requestHealth: async () => Response.json({ ...health, nonce }),
+    }));
+
+    const settled = t.mock.fn();
+    void detachRelay({ ...f.deps, platform: "darwin" }).then(settled);
+    await setImmediate();
+    await f.clock.advance(8_000);
+
+    assert.deepEqual([settled.mock.calls.map(call => call.arguments), f.stdout, f.stderr, f.spawn.mock.callCount()],
+      [[[1]], [], ["subswitch: service_not_ready"], 0]);
+  });
+}
+
+it("includes the first probe in the 8 s service bound and cancels the pending probe (TP-22)", async t => {
+  const f = fixture(t);
+  f.spawn.mock.mockImplementation(() => err("child_exited"));
+  f.plistExists.mock.mockImplementation(() => true);
+  let pending: AbortSignal | undefined;
+  f.classify.mock.mockImplementationOnce(() => new Promise(resolve => {
+    f.clock.after(500, () => resolve({ kind: "none" }));
+  }));
+  f.classify.mock.mockImplementation((_, { signal }) => {
+    pending = signal;
+    return new Promise(resolve => signal?.addEventListener("abort", () => resolve({ kind: "none" }), { once: true }));
+  });
+  const settled = t.mock.fn();
+  void detachRelay({ ...f.deps, platform: "darwin" }).then(settled);
+
+  await f.clock.advance(7_999);
+  const before = settled.mock.callCount();
+  await f.clock.advance(1);
+
+  assert.deepEqual([before, settled.mock.calls.map(call => call.arguments), f.stderr, f.spawn.mock.callCount()],
+    [0, [[1]], ["subswitch: service_not_ready"], 0]);
+  assert.equal(pending?.aborted, true);
+});
+
+for (const platform of ["darwin", "linux"] as const) {
+  it(`spawns without a macOS service on ${platform} (TP-23)`, async t => {
+    const f = fixture(t);
+    f.plistExists.mock.mockImplementation(() => platform === "linux");
+    f.state.record = record;
+    const done = detachRelay({ ...f.deps, platform });
+    await setImmediate();
+    await f.clock.advance(8_000);
+    assert.deepEqual([await done, f.stdout, f.spawn.mock.callCount(), f.plistExists.mock.callCount()],
+      [0, ["1234"], 1, platform === "darwin" ? 1 : 0]);
+  });
 }
 
 it("prints only the verified child pid after the record names that child (TP-1)", async t => {
@@ -86,10 +165,14 @@ it("reuses a relay that publishes its record during the first health check", asy
   const boot = openBootLog(port, f.home);
   assert.ok(boot.ok);
   closeSync(boot.value);
-  const classify: DetachDeps["classify"] = (p, deps) => classifyRelay(p, { ...deps, requestHealth: async () => {
-    writeFileSync(join(relayFolder(port, f.home), "relay.json"), JSON.stringify(record), { mode: 0o600 });
-    return Response.json(health);
-  } });
+  const classify: DetachDeps["classify"] = (p, deps) => classifyRelay(p, {
+    ...deps,
+    isAlive: (pid) => pid === record.pid,
+    requestHealth: async () => {
+      writeFileSync(join(relayFolder(port, f.home), "relay.json"), JSON.stringify(record), { mode: 0o600 });
+      return Response.json(health);
+    },
+  });
   assert.deepEqual([await detachRelay({ ...f.deps, classify }), f.stdout, f.stderr, f.spawn.mock.callCount()], [0, [String(record.pid)], [], 0]);
 });
 
@@ -190,7 +273,9 @@ it("leaves an unsafe record intact (TP-8 to TP-11)", async t => {
   const bytes = Buffer.from(JSON.stringify(record));
   writeFileSync(path, bytes);
   chmodSync(path, 0o644);
-  const classify: DetachDeps["classify"] = (p, deps) => classifyRelay(p, { ...deps, requestHealth: f.state.requestHealth });
+  const classify: DetachDeps["classify"] = (p, deps) => classifyRelay(p, {
+    ...deps, requestHealth: f.state.requestHealth, isAlive: () => assert.fail("Unsafe records must not cause a pid lookup"),
+  });
 
   const code = await detachRelay({ ...f.deps, classify });
 

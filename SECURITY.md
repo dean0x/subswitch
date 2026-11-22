@@ -38,9 +38,16 @@ Defense-in-depth controls built into the proxy:
   Loopback is not authentication. The relay has no local token.
   Any local process that can reach the port can use the relay, including paid Together requests.
   See [Together AI API key](#together-ai-api-key).
+- **macOS login service.** The service runs the relay from login. The relay has no local token in this mode.
+  Install checks the config file and any file that `NODE_EXTRA_CA_CERTS` names.
+  Both files must be regular files that you own, with one link and no group or other write bits.
+  Parent folders must belong to you or root, with no symbolic links or group or other write bits.
+  Install saves and prints the extra certificate path. Node reads that file at each start.
+  The relay checks the config file and its parent folders at each start.
+  Use `subswitch service uninstall` to unload the service and remove its plist.
 - **Private relay files.** The relay writes `relay.json` and `relay.log` under
   `~/.cache/subswitch/relay/<port>/`. The port folder has mode `0700`.
-  The relay creates files with mode `0600`. A detached start also uses `boot.log` for stderr.
+  The relay creates files with mode `0600`. Detached and service starts use `boot.log` for stderr.
   `GET /__subswitch/health` returns the relay PID and nonce. These fields identify the relay.
   The relay does not use them for access control.
 - **Credentials never transit subswitch's config.** The Anthropic leg is a verbatim
@@ -146,8 +153,8 @@ configured behavior; a live check against the Together API is not done yet.
 **Local spend exposure.** SubSwitch listens on loopback and has no local token. Any
 local process on the machine can send a `together:` request to the proxy, and
 SubSwitch sends it to Together with the key. The `Host`/`Origin` gate stops web
-pages, not local processes. Use a small prepaid Together balance with auto-recharge
-off, and stop `subswitch serve` when you do not use Together.
+pages, not local processes. Use a small prepaid Together balance with auto-recharge off.
+When you do not use Together, stop the relay. For the login service, use `subswitch service uninstall`.
 
 **Spend limits.** Together has no budgets and no per-key spend caps, and Together
 meters usage with a delay, so spend can overshoot a prepaid balance. SubSwitch has no
@@ -160,7 +167,7 @@ request and does not retry.
 
 **Key source and handling.**
 
-- SubSwitch reads `TOGETHER_API_KEY` first. On macOS only, when that variable is not
+- A foreground or detached relay reads `TOGETHER_API_KEY` first. On macOS only, when that variable is not
   set, it reads the Keychain item with service `Subswitch Together API key` and
   account `subswitch`. It runs `/usr/bin/security` with fixed arguments, no shell, a
   10 s limit, an 8 KiB output limit and an environment that holds only `HOME`. Any
@@ -169,9 +176,9 @@ request and does not retry.
   `security add-generic-password -s "Subswitch Together API key" -a subswitch -w`.
   `-w` is last with no value, so `security` prompts for the key. Never put the key
   on a command line.
-- Set `TOGETHER_API_KEY` only in the environment of `subswitch serve`, not in Claude
-  Code settings. `subswitch run-action` removes it from the environment of the
-  native client that it starts.
+- For a manual relay start, set `TOGETHER_API_KEY` only in the environment of `subswitch serve`.
+  Do not set it in Claude Code settings. `subswitch run-action` removes it from the native client's environment.
+- The login service uses only the Keychain item for the Together key. It ignores `TOGETHER_API_KEY`.
 - SubSwitch reads the key once, on the first Together request, and keeps it in
   process memory until the process stops. A failed Keychain read is not kept, so
   the next request tries again and macOS can ask again.
@@ -195,7 +202,7 @@ for such names. `subswitch doctor` lists a Together agent pin only when no usabl
 found. The startup host check accepts `https://api.together.ai/v1` by default. With
 `providers.together.allowInsecureBaseUrl: true` it also accepts `api-inference.together.ai`
 and `us-api.together.ai`, and no other host; `api.together.xyz` is refused. Loopback
-is always accepted, for tests. A refused host stops `subswitch serve`.
+is accepted for tests. A refused host prevents relay startup.
 
 **Data disclosure.** Each Together request sends the conversation to Together: the
 system prompt, the messages, the tool definitions, the tool results (which can hold
@@ -236,8 +243,7 @@ configuration or an explicit `SUBSWITCH_CONFIG` file. A project `subswitch.confi
 that sets it fails at load, so a workspace file cannot turn the route on, change the
 hosts or select another sign-in file. The region selects the hosts from a fixed table.
 A host, port or file name that does not match the region fails at load, and the block
-has no opt-in for other hosts. A loopback URL loads, but it stops `subswitch serve` at
-startup.
+has no opt-in for other hosts. A loopback URL passes the config load but prevents relay startup.
 
 **No fallback.** A Kimi failure gives a fixed local error. The request does not go to
 Anthropic or to another provider.

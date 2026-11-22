@@ -157,7 +157,8 @@ export async function startRelayChild(options: RelayChildOptions = {}): Promise<
     const configFile = portFromConfig ? userConfigPath(command.env) : command.env["SUBSWITCH_CONFIG"];
     assert.ok(configFile, "Relay test needs an isolated config file");
     if (portFromConfig) await mkdir(dirname(configFile), { recursive: true, mode: 0o700 });
-    await writeFile(resolve(command.cwd, configFile), JSON.stringify({ ...options.config, port: otherPort ?? port }));
+    // The mode applies to new files only. A test can set a different mode in prepare.
+    await writeFile(resolve(command.cwd, configFile), JSON.stringify({ ...options.config, port: otherPort ?? port }), { mode: 0o600 });
     const args = options.extraImport === undefined ? command.args :
       command.args.toSpliced(-cliArgs.length - 1, 0, "--import", options.extraImport);
     const env = options.detach ? cliChildCommand(folders, cliArgs, { ...childOptions, allowNodeArgs: args }).env : command.env;

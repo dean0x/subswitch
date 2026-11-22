@@ -135,8 +135,8 @@ export interface ProviderDepsById {
 export type ProviderDeps = { readonly [K in ProviderId]?: ProviderDepsById[K] };
 
 /** Only this file defines live deps factories. The CLI and run-action may call them. */
-export const liveTogetherKeyReaderDeps = (): TogetherKeyReaderDeps => ({
-  env: process.env,
+export const liveTogetherKeyReaderDeps = (env: Readonly<NodeJS.ProcessEnv> = process.env): TogetherKeyReaderDeps => ({
+  env,
   platform: process.platform,
   exec: promisify(execFile),
   setTimer: (expire, delay) => {
@@ -277,25 +277,11 @@ const CREDENTIAL_URLS: CredentialKindTable<readonly CredentialUrl[]> = {
   ],
 };
 
-/**
- * The only wiring site: every production dependency is constructed here.
- *
- * `logger` is a parameter rather than a local so that an injected logger reaches the
- * provider handlers too. It defaults to the real console logger, so production callers
- * are unchanged. Constructing it internally made `startSubswitch`'s `logger` option
- * silently partial — it replaced only the request-loop's logger, while every handler
- * kept the one built here, so a test that injected a logger to observe handler records
- * saw none of them and its assertions passed vacuously.
- *
- * Returns `err(message)` when a security gate rejects the config (e.g. a credential-
- * bearing URL points at a non-default host without `allowInsecureBaseUrl: true`).
- * The `serve` command exits non-zero on err; diagnostic commands (`doctor`, `models`)
- * do not call `buildDeps` and are unaffected.
- */
-export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel),
-  routingOptions: { fetchImpl?: typeof fetch; providerDeps?: ProviderDeps; providerConfigFor?: typeof providerConfigFor } = {},
-): Result<ServerDeps, string> => {
-
+/** Run the serve-time config checks without constructing handlers or stores. */
+export const vetConfig = (config: Config, logger: Logger, options: {
+  readonly providerDeps?: ProviderDeps;
+  readonly providerDestinations?: ReturnType<typeof enumerateDestinations>;
+} = {}): Result<void, string> => {
   if (config.codexIngress.enabled && config.codexIngress.claude.enabled && !hasNativeDecoders())
     return err("Codex → Claude routing requires native zstd support. Use Node 22.15 or newer; forward routing remains available.");
 
@@ -314,9 +300,8 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
   }
   const configuredDestinations = enumerateDestinations(config);
   // The handlers use config. An injected report must not replace the checks for their URLs.
-  const destinations = routingOptions.providerConfigFor === undefined ? configuredDestinations
-    : enumerateDestinations(config, routingOptions.providerConfigFor);
-  const urlsToVet = destinations === configuredDestinations ? configuredDestinations : [...configuredDestinations, ...destinations];
+  const urlsToVet = options.providerDestinations === undefined ? configuredDestinations
+    : [...configuredDestinations, ...options.providerDestinations];
   for (const destination of urlsToVet) {
     if (destination.routing === "passthrough") continue;
     const { id, credential } = destination;
@@ -327,17 +312,30 @@ export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(c
     }
   }
   // Without injected deps, buildDeps uses the live Kimi store, which never pairs with a loopback URL.
-  const kimiDeps = routingOptions.providerDeps?.kimi;
-  const kimiLoopback = kimiDeps === undefined ? loopbackKimiKey(config.providers.kimi) : undefined;
+  const kimiLoopback = options.providerDeps?.kimi === undefined ? loopbackKimiKey(config.providers.kimi) : undefined;
   if (kimiLoopback !== undefined) {
     const path = `providers.kimi.${kimiLoopback}`;
     logger.log("error", providerEvents("kimi").baseUrlHostRejected, { path });
     return err(`${path} points at a loopback address, which only test deps can serve. ` +
       `Remove the key to use the ${config.providers.kimi.region} region host.`);
   }
-  const anthropic = vetCredentialUrl({ url: config.anthropic.baseUrl, path: "anthropic.baseUrl", expectedHost: "api.anthropic.com",
+  return vetCredentialUrl({ url: config.anthropic.baseUrl, path: "anthropic.baseUrl", expectedHost: "api.anthropic.com",
     optInKey: "anthropic.allowInsecureBaseUrl", allowOverride: config.anthropic.allowInsecureBaseUrl, logger, events: ANTHROPIC_EVENTS });
-  if (!anthropic.ok) return anthropic;
+};
+
+/** Vet config before the server wires its production dependencies. */
+export const buildDeps = (config: Config, logger: Logger = createConsoleLogger(config.logLevel),
+  routingOptions: { fetchImpl?: typeof fetch; providerDeps?: ProviderDeps; providerConfigFor?: typeof providerConfigFor } = {},
+): Result<ServerDeps, string> => {
+  const providerDestinations = routingOptions.providerConfigFor === undefined ? undefined
+    : enumerateDestinations(config, routingOptions.providerConfigFor);
+  const vetted = vetConfig(config, logger, {
+    ...(routingOptions.providerDeps === undefined ? {} : { providerDeps: routingOptions.providerDeps }),
+    ...(providerDestinations === undefined ? {} : { providerDestinations }),
+  });
+  if (!vetted.ok) return vetted;
+  const destinations = providerDestinations ?? enumerateDestinations(config);
+  const kimiDeps = routingOptions.providerDeps?.kimi;
 
   // Build the routing table once. The resolver is a pure closure over this table;
   // "built once at startup" is a structural guarantee, not a comment. (applies ADR-005)

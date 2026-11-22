@@ -1,6 +1,7 @@
 import { closeSync } from "node:fs";
 import { PortSchema } from "./init.js";
 import { openBootLog, readBootTail, type classifyRelay, type readRelayRecord, type RelayClassification } from "./relay-record.js";
+import { servicePlistPath } from "./relay-service.js";
 import { err, ok, type Result } from "./result.js";
 import { SUBSWITCH_VERSION } from "./version.js";
 
@@ -35,8 +36,9 @@ export interface DetachDeps {
     readonly entry: string | undefined;
     readonly env: Readonly<NodeJS.ProcessEnv>;
   };
-  readonly clock: { after(ms: number, run: () => void): () => void };
+  readonly clock: { now(): number; after(ms: number, run: () => void): () => void };
   readonly spawn: SpawnRelay;
+  readonly plistExists: (path: string) => boolean;
   readonly classify: typeof classifyRelay;
   readonly readRecord: typeof readRelayRecord;
   readonly loadConfig: (options: { allowProjectPort: false }) => Result<{ config: { port: number } }, { message: string }>;
@@ -45,7 +47,7 @@ export interface DetachDeps {
   readonly fail: (message: string) => void;
 }
 
-export type DetachReason = "port_in_use" | "child_exited" | "not_ready" | "identity_mismatch" | "unsafe_path";
+export type DetachReason = "port_in_use" | "child_exited" | "not_ready" | "identity_mismatch" | "unsafe_path" | "service_not_ready";
 type Outcome = { readonly kind: "pid"; readonly pid: number; readonly otherVersion?: boolean }
   | { readonly kind: "legacy" }
   | { readonly kind: "failed"; readonly reason: DetachReason; readonly boot?: true };
@@ -61,6 +63,35 @@ function existing(check: RelayClassification, afterExit = false): Outcome | unde
     case "none": return undefined;
     default: return check satisfies never;
   }
+}
+
+function waitForService(d: DetachDeps, port: number, first: RelayClassification, deadline: number): Promise<Outcome> {
+  const notReady = problem("service_not_ready");
+  const remaining = deadline - d.clock.now();
+  if (remaining <= 0) return Promise.resolve(notReady);
+  return new Promise(resolve => {
+    const controller = new AbortController();
+    let cancelPoll = () => {};
+    const finish = (outcome: Outcome) => {
+      cancelPoll();
+      cancelDeadline();
+      controller.abort();
+      resolve(outcome);
+    };
+    const cancelDeadline = d.clock.after(remaining, () => finish(notReady));
+    const checkService = (check: RelayClassification, attempt: number) => {
+      if (controller.signal.aborted) return;
+      if (d.clock.now() >= deadline) { finish(notReady); return; }
+      const found = check.kind === "verified" && check.record.managedBy === "launchd" ? existing(check) : undefined;
+      if (found !== undefined) { finish(found); return; }
+      if (attempt + 1 < READY_MS / POLL_MS) {
+        cancelPoll = d.clock.after(POLL_MS, () => {
+          void d.classify(port, { home: d.home, signal: controller.signal }).then(next => checkService(next, attempt + 1));
+        });
+      }
+    };
+    checkService(first, 0);
+  });
 }
 
 function effectivePort(d: DetachDeps): Result<number, string> {
@@ -200,7 +231,12 @@ export async function detachRelay(d: DetachDeps): Promise<0 | 1> {
   const { entry, execPath, execArgv, env } = d.node;
   if (entry === undefined || entry === "") { d.fail("the CLI entry is unavailable"); return 1; }
   const port = selected.value;
-  const found = existing(await d.classify(port, { home: d.home }));
+  const deadline = d.platform === "darwin" ? d.clock.now() + READY_MS : undefined;
+  const check = await d.classify(port, { home: d.home });
+  if (deadline !== undefined && d.plistExists(servicePlistPath(d.home))) {
+    return report(d, await waitForService(d, port, check, deadline), port);
+  }
+  const found = existing(check);
   if (found !== undefined) return report(d, found, port);
 
   const nodeOptions = env["NODE_OPTIONS"];

@@ -110,6 +110,9 @@ Usage: subswitch [command] [flags]
 
 Commands:
   serve     Start the proxy (default command)
+  stop      Stop a verified local relay
+  service install     Install the macOS login service
+  service uninstall   Remove the macOS login service
   doctor    Check config, subscription auth, and network reachability
   init      Interactive setup — wires the selected client(s)
   models    Show effective alias table (registry × aliases)
@@ -128,6 +131,15 @@ Flags (serve):
       --quiet      Set log level to warn for this run
       --port <n>   Override listen port (default: 4141)
       --detach     Start the proxy in its own session and print its PID
+
+Flags (stop):
+      --port <n>   Select the relay port (default: user config port or 4141)
+      --by <label> Add a label to the stop request (1 to 32 lowercase letters,
+                   digits, dots, underscores or dashes)
+
+Flags (service install):
+      --port <n>       Override the config port
+      --config <path>  Use an absolute config path instead of the user config
 
 Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
@@ -161,18 +173,31 @@ Environment:
 
 **Exit codes:**
 
+Detach and stop check the PID and nonce in the relay's health response against its record.
+To verify a relay, they also require a live record PID.
+
 | Command | Condition | Code |
 |---------|-----------|------|
 | `serve` | The relay stops normally after a stop signal. | 0 |
 | `serve` | Startup fails, shutdown times out or the relay exits after a fatal error. | 1 |
-| `serve --detach` | A verified relay responds to the health request. Stdout contains its PID. | 0 |
-| `serve --detach` | A legacy relay responds without a record. Stdout is empty. | 0 |
-| `serve --detach` | `port_in_use`: A foreign listener answers on the port. | 1 |
+| `serve --detach` | The command finds a verified relay. Stdout contains its PID. | 0 |
+| `serve --detach` | A legacy relay responds without a record and there is no service plist. Stdout is empty. | 0 |
+| `serve --detach` | `port_in_use`: A different listener answers on the port. | 1 |
 | `serve --detach` | `child_exited`: The child cannot start or exits before it is ready. | 1 |
 | `serve --detach` | `not_ready`: The new relay is not ready within 8 seconds. | 1 |
-| `serve --detach` | `identity_mismatch`: The record or health response does not match the new relay. | 1 |
-| `serve --detach` | `unsafe_path`: A relay file or folder is not safe to use. | 1 |
+| `serve --detach` | `identity_mismatch`: The new relay's record or health response does not match, or its record PID is not live. | 1 |
+| `serve --detach` | `unsafe_path`: The command cannot use a relay file or folder. | 1 |
+| `serve --detach` | `service_not_ready`: The macOS service plist exists, but the command finds no verified launchd relay on the selected port within 8 seconds. | 1 |
 | `serve --detach` | The CLI reports an argument, port, config, platform or entry point error. | 1 |
+| `stop` | The relay exits, or the PID check during the wait returns `EPERM`. | 0 |
+| `stop` | The connection is refused and no record exists, or the recorded PID is absent and the probe gets no answer. | 0 |
+| `stop` | The relay is legacy or uses launchd, a different listener uses the port, or the relay changes before the signal. | 1 |
+| `stop` | The record is unreadable, or an unanswered probe does not let the command confirm that the relay is absent. | 1 |
+| `stop` | Invalid arguments, unavailable requester data, a request, signal or PID check error, or a stop wait timeout. | 1 |
+| `service install` | The command writes and loads the plist and finds a verified launchd relay. | 0 |
+| `service install` | The command cannot complete the install. | 1 |
+| `service uninstall` | No service exists, or the command unloads the service and removes its plist. | 0 |
+| `service uninstall` | The command fails, for example if launchctl cannot confirm unload or the plist cannot be removed. | 1 |
 | `doctor` | all checks pass | 0 |
 | `doctor` | any check fails | 1 |
 | `init` | success (interactive, non-interactive, or dry-run) | 0 |
@@ -186,24 +211,72 @@ Environment:
 
 On macOS and Linux, use `subswitch serve --detach` to start a relay in its own session.
 It can stay active after its launcher exits.
-Use `--port` to select the port. Without `--port`, detach ignores the project config port.
-The child uses the caller's current folder and can load other permitted project settings.
+Use `--port` to select the port. Detach ignores the project config port.
+The child uses the caller's current folder and can load other project settings.
 
-For a new child, the launcher checks that the record and `GET /__subswitch/health`
-identify that child. The check uses the relay name, PID and nonce.
-If another verified relay starts first, the command can return that relay's PID.
+If the macOS service plist exists, detach waits up to 8 seconds for the launchd relay on the selected port.
+It does not start a child. Select the service port with `--port` if it differs from your config port.
+
 On success with a verified relay, stdout contains only the PID and a newline.
+If another verified relay starts first, detach can print that relay's PID.
 If the version differs, stderr also shows a notice.
-For a legacy relay, stderr asks you to restart it to get the PID.
+For a legacy relay without the service plist, stderr asks you to restart it to get the PID.
 
 On failure, stderr shows one of the reason codes above or a CLI error message.
-After a child exit, stderr can also show one sanitized line from `boot.log`.
+After a child exit, stderr can also show a line from `boot.log`.
 After `not_ready`, the child can stay active.
-The launcher sets `SUBSWITCH_MANAGED_BY=detach` for the child.
-For `serve` without `--detach`, leave this variable unset for foreground use.
-`detach` is the only value that `serve` accepts for this variable.
 
-See [Relay files and exit events](#relay-files-and-exit-events) for the record and logs.
+Leave `SUBSWITCH_MANAGED_BY` unset for foreground use.
+The detach launcher sets `detach`. The login service sets `launchd`.
+`serve` accepts only those two values or an unset variable.
+
+### Stop a relay
+
+Use `subswitch stop` for a foreground or detached relay with a current record.
+Use `--port <n>` if the relay uses a different port.
+Without `--port`, stop uses the config port, but ignores the project port.
+If config load fails, stop uses port `4141`.
+
+`stop` writes `stop-request.json` before it sends `SIGTERM` to a verified relay.
+Use `--by <label>` to add a label to the request.
+The command waits up to 35 seconds for the relay to exit. It does not send a second signal.
+`stop` reports an idle port only if the connection is refused.
+If the recorded PID is absent and the health probe times out, exit code 0 does not mean the port is idle.
+To stop a login service relay, use `subswitch service uninstall` instead.
+
+### macOS login service
+
+Use `subswitch service install` to install and start one service per user.
+The service starts at login and restarts after an unsuccessful exit.
+
+Use a regular config file that you own. The file must have one link and no group or other write bits.
+Use parent folders that you or root own. These folders must have no symbolic links or group or other write bits.
+The service checks the file and its parent folders on each start.
+The default file is `~/.config/subswitch/config.json`. An empty JSON object uses defaults.
+Use `--config <path>` to select a different absolute path.
+Install ignores the project config and does not use `SUBSWITCH_CONFIG` to select the file.
+Use `--port <n>` to override the config port.
+Install can stop a verified foreground or detached relay on that port.
+
+The service plist is `~/Library/LaunchAgents/com.subswitch.relay.plist`.
+Install sets the Node and CLI paths, config path and port in the plist.
+If `NODE_EXTRA_CA_CERTS` is set, install checks its file and parent folders by the same rules as the config.
+A successful install saves that absolute path in the plist and prints it.
+Node reads the certificate file at each service start.
+Run install again if those paths or the port change.
+To remove the extra certificate path, run install again with `NODE_EXTRA_CA_CERTS` unset.
+For Together requests, use the [Keychain item](#together-key), not `TOGETHER_API_KEY`.
+
+To restart the installed service, run:
+
+```sh
+launchctl kickstart -k "gui/$(id -u)/com.subswitch.relay"
+```
+
+Use `subswitch service uninstall` to unload the service and remove its plist.
+The command keeps the logs. See [Relay files and exit events](#relay-files-and-exit-events).
+
+Live macOS checks for install, restart, uninstall and Keychain access are manual and have no results yet.
 
 ### Recording real request limits
 
@@ -303,7 +376,7 @@ model: together:<model-id>   # replace with a Together model ID available to you
 
 ### Together key
 
-SubSwitch reads the key from one of two sources:
+For a foreground or detached relay, SubSwitch reads the key from one of two sources:
 
 1. `TOGETHER_API_KEY` in the environment of `subswitch serve`.
 2. On macOS only, when `TOGETHER_API_KEY` is not set: the Keychain item with service
@@ -317,14 +390,15 @@ Never type the key on the command line.
 security add-generic-password -s "Subswitch Together API key" -a subswitch -w
 ```
 
-- Set `TOGETHER_API_KEY` only in the environment that starts `subswitch serve`. Do not
-  put it in Claude Code settings or in a shell profile that Claude Code and its tools
-  also load. `subswitch run-action` removes `TOGETHER_API_KEY` from the environment of
-  the native client that it starts.
-- When `TOGETHER_API_KEY` is set, SubSwitch uses it and does not read the Keychain, even
-  when the value is malformed.
-- SubSwitch reads the key once, on the first Together request, and keeps it in process
-  memory until `subswitch serve` stops. Restart the proxy after you change the key.
+- For a manual relay start, set `TOGETHER_API_KEY` only in the environment that starts `subswitch serve`.
+  Do not put it in Claude Code settings or in a shared shell profile.
+  `subswitch run-action` removes it from the native client's environment.
+- The macOS login service uses only the Keychain item. It ignores `TOGETHER_API_KEY`.
+- For other relays, a set `TOGETHER_API_KEY` takes precedence, even if its value is malformed.
+- SubSwitch reads the key on the first Together request.
+  It keeps the key in process memory until the relay stops.
+  After you change the key, restart the relay.
+  For the login service, use the [service restart command](#macos-login-service).
   The Keychain read has a 10 s limit. A failed read is not kept: the next Together
   request tries again, so macOS can ask again.
 - The key goes only to the Together host, as `authorization: Bearer <key>`. Client
@@ -382,8 +456,8 @@ is not sent back.
 SubSwitch listens on `127.0.0.1` and has no local token. **Any local process on this
 machine can send a `together:` request to the proxy, and SubSwitch sends that request to
 Together with your key.** The [`Host`/`Origin` gate](#loopback-hostorigin-gate) stops web
-pages, not local processes. Keep the Together balance small, and stop `subswitch serve`
-when you do not use Together.
+pages, not local processes. Keep the Together balance small.
+When you do not use Together, stop the relay. For the login service, use `subswitch service uninstall`.
 
 ### Together configuration
 
@@ -406,10 +480,10 @@ optional; without it the defaults apply.
 
 `providers.together.baseUrl` defaults to `https://api.together.ai/v1`. With
 `providers.together.allowInsecureBaseUrl: true`, SubSwitch also accepts
-`api-inference.together.ai` and `us-api.together.ai` on the default HTTPS port, and no
-other host. Together charges more for the US-only host `us-api.together.ai`.
-`api.together.xyz` and every other host stop `subswitch serve` at startup. Loopback URLs
-are always accepted, for tests. A URL with userinfo, a query or a fragment fails at load.
+`api-inference.together.ai` and `us-api.together.ai` on the default HTTPS port.
+Together charges more for the US-only host `us-api.together.ai`.
+SubSwitch accepts loopback URLs for tests. All other hosts, such as `api.together.xyz`,
+prevent relay startup. A URL with userinfo, a query or a fragment fails at load.
 The [config reference](#config-reference) lists every `providers.together` key.
 
 A workspace file can name a `together:` model, for example in a project
@@ -434,8 +508,7 @@ Kimi is not done yet.
 1. Sign in with `kimi login` in your own Terminal. For the mainland China region, use
    `kimi login --region mainland-cn`. SubSwitch supports the files of Kimi CLI versions
    0.38.0 to 2.7.2.
-2. Add the block to your user configuration (`~/.config/subswitch/config.json`), then
-   restart `subswitch serve`:
+2. Add this block to your user configuration (`~/.config/subswitch/config.json`):
 
    ```json
    {
@@ -444,6 +517,8 @@ Kimi is not done yet.
      }
    }
    ```
+
+   Restart the relay. For the login service, use the [service restart command](#macos-login-service).
 
 3. Set the model of a Claude Code subagent to a Kimi model, for example
    `model: kimi-for-coding`.
@@ -522,8 +597,8 @@ that `SUBSWITCH_CONFIG` names. A project `subswitch.config.json` that sets
   and the Kimi CLI sign-in file.
 - `baseUrl` and `oauthTokenUrl` must use the HTTPS host of the region on the default port.
   `authFile` must end in `credentials/<file of the region>`. Any other value fails at load.
-  The Kimi block has no `allowInsecureBaseUrl` key. A loopback URL loads, but it stops
-  `subswitch serve` at startup.
+  The Kimi block has no `allowInsecureBaseUrl` key.
+  A loopback URL passes the config load but prevents relay startup.
 - The [config reference](#config-reference) lists every `providers.kimi` key.
 
 ## Gemini (agy sign-in)
@@ -852,7 +927,7 @@ All keys and their defaults:
 | `anthropic.baseUrl` | `"https://api.anthropic.com"` | Anthropic passthrough base URL |
 | `anthropic.connectTimeoutMs` | `10000` (10 s) | **Anthropic leg only** — DNS resolution and TCP connection establishment timeout (see note below) |
 | `anthropic.maxUpstreamSockets` | `256` | **Anthropic leg only** — max sockets in the keep-alive pool (see note below) |
-| `anthropic.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `anthropic.baseUrl` points at a host other than `api.anthropic.com`. Set to `true` only when routing through a trusted proxy in front of Anthropic's API. Loopback addresses are always exempt. |
+| `anthropic.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), the relay does not start if `anthropic.baseUrl` points at a host other than `api.anthropic.com`. `subswitch service install` also refuses and writes no plist. Set to `true` only when routing through a trusted proxy in front of Anthropic's API. Loopback addresses are always exempt. |
 | `providers.codex.baseUrl` | `"https://chatgpt.com/backend-api/codex"` | Codex backend base URL — override to route subswitch through the wire recorder |
 | `providers.codex.oauthTokenUrl` | `"https://auth.openai.com/oauth/token"` | Token refresh endpoint for the Codex OAuth flow |
 | `providers.codex.authFile` | `"~/.codex/auth.json"` | Path to the Codex credential file written by `codex login` |
@@ -864,9 +939,9 @@ All keys and their defaults:
 | `providers.codex.streamIdleTimeoutMs` | `300000` (5 min) | Codex stream idle timeout — resets on each SSE chunk |
 | `providers.codex.maxSseEventBytes` | `4194304` (4 MiB) | Maximum bytes per individual SSE event from the Codex upstream |
 | `providers.codex.maxAggregateBytes` | `67108864` (64 MiB) | Maximum total accumulated frame bytes for non-streaming response aggregation; exceeding this returns 502 |
-| `providers.codex.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` points at a host other than `chatgpt.com` or `auth.openai.com`. This prevents credential forwarding to an untrusted host. Set to `true` only when routing through a trusted proxy. Loopback addresses are always exempt. |
+| `providers.codex.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), the relay does not start if `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` points at a host other than `chatgpt.com` or `auth.openai.com`. `subswitch service install` also refuses and writes no plist. This prevents credential forwarding to an untrusted host. Set to `true` only when routing through a trusted proxy. Loopback addresses are always exempt. |
 | `providers.together.baseUrl` | `"https://api.together.ai/v1"` | Together AI base URL; requests go to `<baseUrl>/chat/completions`. **User config or `SUBSWITCH_CONFIG` only** — a project file that sets any `providers.together` key fails at load. HTTPS only (HTTP on loopback); no userinfo, query or fragment. |
-| `providers.together.allowInsecureBaseUrl` | `false` | **Security opt-in** — when `true`, `subswitch serve` also accepts `api-inference.together.ai` and `us-api.together.ai` on the default HTTPS port. Every other host, `api.together.xyz` included, stops the startup. Loopback addresses are always exempt. |
+| `providers.together.allowInsecureBaseUrl` | `false` | **Security opt-in** — when `true`, the relay also accepts `api-inference.together.ai` and `us-api.together.ai` on the default HTTPS port. SubSwitch accepts loopback URLs for tests. All other hosts, such as `api.together.xyz`, prevent relay startup. |
 | `providers.together.aliases` | `{}` | Alias targets must be registered Together model ids. This version registers none, so an alias is rejected with an `alias_rejected` warning; use `together:<model-id>`. |
 | `providers.together.outputCap` | `16384` | Maximum `max_tokens` sent to Together per request. Bounds output tokens only, not input tokens or spend. |
 | `providers.together.reasoningCache.maxEntries` | `1024` | Maximum LRU entries in the Together reasoning cache |
@@ -1138,17 +1213,19 @@ Only the owner can have write access to the folders from the home folder to the 
 | `relay.json` | The relay record. The relay publishes it atomically after it binds the port. |
 | `relay.log` | The active relay log. Each line starts with an ISO 8601 time and has no color codes. |
 | `relay.1.log` to `relay.3.log` | Older logs, from newest to oldest. Normal writes limit each log to 4 MiB. |
-| `boot.log` | The detached child's stderr, which includes the ready banner. |
+| `boot.log` | Stderr from detached and launchd relays, with the ready banner. |
+| `stop-request.json` | The target, requester, time and optional `--by` label from `subswitch stop`. |
 
 The record fields are `schemaVersion`, `pid`, `port`, `version`, `startedAt`, `managedBy` and `nonce`.
-`schemaVersion` is `1`, and `managedBy` is `none` in both modes.
+`schemaVersion` is `1`. `managedBy` is `launchd` for a launchd relay and `none` otherwise.
 Health returns the same `pid` and `nonce` as the record.
 On a stop signal, the relay removes its record before it releases the port.
 On a fatal error, the relay removes its record at exit if it has not tried before.
 The relay removes the record only if the nonce still matches.
 
 Foreground `serve` writes structured logs to stderr and `relay.log`.
-A detached relay writes structured logs only to `relay.log`.
+Detached and launchd relays write structured logs only to `relay.log` and keep the ready banner on stderr.
+At startup, launchd mode truncates a regular stderr file if it exceeds 256 KiB.
 If a line would put the file queue over 256 KiB, the relay drops the line.
 The next successful write reports the number of dropped lines.
 If the file sink fails, the relay reports the fault once on stderr.
@@ -1157,6 +1234,10 @@ If the file sink fails, the relay reports the fault once on stderr.
 |------------|------------------|
 | `relay_stopped` | Time, PID, exit code and signal for `SIGINT`, `SIGTERM` or `SIGHUP`. |
 | `relay_fatal` | Time and PID, with no error message or stack. A fatal error writes this line before `relay_stopped`, which has exit code 1 and no signal. |
+
+Each stop signal consumes `stop-request.json` if present.
+A `SIGTERM` stop adds numeric `requesterPid` and `requesterPpid` if the target PID and nonce match.
+The request must be at most 40 seconds old at the time of the signal.
 
 Use `relay.log` for exit events. A hard kill does not write an exit line or remove the record.
 
@@ -1254,8 +1335,7 @@ End-to-end verification against the real CLI and real upstreams:
   mid-conversation degrades the next Codex turn to a cache miss.
 - The Together AI route is not live-verified. Some Together wire details, such as
   stream usage and `tool_choice` values, are not confirmed. The Together key stays in
-  process memory until `subswitch serve` stops, and the output cap does not bound input
-  tokens.
+  process memory until the relay stops. The output cap does not limit input tokens.
 - The wire recorder is HTTP-only. It inspects explicit SSE responses and successful
   streamed `POST .../responses` requests whose upstream omits `Content-Type`; other
   missing-header responses remain transparent pass-through.

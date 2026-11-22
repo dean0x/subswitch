@@ -11,9 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Opt-in Gemini route for Claude Code on macOS.** The route works with a simulated upstream.
   Live use still needs confirmed model IDs and request details.
 - `subswitch serve --detach` starts a relay in its own session on macOS and Linux.
-  It prints the PID of a verified relay on stdout.
+  It prints an active relay's PID when the health response matches the record.
+  If the macOS service plist exists, it waits for the service and does not start a child.
+- `subswitch stop` stops a foreground or detached relay and waits up to 35 seconds for it to exit.
+- `subswitch service install` installs and starts the macOS login service.
+  The service starts the relay at login.
+  `subswitch service uninstall` stops the service and removes it. It keeps the logs.
 - Each relay port has a record and a rotating log in `~/.cache/subswitch/relay/<port>/`.
-  Detached starts also save stderr to `boot.log`. The relay log records stops and fatal errors.
+  Detached and service starts save stderr to `boot.log`. The relay log records stops and fatal errors.
 - `GET /__subswitch/health` includes the relay PID and nonce.
 - **Together AI route for Claude Code (paid, opt-in per model).** A Claude Code
   request for `together:<model-id>` goes to Together Chat Completions with your own
@@ -22,10 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Claude Code is the only supported client for this route. The Codex client
   integration does not route to Together. Live behavior against the Together API is
   not verified yet.
-- Subswitch reads the Together key from `TOGETHER_API_KEY`. On macOS, when that
-  variable is not set, it reads the Keychain item `Subswitch Together API key`
-  (account `subswitch`). It reads the key once and keeps it in memory only. Set the
-  key only in the environment of `subswitch serve`. `subswitch run-action` removes
+- Foreground and detached relays read the Together key from `TOGETHER_API_KEY`. On macOS, when that
+  variable is not set, they read the Keychain item `Subswitch Together API key`
+  (account `subswitch`). They read the key once and keep it in memory only.
+  Use the Keychain item for the login service. `subswitch run-action` removes
   `TOGETHER_API_KEY` from the environment of the native client.
 - A missing or malformed Together key gives a local 401. A malformed `together:`
   model name gives a local 400. In both cases Subswitch sends no upstream request and
@@ -75,6 +80,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `npm run probe:kimi` runs the Kimi live check. `--dry-run` uses only fakes and the
   loopback host. `--live` is for the owner: it needs a terminal and a typed phrase, and
   it caps every request.
+
+### Fixed
+
+- A refused stop no longer leaves its request behind.
 
 ## [0.8.0] - 2026-11-19
 
