@@ -67,8 +67,9 @@ Run these in order before pushing the release tag:
    - Workflow filename: `release.yml`
    - Environment: empty (the job uses no GitHub environment)
 
-   After the first trusted publish, set the package publishing access on npm to "Require
-   two-factor authentication and disallow tokens".
+   Revoke on npmjs.com each old npm token that can publish `subswitch`. After the first trusted
+   publish, set the package publishing access on npm to "Require two-factor authentication and
+   disallow tokens".
 
 ---
 
