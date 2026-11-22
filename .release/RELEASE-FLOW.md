@@ -58,10 +58,18 @@ Run these in order before pushing the release tag:
    `smoke-tarball.sh` packs the package, installs the tarball into a temp directory, runs
    `subswitch --version`, then starts `subswitch serve` and polls the health endpoint.
 
-6. **NPM_TOKEN secret**: confirm it exists in the GitHub repo before pushing the tag:
-   ```
-   gh secret list
-   ```
+6. **npm trusted publisher**: the publish uses npm trusted publishing (OIDC). No npm token
+   secret is used. Before the first tag push with this setup, confirm that the npm package
+   settings for `subswitch` have a trusted publisher with these values:
+   - Provider: GitHub Actions
+   - Organization or user: `dean0x`
+   - Repository: `subswitch`
+   - Workflow filename: `release.yml`
+   - Environment: empty (the job uses no GitHub environment)
+
+   Revoke on npmjs.com each old npm token that can publish `subswitch`. After the first trusted
+   publish, set the package publishing access on npm to "Require two-factor authentication and
+   disallow tokens".
 
 ---
 
@@ -112,9 +120,19 @@ CI job. Do not remove `prepublishOnly`.
    that file; consult it for the exact sequence. The invariants that matter:
    - A **tag guard** hard-fails (exit 1) if the tag version does not match `package.json`
    - A **lockfile guard** hard-fails if `package-lock.json` fields lag `package.json`
-   - **Provenance signing** is on via `id-token: write` — published artifacts carry npm attestations
-   - The Publish step runs `npm publish --provenance --access public`, which fires both
-     `prepublishOnly` (`npm run check`) and `prepack` (`npm run build`) hooks before publishing
+   - **Trusted publishing and provenance** use `id-token: write`: npm signs in with the
+     workflow identity, and published artifacts carry npm attestations
+   - **No token path**: no workflow names an npm token, and setup-node gets no `registry-url`,
+     so the publish can not fall back to a token. `test/unit/release-workflow.test.ts` keeps
+     this true
+   - **No install scripts and no npm cache**: the job runs `npm ci --ignore-scripts` and
+     restores no cached files, because it can sign in to npm
+   - The Publish step runs a pinned npm 11 through `npx` (the exact version is in
+     `release.yml`). Trusted publishing needs npm 11.5.1 or newer, and Node 22 has npm 10. The
+     publish fires both `prepublishOnly` (`npm run check`) and `prepack` (`npm run build`) hooks
+     before publishing
+   - npm 11 refuses a prerelease version, or a version below the newest on npm, without a
+     `--tag`. A `v*` tag for such a version needs a `--tag` in the Publish step first
 
 ---
 
@@ -151,11 +169,3 @@ After the tag is pushed, in order:
    ```
    The `awk` command extracts the section body for `## [X.Y.Z]` — stopping at the next
    `## [` header (or EOF for the oldest entry) without dropping the final line.
-
----
-
-## Known Future Improvements
-
-- Migrate `release.yml` from the `NPM_TOKEN` classic token to npm OIDC trusted publishing.
-  Status: not started as of v0.3.0. On completion: delete the `NPM_TOKEN` GitHub secret and
-  drop the `NODE_AUTH_TOKEN` env block from the Publish step.
