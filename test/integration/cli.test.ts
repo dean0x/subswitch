@@ -19,8 +19,7 @@ import { mkdir, mkdtemp, rm, readdir, writeFile, readFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cliChildCommand, cliChildFolders, offlineDoctorConfig, readExecLog, runCliChild, type CliChildFolders } from "../helpers/cli-child.js";
-import { once } from "node:events";
-import { setTimeout as delay } from "node:timers/promises";
+import { startRelayChild } from "../helpers/relay-child.js";
 import { GEMINI_TEST_MODEL, geminiTestProvider } from "../fixtures/gemini.js";
 
 const geminiTerms = "Google's terms do not allow third-party tools such as Subswitch to use the Gemini subscription sign-in, and if you turn this route on, that choice is yours.";
@@ -28,33 +27,22 @@ const geminiTerms = "Google's terms do not allow third-party tools such as Subsw
 describe("CLI Gemini surfaces", () => {
   for (const active of [false, true]) {
     it(`TP-43: shows terms and attempts Gemini exec only with the block (${active})`, async (t) => {
-      const folders = await cliChildFolders();
-      t.after(() => rm(folders.home, { recursive: true, force: true }));
       const config = await offlineDoctorConfig(active ? { providers: { gemini: geminiTestProvider } } : {});
-      await writeFile(folders.configFile, JSON.stringify(config));
-      const command = cliChildCommand(folders, ["serve"], { offlineDarwin: true, env: { SUBSWITCH_LIMIT_RECORDING: "0" } });
-      const child = spawn(command.file, command.args, { cwd: command.cwd, env: command.env, stdio: ["ignore", "ignore", "pipe"] });
-      const exited = once(child, "exit");
-      let banner = "";
-      child.stderr.on("data", (chunk) => { banner += String(chunk); });
-      try {
-        for (let wait = 0; wait < 500 && !banner.includes("to verify setup") && child.exitCode === null; wait++) await delay(20);
-        assert.match(banner, /subswitch ready/);
-        assert.match(banner, /gemini\s+0 models/);
-        assert.equal(banner.split(geminiTerms).length - 1, active ? 1 : 0);
-        assert.deepEqual(await readExecLog(folders), ["preload"], "serve must not start an exec before the request");
-        const reply = await fetch(`http://127.0.0.1:${String(config["port"])}/v1/messages`, {
-          method: "POST", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(5_000),
-          body: JSON.stringify({ model: GEMINI_TEST_MODEL, max_tokens: 16, messages: [{ role: "user", content: "hello" }] }),
-        });
-        assert.equal(reply.status, active ? 503 : 400);
-        assert.match(await reply.text(), active ? /Subswitch could not read from Keychain/ : /Gemini is not turned on/);
-        assert.deepEqual(await readExecLog(folders), active ? ["preload", "execFile /usr/bin/security"] : ["preload"]);
-      } finally {
-        child.kill("SIGTERM");
-        const stop = setTimeout(() => child.kill("SIGKILL"), 2_000);
-        await exited.finally(() => clearTimeout(stop));
-      }
+      const relay = await startRelayChild({ config, offlineDarwin: true, env: { SUBSWITCH_LIMIT_RECORDING: "0" } });
+      t.after(relay.cleanup);
+      await relay.waitFor("to verify setup");
+      const banner = relay.stderr;
+      assert.match(banner, /subswitch ready/);
+      assert.match(banner, /gemini\s+0 models/);
+      assert.equal(banner.split(geminiTerms).length - 1, active ? 1 : 0);
+      assert.deepEqual(await readExecLog(relay.folders), ["preload"], "serve must not start an exec before the request");
+      const reply = await fetch(`http://127.0.0.1:${relay.port}/v1/messages`, {
+        method: "POST", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(5_000),
+        body: JSON.stringify({ model: GEMINI_TEST_MODEL, max_tokens: 16, messages: [{ role: "user", content: "hello" }] }),
+      });
+      assert.equal(reply.status, active ? 503 : 400);
+      assert.match(await reply.text(), active ? /Subswitch could not read from Keychain/ : /Gemini is not turned on/);
+      assert.deepEqual(await readExecLog(relay.folders), active ? ["preload", "execFile /usr/bin/security"] : ["preload"]);
     });
   }
 
@@ -225,12 +213,9 @@ describe("CLI --help", () => {
     const end = readme.indexOf("```", bodyStart);
     assert.ok(end > bodyStart, "README CLI reference block must be closed");
 
-    const readmeBlock = readme.slice(bodyStart, end).trimEnd();
-    assert.equal(
-      result.stdout.trimEnd(),
-      readmeBlock,
-      "the CLI USAGE text and the README CLI reference block must stay byte-identical",
-    );
+    const readmeBlock = readme.slice(bodyStart, end);
+    assert.equal(result.stdout, readmeBlock, "USAGE and the README CLI block must stay byte-identical");
+    assert.match(result.stdout, /^      --detach +\S/m);
   });
 });
 

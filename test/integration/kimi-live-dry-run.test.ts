@@ -27,11 +27,16 @@ const runDry = async (t: TestContext, root: string, onClientFolder?: (folder: st
 
   const fetchReal = globalThis.fetch;
   let refused = 0;
+  const toolChoices: unknown[] = [];
   const loopbackFetch: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.hostname !== "127.0.0.1") {
       refused += 1;
       throw new Error("The dry run must use only the loopback host.");
+    }
+    if (url.pathname === "/v1/messages" && typeof init?.body === "string") {
+      const body: unknown = JSON.parse(init.body);
+      if (isPlainObject(body) && body["tool_choice"] !== undefined) toolChoices.push(body["tool_choice"]);
     }
     return fetchReal(input, { ...init, redirect: "error" });
   };
@@ -52,7 +57,7 @@ const runDry = async (t: TestContext, root: string, onClientFolder?: (folder: st
     out, run: (args) => runCheck(args, out),
   });
   assert.equal(refused, 0, "The dry run must not attempt a request off the loopback host.");
-  return { code, evidence, lines, clientFolder };
+  return { code, evidence, lines, clientFolder, toolChoices };
 };
 
 const readReport = async (root: string): Promise<Record<string, unknown>> => {
@@ -68,12 +73,13 @@ const readReport = async (root: string): Promise<Record<string, unknown>> => {
 
 it("runs the dry check with only loopback traffic and writes evidence of Kimi use", async (t) => {
   const root = await evidenceRoot(t);
-  const { code, evidence, lines } = await runDry(t, root, (folder) => {
+  const { code, evidence, lines, toolChoices } = await runDry(t, root, (folder) => {
     const scratch = join(folder, "..");
     assert.throws(() => lstatSync(join(scratch, "home", ".config", "subswitch", "config.json")), { code: "ENOENT" },
       "TP-47: the dry run must attach without a user config");
   });
   assert.equal(code, 0, lines.at(-1));
+  assert.deepEqual(toolChoices, [{ type: "auto" }]);
   const report = await readReport(evidence);
   assert.equal(report["success"], true);
   assert.ok(isPlainObject(report["caps"]) && isPlainObject(report["caps"]["used"]));

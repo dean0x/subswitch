@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Opt-in Gemini route for Claude Code on macOS.** The route works with a simulated upstream.
   Live use still needs confirmed model IDs and request details.
+- `subswitch serve --detach` starts a relay in its own session on macOS and Linux.
+  It prints the PID of a verified relay on stdout.
+- Each relay port has a record and a rotating log in `~/.cache/subswitch/relay/<port>/`.
+  Detached starts also save stderr to `boot.log`. The relay log records stops and fatal errors.
+- `GET /__subswitch/health` includes the relay PID and nonce.
 - **Together AI route for Claude Code (paid, opt-in per model).** A Claude Code
   request for `together:<model-id>` goes to Together Chat Completions with your own
   Together API key. Together bills each request per token. Only `together:<model-id>`
@@ -53,7 +58,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to the Kimi coding Messages API. Without the block, a Kimi model name gets a local
   400 and Subswitch reads no Kimi file. Claude Code is the only supported client for
   this route. The tests use simulated Kimi servers; live behavior against Kimi is not
-  verified yet.
+  verified yet. The route returns a local 400 for `tool_choice` type `"tool"` and logs
+  known upstream error types.
 - Sign in with `kimi login` in your own Terminal. Subswitch reads the sign-in file of
   the Kimi CLI (versions 0.38.0 to 2.7.2), renews it when it is due or once after a
   401, and writes it back under the Kimi CLI lock. Subswitch never runs the Kimi CLI.

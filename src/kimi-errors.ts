@@ -1,8 +1,16 @@
-// The closed set of Kimi sign-in failures. Each code has one ProxyError kind and client
-// status, fixed text, a hint for the user and one log event. The text names no path and
-// holds no record text, so a reply or a log line can not carry a credential or a local path.
+// Fixed Kimi client errors and their log events. The text names no path and holds no
+// record text, so a reply or a log line can not carry a credential or a local path.
 import type { ProxyError } from "./errors.js";
 import { KIMI_EVENTS } from "./provider-events.js";
+
+export const KIMI_FORCED_TOOL_CHOICE = {
+  code: "forced_tool_choice",
+  event: KIMI_EVENTS.requestRejected,
+  error: {
+    kind: "translate",
+    message: 'The Kimi route does not accept a forced tool choice (tool_choice type "tool").',
+  } satisfies ProxyError,
+} as const;
 
 type KimiEventName = (typeof KIMI_EVENTS)[keyof typeof KIMI_EVENTS];
 

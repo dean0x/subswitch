@@ -179,6 +179,7 @@ const CHILD_PROCESS_FILES: ReadonlyMap<string, string> = new Map([
   ["server.ts", "the live deps factories build the program runners"],
   ["claude-auth.ts", "the Claude client-ingress store runs the macOS Keychain tool"],
   ["run-action.ts", "run-action starts the client command that the user names"],
+  ["relay-exec.ts", "starts the detached relay"],
 ]);
 const CHILD_PROCESS_MODULE = /["'](?:node:)?child_process["']/;
 /** The Kimi file store module, and the name of its maker. Only the live Kimi factory may name it. */
@@ -240,7 +241,7 @@ describe("source-text guards: CLI child processes", () => {
 describe("source-text guards: live deps factories", () => {
   it("G2: only server.ts defines a live factory, and only cli.ts and run-action.ts call one", () => {
     const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
-    for (const file of [LIVE_FACTORY_HOME, ...LIVE_FACTORY_CALLERS, ...CHILD_PROCESS_FILES.keys()]) {
+    for (const file of [LIVE_FACTORY_HOME, ...LIVE_FACTORY_CALLERS, "claude-auth.ts"]) {
       assert.ok(files.includes(file), `The source list must include ${file}`);
     }
     assert.match(readSrc(LIVE_FACTORY_HOME), /export const liveTogetherKeyReaderDeps = /);
@@ -300,6 +301,81 @@ describe("source-text guards: live deps factories", () => {
 const KIMI_FIXTURE_MARKER = /FAKE-KIMI/i;
 const KIMI_TEST_FILE = /(?:^|\/)kimi-[^/]*\.ts$/;
 const THIS_GUARD = "unit/source-text-guards.test.ts";
+const RELAY_CHILD_HELPER = "helpers/relay-child.ts";
+// Literal arrays only. The runCli wrapper takes the array as its first argument.
+const CLI_CHILD_ARRAY = /\b(?:runCli\s*\(|(?:cliChildCommand|runCliChild)\s*\([^,]*,)\s*\[([^\]]*)\](?:\s*\))?/g;
+// Help and version exit before command selection. The unknown option fixture fails in parseArgs.
+const NON_SERVE_ARGS = /^\s*(["'`])(?:--help|--version|--nope)\1\s*,?\s*$/;
+const serveLaunches = (source: string): string[] => [...source.matchAll(CLI_CHILD_ARRAY)]
+  .filter(([, args = ""]) => !NON_SERVE_ARGS.test(args) &&
+    /^\s*(?:$|["'`]-)|(?:^|,)\s*(["'`])serve\1\s*(?:,|$)/.test(args))
+  .map(([call]) => call);
+
+// These exact calls in cli.test.ts fail port validation before bind. Each entry permits one call.
+const CLI_PORT_VALIDATION_CALLS = [
+  'runCli(["serve", "--port", "abc"])', // Reject a non-numeric port.
+  'runCli(["serve", "--port", "abc"])', // Check that the rejection has no ready banner.
+  'runCli(["serve", "--port", "99999"])', // Reject a port above 65535.
+];
+const unexpectedServeLaunches = (file: string, source: string): string[] => {
+  const allowed = file === "integration/cli.test.ts" ? [...CLI_PORT_VALIDATION_CALLS] : [];
+  return serveLaunches(source).filter((call) => {
+    const index = allowed.indexOf(call);
+    if (index < 0) return true;
+    allowed.splice(index, 1);
+    return false;
+  });
+};
+const healthProbe = (source: string): boolean => source.includes("/__subswitch/health") && /\b(?:fetch|get|request)\s*\(/.test(source);
+const RELAY_DETACH_SIGNAL = /\.\s*kill\s*\(|\[\s*["'`]kill["'`]\s*\]/;
+
+describe("source-text guards: relay lifecycle", () => {
+  it("G7: serve launches use the isolated relay child helper", () => {
+    const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: TEST_DIR });
+    assert.ok(files.includes(RELAY_CHILD_HELPER));
+    assert.deepEqual([...files].sort().flatMap((file) =>
+      [RELAY_CHILD_HELPER, THIS_GUARD].includes(file) ? [] :
+        unexpectedServeLaunches(file, readFileSync(join(TEST_DIR, file), "utf8")).map((call) => `${file}: ${call}`)), []);
+  });
+
+  it("G7 positive control: detects direct serve, empty and flag-first arrays", () => {
+    for (const args of ['["serve"]', "['models', 'serve']", "[ ]", '[\n "--port", "42193"]']) {
+      for (const name of ["cliChildCommand", "runCliChild"]) {
+        const call = `${name}(folders, ${args}`;
+        assert.deepEqual(serveLaunches(`${call}, options)`), [call]);
+      }
+    }
+    assert.deepEqual(serveLaunches('runCliChild(folders, ["models", "--json"])'), []);
+  });
+
+  for (const args of ['["serve"]', '[]', '["--verbose"]']) {
+    it(`G7 positive control: detects runCli(${args})`, () => {
+      const call = `runCli(${args})`;
+      assert.deepEqual(unexpectedServeLaunches("integration/cli.test.ts", call), [call]);
+    });
+  }
+
+  it("G8: only the record module probes health for the relay lifecycle", () => {
+    const files = globSync("**/relay-*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
+    assert.ok(files.includes("relay-record.ts") && files.includes("relay-log.ts"));
+    assert.ok(healthProbe(readSrc("relay-record.ts")), "The guard must find the owner probe");
+    assert.deepEqual(files.filter((file) => file !== "relay-record.ts" && healthProbe(readSrc(file))), []);
+  });
+
+  it("G9: relay detach sends no signal and only relay exec can load child_process", () => {
+    assert.match('process.kill(pid, "SIGTERM");', RELAY_DETACH_SIGNAL);
+    const exec = readSrc("relay-exec.ts");
+    assert.match(exec, CHILD_PROCESS_MODULE);
+    assert.equal(CHILD_PROCESS_FILES.get("relay-exec.ts"), "starts the detached relay");
+    assert.deepEqual(liveFactoryViolations("relay-detach.ts", exec), ["loads node:child_process"]);
+    assert.deepEqual(liveFactoryViolations("relay-exec.ts", exec), []);
+    const files = globSync("**/relay-detach.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
+    assert.ok(files.includes("relay-detach.ts"));
+    for (const file of files) {
+      assert.doesNotMatch(readSrc(file), RELAY_DETACH_SIGNAL, `src/${file} must not send signals`);
+    }
+  });
+});
 
 describe("source-text guards: provider fixtures", () => {
   it("G4: only Kimi-named test files hold a marked Kimi fixture", () => {
@@ -395,6 +471,19 @@ const CLIENT_VARIABLE = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|ANTHROP
 const CLIENT_VARIABLE_SET = /\b(?:ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)["'`]?\]?\s*(?::|=(?!=))/;
 const readRepo = (name: string): string => readFileSync(join(REPO_DIR, name), "utf8");
 
+it("the package smoke script isolates both serve calls and checks normal exit", () => {
+  const script = readRepo("scripts/smoke-tarball.sh");
+  const serves = script.replaceAll("\\\n", "").split("\n")
+    .filter((line) => line.endsWith("node_modules/.bin/subswitch serve &"));
+  assert.equal(serves.length, 2);
+  for (const line of serves) {
+    assert.match(line, /(?:^| )HOME="\$\{TMPDIR_INSTALL\}(?:\/[^" ]+)?" /);
+    assert.match(line, /(?:^| )XDG_CACHE_HOME="\$\{TMPDIR_INSTALL\}\/[^" ]+" /);
+  }
+  assert.match(script, /^set -euo pipefail$/m);
+  assert.match(script, /^kill "\$\{SERVE_PID\}"\nwait "\$\{SERVE_PID\}"$/m);
+});
+
 describe("source-text guards: the provider live checks", () => {
   it("G5: only the fake clients read override variables, and no live check sets one", () => {
     for (const provider of ["kimi", "gemini"]) {
@@ -426,12 +515,12 @@ describe("source-text guards: the provider live checks", () => {
   }
 });
 
-// G6: the public docs, the source and the Kimi check files hold no local text: no home
-// folder path, no workspace id and no path of a private planning folder. The paths of this
-// machine (its home folder and the folder that holds this repo) are checked as values too.
-const PUBLIC_TEXT = ["*.md", "e2e/**/*.md", "src/**/*.{ts,mts,cts,js,mjs,cjs}", "e2e/gates/{kimi,gemini}-*", "e2e/gates/live-check-common.ts"];
+// G6: The docs, source and provider check files must not contain home paths,
+// workspace IDs or private plan paths. The guard also checks the local paths.
+const CLI_KNOWLEDGE = ".devflow/features/cli-ux/KNOWLEDGE.md";
+const PUBLIC_TEXT = ["*.md", "e2e/**/*.md", "src/**/*.{ts,mts,cts,js,mjs,cjs}", "e2e/gates/{kimi,gemini}-*", "e2e/gates/live-check-common.ts", CLI_KNOWLEDGE];
 const PRIVATE_SHAPES: readonly RegExp[] = [
-  /\/(?:Users|home)\/[A-Za-z0-9._-]+\//,
+  /\/(?:Users|home)\/[A-Za-z0-9._-]+/,
   /\b[A-Za-z]:\\{1,2}Users\\{1,2}[A-Za-z0-9._-]+/,
   /\bwrkspc_[A-Za-z0-9]/,
   /\.devflow\/docs\/lanes\//,
@@ -446,7 +535,8 @@ const privateText = (text: string, paths: readonly string[] = machinePaths()): b
 describe("source-text guards: public text", () => {
   it("G6: no public doc, source file or provider check file holds local text", () => {
     const files = globSync(PUBLIC_TEXT, { cwd: REPO_DIR });
-    for (const name of ["README.md", "SECURITY.md", "CHANGELOG.md", "src/kimi-native-auth.ts", LIVE_CHECK,
+    for (const name of ["README.md", "SECURITY.md", "CHANGELOG.md", CLI_KNOWLEDGE,
+      "src/relay-detach.ts", "src/relay-record.ts", "src/kimi-native-auth.ts", LIVE_CHECK,
       "e2e/gates/gemini-live-check.ts", "e2e/gates/live-check-common.ts"]) {
       assert.ok(files.includes(name), `The search must find ${name}`);
     }
@@ -454,7 +544,7 @@ describe("source-text guards: public text", () => {
   });
 
   it("G6 positive control: each shape and each machine path is found", () => {
-    for (const text of ["see /Users/someone/project", "in /home/someone/repo", "C:\\Users\\someone", "wrkspc_01ABC",
+    for (const text of ["see /Users/someone/project", "see /Users/someone", "in /home/someone/repo", "C:\\Users\\someone", "wrkspc_01ABC",
       "notes in .devflow/docs/lanes/plan.md", "the .orchestrator folder", `${homedir()}/project`, `${dirname(REPO_DIR)}/other`]) {
       assert.equal(privateText(text), true, text);
     }

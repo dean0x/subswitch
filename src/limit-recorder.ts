@@ -1,9 +1,10 @@
 import { constants } from "node:fs";
-import { mkdir, open, rename, unlink, lstat } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "./logger.js";
 import type { LimitObservation } from "./limit-observation.js";
+import { appendRotatingPrivateFile } from "./private-file.js";
 
 const FILE_BYTES = 2 * 1024 * 1024;
 const FILES = 4;
@@ -49,68 +50,14 @@ export class LimitRecorder {
       /* Diagnostics remain optional. */
     }
   }
-  private async append(line: string): Promise<void> {
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    const directory = await lstat(this.directory);
-    if (
-      !directory.isDirectory() ||
-      directory.isSymbolicLink() ||
-      (process.getuid && directory.uid !== process.getuid()) ||
-      directory.mode & 0o077
-    )
-      throw new Error("unsafe_limit_directory");
-    const path = join(this.directory, "events.jsonl");
-    let file: Awaited<ReturnType<typeof open>> | undefined = await open(
-      path,
-      constants.O_APPEND |
-        constants.O_CREAT |
-        constants.O_WRONLY |
-        constants.O_NOFOLLOW,
-      0o600,
-    );
-    try {
-      const stat = await file.stat();
-      if (
-        !stat.isFile() ||
-        stat.size > FILE_BYTES ||
-        stat.nlink !== 1 ||
-        stat.mode & 0o077 ||
-        (process.getuid && stat.uid !== process.getuid())
-      )
-        throw new Error("unsafe_limit_file");
-      if (stat.size + Buffer.byteLength(line) > FILE_BYTES) {
-        await file.close();
-        file = undefined;
-        await unlink(
-          join(this.directory, "events." + (FILES - 1) + ".jsonl"),
-        ).catch((error) => {
-          if (error.code !== "ENOENT") throw error;
-        });
-        for (let index = FILES - 2; index >= 0; index--) {
-          const from = join(
-            this.directory,
-            index === 0 ? "events.jsonl" : "events." + index + ".jsonl",
-          );
-          await rename(
-            from,
-            join(this.directory, "events." + (index + 1) + ".jsonl"),
-          ).catch((error) => {
-            if (error.code !== "ENOENT") throw error;
-          });
-        }
-        file = await open(
-          path,
-          constants.O_APPEND |
-            constants.O_CREAT |
-            constants.O_WRONLY |
-            constants.O_NOFOLLOW,
-          0o600,
-        );
-      }
-      await file!.writeFile(line);
-    } finally {
-      await file?.close();
-    }
+  private append(line: string): Promise<void> {
+    return appendRotatingPrivateFile({
+      directory: this.directory,
+      stem: "events",
+      extension: "jsonl",
+      maxBytes: FILE_BYTES,
+      fileCount: FILES,
+    }, line);
   }
   readonly track = (task: Promise<void>): void => {
     this.tasks.add(task);
