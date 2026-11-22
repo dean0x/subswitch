@@ -386,8 +386,10 @@ security add-generic-password -s "Subswitch Together API key" -a subswitch -w
   `subswitch run-action` removes it from the native client's environment.
 - The macOS login service uses only the Keychain item. It ignores `TOGETHER_API_KEY`.
 - For other relays, a set `TOGETHER_API_KEY` takes precedence, even if its value is malformed.
-- SubSwitch reads the key once, on the first Together request, and keeps it in process
-  memory until `subswitch serve` stops. Restart the proxy after you change the key.
+- SubSwitch reads the key on the first Together request.
+  It keeps the key in process memory until the relay stops.
+  After you change the key, restart the relay.
+  For the login service, use the [service restart command](#macos-login-service).
   The Keychain read has a 10 s limit. A failed read is not kept: the next Together
   request tries again, so macOS can ask again.
 - The key goes only to the Together host, as `authorization: Bearer <key>`. Client
@@ -469,10 +471,10 @@ optional; without it the defaults apply.
 
 `providers.together.baseUrl` defaults to `https://api.together.ai/v1`. With
 `providers.together.allowInsecureBaseUrl: true`, SubSwitch also accepts
-`api-inference.together.ai` and `us-api.together.ai` on the default HTTPS port, and no
-other host. Together charges more for the US-only host `us-api.together.ai`.
-`api.together.xyz` and every other host stop `subswitch serve` at startup. Loopback URLs
-are always accepted, for tests. A URL with userinfo, a query or a fragment fails at load.
+`api-inference.together.ai` and `us-api.together.ai` on the default HTTPS port.
+Together charges more for the US-only host `us-api.together.ai`.
+SubSwitch accepts loopback URLs for tests. All other hosts, such as `api.together.xyz`,
+prevent relay startup. A URL with userinfo, a query or a fragment fails at load.
 The [config reference](#config-reference) lists every `providers.together` key.
 
 A workspace file can name a `together:` model, for example in a project
@@ -497,8 +499,7 @@ Kimi is not done yet.
 1. Sign in with `kimi login` in your own Terminal. For the mainland China region, use
    `kimi login --region mainland-cn`. SubSwitch supports the files of Kimi CLI versions
    0.38.0 to 2.7.2.
-2. Add the block to your user configuration (`~/.config/subswitch/config.json`), then
-   restart `subswitch serve`:
+2. Add this block to your user configuration (`~/.config/subswitch/config.json`):
 
    ```json
    {
@@ -507,6 +508,8 @@ Kimi is not done yet.
      }
    }
    ```
+
+   Restart the relay. For the login service, use the [service restart command](#macos-login-service).
 
 3. Set the model of a Claude Code subagent to a Kimi model, for example
    `model: kimi-for-coding`.
@@ -576,8 +579,8 @@ that `SUBSWITCH_CONFIG` names. A project `subswitch.config.json` that sets
   and the Kimi CLI sign-in file.
 - `baseUrl` and `oauthTokenUrl` must use the HTTPS host of the region on the default port.
   `authFile` must end in `credentials/<file of the region>`. Any other value fails at load.
-  The Kimi block has no `allowInsecureBaseUrl` key. A loopback URL loads, but it stops
-  `subswitch serve` at startup.
+  The Kimi block has no `allowInsecureBaseUrl` key.
+  A loopback URL passes the config load but prevents relay startup.
 - The [config reference](#config-reference) lists every `providers.kimi` key.
 
 ## Codex → Claude
@@ -900,7 +903,7 @@ All keys and their defaults:
 | `providers.codex.maxAggregateBytes` | `67108864` (64 MiB) | Maximum total accumulated frame bytes for non-streaming response aggregation; exceeding this returns 502 |
 | `providers.codex.allowInsecureBaseUrl` | `false` | **Security opt-in** — when false (the default), `subswitch serve` refuses to start if `providers.codex.baseUrl` or `providers.codex.oauthTokenUrl` points at a host other than `chatgpt.com` or `auth.openai.com`. This prevents credential forwarding to an untrusted host. Set to `true` only when routing through a trusted proxy. Loopback addresses are always exempt. |
 | `providers.together.baseUrl` | `"https://api.together.ai/v1"` | Together AI base URL; requests go to `<baseUrl>/chat/completions`. **User config or `SUBSWITCH_CONFIG` only** — a project file that sets any `providers.together` key fails at load. HTTPS only (HTTP on loopback); no userinfo, query or fragment. |
-| `providers.together.allowInsecureBaseUrl` | `false` | **Security opt-in** — when `true`, `subswitch serve` also accepts `api-inference.together.ai` and `us-api.together.ai` on the default HTTPS port. Every other host, `api.together.xyz` included, stops the startup. Loopback addresses are always exempt. |
+| `providers.together.allowInsecureBaseUrl` | `false` | **Security opt-in** — when `true`, the relay also accepts `api-inference.together.ai` and `us-api.together.ai` on the default HTTPS port. SubSwitch accepts loopback URLs for tests. All other hosts, such as `api.together.xyz`, prevent relay startup. |
 | `providers.together.aliases` | `{}` | Alias targets must be registered Together model ids. This version registers none, so an alias is rejected with an `alias_rejected` warning; use `together:<model-id>`. |
 | `providers.together.outputCap` | `16384` | Maximum `max_tokens` sent to Together per request. Bounds output tokens only, not input tokens or spend. |
 | `providers.together.reasoningCache.maxEntries` | `1024` | Maximum LRU entries in the Together reasoning cache |
@@ -1294,8 +1297,7 @@ End-to-end verification against the real CLI and real upstreams:
   mid-conversation degrades the next Codex turn to a cache miss.
 - The Together AI route is not live-verified. Some Together wire details, such as
   stream usage and `tool_choice` values, are not confirmed. The Together key stays in
-  process memory until `subswitch serve` stops, and the output cap does not bound input
-  tokens.
+  process memory until the relay stops. The output cap does not limit input tokens.
 - The wire recorder is HTTP-only. It inspects explicit SSE responses and successful
   streamed `POST .../responses` requests whose upstream omits `Content-Type`; other
   missing-header responses remain transparent pass-through.
