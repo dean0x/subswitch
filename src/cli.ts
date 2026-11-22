@@ -2,6 +2,7 @@
 import { CLIENT_IDS, parseClientSelection, selectedClients, type ClientId, type ClientSelection as Client } from "./clients.js";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
@@ -28,7 +29,8 @@ import { publishActionControl } from "./routing/action-control.js";
 import { detachRelay } from "./relay-detach.js";
 import { spawnRelay } from "./relay-exec.js";
 import { createRelayLogger, truncateLaunchdStderr, writeFatalLineSync, writeStopLineSync, type RelayLogMode, type RelayStopFields } from "./relay-log.js";
-import { classifyRelay, createRelayNonce, ensureRelayFolder, publishRelayRecord, readRelayRecord, readStopRequest, relayFolder, removeOwnRelayRecord } from "./relay-record.js";
+import { classifyRelay, createRelayNonce, ensureRelayFolder, publishRelayRecord, readRelayRecord, readStopRequest, relayFolder, removeOwnRelayRecord, requestLoopbackHealth } from "./relay-record.js";
+import { stopRelay } from "./relay-stop.js";
 import { appendRotatingPrivateFile } from "./private-file.js";
 import { LimitRecorder, limitDirectory, withLimitRecorder, readLimitObservations } from "./limit-recorder.js";
 import { settleNativeRefreshes } from "./native-auth-coordination.js";
@@ -63,6 +65,7 @@ Usage: subswitch [command] [flags]
 
 Commands:
   serve     Start the proxy (default command)
+  stop      Stop a verified local relay
   doctor    Check config, subscription auth, and network reachability
   init      Interactive setup — wires the selected client(s)
   models    Show effective alias table (registry × aliases)
@@ -81,6 +84,11 @@ Flags (serve):
       --quiet      Set log level to warn for this run
       --port <n>   Override listen port (default: ${DEFAULT_PORT})
       --detach     Start the proxy in its own session and print its PID
+
+Flags (stop):
+      --port <n>   Select the relay port (default: user config port or ${DEFAULT_PORT})
+      --by <label> Add a label to the stop request (1 to 32 lowercase letters,
+                   digits, dots, underscores or dashes)
 
 Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
@@ -119,6 +127,7 @@ type CliCommand =
   | { readonly kind: "help" }
   | { readonly kind: "version" }
   | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly detach: boolean; readonly port?: string }
+  | { readonly kind: "stop"; readonly port?: string; readonly label?: string }
   | { readonly kind: "doctor"; readonly client: Client }
   | { readonly kind: "models"; readonly json: boolean; readonly client: Client; readonly schemaVersion?: 3 }
   | { readonly kind: "limits"; readonly json: boolean; readonly port?: string }
@@ -128,6 +137,7 @@ type CliCommand =
 // Flag sets per command — used for per-command validation (A3.19)
 const GLOBAL_FLAGS = new Set(["help", "version"]);
 const SERVE_FLAGS = new Set(["verbose", "quiet", "port", "detach"]);
+const STOP_FLAGS = new Set(["by", "port"]);
 const DOCTOR_FLAGS = new Set(["client"]);
 const MODELS_FLAGS = new Set(["json", "client", "schema-version"]);
 const LIMITS_FLAGS = new Set(["json", "port"]);
@@ -166,6 +176,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
         json:              { type: "boolean" },
         client:            { type: "string" },
         "schema-version":  { type: "string" },
+        by:                { type: "string" },
       },
       allowPositionals: true,
       strict: true,
@@ -183,7 +194,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     if (!client) return { ok: false, error: { message: `client must be ${CLIENT_IDS.join(", ")}, or all` } };
 
     // Unknown command
-    if (command !== "serve" && command !== "doctor" && command !== "init" && command !== "models" && command !== "limits") {
+    if (command !== "serve" && command !== "stop" && command !== "doctor" && command !== "init" && command !== "models" && command !== "limits") {
       return {
         ok: false,
         error: { message: `unknown command "${command}" — run \`subswitch --help\` for usage` },
@@ -194,6 +205,8 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     let allowedFlags: Set<string>;
     if (command === "serve") {
       allowedFlags = SERVE_FLAGS;
+    } else if (command === "stop") {
+      allowedFlags = STOP_FLAGS;
     } else if (command === "doctor") {
       allowedFlags = DOCTOR_FLAGS;
     } else if (command === "models") {
@@ -205,6 +218,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     }
 
     if (tokens !== undefined) {
+      let sawStopLabel = false;
       for (const token of tokens) {
         if (token.kind !== "option") continue;
         const flagName = token.name;
@@ -217,7 +231,19 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
             },
           };
         }
+        if (command === "stop" && flagName === "by") {
+          if (sawStopLabel) return { ok: false, error: { message: "stop accepts --by only once" } };
+          sawStopLabel = true;
+        }
       }
+    }
+
+    if (command === "stop") {
+      if (positionals.length > 1) return { ok: false, error: { message: "stop does not take positional arguments" } };
+      return { ok: true, value: { kind: "stop",
+        ...(values.port === undefined ? {} : { port: values.port }),
+        ...(values.by === undefined ? {} : { label: values.by }),
+      } };
     }
 
     if (command === "init") {
@@ -642,6 +668,17 @@ const main = async (): Promise<void> => {
         return;
       }
       await serve(configResult.value, command.verbose, command.quiet, managedBy ?? "foreground", command.port);
+      return;
+    }
+
+    case "stop": {
+      process.exitCode = await stopRelay({
+        home: homedir(), pid: process.pid, ppid: process.ppid, uid: process.getuid?.(),
+        ...(command.port === undefined ? {} : { port: command.port }),
+        ...(command.label === undefined ? {} : { label: command.label }),
+        kill: (pid, signal) => process.kill(pid, signal), requestHealth: requestLoopbackHealth,
+        clock: { now: Date.now, monotonic: () => performance.now() }, sleep, loadConfig, out, errOut,
+      });
       return;
     }
 

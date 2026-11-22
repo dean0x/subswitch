@@ -110,6 +110,7 @@ Usage: subswitch [command] [flags]
 
 Commands:
   serve     Start the proxy (default command)
+  stop      Stop a verified local relay
   doctor    Check config, subscription auth, and network reachability
   init      Interactive setup — wires the selected client(s)
   models    Show effective alias table (registry × aliases)
@@ -128,6 +129,11 @@ Flags (serve):
       --quiet      Set log level to warn for this run
       --port <n>   Override listen port (default: 4141)
       --detach     Start the proxy in its own session and print its PID
+
+Flags (stop):
+      --port <n>   Select the relay port (default: user config port or 4141)
+      --by <label> Add a label to the stop request (1 to 32 lowercase letters,
+                   digits, dots, underscores or dashes)
 
 Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults

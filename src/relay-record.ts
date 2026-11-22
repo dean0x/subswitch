@@ -261,7 +261,7 @@ type HealthProbe = { readonly answered: false } | { readonly answered: true; rea
 type HealthResponse = Pick<Response, "status" | "body">;
 
 // Fetch blocks some valid relay ports. Connect directly to the selected loopback socket.
-function requestLoopbackHealth(port: number, signal: AbortSignal): Promise<HealthResponse> {
+export function requestLoopbackHealth(port: number, signal: AbortSignal): Promise<HealthResponse> {
   return new Promise((resolve, reject) => {
     get({ hostname: "127.0.0.1", port, path: "/__subswitch/health", agent: false, signal }, (response) => {
       const body = Readable.toWeb(response, { strategy: { highWaterMark: HEALTH_BYTES, size: (chunk: Uint8Array) => chunk.byteLength } });
