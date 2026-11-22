@@ -254,7 +254,7 @@ Pure planning layer (no side effects): `resolveInitDispatch`, `resolveOptionsFro
 ### src/logger.ts — Structured key=value logger
 
 The console logger defaults to stderr. With color enabled, it adds a `[HH:MM:SS]` prefix.
-Foreground `serve` also writes to `relay.log`. Detached `serve` writes structured logs to that file only.
+Foreground `serve` also writes to `relay.log`. Detached and launchd relays write structured logs to that file only.
 The relay file logger adds an ISO 8601 time and does not use color.
 The logger writes `level=<L> event=<E> key=value …` and uses only fields in `FIELD_KEYS`, in that order.
 

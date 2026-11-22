@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { access, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createConnection, Server } from "node:net";
 import { homedir } from "node:os";
@@ -8,11 +8,11 @@ import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { DEFAULT_PORT } from "../../src/config.js";
 import { isPlainObject } from "../../src/plain-object.js";
-import { classifyRelay, ensureRelayFolder, readRelayRecord } from "../../src/relay-record.js";
+import { classifyRelay, ensureRelayFolder, readRelayRecord, writeStopRequest, type StopRequest } from "../../src/relay-record.js";
 import { SUBSWITCH_VERSION } from "../../src/version.js";
 import { startRelayChild, type RelayChild, type RelayChildOptions } from "../helpers/relay-child.js";
 
-async function launch(t: TestContext, options: Pick<RelayChildOptions, "detach" | "portFromConfig" | "extraImport" | "prepare" | "config"> & { readonly env?: NodeJS.ProcessEnv } = {}) {
+async function launch(t: TestContext, options: Omit<RelayChildOptions, "env"> & { readonly env?: NodeJS.ProcessEnv } = {}) {
   const relay = await startRelayChild({
     ...options, env: { NO_COLOR: "1", SUBSWITCH_LIMIT_RECORDING: "0", ...options.env },
   });
@@ -24,21 +24,46 @@ const state = (relay: RelayChild) => join(relay.folders.home, ".cache", "subswit
 const log = (relay: RelayChild) => readFile(join(state(relay), "relay.log"), "utf8");
 const lifecycleLines = (text: string) => text.split("\n").filter((line) => /event=relay_(fatal|stopped)\b/.test(line));
 const iso = String.raw`\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z`;
-const stopped = (pid: number | undefined, code: number, signal?: string) =>
-  new RegExp(`^${iso} level=info event=relay_stopped pid=${pid}${signal === undefined ? "" : ` signal=${signal}`} exitCode=${code}$`);
+const stopped = (pid: number | undefined, code: number, signal?: string, requester = "") =>
+  new RegExp(`^${iso} level=info event=relay_stopped pid=${pid}${signal === undefined ? "" : ` signal=${signal}`} exitCode=${code}${requester}$`);
 const beforeReady = (relay: RelayChild) => Promise.race([relay.exited, relay.waitFor("subswitch ready").then(() => "listened")]);
 
-for (const mode of ["foreground", "detach"] as const) {
+const LARGE_STDERR_BYTES = 256 * 1024 + 1;
+const bootPath = (home: string) => join(home, "test-stderr.log");
+const redirectStderrFile = `data:text/javascript,${encodeURIComponent(`
+  import fs from "node:fs";
+  import { syncBuiltinESMExports } from "node:module";
+  import { homedir } from "node:os";
+  import { join } from "node:path";
+  const fd = fs.openSync(join(homedir(), "test-stderr.log"), "r+");
+  const { fstatSync, ftruncateSync } = fs;
+  fs.fstatSync = (target, ...args) => fstatSync(target === 2 ? fd : target, ...args);
+  fs.ftruncateSync = (target, ...args) => ftruncateSync(target === 2 ? fd : target, ...args);
+  syncBuiltinESMExports();
+  process.once("exit", () => fs.closeSync(fd));
+`)}`;
+
+for (const mode of ["foreground", "detach", "launchd"] as const) {
   it(`${mode} publishes a private record, serves its identity and uses the correct log outputs`, async (t) => {
-    const relay = await launch(t, { env: mode === "detach" ? { SUBSWITCH_MANAGED_BY: "detach" } : {} });
+    const relay = await launch(t, {
+      env: { SUBSWITCH_MANAGED_BY: mode === "foreground" ? undefined : mode },
+      extraImport: redirectStderrFile,
+      prepare: async ({ home }) => {
+        await writeFile(bootPath(home), "", { mode: 0o600 });
+        await truncate(bootPath(home), LARGE_STDERR_BYTES);
+      },
+    });
+    assert.equal(await beforeReady(relay), "listened", relay.stderr);
     await relay.waitFor("run `subswitch doctor`");
+    assert.equal((await stat(bootPath(relay.folders.home))).size, mode === "launchd" ? 0 : LARGE_STDERR_BYTES);
     const saved = readRelayRecord(relay.port, relay.folders.home);
     assert.ok(saved.ok && saved.value, "The ready relay must publish a record");
     const { startedAt, nonce } = saved.value;
     assert.equal(new Date(startedAt).toISOString(), startedAt);
     assert.match(nonce, /^[a-f0-9]{32}$/);
     assert.deepEqual(saved.value, {
-      schemaVersion: 1, pid: relay.child.pid, port: relay.port, version: SUBSWITCH_VERSION, startedAt, managedBy: "none", nonce,
+      schemaVersion: 1, pid: relay.child.pid, port: relay.port, version: SUBSWITCH_VERSION, startedAt,
+      managedBy: mode === "launchd" ? "launchd" : "none", nonce,
     });
     assert.equal((await stat(state(relay))).mode & 0o777, 0o700);
     assert.equal((await stat(join(state(relay), "relay.json"))).mode & 0o777, 0o600);
@@ -63,14 +88,15 @@ for (const mode of ["foreground", "detach"] as const) {
   });
 }
 
-for (const value of ["launchd", "unknown"]) {
-  it(`refuses managed-by ${value} before listen`, async (t) => {
-    const relay = await launch(t, { detach: value === "launchd", env: { SUBSWITCH_MANAGED_BY: value } });
-    assert.deepEqual(await beforeReady(relay), [1, null]);
-    assert.match(relay.stderr, /SUBSWITCH_MANAGED_BY/);
-    await assert.rejects(access(join(state(relay), "relay.json")), { code: "ENOENT" });
-  });
-}
+it("refuses an unknown managed mode before listen without printing its value", async (t) => {
+  const invalidMode = "mode-input-canary";
+  const relay = await launch(t, { env: { SUBSWITCH_MANAGED_BY: invalidMode } });
+  assert.deepEqual(await beforeReady(relay), [1, null]);
+  assert.match(relay.stderr, /SUBSWITCH_MANAGED_BY/);
+  assert.doesNotMatch(relay.stderr, /subswitch ready/);
+  assert.ok(!relay.stderr.includes(invalidMode));
+  await assert.rejects(access(join(state(relay), "relay.json")), { code: "ENOENT" });
+});
 
 it("answers health only after the action control file is ready", async (t) => {
   const relay = await launch(t, { config: { configVersion: 2 }, extraImport: `data:text/javascript,${encodeURIComponent(`
@@ -108,16 +134,16 @@ it("does not publish a record or log a stop if listen fails", async (t) => {
   await assert.rejects(access(join(state(relay), "relay.json")), { code: "ENOENT" });
 });
 
-for (const detach of [false, true]) {
-  it(`record write failure ${detach ? "stops detach" : "warns once and leaves foreground ready"}`, async (t) => {
+for (const mode of ["foreground", "detach", "launchd"] as const) {
+  it(`record write failure ${mode === "foreground" ? "warns once and leaves foreground ready" : `stops ${mode}`}`, async (t) => {
     const relay = await launch(t, {
-      env: detach ? { SUBSWITCH_MANAGED_BY: "detach" } : {},
+      env: { SUBSWITCH_MANAGED_BY: mode === "foreground" ? undefined : mode },
       prepare: async ({ home }) => {
         await mkdir(join(home, "other-cache"), { mode: 0o700 });
         await symlink(join(home, "other-cache"), join(home, ".cache"));
       },
     });
-    if (detach) {
+    if (mode !== "foreground") {
       assert.deepEqual(await beforeReady(relay), [1, null]);
     } else {
       await relay.waitFor("subswitch ready");
@@ -147,6 +173,76 @@ for (const signal of ["SIGHUP", "SIGINT"] as const) {
     const lines = lifecycleLines(await log(relay));
     assert.equal(lines.length, 1);
     assert.match(lines[0] ?? "", stopped(relay.child.pid, 0, signal));
+  });
+}
+
+const stopRequestPath = (relay: RelayChild) => join(state(relay), "stop-request.json");
+const requestFields = { requesterPid: 51001, requesterPpid: 51002, uid: 501, label: "test-request-label" } as const;
+const requestCanaries = /test-env-canary|test-argv-canary/;
+
+function makeStopRequest(relay: RelayChild, changes: Partial<StopRequest> = {}): StopRequest {
+  const saved = readRelayRecord(relay.port, relay.folders.home);
+  assert.ok(saved.ok && saved.value);
+  return { targetPid: saved.value.pid, nonce: saved.value.nonce, requestedAt: new Date().toISOString(), ...requestFields, ...changes };
+}
+
+async function placeStopRequest(relay: RelayChild, request: StopRequest): Promise<void> {
+  assert.deepEqual(await writeStopRequest(relay.port, relay.folders.home, request), { ok: true, value: request });
+}
+
+async function requestReads(relay: RelayChild): Promise<number> {
+  const text = await readFile(relay.folders.execLog, "utf8");
+  return text.split("\n").filter((line) => line === `fs.openSync ${stopRequestPath(relay)}`).length;
+}
+
+const requestCases: readonly {
+  readonly name: string;
+  readonly signal: "SIGINT" | "SIGTERM" | "SIGHUP";
+  readonly attributed?: boolean;
+  readonly offsetMs?: number;
+  readonly changes?: Partial<StopRequest>;
+  readonly oversize?: boolean;
+}[] = [
+  { name: "matching fresh SIGTERM", signal: "SIGTERM", attributed: true },
+  { name: "matching fresh SIGINT", signal: "SIGINT" },
+  { name: "matching fresh SIGHUP", signal: "SIGHUP" },
+  { name: "stale SIGTERM", signal: "SIGTERM", offsetMs: -41_000 },
+  { name: "future SIGTERM", signal: "SIGTERM", offsetMs: 10_000 },
+  { name: "wrong pid SIGTERM", signal: "SIGTERM", changes: { targetPid: 2 } },
+  { name: "wrong nonce SIGTERM", signal: "SIGTERM", changes: { nonce: "00".repeat(16) } },
+  { name: "oversize SIGTERM", signal: "SIGTERM", oversize: true },
+];
+
+for (const fixture of requestCases) {
+  it(`consumes a stop request once for ${fixture.name}`, async (t) => {
+    const relay = await launch(t, {
+      recordFsUnder: ".cache/subswitch/relay",
+      env: { SUBSWITCH_TEST_ENV_CANARY: "test-env-canary" },
+      extraImport: "data:text/javascript,/*test-argv-canary*/",
+    });
+    await relay.waitFor("subswitch ready");
+    const request = makeStopRequest(relay, {
+      requestedAt: new Date(Date.now() + (fixture.offsetMs ?? 0)).toISOString(),
+      ...fixture.changes,
+    });
+    await placeStopRequest(relay, request);
+    if (fixture.oversize) await appendFile(stopRequestPath(relay), " ".repeat(4_096));
+    const requestText = await readFile(stopRequestPath(relay), "utf8");
+    assert.deepEqual(JSON.parse(requestText), request);
+    assert.doesNotMatch(requestText, requestCanaries);
+    assert.equal(await requestReads(relay), 0);
+
+    assert.ok(relay.child.kill(fixture.signal));
+    assert.deepEqual(await relay.exited, [0, null]);
+    const text = await log(relay);
+    const lines = lifecycleLines(text);
+    assert.equal(lines.length, 1);
+    const requester = fixture.attributed ? " requesterPid=51001 requesterPpid=51002" : "";
+    assert.match(lines[0] ?? "", stopped(relay.child.pid, 0, fixture.signal, requester));
+    assert.deepEqual(lifecycleLines(relay.stderr), lines);
+    assert.doesNotMatch(text + relay.stderr + relay.stdout, requestCanaries);
+    assert.equal(await requestReads(relay), 1);
+    await assert.rejects(access(stopRequestPath(relay)), { code: "ENOENT" });
   });
 }
 
@@ -190,21 +286,26 @@ it("removes the record before port release and leaves the next relay record alon
   assert.ok(saved.ok && saved.value?.nonce === nonce, "The next relay record must remain");
 });
 
-it("exits 1 after the grace period and keeps the first stop signal", async (t) => {
-  const relay = await launch(t);
+it("exits 1 after the grace period, keeps the first stop signal and consumes a later request", async (t) => {
+  const relay = await launch(t, { recordFsUnder: ".cache/subswitch/relay" });
   await relay.waitFor("subswitch ready");
+  const request = makeStopRequest(relay);
   const socket = createConnection({ host: "127.0.0.1", port: relay.port });
   t.after(() => { socket.destroy(); });
   socket.on("error", () => { /* Exit can close the held connection. */ });
   await once(socket, "connect", { signal: AbortSignal.timeout(2_000) });
   socket.write("POST ");
+  await placeStopRequest(relay, request);
   assert.ok(relay.child.kill("SIGTERM"));
   await relay.waitFor("shutting_down");
+  await placeStopRequest(relay, { ...request, requesterPid: 51003 });
   assert.ok(relay.child.kill("SIGHUP"));
   assert.deepEqual(await relay.exited, [1, null]);
   const lines = lifecycleLines(await log(relay));
   assert.equal(lines.length, 1);
-  assert.match(lines[0] ?? "", stopped(relay.child.pid, 1, "SIGTERM"));
+  assert.match(lines[0] ?? "", stopped(relay.child.pid, 1, "SIGTERM", " requesterPid=51001 requesterPpid=51002"));
+  assert.equal(await requestReads(relay), 2);
+  await assert.rejects(access(stopRequestPath(relay)), { code: "ENOENT" });
 });
 
 it("logs only the pid on fatal, then writes the stop line and removes the record", async (t) => {

@@ -1113,14 +1113,15 @@ Only the owner can have write access to the folders from the home folder to the 
 | `boot.log` | The detached child's stderr, which includes the ready banner. |
 
 The record fields are `schemaVersion`, `pid`, `port`, `version`, `startedAt`, `managedBy` and `nonce`.
-`schemaVersion` is `1`, and `managedBy` is `none` in both modes.
+`schemaVersion` is `1`. `managedBy` is `launchd` for a launchd relay and `none` otherwise.
 Health returns the same `pid` and `nonce` as the record.
 On a stop signal, the relay removes its record before it releases the port.
 On a fatal error, the relay removes its record at exit if it has not tried before.
 The relay removes the record only if the nonce still matches.
 
 Foreground `serve` writes structured logs to stderr and `relay.log`.
-A detached relay writes structured logs only to `relay.log`.
+Detached and launchd relays write structured logs only to `relay.log` and keep the ready banner on stderr.
+At startup, launchd mode truncates a regular stderr file if it exceeds 256 KiB.
 If a line would put the file queue over 256 KiB, the relay drops the line.
 The next successful write reports the number of dropped lines.
 If the file sink fails, the relay reports the fault once on stderr.
@@ -1129,6 +1130,10 @@ If the file sink fails, the relay reports the fault once on stderr.
 |------------|------------------|
 | `relay_stopped` | Time, PID, exit code and signal for `SIGINT`, `SIGTERM` or `SIGHUP`. |
 | `relay_fatal` | Time and PID, with no error message or stack. A fatal error writes this line before `relay_stopped`, which has exit code 1 and no signal. |
+
+Each stop signal consumes `stop-request.json` if present.
+A `SIGTERM` stop adds numeric `requesterPid` and `requesterPpid` if the target PID and nonce match.
+The request must be at most 40 seconds old at the time of the signal.
 
 Use `relay.log` for exit events. A hard kill does not write an exit line or remove the record.
 

@@ -146,13 +146,15 @@ async function writePrivateRecord<T extends RelayRecord | StopRequest>(path: str
   }
 }
 
-export async function publishRelayRecord(port: number, home: string, nonce?: string): Promise<RelayPathResult<RelayRecord>> {
+export async function publishRelayRecord(
+  port: number, home: string, nonce?: string, managedBy: RelayRecord["managedBy"] = "none",
+): Promise<RelayPathResult<RelayRecord>> {
   const folder = ensureRelayFolder(port, home);
   if (!folder.ok) return folder;
   try {
     const record: RelayRecord = {
       schemaVersion: 1, port, pid: process.pid, version: SUBSWITCH_VERSION, startedAt: new Date().toISOString(),
-      managedBy: "none", nonce: nonce ?? createRelayNonce(),
+      managedBy, nonce: nonce ?? createRelayNonce(),
     };
     return writePrivateRecord(join(folder.value, RECORD_NAME), record);
   } catch {

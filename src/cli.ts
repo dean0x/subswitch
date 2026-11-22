@@ -27,13 +27,14 @@ import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
 import { detachRelay } from "./relay-detach.js";
 import { spawnRelay } from "./relay-exec.js";
-import { createRelayLogger, writeFatalLineSync, writeStopLineSync, type RelayStopFields } from "./relay-log.js";
-import { classifyRelay, createRelayNonce, ensureRelayFolder, publishRelayRecord, readRelayRecord, relayFolder, removeOwnRelayRecord } from "./relay-record.js";
+import { createRelayLogger, truncateLaunchdStderr, writeFatalLineSync, writeStopLineSync, type RelayLogMode, type RelayStopFields } from "./relay-log.js";
+import { classifyRelay, createRelayNonce, ensureRelayFolder, publishRelayRecord, readRelayRecord, readStopRequest, relayFolder, removeOwnRelayRecord } from "./relay-record.js";
 import { appendRotatingPrivateFile } from "./private-file.js";
 import { LimitRecorder, limitDirectory, withLimitRecorder, readLimitObservations } from "./limit-recorder.js";
 import { settleNativeRefreshes } from "./native-auth-coordination.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
+const STOP_REQUEST_MAX_AGE_MS = 40_000;
 // Allow at least the full Kimi renewal deadline (20 s), including write-back.
 const NATIVE_REFRESH_SHUTDOWN_MS = 25_000;
 
@@ -287,10 +288,11 @@ const serve = async (
   result: LoadConfigResult,
   verbose: boolean,
   quiet: boolean,
+  mode: RelayLogMode,
   portStr?: string,
 ): Promise<void> => {
+  if (mode === "launchd") truncateLaunchdStderr();
   const { config, configPath, fileFound } = result;
-  const detached = process.env["SUBSWITCH_MANAGED_BY"] === "detach";
 
   // Validate --port if given, with byte-identical wording to init port validation. [F3/F15]
   let effectivePort = config.port;
@@ -319,7 +321,7 @@ const serve = async (
   const pid = process.pid;
   const nonce = createRelayNonce();
   const relayLog = createRelayLogger({
-    directory: relayFolder(effectivePort, home), minLevel: logLevel, mode: detached ? "detach" : "foreground",
+    directory: relayFolder(effectivePort, home), minLevel: logLevel, mode,
     append: (target, lines) => ensureRelayFolder(effectivePort, home).ok
       ? appendRotatingPrivateFile(target, lines) : Promise.reject(new Error("relay log unavailable")),
   });
@@ -341,9 +343,9 @@ const serve = async (
     }
     return;
   }
-  const published = await publishRelayRecord(effectivePort, home, nonce);
+  const published = await publishRelayRecord(effectivePort, home, nonce, mode === "launchd" ? "launchd" : "none");
   if (!published.ok) {
-    if (detached) {
+    if (mode !== "foreground") {
       server.close();
       server.closeAllConnections();
       fail("relay record unavailable");
@@ -358,11 +360,11 @@ const serve = async (
     triedRecordCleanup = true;
     removeOwnRelayRecord(effectivePort, home, nonce);
   };
-  let stopSignal: RelayStopFields["signal"];
+  let stop: Omit<RelayStopFields, "pid" | "exitCode"> | undefined;
   process.once("exit", (exitCode) => {
     removeRelayRecordOnce();
     const folder = ensureRelayFolder(effectivePort, home);
-    writeStopLineSync(folder.ok ? folder.value : undefined, { pid, exitCode, ...(stopSignal ? { signal: stopSignal } : {}) }, !detached);
+    writeStopLineSync(folder.ok ? folder.value : undefined, { pid, exitCode, ...stop }, mode === "foreground");
   });
   process.once("uncaughtExceptionMonitor", () => {
     const folder = ensureRelayFolder(effectivePort, home);
@@ -376,8 +378,15 @@ const serve = async (
     catch (error) { removeRelayRecordOnce(); server.close(); throw error; }
   }
   const shutdown = (signal: NonNullable<RelayStopFields["signal"]>): void => {
-    if (stopSignal !== undefined) return;
-    stopSignal = signal;
+    const signalAt = Date.now();
+    const request = readStopRequest(effectivePort, home, pid, nonce);
+    if (stop !== undefined) return;
+    stop = { signal };
+    if (signal === "SIGTERM" && request.ok && request.value !== undefined) {
+      const { requestedAt, requesterPid, requesterPpid } = request.value;
+      const age = signalAt - Date.parse(requestedAt);
+      if (age >= 0 && age <= STOP_REQUEST_MAX_AGE_MS) stop = { signal, requesterPid, requesterPpid };
+    }
     const exitAfterRenewals = (code: number): Promise<never> =>
       settleNativeRefreshes(NATIVE_REFRESH_SHUTDOWN_MS).then(() => process.exit(code));
     deps.logger.log("info", "shutting_down");
@@ -609,8 +618,8 @@ const main = async (): Promise<void> => {
 
     case "serve": {
       const managedBy = process.env["SUBSWITCH_MANAGED_BY"];
-      if (managedBy !== undefined && managedBy !== "detach") {
-        fail("SUBSWITCH_MANAGED_BY must be unset or detach");
+      if (managedBy !== undefined && managedBy !== "detach" && managedBy !== "launchd") {
+        fail("SUBSWITCH_MANAGED_BY must be unset, detach or launchd");
         return;
       }
       if (command.detach) {
@@ -627,12 +636,12 @@ const main = async (): Promise<void> => {
         });
         return;
       }
-      const configResult = loadConfig({ allowProjectPort: process.env["SUBSWITCH_MANAGED_BY"] !== "detach" });
+      const configResult = loadConfig({ allowProjectPort: managedBy === undefined });
       if (!configResult.ok) {
         fail(configResult.error.message);
         return;
       }
-      await serve(configResult.value, command.verbose, command.quiet, command.port);
+      await serve(configResult.value, command.verbose, command.quiet, managedBy ?? "foreground", command.port);
       return;
     }
 
