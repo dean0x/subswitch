@@ -70,13 +70,14 @@ export async function stopRelay(d: StopRelayDeps): Promise<0 | 1> {
     d.out(`No relay is active on port ${port}.`);
     return 0;
   };
-  const check = await classifyRelay(port, {
-    home: d.home, requestHealth: d.requestHealth,
+  const identify = () => classifyRelay(port, {
+    home: d.home, requestHealth: d.requestHealth, confirmIdle: true,
     isAlive: (pid) => {
       const state = signalRelay(d, pid, 0);
       return state === "ok" || state === "denied";
     },
   });
+  const check = await identify();
 
   switch (check.kind) {
     case "none": return inactive();
@@ -102,6 +103,11 @@ export async function stopRelay(d: StopRelayDeps): Promise<0 | 1> {
   if (!written.ok) return fail(`could not write stop request on port ${port}`);
   d.errOut(`subswitch: stop request ${JSON.stringify(written.value)}`);
 
+  // The record or listener can change while the request write awaits disk I/O.
+  const latest = await identify();
+  if (latest.kind !== "verified" || latest.record.pid !== pid || latest.record.nonce !== nonce || latest.record.managedBy !== managedBy) {
+    return signalRelay(d, pid, 0) === "missing" ? inactive() : fail(`relay on port ${port} changed before stop`);
+  }
   const sent = signalRelay(d, pid, "SIGTERM");
   if (sent === "missing") return 0;
   if (sent !== "ok") return fail(`could not signal the relay on port ${port}`);

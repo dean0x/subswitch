@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { access, appendFile, mkdir, readFile, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";
+import { access, appendFile, chmod, mkdir, readFile, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createConnection, Server } from "node:net";
 import { homedir } from "node:os";
@@ -47,7 +47,8 @@ const redirectStderrFile = `data:text/javascript,${encodeURIComponent(`
 for (const mode of ["foreground", "detach", "launchd"] as const) {
   it(`${mode} publishes a private record, serves its identity and uses the correct log outputs`, async (t) => {
     const relay = await launch(t, {
-      env: { SUBSWITCH_MANAGED_BY: mode === "foreground" ? undefined : mode },
+      env: { SUBSWITCH_MANAGED_BY: mode === "foreground" ? undefined : mode, TOGETHER_API_KEY: "test-only-fake-key" },
+      config: { providers: { together: {} } },
       extraImport: redirectStderrFile,
       prepare: async ({ home }) => {
         await writeFile(bootPath(home), "", { mode: 0o600 });
@@ -72,6 +73,10 @@ for (const mode of ["foreground", "detach", "launchd"] as const) {
     assert.equal(response.status, 200);
     const body: unknown = await response.json();
     assert.ok(isPlainObject(body));
+    assert.ok(Array.isArray(body.providers));
+    const together: unknown = body.providers.find((row: unknown) => isPlainObject(row) && row.id === "together");
+    assert.ok(isPlainObject(together));
+    assert.equal(together.keySource, mode === "launchd" ? null : "env");
     const { name, pid, nonce: liveNonce } = body;
     assert.deepEqual({ name, pid, nonce: liveNonce }, { name: "subswitch", pid: relay.child.pid, nonce });
     assert.ok(relay.child.kill("SIGTERM"));
@@ -88,6 +93,16 @@ for (const mode of ["foreground", "detach", "launchd"] as const) {
     await assert.rejects(access(join(state(relay), "relay.json")), { code: "ENOENT" });
   });
 }
+
+it("refuses a launchd start when the pinned config is writable by another user", async (t) => {
+  const relay = await launch(t, {
+    env: { SUBSWITCH_MANAGED_BY: "launchd" },
+    prepare: ({ configFile }) => chmod(configFile, 0o666),
+  });
+  assert.deepEqual(await beforeReady(relay), [1, null]);
+  assert.match(relay.stderr, /regular user-owned config/);
+  await assert.rejects(access(state(relay)), { code: "ENOENT" });
+});
 
 it("refuses an unknown managed mode before listen without printing its value", async (t) => {
   const invalidMode = "mode-input-canary";
@@ -222,10 +237,28 @@ for (const mode of ["legacy", "launchd"] as const) {
   });
 }
 
-const serviceEnv = (platform: "darwin" | "linux") => ({ NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(`
+const serviceEnv = (platform: "darwin" | "linux", uid?: number) => ({ NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(`
   Object.defineProperty(process, "platform", { value: ${JSON.stringify(platform)} });
-  delete process.getuid;
+  ${uid === undefined ? "delete process.getuid;" : `process.getuid = () => ${uid};`}
 `)}` });
+
+it("reads the selected service config on macOS but not on Linux", async (t) => {
+  const folders = await cliChildFolders();
+  t.after(() => rm(folders.home, { recursive: true, force: true }));
+  const dir = join(folders.home, "config");
+  const file = join(dir, "selected.json");
+  await mkdir(dir);
+  await writeFile(file, "{", { mode: 0o600 });
+  const { uid } = await stat(file);
+  const args = ["service", "install", "--port", "23123", "--config", file];
+  for (const platform of ["linux", "darwin"] as const) {
+    const result = await runCliChild(folders, args, { env: serviceEnv(platform, uid), recordFsUnder: dir });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, platform === "linux" ? /launchd on macOS/ : /malformed JSON/);
+    const calls = await readExecLog(folders);
+    assert.deepEqual(calls.filter((line) => line !== "preload"), platform === "linux" ? [] : [`fs.openSync ${file}`]);
+  }
+});
 
 for (const [args, message] of [
   [["service"], /service requires install or uninstall/],

@@ -190,7 +190,7 @@ To verify a relay, they also require a live record PID.
 | `serve --detach` | `service_not_ready`: The macOS service plist exists, but the command finds no verified launchd relay on the selected port within 8 seconds. | 1 |
 | `serve --detach` | The CLI reports an argument, port, config, platform or entry point error. | 1 |
 | `stop` | The relay is inactive or exits. The wait also ends with 0 if the PID check returns `EPERM`. | 0 |
-| `stop` | The relay is legacy or uses launchd, or a different listener answers. | 1 |
+| `stop` | The relay is legacy or uses launchd, or the command cannot verify the listener on the port. | 1 |
 | `stop` | The record is unreadable, or the relay is unverified and the command cannot confirm that its PID is absent. | 1 |
 | `stop` | Invalid arguments, unavailable requester data, a request or signal error, a PID check error, or a timeout. | 1 |
 | `service install` | The command writes and loads the plist and finds a verified launchd relay. | 0 |
@@ -246,7 +246,7 @@ To stop a login service relay, use `subswitch service uninstall` instead.
 Use `subswitch service install` to install and start one service per user.
 The service starts at login and restarts after an unsuccessful exit.
 
-Use a regular config file that you own and that only you can modify.
+Use a regular config file that you own and that only you can modify. The service checks the file on each start.
 The default file is `~/.config/subswitch/config.json`. An empty JSON object uses defaults.
 Use `--config <path>` to select a different absolute path.
 Install ignores the project config and does not use `SUBSWITCH_CONFIG` to select the file.
@@ -367,7 +367,7 @@ model: together:<model-id>   # replace with a Together model ID available to you
 
 ### Together key
 
-SubSwitch reads the key from one of two sources:
+For a foreground or detached relay, SubSwitch reads the key from one of two sources:
 
 1. `TOGETHER_API_KEY` in the environment of `subswitch serve`.
 2. On macOS only, when `TOGETHER_API_KEY` is not set: the Keychain item with service
@@ -384,9 +384,8 @@ security add-generic-password -s "Subswitch Together API key" -a subswitch -w
 - For a manual relay start, set `TOGETHER_API_KEY` only in the environment that starts `subswitch serve`.
   Do not put it in Claude Code settings or in a shared shell profile.
   `subswitch run-action` removes it from the native client's environment.
-- For the macOS login service, use the Keychain item. The installer does not copy `TOGETHER_API_KEY` from your shell.
-- When `TOGETHER_API_KEY` is set, SubSwitch uses it and does not read the Keychain, even
-  when the value is malformed.
+- The macOS login service uses only the Keychain item. It ignores `TOGETHER_API_KEY`.
+- For other relays, a set `TOGETHER_API_KEY` takes precedence, even if its value is malformed.
 - SubSwitch reads the key once, on the first Together request, and keeps it in process
   memory until `subswitch serve` stops. Restart the proxy after you change the key.
   The Keychain read has a 10 s limit. A failed read is not kept: the next Together

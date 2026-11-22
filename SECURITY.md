@@ -162,7 +162,7 @@ request and does not retry.
 
 **Key source and handling.**
 
-- SubSwitch reads `TOGETHER_API_KEY` first. On macOS only, when that variable is not
+- A foreground or detached relay reads `TOGETHER_API_KEY` first. On macOS only, when that variable is not
   set, it reads the Keychain item with service `Subswitch Together API key` and
   account `subswitch`. It runs `/usr/bin/security` with fixed arguments, no shell, a
   10 s limit, an 8 KiB output limit and an environment that holds only `HOME`. Any
@@ -173,8 +173,7 @@ request and does not retry.
   on a command line.
 - For a manual relay start, set `TOGETHER_API_KEY` only in the environment of `subswitch serve`.
   Do not set it in Claude Code settings. `subswitch run-action` removes it from the native client's environment.
-- The login service uses the Keychain item for the Together key, not the install command's environment.
-  Do not set `TOGETHER_API_KEY` in the launchd environment.
+- The login service uses only the Keychain item for the Together key. It ignores `TOGETHER_API_KEY`.
 - SubSwitch reads the key once, on the first Together request, and keeps it in
   process memory until the process stops. A failed Keychain read is not kept, so
   the next request tries again and macOS can ask again.

@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { it, type TestContext } from "node:test";
 import { noopLogger } from "../../src/logger.js";
 import { err, ok } from "../../src/result.js";
+import { classifyRelay, relayFolder } from "../../src/relay-record.js";
 import { installService, servicePlistPath, uninstallService, type ServiceDeps } from "../../src/relay-service.js";
 import * as server from "../../src/server.js";
 
@@ -43,6 +44,7 @@ function fixture(t: TestContext) {
   const plist = join(home, "Library", "LaunchAgents", `${LABEL}.plist`);
   const folder = join(home, ".cache", "subswitch", "relay", String(PORT));
   const boot = join(folder, "boot.log");
+  for (const path of [servicePlistPath(home), relayFolder(PORT, home), boot, configPath, execPath, entry]) underHome(home, path);
   let elapsed = 0;
   let loaded = false;
   const deps: ServiceDeps = {
@@ -120,7 +122,7 @@ it("stops a verified detached relay and unloads an old job before bootstrap", as
   const probe = t.mock.fn(f.deps.probe);
   probe.mock.mockImplementationOnce(async () => verified("none"));
   assert.equal(await f.install({ probe }), 0);
-  assert.deepEqual(f.events, ["vet", "stop", "print", "bootout", "print", "bootstrap"]);
+  assert.deepEqual(f.events, ["vet", "print", "stop", "bootout", "print", "bootstrap"]);
   assert.deepEqual(f.calls.slice(-4), [
     ["/bin/launchctl", "print", JOB], ["/bin/launchctl", "bootout", JOB], ["/bin/launchctl", "print", JOB],
     ["/bin/launchctl", "bootstrap", DOMAIN, f.plist],
@@ -131,7 +133,7 @@ it("does not publish a plist or bootstrap if the detached relay cannot stop", as
   const f = fixture(t);
   assert.equal(await f.install({ probe: async () => verified("none"), stop: async () => 1 }), 1);
   assert.match(f.errors.join("\n"), /could not stop the detached relay/);
-  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.calls, [["/bin/launchctl", "print", JOB]]);
   assert.equal(existsSync(f.plist), false);
   assert.equal(existsSync(f.boot), false);
 });
@@ -192,6 +194,16 @@ for (const kind of ["foreign", "legacy"] as const) {
   });
 }
 
+it("refuses an unanswered listener without a plist or launchctl call", async (t) => {
+  const f = fixture(t);
+  const probe: ServiceDeps["probe"] = (port, deps) => classifyRelay(port, {
+    ...deps, requestHealth: async () => { throw Object.assign(new Error(), { code: "ECONNRESET" }); },
+  });
+  assert.equal(await f.install({ probe }), 1);
+  assert.deepEqual(f.events, ["vet"]);
+  assert.equal(existsSync(f.plist), false);
+});
+
 for (const stage of ["bootstrap", "verify"] as const) {
   it(`rolls back a failed ${stage} and reports that the detached relay stopped`, async (t) => {
     const f = fixture(t);
@@ -201,7 +213,7 @@ for (const stage of ["bootstrap", "verify"] as const) {
       return stage === "bootstrap" && args[1][0] === "bootstrap" ? err("failed") : result;
     };
     assert.equal(await f.install({ runner, probe: async () => { probes++; return verified("none"); } }), 1);
-    assert.deepEqual(f.events, ["vet", "stop", "print", "bootstrap", "bootout", "print"]);
+    assert.deepEqual(f.events, ["vet", "print", "stop", "bootstrap", "bootout", "print"]);
     assert.equal(existsSync(f.plist), false);
     assert.equal(existsSync(f.boot), true);
     assert.equal(f.errors.length, 1);
@@ -210,6 +222,18 @@ for (const stage of ["bootstrap", "verify"] as const) {
     assert.ok(probes <= 42);
   });
 }
+
+it("leaves no service on a print failure and keeps an existing plist on a bootout failure", async (t) => {
+  const f = fixture(t);
+  assert.equal(await f.install({ probe: async () => verified("none"), runner: async () => err("unavailable") }), 1);
+  assert.deepEqual(f.events, ["vet"]);
+  assert.equal(existsSync(f.plist), false);
+  assert.equal(await f.install(), 0);
+  const original = readFileSync(f.plist, "utf8");
+  const runner: ServiceDeps["runner"] = (...args) => args[1][0] === "bootout" ? Promise.resolve(ok(5)) : f.deps.runner(...args);
+  assert.equal(await f.install({ nodeExtraCaCerts: join(f.deps.home, "new.pem"), runner }), 1);
+  assert.equal(readFileSync(f.plist, "utf8"), original);
+});
 
 it("unloads an installed job, removes its plist and keeps its logs; a second uninstall succeeds", async (t) => {
   const f = fixture(t);

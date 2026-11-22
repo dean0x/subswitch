@@ -183,6 +183,24 @@ it("refuses to signal when an I/O error prevents the request write", async (t) =
   assert.ok(statSync(f.requestPath).isDirectory());
 });
 
+it("does not call an unanswered listener idle without a record", async (t) => {
+  const f = await fixture(t, { record: false });
+  assert.equal(await f.run({ requestHealth: async () => { throw osError("ECONNRESET"); } }), 1);
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.stdout.length, 0);
+});
+
+it("does not send SIGTERM if the listener changes during request publication", async (t) => {
+  const f = await fixture(t);
+  let written = false;
+  assert.equal(await f.run({
+    errOut: () => { written = true; },
+    requestHealth: async () => Response.json(written ? { name: "other" } : identity),
+  }), 1);
+  assert.equal(written, true);
+  assert.ok(f.calls.every(([, signal]) => signal === 0));
+});
+
 it("does not write or signal when the requester uid is unavailable", async (t) => {
   const f = await fixture(t);
   assert.equal(await f.run({ uid: undefined }), 1);
@@ -230,7 +248,7 @@ for (const [code, exit] of [["ESRCH", 0], ["EPERM", 1]] as const) {
       return true;
     } });
     assert.equal(await f.run(), exit);
-    assert.deepEqual(f.calls, [[PID, 0], [PID, "SIGTERM"]]);
+    assert.deepEqual(f.calls, [[PID, 0], [PID, 0], [PID, "SIGTERM"]]);
     assert.deepEqual(f.delays, []);
     assert.ok(!f.stderr.join("\n").includes("private OS details"));
     assert.ok(!Object.hasOwn(JSON.parse(readFileSync(f.requestPath, "utf8")), "label"));
@@ -245,7 +263,7 @@ it("counts a permission error during the wait as exit", async (t) => {
     return true;
   } });
   assert.equal(await f.run(), 0);
-  assert.deepEqual(f.calls, [[PID, 0], [PID, "SIGTERM"], [PID, 0]]);
+  assert.deepEqual(f.calls, [[PID, 0], [PID, 0], [PID, "SIGTERM"], [PID, 0]]);
   assert.deepEqual(f.delays, [200]);
 });
 
@@ -253,8 +271,8 @@ it("times out at 35 seconds with one timeout line and no escalation", async (t) 
   const f = await fixture(t);
   assert.equal(await f.run(), 1);
   assert.deepEqual(f.delays, Array(175).fill(200));
-  assert.deepEqual(f.calls.slice(0, 2), [[PID, 0], [PID, "SIGTERM"]]);
-  assert.deepEqual(f.calls.slice(2), Array(175).fill([PID, 0]));
+  assert.deepEqual(f.calls.slice(0, 3), [[PID, 0], [PID, 0], [PID, "SIGTERM"]]);
+  assert.deepEqual(f.calls.slice(3), Array(175).fill([PID, 0]));
   assert.deepEqual(f.stderr.slice(1), [`subswitch: relay on port ${PORT} did not stop within 35 seconds`]);
 });
 
@@ -271,5 +289,5 @@ it("does not look up the pid after the wait deadline passes", async (t) => {
     clock: { now: () => Date.parse(AT), monotonic: () => elapsed },
     sleep: async () => { elapsed = 35_001; },
   }), 1);
-  assert.deepEqual(f.calls, [[PID, 0], [PID, "SIGTERM"]]);
+  assert.deepEqual(f.calls, [[PID, 0], [PID, 0], [PID, "SIGTERM"]]);
 });

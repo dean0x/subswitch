@@ -118,8 +118,8 @@ export interface ProviderDepsById {
 export type ProviderDeps = { readonly [K in ProviderId]?: ProviderDepsById[K] };
 
 /** Only this file defines live deps factories. The CLI and run-action may call them. */
-export const liveTogetherKeyReaderDeps = (): TogetherKeyReaderDeps => ({
-  env: process.env,
+export const liveTogetherKeyReaderDeps = (env: Readonly<NodeJS.ProcessEnv> = process.env): TogetherKeyReaderDeps => ({
+  env,
   platform: process.platform,
   exec: promisify(execFile),
   setTimer: (expire, delay) => {

@@ -124,6 +124,16 @@ function readOwnedFile(path: string, uid: number, limit: number): Result<string 
   }
 }
 
+/** Read the pinned file through the same checked descriptor at install and on each service start. */
+export function loadServiceConfig(configPath: string, uid: number | undefined): ReturnType<typeof loadConfig> {
+  const file = safePath(configPath) && uid !== undefined ? readOwnedFile(configPath, uid, CONFIG_BYTES) : undefined;
+  if (!file?.ok || file.value === undefined) {
+    return err({ kind: "translate", message: "the service needs a regular user-owned config file without group or other write access" });
+  }
+  const text = file.value;
+  return loadConfig({ configPath, globalConfigPath: false, env: {}, readFile: () => text });
+}
+
 function checkPlist(d: ServiceDeps, path: string): Result<boolean, string> {
   if (!checkLaunchAgents(d, false)) return err("unsafe LaunchAgents folder");
   const file = readOwnedFile(path, d.uid, PLIST_BYTES);
@@ -200,10 +210,7 @@ export async function installService(d: ServiceDeps): Promise<0 | 1> {
     return fail(d, "cannot resolve the node or CLI path");
   }
   if (!safePath(node) || !safePath(entry) || dirname(node).includes(":")) return fail(d, "invalid real node or CLI path");
-  const source = readOwnedFile(configPath, d.uid, CONFIG_BYTES);
-  if (!source.ok || source.value === undefined) return fail(d, "the service needs a regular user-owned config file without group or other write access");
-  const text = source.value;
-  const loaded = loadConfig({ configPath, globalConfigPath: false, env: {}, readFile: () => text });
+  const loaded = loadServiceConfig(configPath, d.uid);
   if (!loaded.ok) return fail(d, loaded.error.message);
   const parsed = PortSchema.safeParse(d.port ?? loaded.value.config.port);
   if (!parsed.success) return fail(d, "invalid --port: expected an integer between 1 and 65535");
@@ -216,14 +223,25 @@ export async function installService(d: ServiceDeps): Promise<0 | 1> {
   if (!current.ok) return fail(d, current.error);
   const data = renderPlist(node, entry, port, d.home, relayFolder(port, d.home), configPath, ca);
   if (Buffer.byteLength(data) > PLIST_BYTES) return fail(d, "service plist is too large");
-  const probe = await d.probe(port, { home: d.home });
+  const probe = await d.probe(port, { home: d.home, confirmIdle: true });
   if (probe.kind !== "none" && probe.kind !== "verified") return fail(d, `cannot verify the listener or relay record on port ${port}`);
+  const job = await run(d, ["print", serviceJob(d)]);
+  if (!job.ok || (job.value !== 0 && job.value !== PRINT_MISSING)) return fail(d, "launchctl print failed");
   const stopped = probe.kind === "verified" && probe.record.managedBy === "none";
   if (stopped && await d.stop(port) !== 0) return fail(d, `could not stop the detached relay on port ${port}`);
 
-  if (!checkLaunchAgents(d, true) || !checkPlist(d, path).ok) return fail(d, "unsafe service plist path");
+  const published = await publishPlist(d, port, path, data, job.value === 0);
+  if (!published.ok) return fail(d, published.error);
+  const bootstrap = await run(d, ["bootstrap", serviceDomain(d), path]);
+  if (bootstrap.ok && bootstrap.value === 0 && await waitForService(d, port)) return 0;
+  const rollback = await removeService(d);
+  return fail(d, `the launchd relay did not start${stopped ? "; the earlier detached relay was stopped" : ""}${rollback.ok ? "" : `; rollback failed: ${rollback.error}`}`);
+}
+
+async function publishPlist(d: ServiceDeps, port: number, path: string, data: string, replaceJob: boolean): Promise<Result<void, string>> {
+  if (!checkLaunchAgents(d, true) || !checkPlist(d, path).ok) return err("unsafe service plist path");
   const boot = openBootLog(port, d.home, { truncate: false });
-  if (!boot.ok) return fail(d, "cannot open the service boot log");
+  if (!boot.ok) return err("cannot open the service boot log");
   let temp: string | undefined;
   try {
     try {
@@ -240,31 +258,31 @@ export async function installService(d: ServiceDeps): Promise<0 | 1> {
     } finally {
       closeSync(fd);
     }
+    if (replaceJob) {
+      const unloaded = await unload(d);
+      if (!unloaded.ok) return unloaded;
+    }
+    if (!checkPlist(d, path).ok) return err("unsafe service plist path");
     renameSync(temp, path);
+    temp = undefined;
+    return ok(undefined);
   } catch {
+    return err("cannot write the service plist");
+  } finally {
     if (temp !== undefined) {
-      try { unlinkSync(temp); } catch { return fail(d, "cannot remove the temporary service plist"); }
+      try { unlinkSync(temp); } catch { return err("cannot remove the temporary service plist"); }
     }
-    return fail(d, "cannot write the service plist");
   }
+}
 
-  const job = await run(d, ["print", serviceJob(d)]);
-  if (!job.ok || (job.value !== 0 && job.value !== PRINT_MISSING)) return fail(d, "launchctl print failed");
-  if (job.value === 0) {
-    const unloaded = await unload(d);
-    if (!unloaded.ok) return fail(d, unloaded.error);
+async function waitForService(d: ServiceDeps, port: number): Promise<boolean> {
+  const deadline = d.monotonic() + READY_MS;
+  for (let poll = 0; poll < READY_MS / POLL_MS; poll++) {
+    const left = deadline - d.monotonic();
+    if (left <= 0) break;
+    const state = await d.probe(port, { home: d.home, signal: AbortSignal.timeout(Math.ceil(left)) });
+    if (state.kind === "verified" && state.record.managedBy === "launchd" && d.monotonic() <= deadline) return true;
+    await d.sleep(Math.min(POLL_MS, Math.max(0, deadline - d.monotonic())));
   }
-  const bootstrap = await run(d, ["bootstrap", serviceDomain(d), path]);
-  if (bootstrap.ok && bootstrap.value === 0) {
-    const deadline = d.monotonic() + READY_MS;
-    for (let poll = 0; poll < READY_MS / POLL_MS; poll++) {
-      const left = deadline - d.monotonic();
-      if (left <= 0) break;
-      const state = await d.probe(port, { home: d.home, signal: AbortSignal.timeout(Math.ceil(left)) });
-      if (state.kind === "verified" && state.record.managedBy === "launchd" && d.monotonic() <= deadline) return 0;
-      await d.sleep(Math.min(POLL_MS, Math.max(0, deadline - d.monotonic())));
-    }
-  }
-  const rollback = await removeService(d);
-  return fail(d, `the launchd relay did not start${stopped ? "; the earlier detached relay was stopped" : ""}${rollback.ok ? "" : `; rollback failed: ${rollback.error}`}`);
+  return false;
 }

@@ -77,6 +77,8 @@ export interface ClassifyRelayDeps {
   /** A record from the strict reader that triggered a readiness probe. */
   readonly record?: RelayRecord;
   readonly signal?: AbortSignal;
+  /** Stop and install need a refused connection, not just a failed probe, to report an empty port. */
+  readonly confirmIdle?: true;
   readonly requestHealth?: typeof requestLoopbackHealth;
   readonly isAlive?: (pid: number) => boolean;
 }
@@ -256,7 +258,7 @@ export function removeOwnRelayRecord(port: number, home: string, nonce: string):
   return unlinkRecord(path);
 }
 
-type HealthProbe = { readonly answered: false } | { readonly answered: true; readonly health?: RelayHealth };
+type HealthProbe = { readonly answered: false; readonly refused: boolean } | { readonly answered: true; readonly health?: RelayHealth };
 
 type HealthResponse = Pick<Response, "status" | "body">;
 
@@ -279,8 +281,8 @@ async function probeHealth(port: number, { signal: cancel, requestHealth = reque
   let response: HealthResponse;
   try {
     response = await requestHealth(port, signal);
-  } catch {
-    return { answered: false };
+  } catch (error) {
+    return { answered: false, refused: hasCode(error, "ECONNREFUSED") };
   }
   const invalid = { answered: true } as const;
   const reader = response.body?.getReader();
@@ -302,7 +304,7 @@ async function probeHealth(port: number, { signal: cancel, requestHealth = reque
     }
     return invalid;
   } catch {
-    return signal.aborted ? { answered: false } : invalid;
+    return signal.aborted ? { answered: false, refused: false } : invalid;
   } finally {
     void reader.cancel().catch(() => undefined);
   }
@@ -321,7 +323,10 @@ export async function classifyRelay(port: number, deps: ClassifyRelayDeps): Prom
   const current = deps.record === undefined ? readRelayRecord(port, deps.home) : ok(deps.record);
   if (!current.ok) return { kind: "unverified", reason: current.error };
   const probe = await probeHealth(port, deps);
-  if (!probe.answered) return current.value === undefined ? { kind: "none" } : { kind: "unverified", reason: "no_answer", record: current.value };
+  if (!probe.answered) {
+    if (current.value !== undefined) return { kind: "unverified", reason: "no_answer", record: current.value };
+    return { kind: deps.confirmIdle && !probe.refused ? "foreign" : "none" };
+  }
   // A relay can publish or replace the record while the health request is in flight.
   const latest = deps.record === undefined ? readRelayRecord(port, deps.home) : current;
   if (!latest.ok) return { kind: "unverified", reason: latest.error };

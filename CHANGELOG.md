@@ -25,9 +25,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Claude Code is the only supported client for this route. The Codex client
   integration does not route to Together. Live behavior against the Together API is
   not verified yet.
-- Subswitch reads the Together key from `TOGETHER_API_KEY`. On macOS, when that
-  variable is not set, it reads the Keychain item `Subswitch Together API key`
-  (account `subswitch`). It reads the key once and keeps it in memory only.
+- Foreground and detached relays read the Together key from `TOGETHER_API_KEY`. On macOS, when that
+  variable is not set, they read the Keychain item `Subswitch Together API key`
+  (account `subswitch`). They read the key once and keep it in memory only.
   Use the Keychain item for the login service. `subswitch run-action` removes
   `TOGETHER_API_KEY` from the environment of the native client.
 - A missing or malformed Together key gives a local 401. A malformed `together:`

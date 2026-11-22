@@ -30,7 +30,7 @@ import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
 import { detachRelay } from "./relay-detach.js";
 import { runLaunchctl, spawnRelay } from "./relay-exec.js";
-import { installService, uninstallService, type ServiceDeps } from "./relay-service.js";
+import { installService, loadServiceConfig, uninstallService, type ServiceDeps } from "./relay-service.js";
 import { createRelayLogger, truncateLaunchdStderr, writeFatalLineSync, writeStopLineSync, type RelayLogMode, type RelayStopFields } from "./relay-log.js";
 import { classifyRelay, createRelayNonce, ensureRelayFolder, publishRelayRecord, readRelayRecord, readStopRequest, relayFolder, removeOwnRelayRecord, requestLoopbackHealth } from "./relay-record.js";
 import { stopRelay } from "./relay-stop.js";
@@ -346,7 +346,6 @@ const serve = async (
   mode: RelayLogMode,
   portStr?: string,
 ): Promise<void> => {
-  if (mode === "launchd") truncateLaunchdStderr();
   const { config, configPath, fileFound } = result;
 
   // Validate --port if given, with byte-identical wording to init port validation. [F3/F15]
@@ -381,7 +380,9 @@ const serve = async (
       ? appendRotatingPrivateFile(target, lines) : Promise.reject(new Error("relay log unavailable")),
   });
   const recorder = process.env["SUBSWITCH_LIMIT_RECORDING"] === "0" ? undefined : new LimitRecorder(limitDirectory(effectivePort), relayLog.logger);
-  const depsResult = buildDeps(effectiveConfig, recorder ? withLimitRecorder(relayLog.logger, recorder) : relayLog.logger);
+  const logger = recorder ? withLimitRecorder(relayLog.logger, recorder) : relayLog.logger;
+  const depsResult = buildDeps(effectiveConfig, logger, mode === "launchd"
+    ? { providerDeps: { together: liveTogetherKeyReaderDeps({ HOME: home }) } } : {});
   if (!depsResult.ok) {
     fail(depsResult.error);
     return;
@@ -698,7 +699,10 @@ const main = async (): Promise<void> => {
         });
         return;
       }
-      const configResult = loadConfig({ allowProjectPort: managedBy === undefined });
+      if (managedBy === "launchd") truncateLaunchdStderr();
+      const configResult = managedBy === "launchd"
+        ? loadServiceConfig(process.env["SUBSWITCH_CONFIG"] ?? "", process.getuid?.())
+        : loadConfig({ allowProjectPort: managedBy === undefined });
       if (!configResult.ok) {
         fail(configResult.error.message);
         return;
