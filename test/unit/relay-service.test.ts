@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { it, type TestContext } from "node:test";
 import { noopLogger } from "../../src/logger.js";
 import { err, ok } from "../../src/result.js";
 import { classifyRelay, relayFolder } from "../../src/relay-record.js";
-import { installService, servicePlistPath, uninstallService, type ServiceDeps } from "../../src/relay-service.js";
+import { installService, loadServiceConfig, servicePlistPath, uninstallService, type ServiceDeps } from "../../src/relay-service.js";
 import * as server from "../../src/server.js";
 
 const PORT = 23123;
@@ -28,7 +28,8 @@ function underHome(home: string, path: string): void {
 }
 
 function fixture(t: TestContext) {
-  const home = mkdtempSync(join(realpathSync(tmpdir()), "subswitch-service-"));
+  const base = process.platform === "darwin" ? tmpdir() : homedir();
+  const home = mkdtempSync(join(realpathSync(base), "subswitch-service-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const configPath = join(home, ".config", "subswitch", "config.json");
   const execPath = join(home, "node's & tools", "node");
@@ -41,6 +42,7 @@ function fixture(t: TestContext) {
   const calls: string[][] = [];
   const events: string[] = [];
   const errors: string[] = [];
+  const output: string[] = [];
   const plist = join(home, "Library", "LaunchAgents", `${LABEL}.plist`);
   const folder = join(home, ".cache", "subswitch", "relay", String(PORT));
   const boot = join(folder, "boot.log");
@@ -50,7 +52,7 @@ function fixture(t: TestContext) {
   const deps: ServiceDeps = {
     home, uid: UID, platform: "darwin", execPath, entry, logger: noopLogger,
     monotonic: () => elapsed, sleep: async (ms) => { elapsed += ms; },
-    errOut: (line) => errors.push(line),
+    errOut: (line) => errors.push(line), out: (line) => output.push(line),
     stop: t.mock.fn(async (port) => { assert.equal(port, PORT); events.push("stop"); return 0; }),
     vet: t.mock.fn(() => { events.push("vet"); return ok(undefined); }),
     probe: t.mock.fn(async (port) => { assert.equal(port, PORT); return loaded ? verified("launchd") : noListener; }),
@@ -73,7 +75,7 @@ function fixture(t: TestContext) {
       return ok(0);
     },
   };
-  return { deps, configPath, plist, folder, boot, calls, events, errors,
+  return { deps, configPath, plist, folder, boot, calls, events, errors, output,
     install: (overrides: Partial<ServiceDeps> = {}) => installService({ ...deps, ...overrides }),
     uninstall: (overrides: Partial<ServiceDeps> = {}) => uninstallService({ ...deps, ...overrides }),
   };
@@ -85,6 +87,7 @@ it("installs the closed plist with real paths, private logs and only pinned envi
   const nodeAlias = join(home, "node-alias");
   const entryAlias = join(home, "entry-alias");
   const ca = join(home, "ca.pem");
+  writeFileSync(ca, "test CA file", { mode: 0o600 });
   symlinkSync(execPath, nodeAlias);
   symlinkSync(entry, entryAlias);
   assert.equal(await f.install({ execPath: nodeAlias, entry: entryAlias, nodeExtraCaCerts: ca }), 0);
@@ -112,6 +115,67 @@ it("installs the closed plist with real paths, private logs and only pinned envi
     underHome(home, path);
   }
   assert.throws(() => underHome(home, join(home, "..", "elsewhere")), /must stay under the temp home/);
+});
+
+it("reports the CA path when install succeeds", async (t) => {
+  const f = fixture(t);
+  const ca = join(f.deps.home, "extra ca.pem");
+  writeFileSync(ca, "test CA file", { mode: 0o600 });
+
+  assert.equal(await f.install({ nodeExtraCaCerts: ca }), 0);
+  assert.deepEqual(f.output, [`Service NODE_EXTRA_CA_CERTS: ${ca}`]);
+});
+
+const caCases = {
+  "file is missing": () => {},
+  "file is a directory": (path: string) => mkdirSync(path),
+  "file is writable by other users": (path: string) => {
+    writeFileSync(path, "test CA file", { mode: 0o600 });
+    chmodSync(path, 0o622);
+  },
+  "file is a symbolic link": (path: string, file: string) => symlinkSync(file, path),
+  "file has a hard link": (path: string, file: string) => linkSync(file, path),
+  "ancestor is writable by other users": (path: string) => {
+    writeFileSync(path, "test CA file", { mode: 0o600 });
+    chmodSync(dirname(dirname(path)), 0o777);
+  },
+};
+
+for (const [kind, prepare] of Object.entries(caCases)) {
+  it(`refuses install if the CA ${kind}`, async (t) => {
+    const f = fixture(t);
+    const source = join(f.deps.home, "source.pem");
+    const ca = join(f.deps.home, "certs", "extra", "ca.pem");
+    mkdirSync(dirname(ca), { recursive: true });
+    writeFileSync(source, "test CA file", { mode: 0o600 });
+    prepare(ca, source);
+
+    assert.equal(await f.install({ nodeExtraCaCerts: ca }), 1);
+    assert.match(f.errors.join("\n"), /NODE_EXTRA_CA_CERTS/);
+    assert.deepEqual(f.events, []);
+    assert.equal(existsSync(f.plist), false);
+  });
+}
+
+it("refuses a config path with a symbolic link in a parent folder", async (t) => {
+  const f = fixture(t);
+  const alias = join(f.deps.home, "config-alias");
+  symlinkSync(join(f.deps.home, ".config"), alias);
+  const configPath = join(alias, "subswitch", "config.json");
+
+  assert.equal(await f.install({ configPath }), 1);
+  assert.match(f.errors.join("\n"), /config path/);
+  assert.deepEqual(f.events, []);
+  assert.equal(existsSync(f.plist), false);
+});
+
+it("refuses the pinned config on the next start if a parent folder becomes writable", async (t) => {
+  const f = fixture(t);
+  assert.equal(await f.install(), 0);
+  assert.equal(loadServiceConfig(f.configPath, UID).ok, true);
+  chmodSync(dirname(dirname(f.configPath)), 0o777);
+
+  assert.equal(loadServiceConfig(f.configPath, UID).ok, false);
 });
 
 it("stops a verified detached relay and unloads an old job before bootstrap", async (t) => {
@@ -231,7 +295,10 @@ it("leaves no service on a print failure and keeps an existing plist on a bootou
   assert.equal(await f.install(), 0);
   const original = readFileSync(f.plist, "utf8");
   const runner: ServiceDeps["runner"] = (...args) => args[1][0] === "bootout" ? Promise.resolve(ok(5)) : f.deps.runner(...args);
-  assert.equal(await f.install({ nodeExtraCaCerts: join(f.deps.home, "new.pem"), runner }), 1);
+  const ca = join(f.deps.home, "new.pem");
+  writeFileSync(ca, "test CA file", { mode: 0o600 });
+  assert.equal(await f.install({ nodeExtraCaCerts: ca, runner }), 1);
+  assert.match(f.errors.at(-1) ?? "", /launchctl bootout failed/);
   assert.equal(readFileSync(f.plist, "utf8"), original);
 });
 

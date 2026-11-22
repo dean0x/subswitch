@@ -34,7 +34,10 @@ it("reads the selected service config on macOS but not on Linux", async (t) => {
     assert.equal(result.code, 1);
     assert.match(result.stderr, platform === "linux" ? /launchd on macOS/ : /malformed JSON/);
     const calls = await readExecLog(folders);
-    assert.deepEqual(calls.filter((line) => line !== "preload"), platform === "linux" ? [] : [`fs.openSync ${file}`]);
+    assert.deepEqual(calls.filter((line) => line !== "preload"), platform === "linux" ? [] : [
+      `fs.lstatSync ${dir}`,
+      `fs.openSync ${file}`,
+    ]);
   }
 });
 

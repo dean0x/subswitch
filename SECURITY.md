@@ -39,7 +39,12 @@ Defense-in-depth controls built into the proxy:
   Any local process that can reach the port can use the relay, including paid Together requests.
   See [Together AI API key](#together-ai-api-key).
 - **macOS login service.** The service runs the relay from login. The relay has no local token in this mode.
-  Use `subswitch service uninstall` to unload it and remove its plist.
+  Install checks the config file and any file that `NODE_EXTRA_CA_CERTS` names.
+  Both files must be regular files that you own, with one link and no group or other write bits.
+  Parent folders must belong to you or root, with no symbolic links or group or other write bits.
+  Install saves and prints the extra certificate path. Node reads that file at each start.
+  The relay checks the config file and its parent folders at each start.
+  Use `subswitch service uninstall` to unload the service and remove its plist.
 - **Private relay files.** The relay writes `relay.json` and `relay.log` under
   `~/.cache/subswitch/relay/<port>/`. The port folder has mode `0700`.
   The relay creates files with mode `0600`. Detached and service starts use `boot.log` for stderr.

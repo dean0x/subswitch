@@ -33,6 +33,7 @@ export interface ServiceDeps {
   readonly logger: Logger;
   readonly monotonic: () => number;
   readonly sleep: (ms: number) => Promise<void>;
+  readonly out: (line: string) => void;
   readonly errOut: (line: string) => void;
 }
 
@@ -43,6 +44,8 @@ const PRINT_MISSING = 113;
 const BOOTOUT_MISSING = 3;
 const PLIST_BYTES = 32 * 1024;
 const CONFIG_BYTES = 1024 * 1024;
+const CA_BYTES = 1024 * 1024;
+const MAX_PATH_LENGTH = 1024;
 const NOFOLLOW = constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
 const safePath = (path: string): boolean => isAbsolute(path) && !/[\u0000-\u001f\u007f-\u009f\uD800-\uDFFF￾￿]/u.test(path);
@@ -124,14 +127,40 @@ function readOwnedFile(path: string, uid: number, limit: number): Result<string 
   }
 }
 
-/** Read the pinned file through the same checked descriptor at install and on each service start. */
-export function loadServiceConfig(configPath: string, uid: number | undefined): ReturnType<typeof loadConfig> {
-  const file = safePath(configPath) && uid !== undefined ? readOwnedFile(configPath, uid, CONFIG_BYTES) : undefined;
-  if (!file?.ok || file.value === undefined) {
-    return err({ kind: "translate", message: "the service needs a regular user-owned config file without group or other write access" });
+function checkServiceParents(path: string, uid: number): boolean {
+  if (path.length >= MAX_PATH_LENGTH) return false;
+  try {
+    // Check from the root down, before the next lookup can follow a link.
+    let folder = "/";
+    for (const part of dirname(path).split("/")) {
+      if (part === "..") return false;
+      folder = join(folder, part);
+      const stat = lstatSync(folder);
+      if (!stat.isDirectory() || (stat.uid !== 0 && stat.uid !== uid) || (stat.mode & 0o022) !== 0) return false;
+    }
+    return true;
+  } catch {
+    return false;
   }
-  const text = file.value;
-  return loadConfig({ configPath, globalConfigPath: false, env: {}, readFile: () => text });
+}
+
+function readServiceFile(path: string, uid: number | undefined, limit: number, name: string): Result<string, string> {
+  if (!safePath(path) || uid === undefined) return err(`the service needs an absolute ${name} path and a user ID`);
+  if (!checkServiceParents(path, uid)) {
+    return err(`parent folders of the service ${name} path must have no links or group or other write bits. The user or root must own them`);
+  }
+  const file = readOwnedFile(path, uid, limit);
+  if (!file.ok || file.value === undefined) {
+    return err(`the service needs a regular user-owned ${name} file with one link and no group or other write access`);
+  }
+  return ok(file.value);
+}
+
+/** Check and read the pinned config at install and on each service start. */
+export function loadServiceConfig(configPath: string, uid: number | undefined): ReturnType<typeof loadConfig> {
+  const file = readServiceFile(configPath, uid, CONFIG_BYTES, "config");
+  if (!file.ok) return err({ kind: "translate", message: file.error });
+  return loadConfig({ configPath, globalConfigPath: false, env: {}, readFile: () => file.value });
 }
 
 function checkPlist(d: ServiceDeps, path: string): Result<boolean, string> {
@@ -210,6 +239,10 @@ export async function installService(d: ServiceDeps): Promise<0 | 1> {
     return fail(d, "cannot resolve the node or CLI path");
   }
   if (!safePath(node) || !safePath(entry) || dirname(node).includes(":")) return fail(d, "invalid real node or CLI path");
+  if (ca !== undefined) {
+    const file = readServiceFile(ca, d.uid, CA_BYTES, "NODE_EXTRA_CA_CERTS");
+    if (!file.ok) return fail(d, file.error);
+  }
   const loaded = loadServiceConfig(configPath, d.uid);
   if (!loaded.ok) return fail(d, loaded.error.message);
   const parsed = PortSchema.safeParse(d.port ?? loaded.value.config.port);
@@ -233,7 +266,10 @@ export async function installService(d: ServiceDeps): Promise<0 | 1> {
   const published = await publishPlist(d, port, path, data, job.value === 0);
   if (!published.ok) return fail(d, published.error);
   const bootstrap = await run(d, ["bootstrap", serviceDomain(d), path]);
-  if (bootstrap.ok && bootstrap.value === 0 && await waitForService(d, port)) return 0;
+  if (bootstrap.ok && bootstrap.value === 0 && await waitForService(d, port)) {
+    if (ca !== undefined) d.out(`Service NODE_EXTRA_CA_CERTS: ${ca}`);
+    return 0;
+  }
   const rollback = await removeService(d);
   return fail(d, `the launchd relay did not start${stopped ? "; the earlier detached relay was stopped" : ""}${rollback.ok ? "" : `; rollback failed: ${rollback.error}`}`);
 }

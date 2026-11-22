@@ -246,7 +246,9 @@ To stop a login service relay, use `subswitch service uninstall` instead.
 Use `subswitch service install` to install and start one service per user.
 The service starts at login and restarts after an unsuccessful exit.
 
-Use a regular config file that you own and that only you can modify. The service checks the file on each start.
+Use a regular config file that you own. The file must have one link and no group or other write bits.
+Use parent folders that you or root own. These folders must have no symbolic links or group or other write bits.
+The service checks the file and its parent folders on each start.
 The default file is `~/.config/subswitch/config.json`. An empty JSON object uses defaults.
 Use `--config <path>` to select a different absolute path.
 Install ignores the project config and does not use `SUBSWITCH_CONFIG` to select the file.
@@ -255,7 +257,11 @@ Install can stop a verified foreground or detached relay on that port.
 
 The service plist is `~/Library/LaunchAgents/com.subswitch.relay.plist`.
 Install sets the Node and CLI paths, config path and port in the plist.
+If `NODE_EXTRA_CA_CERTS` is set, install checks its file and parent folders by the same rules as the config.
+A successful install saves that absolute path in the plist and prints it.
+Node reads the certificate file at each service start.
 Run install again if those paths or the port change.
+To remove the extra certificate path, run install again with `NODE_EXTRA_CA_CERTS` unset.
 For Together requests, use the [Keychain item](#together-key), not `TOGETHER_API_KEY`.
 
 To restart the installed service, run:

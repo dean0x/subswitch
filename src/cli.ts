@@ -724,7 +724,7 @@ const main = async (): Promise<void> => {
       const deps: ServiceDeps = {
         home, uid, platform, execPath: process.execPath, entry: process.argv[1] ?? "",
         runner: runLaunchctl, probe: classifyRelay, stop: (port) => runStop(home, uid, String(port)),
-        vet: vetConfig, logger: noopLogger, monotonic: () => performance.now(), sleep, errOut,
+        vet: vetConfig, logger: noopLogger, monotonic: () => performance.now(), sleep, out, errOut,
       };
       if (command.action === "install") {
         const ca = process.env["NODE_EXTRA_CA_CERTS"];
