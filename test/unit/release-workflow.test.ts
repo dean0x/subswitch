@@ -36,6 +36,16 @@ describe("release workflow", () => {
     assert.doesNotMatch(readWorkflow("release.yml"), /^\s*registry-url:/m);
   });
 
+  it("release.yml runs no dependency install scripts", () => {
+    const text = readWorkflow("release.yml");
+    assert.match(text, /^\s*run: npm ci --ignore-scripts\s*$/m);
+    assert.doesNotMatch(text, /^\s*run: npm ci\s*$/m);
+  });
+
+  it("release.yml restores no npm cache", () => {
+    assert.doesNotMatch(readWorkflow("release.yml"), /^\s*cache:/m);
+  });
+
   it("release.yml can request the workflow identity token", () => {
     assert.match(readWorkflow("release.yml"), /^\s*id-token:\s*write\s*$/m);
   });

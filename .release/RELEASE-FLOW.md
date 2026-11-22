@@ -67,6 +67,9 @@ Run these in order before pushing the release tag:
    - Workflow filename: `release.yml`
    - Environment: empty (the job uses no GitHub environment)
 
+   After the first trusted publish, set the package publishing access on npm to "Require
+   two-factor authentication and disallow tokens".
+
 ---
 
 ## Changelog
@@ -121,9 +124,14 @@ CI job. Do not remove `prepublishOnly`.
    - **No token path**: no workflow names an npm token, and setup-node gets no `registry-url`,
      so the publish can not fall back to a token. `test/unit/release-workflow.test.ts` keeps
      this true
-   - The Publish step runs `npx -y npm@11.19.1 publish --provenance --access public`. Trusted
-     publishing needs npm 11.5.1 or newer, and Node 22 has npm 10. The publish fires both
-     `prepublishOnly` (`npm run check`) and `prepack` (`npm run build`) hooks before publishing
+   - **No install scripts and no npm cache**: the job runs `npm ci --ignore-scripts` and
+     restores no cached files, because it can sign in to npm
+   - The Publish step runs a pinned npm 11 through `npx` (the exact version is in
+     `release.yml`). Trusted publishing needs npm 11.5.1 or newer, and Node 22 has npm 10. The
+     publish fires both `prepublishOnly` (`npm run check`) and `prepack` (`npm run build`) hooks
+     before publishing
+   - npm 11 refuses a prerelease version, or a version below the newest on npm, without a
+     `--tag`. A `v*` tag for such a version needs a `--tag` in the Publish step first
 
 ---
 
