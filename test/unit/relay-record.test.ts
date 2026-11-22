@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { it, type TestContext } from "node:test";
 import {
-  classifyRelay, ensureRelayFolder, openBootLog, publishRelayRecord, readBootTail, readRelayRecord, relayFolder, removeOwnRelayRecord,
+  classifyRelay, ensureRelayFolder, openBootLog, publishRelayRecord, readBootTail, readRelayRecord, readStopRequest,
+  relayFolder, removeOwnRelayRecord, StopRequestLabelSchema, writeStopRequest,
 } from "../../src/relay-record.js";
 import { SUBSWITCH_VERSION } from "../../src/version.js";
 import type { Result } from "../../src/result.js";
@@ -21,6 +22,12 @@ const unsafe = { ok: false, error: "unsafe_path" };
 const fixture = (port = PORT) => ({
   schemaVersion: 1, pid: PID, port, version: "0.1.2", startedAt: "2026-11-21T18:47:00.000Z", managedBy: "none", nonce: NONCE,
 });
+
+const requester = {
+  requesterPid: 47, requesterPpid: 1, uid: 501, requestedAt: "2026-11-21T18:47:00.000Z", label: "cli.stop_1-test",
+};
+const stopRequest = { targetPid: PID, nonce: NONCE, ...requester };
+const invalidRequest = { ok: false, error: "invalid_request" };
 
 function value<T>(result: Result<T, unknown>): T {
   assert.ok(result.ok, result.ok ? undefined : String(result.error));
@@ -174,6 +181,96 @@ it("removes its own record but leaves a newer nonce intact", async (t) => {
   assert.equal(value(readRelayRecord(PORT, home)), undefined);
 });
 
+it("shares a label rule that accepts only 1 to 32 lowercase ASCII label characters", () => {
+  for (const label of ["0", "cli.stop_1-test", "z".repeat(32)]) {
+    assert.equal(StopRequestLabelSchema.safeParse(label).success, true, label);
+  }
+  for (const label of ["", "z".repeat(33), "aZ", "é", "a/b", "a b", "a\n", "a=1"]) {
+    assert.equal(StopRequestLabelSchema.safeParse(label).success, false, JSON.stringify(label));
+  }
+});
+
+it("writes only the stop request fields to a private file and consumes a matching request once", async (t) => {
+  const home = await testHome(t);
+  const directory = relayFolder(PORT, home);
+  const path = join(directory, "stop-request.json");
+  assert.ok((await writeStopRequest(PORT, home, stopRequest)).ok);
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")), stopRequest);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.equal((await stat(directory)).mode & 0o777, 0o700);
+  assert.deepEqual(await readdir(directory), ["stop-request.json"]);
+  assert.deepEqual(value(readStopRequest(PORT, home, PID, NONCE)), requester);
+  assert.deepEqual(await readdir(directory), []);
+  assert.equal(value(readStopRequest(PORT, home, PID, NONCE)), undefined);
+});
+
+it("refuses invalid stop request data before it creates a folder", async (t) => {
+  const home = await testHome(t);
+  for (const change of [
+    { label: "UP" }, { argv: ["not a request field"] }, { requestedAt: "today" }, { uid: -1 },
+    { requestedAt: `2026-11-21T18:47:00.${"0".repeat(4096)}Z` },
+  ]) {
+    assert.deepEqual(await writeStopRequest(PORT, home, { ...stopRequest, ...change }), invalidRequest);
+  }
+  assert.deepEqual(await readdir(home), []);
+});
+
+it("does not write a stop request through a linked relay ancestor", async (t) => {
+  const home = await testHome(t);
+  const other = await testHome(t);
+  await symlink(other, join(home, ".cache"));
+  assert.deepEqual(await writeStopRequest(PORT, home, stopRequest), unsafe);
+  assert.deepEqual(await readdir(other), []);
+});
+
+it("leaves no temporary stop request when the atomic rename fails", async (t) => {
+  const home = await testHome(t);
+  const directory = value(ensureRelayFolder(PORT, home));
+  await mkdir(join(directory, "stop-request.json"));
+  assert.deepEqual(await writeStopRequest(PORT, home, stopRequest), unsafe);
+  assert.deepEqual(await readdir(directory), ["stop-request.json"]);
+});
+
+it("consumes but does not return requester fields when the target pid or nonce differs", async (t) => {
+  const home = await testHome(t);
+  const directory = value(ensureRelayFolder(PORT, home));
+  for (const change of [{ targetPid: PID + 1 }, { nonce: OTHER_NONCE }]) {
+    assert.ok((await writeStopRequest(PORT, home, { ...stopRequest, ...change })).ok);
+    assert.equal(value(readStopRequest(PORT, home, PID, NONCE)), undefined);
+    assert.deepEqual(await readdir(directory), []);
+  }
+});
+
+it("accepts a stop request without a label at 4 KiB and refuses oversize or invalid data", async (t) => {
+  const home = await testHome(t);
+  const path = join(value(ensureRelayFolder(PORT, home)), "stop-request.json");
+  const { label: _label, ...unlabelled } = stopRequest;
+  await writeFile(path, JSON.stringify(unlabelled).padEnd(4096, " "), { mode: 0o600 });
+  assert.deepEqual(value(readStopRequest(PORT, home, PID, NONCE)), {
+    requesterPid: 47, requesterPpid: 1, uid: 501, requestedAt: "2026-11-21T18:47:00.000Z",
+  });
+  for (const contents of [JSON.stringify(unlabelled).padEnd(4097, " "), JSON.stringify({ ...unlabelled, env: {} }), "{"]) {
+    await writeFile(path, contents, { mode: 0o600 });
+    assert.deepEqual(readStopRequest(PORT, home, PID, NONCE), unsafe);
+    assert.deepEqual(await readdir(join(path, "..")), []);
+  }
+});
+
+it("does not return requester fields from a link or a non-private file", async (t) => {
+  const home = await testHome(t);
+  const path = join(value(ensureRelayFolder(PORT, home)), "stop-request.json");
+  const target = join(home, "target.json");
+  await writeFile(target, JSON.stringify(stopRequest), { mode: 0o600 });
+  for (const makeLink of [symlink, link]) {
+    await makeLink(target, path);
+    assert.deepEqual(readStopRequest(PORT, home, PID, NONCE), unsafe);
+    assert.equal(await readFile(target, "utf8"), JSON.stringify(stopRequest));
+  }
+  await writeFile(path, JSON.stringify(stopRequest), { mode: 0o644 });
+  await chmod(path, 0o644);
+  assert.deepEqual(readStopRequest(PORT, home, PID, NONCE), unsafe);
+});
+
 it("classifies legacy, foreign, mismatched and verified health answers", async (t) => {
   const home = await testHome(t);
   let body: object = { name: "subswitch", version: "old", providers: [{ id: "anthropic", configured: true, modelCount: 0 }] };
@@ -182,7 +279,7 @@ it("classifies legacy, foreign, mismatched and verified health answers", async (
     requests.push(`${req.method} ${req.url}`);
     res.end(JSON.stringify(body));
   });
-  const deps = { home };
+  const deps = { home, isAlive: (pid: number) => pid === PID };
   assert.deepEqual(await classifyRelay(port, deps), { kind: "legacy" });
   body = { name: "another", version: "old" };
   assert.deepEqual(await classifyRelay(port, deps), { kind: "foreign" });
@@ -199,6 +296,38 @@ it("classifies legacy, foreign, mismatched and verified health answers", async (
   body = health;
   assert.deepEqual(await classifyRelay(port, deps), { kind: "verified", record, version: "new" });
   assert.deepEqual(requests, Array.from({ length: 8 }, () => `GET ${PATH}`));
+});
+
+it("does not verify matching health from a listener when the record pid is dead", async (t) => {
+  const home = await testHome(t);
+  const port = await listen(t, (_req, res) => {
+    res.end(JSON.stringify({ name: "subswitch", version: "new", pid: PID, nonce: NONCE }));
+  });
+  const record = fixture(port);
+  await writeFile(await recordPath(home, port), JSON.stringify(record), { mode: 0o600 });
+
+  assert.deepEqual(await classifyRelay(port, { home, isAlive: () => false }),
+    { kind: "unverified", reason: "identity_mismatch", record });
+  assert.deepEqual(await classifyRelay(port, { home, isAlive: (pid: number) => pid === PID }),
+    { kind: "verified", record, version: "new" });
+});
+
+it("uses signal zero and treats only success and EPERM as live by default", async (t) => {
+  const home = await testHome(t);
+  const record = { ...fixture(), schemaVersion: 1, managedBy: "none" } as const;
+  const requestHealth = async () => Response.json({ name: "subswitch", version: "new", pid: PID, nonce: NONCE });
+  let code: string | undefined;
+  const kill = t.mock.method(process, "kill", () => {
+    if (code !== undefined) throw Object.assign(new Error("test pid lookup"), { code });
+    return true;
+  });
+
+  for (const [failure, kind] of [[undefined, "verified"], ["EPERM", "verified"],
+    ["ESRCH", "unverified"], ["EINVAL", "unverified"]] as const) {
+    code = failure;
+    assert.equal((await classifyRelay(PORT, { home, record, requestHealth })).kind, kind, failure);
+  }
+  assert.deepEqual(kill.mock.calls.map(({ arguments: args }) => args), Array.from({ length: 4 }, () => [PID, 0]));
 });
 
 it("checks a loopback relay on a port that browser fetch excludes", async (t) => {
@@ -225,7 +354,7 @@ it("times out after one second and distinguishes no record from no answer", asyn
   assert.ok(elapsed >= 850 && elapsed < 1_800, `elapsed=${elapsed}`);
   const record = fixture(port);
   await writeFile(await recordPath(home, port), JSON.stringify(record), { mode: 0o600 });
-  assert.deepEqual(await classifyRelay(port, { home }), { kind: "unverified", reason: "no_answer", record });
+  assert.deepEqual(await classifyRelay(port, { home, isAlive: () => true }), { kind: "unverified", reason: "no_answer", record });
 });
 
 it("does not treat an unsafe record as absent", async (t) => {

@@ -43,6 +43,8 @@ export interface LogFields {
   readonly signal?: "SIGINT" | "SIGTERM" | "SIGHUP";
   readonly exitCode?: number;
   readonly version?: typeof SUBSWITCH_VERSION;
+  readonly requesterPid?: number;
+  readonly requesterPpid?: number;
 }
 
 export interface Logger {
@@ -73,6 +75,8 @@ export const FIELD_KEYS = [
   "signal",
   "exitCode",
   "version",
+  "requesterPid",
+  "requesterPpid",
 ] as const satisfies readonly (keyof LogFields)[];
 // Completeness proof lives in test/unit/logger.types.test.ts (module-level type
 // proofs follow the *.types.test.ts convention; in-src guards are function-local

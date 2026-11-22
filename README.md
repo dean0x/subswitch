@@ -191,6 +191,7 @@ The child uses the caller's current folder and can load other permitted project 
 
 For a new child, the launcher checks that the record and `GET /__subswitch/health`
 identify that child. The check uses the relay name, PID and nonce.
+The launcher returns a PID only if that process is still active.
 If another verified relay starts first, the command can return that relay's PID.
 On success with a verified relay, stdout contains only the PID and a newline.
 If the version differs, stderr also shows a notice.

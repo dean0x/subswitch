@@ -14,6 +14,7 @@ import { isPrivateFolder } from "./routing/state-dir.js";
 import { SUBSWITCH_NAME, SUBSWITCH_VERSION } from "./version.js";
 
 const RECORD_NAME = "relay.json";
+const STOP_REQUEST_NAME = "stop-request.json";
 const BOOT_NAME = "boot.log";
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -28,12 +29,23 @@ const Pid = z.int().min(2);
 const Port = z.int().min(1).max(65_535);
 const Version = z.string().max(64);
 const Nonce = z.string().regex(/^[a-f0-9]{32}$/);
+const IsoTime = z.iso.datetime({ offset: true }).refine((time) => Number.isFinite(Date.parse(time)));
+export const StopRequestLabelSchema = z.string().min(1).max(32).regex(/^[a-z0-9._-]+$/);
+const StopRequestSchema = z.strictObject({
+  targetPid: Pid,
+  nonce: Nonce,
+  requesterPid: Pid,
+  requesterPpid: z.int().nonnegative(),
+  uid: z.int().nonnegative(),
+  requestedAt: z.string().max(64).pipe(IsoTime),
+  label: StopRequestLabelSchema.optional(),
+});
 const RecordSchema = z.strictObject({
   schemaVersion: z.literal(1),
   pid: Pid,
   port: Port,
   version: Version,
-  startedAt: z.iso.datetime({ offset: true }).refine((time) => Number.isFinite(Date.parse(time))),
+  startedAt: IsoTime,
   managedBy: z.enum(["none", "launchd"]),
   nonce: Nonce,
 });
@@ -52,6 +64,8 @@ const HealthSchema = z.strictObject({
 
 type RelayHealth = z.infer<typeof HealthSchema>;
 export type RelayRecord = Readonly<z.infer<typeof RecordSchema>>;
+export type StopRequest = Readonly<z.infer<typeof StopRequestSchema>>;
+export type StopRequester = Omit<StopRequest, "targetPid" | "nonce">;
 type RelayPathResult<T> = Result<T, "unsafe_path">;
 export type RelayClassification =
   | { readonly kind: "none" | "legacy" | "foreign" }
@@ -64,6 +78,7 @@ export interface ClassifyRelayDeps {
   readonly record?: RelayRecord;
   readonly signal?: AbortSignal;
   readonly requestHealth?: typeof requestLoopbackHealth;
+  readonly isAlive?: (pid: number) => boolean;
 }
 
 export function relayFolder(port: number, home: string): string {
@@ -109,16 +124,9 @@ export function ensureRelayFolder(port: number, home: string): RelayPathResult<s
 
 export const createRelayNonce = (): string => randomBytes(16).toString("hex");
 
-export async function publishRelayRecord(port: number, home: string, nonce?: string): Promise<RelayPathResult<RelayRecord>> {
-  const folder = ensureRelayFolder(port, home);
-  if (!folder.ok) return folder;
-  const path = join(folder.value, RECORD_NAME);
+async function writePrivateRecord<T extends RelayRecord | StopRequest>(path: string, record: T): Promise<RelayPathResult<T>> {
   let temporary: string | undefined;
   try {
-    const record: RelayRecord = {
-      schemaVersion: 1, port, pid: process.pid, version: SUBSWITCH_VERSION, startedAt: new Date().toISOString(),
-      managedBy: "none", nonce: nonce ?? createRelayNonce(),
-    };
     const name = `${path}.${randomUUID()}.tmp`;
     const file = await open(name, "wx", FILE_MODE);
     temporary = name;
@@ -138,6 +146,20 @@ export async function publishRelayRecord(port: number, home: string, nonce?: str
   }
 }
 
+export async function publishRelayRecord(port: number, home: string, nonce?: string): Promise<RelayPathResult<RelayRecord>> {
+  const folder = ensureRelayFolder(port, home);
+  if (!folder.ok) return folder;
+  try {
+    const record: RelayRecord = {
+      schemaVersion: 1, port, pid: process.pid, version: SUBSWITCH_VERSION, startedAt: new Date().toISOString(),
+      managedBy: "none", nonce: nonce ?? createRelayNonce(),
+    };
+    return writePrivateRecord(join(folder.value, RECORD_NAME), record);
+  } catch {
+    return err("unsafe_path");
+  }
+}
+
 function withPrivateReader<T>(path: string, read: (fd: number, size: number) => RelayPathResult<T>): RelayPathResult<T | undefined> {
   try {
     const fd = openSync(path, constants.O_RDONLY | NOFOLLOW);
@@ -152,13 +174,19 @@ function withPrivateReader<T>(path: string, read: (fd: number, size: number) => 
   }
 }
 
-function readRecordAt(path: string, port: number): RelayPathResult<RelayRecord | undefined> {
+function readRecordJson<T>(path: string, parse: (data: unknown) => RelayPathResult<T>): RelayPathResult<T | undefined> {
   return withPrivateReader(path, (fd, size) => {
     if (size > RECORD_BYTES) return err("unsafe_path");
-    const buffer = Buffer.alloc(RECORD_BYTES + 1);
+    const buffer = Buffer.alloc(RECORD_BYTES);
     const bytes = readSync(fd, buffer, 0, buffer.length, 0);
-    if (bytes > RECORD_BYTES) return err("unsafe_path");
+    if (fstatSync(fd).size !== bytes) return err("unsafe_path");
     const data: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytes)));
+    return parse(data);
+  });
+}
+
+function readRecordAt(path: string, port: number): RelayPathResult<RelayRecord | undefined> {
+  return readRecordJson(path, (data) => {
     const record = RecordSchema.safeParse(data);
     return record.success && record.data.port === port ? ok(record.data) : err("unsafe_path");
   });
@@ -172,6 +200,48 @@ export function readRelayRecord(port: number, home: string): RelayPathResult<Rel
   return result.ok && result.value?.pid === process.pid ? err("unsafe_path") : result;
 }
 
+export async function writeStopRequest(
+  port: number, home: string, request: StopRequest,
+): Promise<Result<StopRequest, "invalid_request" | "unsafe_path">> {
+  const parsed = StopRequestSchema.safeParse(request);
+  if (!parsed.success) return err("invalid_request");
+  const folder = ensureRelayFolder(port, home);
+  if (!folder.ok) return folder;
+  return writePrivateRecord(join(folder.value, STOP_REQUEST_NAME), parsed.data);
+}
+
+/** Consume the file once. The caller checks the signal and request age before use. */
+export function readStopRequest(
+  port: number, home: string, targetPid: number, nonce: string,
+): RelayPathResult<StopRequester | undefined> {
+  const folder = checkFolder(port, home, false);
+  if (!folder.ok || folder.value === undefined) return folder.ok ? ok(undefined) : folder;
+  const path = join(folder.value, STOP_REQUEST_NAME);
+  const result = readRecordJson(path, (data) => {
+    const parsed = StopRequestSchema.safeParse(data);
+    return parsed.success ? ok(parsed.data) : err("unsafe_path");
+  });
+  if (!result.ok) {
+    unlinkRecord(path);
+    return result;
+  }
+  if (result.value === undefined) return ok(undefined);
+  const removed = unlinkRecord(path);
+  if (!removed.ok) return removed;
+  if (!removed.value) return ok(undefined);
+  const { targetPid: pid, nonce: savedNonce, ...requester } = result.value;
+  return ok(pid === targetPid && savedNonce === nonce ? requester : undefined);
+}
+
+function unlinkRecord(path: string): RelayPathResult<boolean> {
+  try {
+    unlinkSync(path);
+    return ok(true);
+  } catch (error) {
+    return hasCode(error, "ENOENT") ? ok(false) : err("unsafe_path");
+  }
+}
+
 /** Share the strict reader, but allow the caller's pid for cleanup. */
 export function removeOwnRelayRecord(port: number, home: string, nonce: string): RelayPathResult<boolean> {
   const folder = checkFolder(port, home, false);
@@ -181,12 +251,7 @@ export function removeOwnRelayRecord(port: number, home: string, nonce: string):
   const result = readRecordAt(path, port);
   if (!result.ok) return result;
   if (result.value?.nonce !== nonce) return ok(false);
-  try {
-    unlinkSync(path);
-    return ok(true);
-  } catch (error) {
-    return hasCode(error, "ENOENT") ? ok(false) : err("unsafe_path");
-  }
+  return unlinkRecord(path);
 }
 
 type HealthProbe = { readonly answered: false } | { readonly answered: true; readonly health?: RelayHealth };
@@ -241,6 +306,15 @@ async function probeHealth(port: number, { signal: cancel, requestHealth = reque
   }
 }
 
+function relayPidIsAlive(pid: number): boolean {
+  try {
+    return process.kill(pid, 0);
+  } catch (error) {
+    return hasCode(error, "EPERM");
+  }
+}
+
+/** A verified relay has a live record pid and a health answer with matching identity. */
 export async function classifyRelay(port: number, deps: ClassifyRelayDeps): Promise<RelayClassification> {
   const current = deps.record === undefined ? readRelayRecord(port, deps.home) : ok(deps.record);
   if (!current.ok) return { kind: "unverified", reason: current.error };
@@ -252,7 +326,9 @@ export async function classifyRelay(port: number, deps: ClassifyRelayDeps): Prom
   const record = latest.value;
   const health = probe.health;
   if (record === undefined) return { kind: health === undefined ? "foreign" : "legacy" };
-  if (health?.pid !== record.pid || health.nonce !== record.nonce) return { kind: "unverified", reason: "identity_mismatch", record };
+  if (health?.pid !== record.pid || health.nonce !== record.nonce || !(deps.isAlive ?? relayPidIsAlive)(record.pid)) {
+    return { kind: "unverified", reason: "identity_mismatch", record };
+  }
   return { kind: "verified", record, version: health.version };
 }
 

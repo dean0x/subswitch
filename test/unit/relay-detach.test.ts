@@ -58,7 +58,8 @@ function fixture(t: TestContext) {
   };
   const readRecord = t.mock.fn<DetachDeps["readRecord"]>(() => ok(state.record));
   const classify = t.mock.fn<DetachDeps["classify"]>((p, deps) => deps.record
-    ? classifyRelay(p, { ...deps, requestHealth: state.requestHealth }) : Promise.resolve(answers.shift() ?? { kind: "none" }));
+    ? classifyRelay(p, { ...deps, requestHealth: state.requestHealth, isAlive: (pid) => pid === record.pid })
+    : Promise.resolve(answers.shift() ?? { kind: "none" }));
   const stdout: string[] = [], stderr: string[] = [], errors: string[] = [];
   const deps: DetachDeps = {
     platform: "linux", home, clock, spawn, loadConfig, classify, readRecord,
@@ -86,10 +87,14 @@ it("reuses a relay that publishes its record during the first health check", asy
   const boot = openBootLog(port, f.home);
   assert.ok(boot.ok);
   closeSync(boot.value);
-  const classify: DetachDeps["classify"] = (p, deps) => classifyRelay(p, { ...deps, requestHealth: async () => {
-    writeFileSync(join(relayFolder(port, f.home), "relay.json"), JSON.stringify(record), { mode: 0o600 });
-    return Response.json(health);
-  } });
+  const classify: DetachDeps["classify"] = (p, deps) => classifyRelay(p, {
+    ...deps,
+    isAlive: (pid) => pid === record.pid,
+    requestHealth: async () => {
+      writeFileSync(join(relayFolder(port, f.home), "relay.json"), JSON.stringify(record), { mode: 0o600 });
+      return Response.json(health);
+    },
+  });
   assert.deepEqual([await detachRelay({ ...f.deps, classify }), f.stdout, f.stderr, f.spawn.mock.callCount()], [0, [String(record.pid)], [], 0]);
 });
 
@@ -190,7 +195,9 @@ it("leaves an unsafe record intact (TP-8 to TP-11)", async t => {
   const bytes = Buffer.from(JSON.stringify(record));
   writeFileSync(path, bytes);
   chmodSync(path, 0o644);
-  const classify: DetachDeps["classify"] = (p, deps) => classifyRelay(p, { ...deps, requestHealth: f.state.requestHealth });
+  const classify: DetachDeps["classify"] = (p, deps) => classifyRelay(p, {
+    ...deps, requestHealth: f.state.requestHealth, isAlive: () => assert.fail("Unsafe records must not cause a pid lookup"),
+  });
 
   const code = await detachRelay({ ...f.deps, classify });
 
