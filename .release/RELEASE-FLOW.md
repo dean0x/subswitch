@@ -118,6 +118,9 @@ CI job. Do not remove `prepublishOnly`.
    - A **lockfile guard** hard-fails if `package-lock.json` fields lag `package.json`
    - **Trusted publishing and provenance** use `id-token: write`: npm signs in with the
      workflow identity, and published artifacts carry npm attestations
+   - **No token path**: no workflow names an npm token, and setup-node gets no `registry-url`,
+     so the publish can not fall back to a token. `test/unit/release-workflow.test.ts` keeps
+     this true
    - The Publish step runs `npx -y npm@11.19.1 publish --provenance --access public`. Trusted
      publishing needs npm 11.5.1 or newer, and Node 22 has npm 10. The publish fires both
      `prepublishOnly` (`npm run check`) and `prepack` (`npm run build`) hooks before publishing

@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          registry-url: https://registry.npmjs.org
+          # No registry-url: setup-node then writes no npm token line to .npmrc.
 
       - name: Install dependencies
         run: npm ci
@@ -62,7 +62,9 @@ jobs:
         run: ./scripts/smoke-tarball.sh
 
       # npm trusted publishing: npm signs in with the workflow identity (OIDC).
-      # No npm token is used. Trusted publishing needs npm 11.5.1 or newer, and
-      # Node 22 has npm 10, so this step runs a pinned npm 11 through npx.
+      # The job has no npm token, so the publish can not fall back to one.
+      # test/unit/release-workflow.test.ts keeps all workflows token-free.
+      # Trusted publishing needs npm 11.5.1 or newer, and Node 22 has npm 10,
+      # so this step runs a pinned npm 11 through npx.
       - name: Publish
         run: npx -y npm@11.19.1 publish --provenance --access public
