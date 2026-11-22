@@ -157,11 +157,12 @@ export const OPENAI_EVENTS = {
 } as const;
 export const ANTHROPIC_EVENTS = scopedEvents("anthropic");
 /**
- * Kimi leg events: the provider table, plus the events of the Kimi sign-in store and its
- * renewal. The type pins each added name to the `kimi_` prefix.
+ * Kimi leg events: the provider table, plus local request and sign-in events.
+ * The type pins each added name to the `kimi_` prefix.
  */
 export const KIMI_EVENTS = {
   ...providerEvents("kimi"),
+  requestRejected: "kimi_request_rejected",
   /** Another process held the Kimi CLI lock for the whole lock wait. */
   lockBusy: "kimi_lock_busy",
   /** Subswitch lost its Kimi CLI lock before the renewal was saved. */

@@ -14,6 +14,7 @@ import type { KimiProviderConfig } from "./config.js";
 import { deriveConversationKey } from "./conversation-key.js";
 import { upstreamStatusToAnthropicError } from "./errors.js";
 import { kimiIdentityHeaders } from "./kimi-constants.js";
+import { KIMI_FORCED_TOOL_CHOICE } from "./kimi-errors.js";
 import type { KimiAuth } from "./kimi-native-auth.js";
 import { buildKimiRequest, isKimiThinkingBlock, type KimiThinkingBlock } from "./kimi-request.js";
 import { createKimiSseTranslator, KIMI_REPLY_ERRORS } from "./kimi-stream.js";
@@ -78,8 +79,14 @@ export const createKimiHandler = (deps: KimiHandlerDeps): ProviderHandler => {
         respondProxyError(res, { kind: "translate", message: "request body is not a valid messages request" });
         return;
       }
-      const request = { ...parsed.data, model: canonicalModel };
       const model = parsed.data.model;
+      if (parsed.data.tool_choice?.["type"] === "tool") {
+        const { code, event, error } = KIMI_FORCED_TOOL_CHOICE;
+        logger.log("warn", event, { model, errorCode: code });
+        respondProxyError(res, error);
+        return;
+      }
+      const request = { ...parsed.data, model: canonicalModel };
       const conversationKey = deriveConversationKey(request);
       const body = buildKimiRequest(request, { model: canonicalModel, getThinking, ...(conversationKey === undefined ? {} : { conversationKey }) });
 
@@ -88,7 +95,7 @@ export const createKimiHandler = (deps: KimiHandlerDeps): ProviderHandler => {
         url, name: "Kimi", model, body, wantStream: request.stream === true,
         requestTimeoutMs: provider.requestTimeoutMs, streamIdleTimeoutMs: provider.streamIdleTimeoutMs,
         maxAggregateBytes: provider.maxAggregateBytes, logger, events: KIMI_EVENTS, auth, fetchImpl,
-        redirect: "error", abortOnResponseTimeout: true,
+        redirect: "error", abortOnResponseTimeout: true, logUpstreamErrorType: true,
         buildHeaders: (credential) => kimiHeaders(auth.deviceId, credential),
         renderUpstreamError,
         renderJsonResponse: () => ({ status: 502, type: "api_error", message: "Kimi returned a JSON reply to a stream request." }),

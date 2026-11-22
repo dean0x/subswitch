@@ -3,6 +3,7 @@ import { EventEmitter, once } from "node:events";
 import { z } from "zod";
 import { it, type TestContext } from "node:test";
 import { registerExactCredential, toAnthropicErrorBody } from "../../src/errors.js";
+import type { LogFields } from "../../src/logger.js";
 import { PROVIDER_IDS } from "../../src/models.js";
 import { TOGETHER_API_KEY_ENV } from "../../src/together-auth.js";
 import { TOGETHER_MODELS } from "../../src/together-models.js";
@@ -32,7 +33,7 @@ const fixture = async (t: TestContext, handler: UpstreamHandler, key: string | n
   t.after(together.close);
   const fallback = await startFakeUpstream((_req, res) => { res.writeHead(418); res.end(); });
   t.after(fallback.close);
-  const logs: unknown[] = [];
+  const logs: { event: string; fields: LogFields | undefined }[] = [];
   const exec = t.mock.fn(async () => ({ stdout: "" }));
   const proxy = await startSubswitch({ ...overrides, providers: { together: { baseUrl: `${together.url}/v1`, ...options } },
     anthropic: { baseUrl: fallback.url } }, {
@@ -198,6 +199,19 @@ for (const [status, code, retryAfter, expectedStatus, expectedBody, noRetry] of 
     assert.equal(fallback.requests.length, 0);
   });
 }
+
+it("logs only the original fields for a Together upstream HTTP error", async (t) => {
+  const { post, logs } = await fixture(t, (_req, res) => {
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { type: "invalid_request_error" } }));
+  });
+  const response = await post();
+  await response.text();
+
+  assert.deepEqual(logs.filter(({ event }) => event === "together_upstream_error"), [
+    { event: "together_upstream_error", fields: { model: REQUEST.model, status: 400 } },
+  ]);
+});
 
 it("maps an upstream SSE error without copying its text", async (t) => {
   const stream = chatSse([chatChunk({ content: "Partial text" }), { error: { code: "bad_chunk", message: KEY } }]);

@@ -312,9 +312,9 @@ The Kimi leg is the third translated leg on `runTranslatedLeg`. Kimi speaks the 
 client /v1/messages (Kimi model, exact id or alias)
   → resolveModel → provider "kimi" → deps.providers.kimi.handleMessages
        not opted in → notOptedInHandler: fixed local 400, no file or network read
-  → createKimiHandler: parse request, canonical model, deriveConversationKey
+  → createKimiHandler: parse request, refuse tool_choice type "tool", canonical model, deriveConversationKey
   → buildKimiRequest: strip client thinking + metadata, replay cached Kimi thinking, stream: true
-  → runTranslatedLeg (auth = createKimiAuth, redirect "error", abortOnResponseTimeout)
+  → runTranslatedLeg (auth = createKimiAuth, redirect "error", abortOnResponseTimeout, logUpstreamErrorType)
        getCredentials → read file → renew if due → Bearer
        upstream 401 → forceRefresh(refused bearer) → one renewal per refused token → one resend
   → createKimiSseTranslator → client SSE frames (thinking hidden, fixed error text)
@@ -339,8 +339,10 @@ Inside the lock, `renewUnderLock` reads the file again. If the sign-in is no lon
 
 The manager has two deadlines: the renewal (`RENEWAL_DEADLINE_MS`, under the lock and including the body read and write-back) and the caller wait (`WAIT_DEADLINE_MS`). A renewal that hits its deadline after the request was sent gives `refresh_recovery_required`; before the send it gives `timeout`.
 
-### Request and stream (`src/kimi-request.ts`, `src/kimi-stream.ts`)
+### Request and stream (`src/kimi-handler.ts`, `src/kimi-request.ts`, `src/kimi-stream.ts`)
 
+- The handler refuses `tool_choice` type `"tool"` with a local 400 before it reads the sign-in. It logs `kimi_request_rejected` with `errorCode=forced_tool_choice`. Other values pass through unchanged.
+- Only Kimi adds `upstreamErrorType` to the shared upstream HTTP error log. The runner reads the type from the existing 2 KiB peek. The field is a known Anthropic type, `other` for an unknown string, or `none` if no type string is available.
 - The request keeps the client fields except `metadata`, replaces `model` with the canonical id, and sets `stream: true`. Both client modes use the upstream stream; the runner folds it with `aggregateFrames(frames, "kimi")` for a JSON reply. A JSON reply to a stream request is a fixed 502.
 - A client assistant turn that holds only thinking is dropped. The cached Kimi thinking comes first in the content of its tool turn, found by the first `tool_use` id of that turn. The cache entry must pass `isKimiThinkingBlock`, or nothing is replayed.
 - The translator accepts only `ping`, `message_start`, the block events, `message_delta`, `message_stop` and `error`; an unknown event is a warning and is dropped. A second `message_start`, a bad block index, an unsupported block or delta, an event over `maxSseEventBytes`, an open block at the end, or a stream that ends early gives one fixed `api_error` frame. The model name in `message_start` is the canonical id.
@@ -354,7 +356,7 @@ The manager has two deadlines: the renewal (`RENEWAL_DEADLINE_MS`, under the loc
 
 - `test/integration/kimi-leg.test.ts` runs the real file store on a fabricated home, with fake upstreams for Kimi, the token service, Anthropic, Codex, Together and the OpenAI side. Its groups cover the opt-in gate, the leak rows, the Claude and Kimi session, renewal after a 401, no fallback and the Codex ingress. `test/integration/kimi-wiring.test.ts` covers the gate, the startup checks, the refusing defaults and the agreement of doctor and `buildDeps`.
 - `test/integration/fake-upstreams.ts` and `test/helpers/server-deps.ts` give every other test refusing Kimi deps (`refusingProviderDeps`) that record each store member, the queue key, fetch and the clock, and throw. Making the store is not a call.
-- `e2e/gates/kimi-live-check.ts` is the live check and its offline dry run. The live mode runs only by the owner, in the owner's own Terminal. It loads the user config as `run-action` does and needs that config to hold no `providers.kimi` block, which exists only in the in-process config of the check. Guard G5 in `source-text-guards.test.ts` keeps it from setting the Claude Code base URL or sign-in variables.
+- `e2e/gates/kimi-live-check.ts` is the live check and its offline dry run. The live mode runs only by the owner, in the owner's own Terminal. It loads the user config as `run-action` does and needs that config to hold no `providers.kimi` block, which exists only in the in-process config of the check. Guard G5 in `source-text-guards.test.ts` keeps it from setting the Claude Code base URL or sign-in variables. The `tool_call` probe uses `tool_choice` type `"auto"` and requires a `tool_use` block. The live check did not test `"any"`.
 
 ## Anti-Patterns
 

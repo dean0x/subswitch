@@ -1,9 +1,11 @@
 import { createColors } from "picocolors";
+import type { AnthropicErrorType } from "./errors.js";
 import { resolveColorEnabled } from "./tty.js";
 import type { LimitObservation } from "./limit-observation.js";
 import type { SUBSWITCH_VERSION } from "./version.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
+export type LoggedUpstreamErrorType = AnthropicErrorType | "overloaded_error" | "other" | "none";
 
 /**
  * The closed field set is the redaction mechanism: nothing that can carry
@@ -14,6 +16,7 @@ export interface LogFields {
   readonly path?: string;
   readonly route?: string;
   readonly status?: number | null;
+  readonly upstreamErrorType?: LoggedUpstreamErrorType;
   readonly latencyMs?: number;
   readonly eventType?: string;
   readonly errorCode?: string;
@@ -59,6 +62,7 @@ export const FIELD_KEYS = [
   "path",
   "route",
   "status",
+  "upstreamErrorType",
   "latencyMs",
   "eventType",
   "errorCode",

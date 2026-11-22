@@ -73,6 +73,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   loopback host. `--live` is for the owner: it needs a terminal and a typed phrase, and
   it caps every request.
 
+### Fixed
+
+- The Kimi route returns a local 400 for a forced tool choice and logs known upstream error types.
+
 ## [0.8.0] - 2026-11-19
 
 ### Changed
