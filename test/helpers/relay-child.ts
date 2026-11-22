@@ -126,6 +126,7 @@ export async function startRelayChild(options: RelayChildOptions = {}): Promise<
   assertIsolatedRelayTarget(folders.home, realHome);
   assertIsolatedRelayTarget(folders.home, envHome);
   const claims: Awaited<ReturnType<typeof reserveTestPort>>[] = [];
+  let launcherTimedOut = false;
   const reserve = async () => {
     const claim = await reserveTestPort();
     claims.push(claim);
@@ -133,7 +134,10 @@ export async function startRelayChild(options: RelayChildOptions = {}): Promise<
   };
   const removeHomeAndRelease = async () => {
     try { await rm(folders.home, { recursive: true, force: true }); }
-    finally { for (const claim of claims) claim.release(); }
+    finally {
+      // A late launcher can still start a relay. Keep its claims until the test process exits.
+      if (!launcherTimedOut) for (const claim of claims) claim.release();
+    }
   };
   try {
     const portFromConfig = options.detach === true && options.portFromConfig === true;
@@ -168,7 +172,10 @@ export async function startRelayChild(options: RelayChildOptions = {}): Promise<
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-OUTPUT_CAP); });
     let closed = false;
     const exited = new Promise<readonly [number | null, NodeJS.Signals | null]>((done, fail) => {
-      const deadline = options.detach ? setTimeout(() => fail(new Error("Relay test launcher did not exit")), DETACH_LAUNCH_MS) : undefined;
+      const deadline = options.detach ? setTimeout(() => {
+        launcherTimedOut = true;
+        fail(new Error("Relay test launcher did not exit"));
+      }, DETACH_LAUNCH_MS) : undefined;
       child.once("error", (error) => { clearTimeout(deadline); fail(error); });
       child.once("close", (code, signal) => { clearTimeout(deadline); closed = true; done([code, signal]); });
     });
