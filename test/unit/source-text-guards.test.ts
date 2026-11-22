@@ -178,7 +178,7 @@ const CHILD_PROCESS_FILES: ReadonlyMap<string, string> = new Map([
   ["server.ts", "the live deps factories build the program runners"],
   ["claude-auth.ts", "the Claude client-ingress store runs the macOS Keychain tool"],
   ["run-action.ts", "run-action starts the client command that the user names"],
-  ["relay-exec.ts", "starts the detached relay"],
+  ["relay-exec.ts", "starts the detached relay and runs launchctl"],
 ]);
 const CHILD_PROCESS_MODULE = /["'](?:node:)?child_process["']/;
 /** The Kimi file store module, and the name of its maker. Only the live Kimi factory may name it. */
@@ -240,7 +240,7 @@ describe("source-text guards: CLI child processes", () => {
 describe("source-text guards: live deps factories", () => {
   it("G2: only server.ts defines a live factory, and only cli.ts and run-action.ts call one", () => {
     const files = globSync("**/*.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
-    for (const file of [LIVE_FACTORY_HOME, ...LIVE_FACTORY_CALLERS, "claude-auth.ts"]) {
+    for (const file of [LIVE_FACTORY_HOME, ...LIVE_FACTORY_CALLERS, "claude-auth.ts", "relay-exec.ts", "relay-service.ts"]) {
       assert.ok(files.includes(file), `The source list must include ${file}`);
     }
     assert.match(readSrc(LIVE_FACTORY_HOME), /export const liveTogetherKeyReaderDeps = /);
@@ -248,6 +248,11 @@ describe("source-text guards: live deps factories", () => {
     for (const file of files) {
       assert.deepEqual(liveFactoryViolations(file, readSrc(file)), [], `Move the live factory to src/${LIVE_FACTORY_HOME}`);
     }
+  });
+
+  it("G2: the exec module runs the absolute launchctl path without a shell", () => {
+    assert.match(readSrc("relay-service.ts"), /LAUNCHCTL_PATH = "\/bin\/launchctl"/);
+    assert.match(readSrc("relay-exec.ts"), /execFile\(LAUNCHCTL_PATH, \[\.\.\.args\], \{[\s\S]*?shell: false/);
   });
 
   it("G2: only server.ts names the Kimi file store maker outside its own module", () => {
@@ -277,7 +282,11 @@ describe("source-text guards: live deps factories", () => {
       assert.notDeepEqual(liveFactoryViolations("cli.ts", line), [], `The guard must catch: ${line}`);
     }
     const runners = ['import { spawn } from "node:child_process";', "const { execFile } = await import('child_process');"];
-    for (const line of runners) assert.notDeepEqual(liveFactoryViolations("gemini-renewal.ts", line), [], `The guard must catch: ${line}`);
+    for (const line of runners) {
+      assert.deepEqual(liveFactoryViolations("relay-service.ts", line), ["loads node:child_process"]);
+      assert.deepEqual(liveFactoryViolations("relay-exec.ts", line), []);
+      assert.notDeepEqual(liveFactoryViolations("gemini-renewal.ts", line), [], `The guard must catch: ${line}`);
+    }
     assert.notDeepEqual(liveFactoryViolations("doctor.ts", "togetherKeyReader: liveTogetherKeyReaderDeps(),"), [],
       "a file that is not a named caller must not call a live factory");
     const calls = [
@@ -365,7 +374,7 @@ describe("source-text guards: relay lifecycle", () => {
     assert.match('process.kill(pid, "SIGTERM");', RELAY_DETACH_SIGNAL);
     const exec = readSrc("relay-exec.ts");
     assert.match(exec, CHILD_PROCESS_MODULE);
-    assert.equal(CHILD_PROCESS_FILES.get("relay-exec.ts"), "starts the detached relay");
+    assert.match(CHILD_PROCESS_FILES.get("relay-exec.ts") ?? "", /detached relay.*launchctl/);
     assert.deepEqual(liveFactoryViolations("relay-detach.ts", exec), ["loads node:child_process"]);
     assert.deepEqual(liveFactoryViolations("relay-exec.ts", exec), []);
     const files = globSync("**/relay-detach.{ts,mts,cts,js,mjs,cjs}", { cwd: SRC_DIR });
@@ -478,7 +487,8 @@ describe("source-text guards: public text", () => {
   it("G6: no public doc, source file or Kimi check file holds local text", () => {
     const files = globSync(PUBLIC_TEXT, { cwd: REPO_DIR });
     for (const name of ["README.md", "SECURITY.md", "CHANGELOG.md", CLI_KNOWLEDGE,
-      "src/relay-detach.ts", "src/relay-record.ts", "src/kimi-native-auth.ts", LIVE_CHECK]) {
+      "src/cli.ts", "src/logger.ts", "src/server.ts", "src/relay-detach.ts", "src/relay-exec.ts", "src/relay-log.ts",
+      "src/relay-record.ts", "src/relay-service.ts", "src/relay-stop.ts", "src/kimi-native-auth.ts", LIVE_CHECK]) {
       assert.ok(files.includes(name), `The search must find ${name}`);
     }
     assert.deepEqual(files.filter((file) => privateText(readRepo(file))), [], "Remove the local text from these files");
@@ -489,7 +499,8 @@ describe("source-text guards: public text", () => {
       "notes in .devflow/docs/lanes/plan.md", "the .orchestrator folder", `${homedir()}/project`, `${dirname(REPO_DIR)}/other`]) {
       assert.equal(privateText(text), true, text);
     }
-    for (const text of ["~/.kimi-code/credentials", ".devflow/docs/usability/run/", "$HOME/.config/subswitch/config.json", "/home/<user>/.cache"]) {
+    for (const text of ["~/.kimi-code/credentials", "~/Library/LaunchAgents/com.subswitch.relay.plist",
+      ".devflow/docs/usability/run/", "$HOME/.config/subswitch/config.json", "/home/<user>/.cache"]) {
       assert.equal(privateText(text), false, text);
     }
     // A machine path that no shape matches is found only through the machine path values.

@@ -1,9 +1,12 @@
+import { fstatSync, ftruncateSync } from "node:fs";
 import { createConsoleLogger, renderLogLine, type LogFields, type Logger, type LogLevel } from "./logger.js";
 import { appendPrivateLineSync, appendRotatingPrivateFile, type PrivateFileRotation } from "./private-file.js";
 
 const RELAY_LOG = { stem: "relay", extension: "log" } as const;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const MAX_QUEUED_BYTES = 256 * 1024;
+const LAUNCHD_STDERR_MAX_BYTES = 256 * 1024;
+const STDERR_FD = 2;
 const FILE_COUNT = 4;
 const REFUSAL_WINDOW_MS = 60_000;
 const MAX_REFUSAL_LINES = 8;
@@ -15,9 +18,11 @@ const isRefusalLine = (event: string, fields?: LogFields): boolean =>
 
 const isoLine = (line: string): string => `${new Date().toISOString()} ${line}\n`;
 
+export type RelayLogMode = "foreground" | "detach" | "launchd";
+
 export interface RelayLogOptions {
   readonly directory: string;
-  readonly mode: "foreground" | "detach";
+  readonly mode: RelayLogMode;
   readonly minLevel: LogLevel;
   readonly console?: Logger;
   readonly writeStderr?: (line: string) => void;
@@ -31,7 +36,17 @@ export interface RelayLogger {
   readonly flush: () => Promise<void>;
 }
 
-export type RelayStopFields = Required<Pick<LogFields, "pid" | "exitCode">> & Pick<LogFields, "signal">;
+export type RelayStopFields = Required<Pick<LogFields, "pid" | "exitCode">> &
+  Pick<LogFields, "signal" | "requesterPid" | "requesterPpid">;
+
+export function truncateLaunchdStderr(): void {
+  try {
+    const stat = fstatSync(STDERR_FD);
+    if (stat.isFile() && stat.size > LAUNCHD_STDERR_MAX_BYTES) ftruncateSync(STDERR_FD, 0);
+  } catch {
+    // The stderr file can be read-only or unavailable. Continue startup.
+  }
+}
 
 export function createRelayLogger(options: RelayLogOptions): RelayLogger {
   const target = { ...RELAY_LOG, directory: options.directory, maxBytes: MAX_FILE_BYTES, fileCount: FILE_COUNT };
@@ -132,8 +147,13 @@ export function createRelayLogger(options: RelayLogOptions): RelayLogger {
 
 export function writeStopLineSync(directory: string | undefined, fields: RelayStopFields, copyToStderr = false): void {
   try {
-    const { pid, exitCode, signal } = fields;
-    const line = isoLine(renderLogLine("info", "relay_stopped", { pid, exitCode, ...(signal === undefined ? {} : { signal }) }));
+    const { pid, exitCode, signal, requesterPid, requesterPpid } = fields;
+    const line = isoLine(renderLogLine("info", "relay_stopped", {
+      pid, exitCode,
+      ...(signal === undefined ? {} : { signal }),
+      ...(requesterPid === undefined ? {} : { requesterPid }),
+      ...(requesterPpid === undefined ? {} : { requesterPpid }),
+    }));
     if (directory !== undefined) appendPrivateLineSync({ ...RELAY_LOG, directory }, line);
     if (copyToStderr) process.stderr.write(line);
   } catch {

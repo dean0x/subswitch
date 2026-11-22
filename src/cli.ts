@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 import { CLIENT_IDS, parseClientSelection, selectedClients, type ClientId, type ClientSelection as Client } from "./clients.js";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
 import { formatProviderBanner, modelProviderRows } from "./cli-report.js";
-import { liveKimiStoreDeps, liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";
+import { liveKimiStoreDeps, liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer, vetConfig } from "./server.js";
+import { noopLogger } from "./logger.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
   runInitInteractive,
@@ -26,14 +29,17 @@ import { routingDiscovery } from "./routing/routing-discovery.js";
 import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
 import { detachRelay } from "./relay-detach.js";
-import { spawnRelay } from "./relay-exec.js";
-import { createRelayLogger, writeFatalLineSync, writeStopLineSync, type RelayStopFields } from "./relay-log.js";
-import { classifyRelay, createRelayNonce, ensureRelayFolder, publishRelayRecord, readRelayRecord, relayFolder, removeOwnRelayRecord } from "./relay-record.js";
+import { runLaunchctl, spawnRelay } from "./relay-exec.js";
+import { installService, loadServiceConfig, uninstallService, type ServiceDeps } from "./relay-service.js";
+import { createRelayLogger, truncateLaunchdStderr, writeFatalLineSync, writeStopLineSync, type RelayLogMode, type RelayStopFields } from "./relay-log.js";
+import { classifyRelay, createRelayNonce, ensureRelayFolder, publishRelayRecord, readRelayRecord, readStopRequest, relayFolder, removeOwnRelayRecord, requestLoopbackHealth } from "./relay-record.js";
+import { stopRelay } from "./relay-stop.js";
 import { appendRotatingPrivateFile } from "./private-file.js";
 import { LimitRecorder, limitDirectory, withLimitRecorder, readLimitObservations } from "./limit-recorder.js";
 import { settleNativeRefreshes } from "./native-auth-coordination.js";
 
 const SHUTDOWN_GRACE_MS = 5000;
+const STOP_REQUEST_MAX_AGE_MS = 40_000;
 // Allow at least the full Kimi renewal deadline (20 s), including write-back.
 const NATIVE_REFRESH_SHUTDOWN_MS = 25_000;
 
@@ -62,6 +68,9 @@ Usage: subswitch [command] [flags]
 
 Commands:
   serve     Start the proxy (default command)
+  stop      Stop a verified local relay
+  service install     Install the macOS login service
+  service uninstall   Remove the macOS login service
   doctor    Check config, subscription auth, and network reachability
   init      Interactive setup — wires the selected client(s)
   models    Show effective alias table (registry × aliases)
@@ -80,6 +89,15 @@ Flags (serve):
       --quiet      Set log level to warn for this run
       --port <n>   Override listen port (default: ${DEFAULT_PORT})
       --detach     Start the proxy in its own session and print its PID
+
+Flags (stop):
+      --port <n>   Select the relay port (default: user config port or ${DEFAULT_PORT})
+      --by <label> Add a label to the stop request (1 to 32 lowercase letters,
+                   digits, dots, underscores or dashes)
+
+Flags (service install):
+      --port <n>       Override the config port
+      --config <path>  Use an absolute config path instead of the user config
 
 Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
@@ -118,6 +136,9 @@ type CliCommand =
   | { readonly kind: "help" }
   | { readonly kind: "version" }
   | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly detach: boolean; readonly port?: string }
+  | { readonly kind: "stop"; readonly port?: string; readonly label?: string }
+  | { readonly kind: "service"; readonly action: "install"; readonly port?: string; readonly configPath?: string }
+  | { readonly kind: "service"; readonly action: "uninstall" }
   | { readonly kind: "doctor"; readonly client: Client }
   | { readonly kind: "models"; readonly json: boolean; readonly client: Client; readonly schemaVersion?: 3 }
   | { readonly kind: "limits"; readonly json: boolean; readonly port?: string }
@@ -127,6 +148,9 @@ type CliCommand =
 // Flag sets per command — used for per-command validation (A3.19)
 const GLOBAL_FLAGS = new Set(["help", "version"]);
 const SERVE_FLAGS = new Set(["verbose", "quiet", "port", "detach"]);
+const STOP_FLAGS = new Set(["by", "port"]);
+const SERVICE_INSTALL_FLAGS = new Set(["port", "config"]);
+const SERVICE_UNINSTALL_FLAGS = new Set<string>();
 const DOCTOR_FLAGS = new Set(["client"]);
 const MODELS_FLAGS = new Set(["json", "client", "schema-version"]);
 const LIMITS_FLAGS = new Set(["json", "port"]);
@@ -165,6 +189,8 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
         json:              { type: "boolean" },
         client:            { type: "string" },
         "schema-version":  { type: "string" },
+        by:                { type: "string" },
+        config:            { type: "string" },
       },
       allowPositionals: true,
       strict: true,
@@ -182,17 +208,26 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     if (!client) return { ok: false, error: { message: `client must be ${CLIENT_IDS.join(", ")}, or all` } };
 
     // Unknown command
-    if (command !== "serve" && command !== "doctor" && command !== "init" && command !== "models" && command !== "limits") {
+    if (command !== "serve" && command !== "stop" && command !== "service" && command !== "doctor" && command !== "init" && command !== "models" && command !== "limits") {
       return {
         ok: false,
         error: { message: `unknown command "${command}" — run \`subswitch --help\` for usage` },
       };
     }
 
+    const serviceAction = positionals[1];
+    if (command === "service" && (positionals.length !== 2 || (serviceAction !== "install" && serviceAction !== "uninstall"))) {
+      return { ok: false, error: { message: "service requires install or uninstall with no extra arguments" } };
+    }
+
     // Per-command flag validation from tokens (A3.19)
     let allowedFlags: Set<string>;
     if (command === "serve") {
       allowedFlags = SERVE_FLAGS;
+    } else if (command === "stop") {
+      allowedFlags = STOP_FLAGS;
+    } else if (command === "service") {
+      allowedFlags = serviceAction === "install" ? SERVICE_INSTALL_FLAGS : SERVICE_UNINSTALL_FLAGS;
     } else if (command === "doctor") {
       allowedFlags = DOCTOR_FLAGS;
     } else if (command === "models") {
@@ -204,6 +239,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     }
 
     if (tokens !== undefined) {
+      let sawStopLabel = false;
       for (const token of tokens) {
         if (token.kind !== "option") continue;
         const flagName = token.name;
@@ -216,7 +252,27 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
             },
           };
         }
+        if (command === "stop" && flagName === "by") {
+          if (sawStopLabel) return { ok: false, error: { message: "stop accepts --by only once" } };
+          sawStopLabel = true;
+        }
       }
+    }
+
+    if (command === "stop") {
+      if (positionals.length > 1) return { ok: false, error: { message: "stop does not take positional arguments" } };
+      return { ok: true, value: { kind: "stop",
+        ...(values.port === undefined ? {} : { port: values.port }),
+        ...(values.by === undefined ? {} : { label: values.by }),
+      } };
+    }
+
+    if (command === "service") {
+      if (serviceAction === "uninstall") return { ok: true, value: { kind: "service", action: "uninstall" } };
+      return { ok: true, value: { kind: "service", action: "install",
+        ...(values.port === undefined ? {} : { port: values.port }),
+        ...(values.config === undefined ? {} : { configPath: values.config }),
+      } };
     }
 
     if (command === "init") {
@@ -287,10 +343,10 @@ const serve = async (
   result: LoadConfigResult,
   verbose: boolean,
   quiet: boolean,
+  mode: RelayLogMode,
   portStr?: string,
 ): Promise<void> => {
   const { config, configPath, fileFound } = result;
-  const detached = process.env["SUBSWITCH_MANAGED_BY"] === "detach";
 
   // Validate --port if given, with byte-identical wording to init port validation. [F3/F15]
   let effectivePort = config.port;
@@ -319,12 +375,14 @@ const serve = async (
   const pid = process.pid;
   const nonce = createRelayNonce();
   const relayLog = createRelayLogger({
-    directory: relayFolder(effectivePort, home), minLevel: logLevel, mode: detached ? "detach" : "foreground",
+    directory: relayFolder(effectivePort, home), minLevel: logLevel, mode,
     append: (target, lines) => ensureRelayFolder(effectivePort, home).ok
       ? appendRotatingPrivateFile(target, lines) : Promise.reject(new Error("relay log unavailable")),
   });
   const recorder = process.env["SUBSWITCH_LIMIT_RECORDING"] === "0" ? undefined : new LimitRecorder(limitDirectory(effectivePort), relayLog.logger);
-  const depsResult = buildDeps(effectiveConfig, recorder ? withLimitRecorder(relayLog.logger, recorder) : relayLog.logger);
+  const logger = recorder ? withLimitRecorder(relayLog.logger, recorder) : relayLog.logger;
+  const depsResult = buildDeps(effectiveConfig, logger, mode === "launchd"
+    ? { providerDeps: { together: liveTogetherKeyReaderDeps({ HOME: home }) } } : {});
   if (!depsResult.ok) {
     fail(depsResult.error);
     return;
@@ -341,9 +399,9 @@ const serve = async (
     }
     return;
   }
-  const published = await publishRelayRecord(effectivePort, home, nonce);
+  const published = await publishRelayRecord(effectivePort, home, nonce, mode === "launchd" ? "launchd" : "none");
   if (!published.ok) {
-    if (detached) {
+    if (mode !== "foreground") {
       server.close();
       server.closeAllConnections();
       fail("relay record unavailable");
@@ -358,11 +416,11 @@ const serve = async (
     triedRecordCleanup = true;
     removeOwnRelayRecord(effectivePort, home, nonce);
   };
-  let stopSignal: RelayStopFields["signal"];
+  let stop: Omit<RelayStopFields, "pid" | "exitCode"> | undefined;
   process.once("exit", (exitCode) => {
     removeRelayRecordOnce();
     const folder = ensureRelayFolder(effectivePort, home);
-    writeStopLineSync(folder.ok ? folder.value : undefined, { pid, exitCode, ...(stopSignal ? { signal: stopSignal } : {}) }, !detached);
+    writeStopLineSync(folder.ok ? folder.value : undefined, { pid, exitCode, ...stop }, mode === "foreground");
   });
   process.once("uncaughtExceptionMonitor", () => {
     const folder = ensureRelayFolder(effectivePort, home);
@@ -376,8 +434,15 @@ const serve = async (
     catch (error) { removeRelayRecordOnce(); server.close(); throw error; }
   }
   const shutdown = (signal: NonNullable<RelayStopFields["signal"]>): void => {
-    if (stopSignal !== undefined) return;
-    stopSignal = signal;
+    const signalAt = Date.now();
+    const request = readStopRequest(effectivePort, home, pid, nonce);
+    if (stop !== undefined) return;
+    stop = { signal };
+    if (signal === "SIGTERM" && request.ok && request.value !== undefined) {
+      const { requestedAt, requesterPid, requesterPpid } = request.value;
+      const age = signalAt - Date.parse(requestedAt);
+      if (age >= 0 && age <= STOP_REQUEST_MAX_AGE_MS) stop = { signal, requesterPid, requesterPpid };
+    }
     const exitAfterRenewals = (code: number): Promise<never> =>
       settleNativeRefreshes(NATIVE_REFRESH_SHUTDOWN_MS).then(() => process.exit(code));
     deps.logger.log("info", "shutting_down");
@@ -585,6 +650,13 @@ const runInit = async (command: Extract<CliCommand, { kind: "init" }>): Promise<
 // main — exhaustive switch with never guard
 // ---------------------------------------------------------------------------
 
+const runStop = (home: string, uid: number | undefined, port?: string, label?: string): Promise<0 | 1> => stopRelay({
+  home, uid, port, pid: process.pid, ppid: process.ppid,
+  ...(label === undefined ? {} : { label }),
+  kill: (pid, signal) => process.kill(pid, signal), requestHealth: requestLoopbackHealth,
+  clock: { now: Date.now, monotonic: () => performance.now() }, sleep, loadConfig, out, errOut,
+});
+
 const main = async (): Promise<void> => {
   const parsed = parseCliArgs(process.argv.slice(2));
   if (!parsed.ok) {
@@ -609,8 +681,8 @@ const main = async (): Promise<void> => {
 
     case "serve": {
       const managedBy = process.env["SUBSWITCH_MANAGED_BY"];
-      if (managedBy !== undefined && managedBy !== "detach") {
-        fail("SUBSWITCH_MANAGED_BY must be unset or detach");
+      if (managedBy !== undefined && managedBy !== "detach" && managedBy !== "launchd") {
+        fail("SUBSWITCH_MANAGED_BY must be unset, detach or launchd");
         return;
       }
       if (command.detach) {
@@ -619,20 +691,52 @@ const main = async (): Promise<void> => {
           verbose: command.verbose, quiet: command.quiet,
           ...(command.port === undefined ? {} : { port: command.port }),
           node: { execPath: process.execPath, execArgv: process.execArgv, entry: process.argv[1], env: process.env },
-          clock: { after: (ms, run) => {
+          clock: { now: () => performance.now(), after: (ms, run) => {
             const timer = setTimeout(run, ms);
             return () => clearTimeout(timer);
           } },
-          spawn: spawnRelay, classify: classifyRelay, readRecord: readRelayRecord, loadConfig, out, errOut, fail,
+          plistExists: existsSync, spawn: spawnRelay, classify: classifyRelay, readRecord: readRelayRecord, loadConfig, out, errOut, fail,
         });
         return;
       }
-      const configResult = loadConfig({ allowProjectPort: process.env["SUBSWITCH_MANAGED_BY"] !== "detach" });
+      if (managedBy === "launchd") truncateLaunchdStderr();
+      const configResult = managedBy === "launchd"
+        ? loadServiceConfig(process.env["SUBSWITCH_CONFIG"] ?? "", process.getuid?.())
+        : loadConfig({ allowProjectPort: managedBy === undefined });
       if (!configResult.ok) {
         fail(configResult.error.message);
         return;
       }
-      await serve(configResult.value, command.verbose, command.quiet, command.port);
+      await serve(configResult.value, command.verbose, command.quiet, managedBy ?? "foreground", command.port);
+      return;
+    }
+
+    case "stop":
+      process.exitCode = await runStop(homedir(), process.getuid?.(), command.port, command.label);
+      return;
+
+    case "service": {
+      const platform = process.platform;
+      if (platform !== "darwin") { fail("the service needs launchd on macOS"); return; }
+      const uid = process.getuid?.();
+      if (uid === undefined) { fail("the service needs a user ID"); return; }
+      const home = homedir();
+      const deps: ServiceDeps = {
+        home, uid, platform, execPath: process.execPath, entry: process.argv[1] ?? "",
+        runner: runLaunchctl, probe: classifyRelay, stop: (port) => runStop(home, uid, String(port)),
+        vet: vetConfig, logger: noopLogger, monotonic: () => performance.now(), sleep, out, errOut,
+      };
+      if (command.action === "install") {
+        const ca = process.env["NODE_EXTRA_CA_CERTS"];
+        process.exitCode = await installService({
+          ...deps,
+          ...(command.port === undefined ? {} : { port: command.port }),
+          ...(command.configPath === undefined ? {} : { configPath: command.configPath }),
+          ...(ca === undefined ? {} : { nodeExtraCaCerts: ca }),
+        });
+      } else {
+        process.exitCode = await uninstallService(deps);
+      }
       return;
     }
 

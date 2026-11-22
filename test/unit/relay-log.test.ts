@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readdir, readFile, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
+import fs from "node:fs";
+import { chmod, mkdtemp, open, readdir, readFile, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { createConsoleLogger } from "../../src/logger.js";
-import { createRelayLogger, writeFatalLineSync, writeStopLineSync } from "../../src/relay-log.js";
+import { createRelayLogger, truncateLaunchdStderr, writeFatalLineSync, writeStopLineSync } from "../../src/relay-log.js";
 
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /;
 
@@ -36,15 +38,47 @@ it("writes plain ISO lines with the same tokens as stderr", async (t) => {
   assert.deepEqual(await logLines(directory), expected);
 });
 
-it("keeps detached request logs out of the console", async (t) => {
-  const directory = await privateDir(t);
-  const lines: string[] = [];
-  const { logger, flush } = createRelayLogger({ directory, mode: "detach", minLevel: "info", console: createConsoleLogger("info", (line) => lines.push(line), false) });
-  logger.log("info", "request_complete");
-  await flush();
+for (const mode of ["detach", "launchd"] as const) {
+  it(`keeps ${mode} request logs out of the console`, async (t) => {
+    const directory = await privateDir(t);
+    const lines: string[] = [];
+    const { logger, flush } = createRelayLogger({ directory, mode, minLevel: "info", console: createConsoleLogger("info", (line) => lines.push(line), false) });
+    logger.log("info", "request_complete");
+    await flush();
 
-  assert.deepEqual(lines, []);
-  assert.deepEqual(await logLines(directory), ["level=info event=request_complete"]);
+    assert.deepEqual(lines, []);
+    assert.deepEqual(await logLines(directory), ["level=info event=request_complete"]);
+  });
+}
+
+it("truncates only regular stderr files above 256 KiB", async (t) => {
+  const directory = await privateDir(t);
+  const file = await open(join(directory, "stderr.log"), "w+", 0o600);
+  const nonRegular = await open(directory, "r");
+  const { fstatSync, ftruncateSync } = fs;
+  let stderr = file.fd;
+  t.mock.method(fs, "fstatSync", (fd: number) => {
+    const stats = fstatSync(fd === 2 ? stderr : fd);
+    // The non-regular descriptor must exceed the size limit too.
+    return fd === 2 && stderr === nonRegular.fd ? Object.assign(stats, { size: 256 * 1024 + 1 }) : stats;
+  });
+  const truncateFd = t.mock.method(fs, "ftruncateSync", (fd: number, size: number) => ftruncateSync(fd === 2 ? stderr : fd, size));
+  syncBuiltinESMExports();
+  t.after(async () => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    await Promise.all([file.close(), nonRegular.close()]);
+  });
+
+  await file.truncate(256 * 1024 + 1);
+  truncateLaunchdStderr();
+  assert.equal((await file.stat()).size, 0);
+  await file.truncate(256 * 1024);
+  truncateLaunchdStderr();
+  assert.equal((await file.stat()).size, 256 * 1024);
+  stderr = nonRegular.fd;
+  truncateLaunchdStderr();
+  assert.equal(truncateFd.mock.callCount(), 1);
 });
 
 it("caps refusal lines across file writes and keeps stderr and lifecycle lines intact", async (t) => {
@@ -227,6 +261,14 @@ it("writes the signal and exit code on a normal stop", async (t) => {
   writeStopLineSync(directory, { pid: 42, exitCode: 0, signal: "SIGHUP" });
 
   assert.deepEqual(await logLines(directory), ["level=info event=relay_stopped pid=42 signal=SIGHUP exitCode=0"]);
+});
+
+it("writes only stop fields and numeric requester IDs on an attributed stop", async (t) => {
+  const directory = await privateDir(t);
+  const fields = { pid: 42, exitCode: 0, signal: "SIGTERM", requesterPid: 43, requesterPpid: 1, path: "omit" } as const;
+  writeStopLineSync(directory, fields);
+
+  assert.deepEqual(await logLines(directory), ["level=info event=relay_stopped pid=42 signal=SIGTERM exitCode=0 requesterPid=43 requesterPpid=1"]);
 });
 
 it("leaves a symlink or loosely moded log intact and never throws", async (t) => {

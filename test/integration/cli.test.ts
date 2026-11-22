@@ -152,6 +152,11 @@ describe("CLI --help", () => {
     const readmeBlock = readme.slice(bodyStart, end);
     assert.equal(result.stdout, readmeBlock, "USAGE and the README CLI block must stay byte-identical");
     assert.match(result.stdout, /^      --detach +\S/m);
+    assert.match(result.stdout, /^  stop +\S/m);
+    assert.match(result.stdout, /^Flags \(stop\):\n      --port <n> +\S[^\n]*\n      --by <label> +\S/m);
+    assert.match(result.stdout, /^  service install +\S/m);
+    assert.match(result.stdout, /^  service uninstall +\S/m);
+    assert.match(result.stdout, /^Flags \(service install\):\n      --port <n> +\S[^\n]*\n      --config <path> +\S/m);
   });
 });
 
@@ -247,6 +252,25 @@ describe("CLI per-command flag validation", () => {
 // ---------------------------------------------------------------------------
 // serve --port abc → clean error, no server started (A3.20)
 // ---------------------------------------------------------------------------
+
+describe("CLI stop argument validation", () => {
+  for (const [args, message] of [
+    [["stop", "--port", "23123", "extra"], /stop does not take positional arguments/],
+    [["stop", "--port", "23123", "--by=PRIVATE INPUT"], /invalid --by/],
+    [["stop", "--port", "23123", "--by=PRIVATE INPUT", "--by=ops"], /stop accepts --by only once/],
+    [["stop", "--port", "65536"], /invalid --port/],
+    [["stop", "--port", "23123", "--detach"], /flag '--detach' is not valid for 'stop'/],
+    [["doctor", "--by=ops"], /flag '--by' is not valid for 'doctor'/],
+  ] as const) {
+    it(`refuses ${args.join(" ")}`, async () => {
+      const result = await runCli([...args]);
+      assert.equal(result.exitCode, 1);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, message);
+      assert.doesNotMatch(result.stderr, /PRIVATE INPUT/);
+    });
+  }
+});
 
 describe("CLI serve --port validation", () => {
   it("serve --port abc → exit 1 with clean error on stderr", async () => {

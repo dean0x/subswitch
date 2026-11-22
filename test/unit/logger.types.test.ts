@@ -37,12 +37,14 @@ const fieldKeysCoversAllLogFields = (): void => {
 void fieldKeysCoversAllLogFields;
 
 const lifecycleFieldTypes = (): void => {
-  type LifecycleFields = Pick<LogFields, "pid" | "signal" | "exitCode" | "version">;
+  type LifecycleFields = Pick<LogFields, "pid" | "signal" | "exitCode" | "version" | "requesterPid" | "requesterPpid">;
   type Expected = {
     readonly pid?: number;
     readonly signal?: "SIGINT" | "SIGTERM" | "SIGHUP";
     readonly exitCode?: number;
     readonly version?: typeof SUBSWITCH_VERSION;
+    readonly requesterPid?: number;
+    readonly requesterPpid?: number;
   };
   type Matches = [LifecycleFields, Expected] extends [Expected, LifecycleFields] ? true : false;
   const matches: Matches = true;

@@ -17,7 +17,7 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isPlainObject } from "../../src/plain-object.js";
@@ -83,17 +83,15 @@ export interface CliChildResult {
   readonly stderr: string;
 }
 
-/**
- * Make a fresh folder set for CLI children. With `resolveTemp`, the home is below the
- * temporary root with its links resolved, as the Kimi store checks need.
- */
-export const cliChildFolders = async ({ resolveTemp = false }: { readonly resolveTemp?: boolean } = {}): Promise<CliChildFolders> => {
-  const home = await mkdtemp(join(resolveTemp ? await realpath(tmpdir()) : tmpdir(), "subswitch-cli-child-"));
+/** Make a fresh CLI home. Use a real path outside shared temporary folders on Linux. */
+export const cliChildFolders = async ({ resolveTemp = true }: { readonly resolveTemp?: boolean } = {}): Promise<CliChildFolders> => {
+  const base = process.platform === "darwin" ? tmpdir() : homedir();
+  const home = await mkdtemp(join(resolveTemp ? await realpath(base) : tmpdir(), "subswitch-cli-child-"));
   const folders: CliChildFolders = {
     home, configHome: join(home, "xdg-config"), cacheHome: join(home, "xdg-cache"),
     configFile: join(home, "subswitch-test-config.json"), execLog: join(home, "exec.log"),
   };
-  await writeFile(folders.configFile, "{}");
+  await writeFile(folders.configFile, "{}", { mode: 0o600 });
   return folders;
 };
 
