@@ -203,20 +203,20 @@ export async function detachRelay(d: DetachDeps): Promise<0 | 1> {
   const found = existing(await d.classify(port, { home: d.home }));
   if (found !== undefined) return report(d, found, port);
 
-  const childEnv: NodeJS.ProcessEnv = { ...env, SUBSWITCH_MANAGED_BY: "detach" };
   const nodeOptions = env["NODE_OPTIONS"];
-  if (nodeOptions !== undefined) {
-    const filtered = detachedNodeOptions(nodeOptions);
-    if (!filtered.ok) { d.fail(filtered.error); return 1; }
-    childEnv["NODE_OPTIONS"] = filtered.value;
-  }
+  const filtered = nodeOptions === undefined ? undefined : detachedNodeOptions(nodeOptions);
+  if (filtered !== undefined && !filtered.ok) { d.fail(filtered.error); return 1; }
   const boot = openBootLog(port, d.home);
   if (!boot.ok) return report(d, problem(boot.error), port);
   const argv = execArgv.filter((arg, i) => keepNodeArg(arg, execArgv[i - 1]));
   argv.push(entry, "serve", "--port", String(port));
   if (d.verbose) argv.push("--verbose");
   if (d.quiet) argv.push("--quiet");
-  const child = d.spawn(execPath, argv, { detached: true, stdio: ["ignore", "ignore", boot.value], env: childEnv });
+  const child = d.spawn(execPath, argv, {
+    detached: true,
+    stdio: ["ignore", "ignore", boot.value],
+    env: { ...env, SUBSWITCH_MANAGED_BY: "detach", ...(filtered === undefined ? {} : { NODE_OPTIONS: filtered.value }) },
+  });
   try {
     closeSync(boot.value);
   } catch {
