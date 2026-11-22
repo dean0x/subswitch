@@ -7,7 +7,8 @@ import { parseArgs } from "node:util";
 import { createColors } from "picocolors";
 import { type Config, type LoadConfigResult, aliasesByProvider, enumerateDestinations, loadConfig, providerConfigFor, DEFAULT_PORT } from "./config.js";
 import { formatProviderBanner, modelProviderRows } from "./cli-report.js";
-import { liveKimiStoreDeps, liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer } from "./server.js";
+import { liveKimiStoreDeps, liveTogetherKeyReaderDeps, buildDeps, createProxyServer, listenServer, vetConfig } from "./server.js";
+import { noopLogger } from "./logger.js";
 import { runDoctor, makeLiveHttpGet, makeLiveTlsConnect, makeLiveListAgentFiles, makeLiveReadTextFile } from "./doctor.js";
 import {
   runInitInteractive,
@@ -27,7 +28,8 @@ import { routingDiscovery } from "./routing/routing-discovery.js";
 import { runAction } from "./run-action.js";
 import { publishActionControl } from "./routing/action-control.js";
 import { detachRelay } from "./relay-detach.js";
-import { spawnRelay } from "./relay-exec.js";
+import { runLaunchctl, spawnRelay } from "./relay-exec.js";
+import { installService, uninstallService, type ServiceDeps } from "./relay-service.js";
 import { createRelayLogger, truncateLaunchdStderr, writeFatalLineSync, writeStopLineSync, type RelayLogMode, type RelayStopFields } from "./relay-log.js";
 import { classifyRelay, createRelayNonce, ensureRelayFolder, publishRelayRecord, readRelayRecord, readStopRequest, relayFolder, removeOwnRelayRecord, requestLoopbackHealth } from "./relay-record.js";
 import { stopRelay } from "./relay-stop.js";
@@ -66,6 +68,8 @@ Usage: subswitch [command] [flags]
 Commands:
   serve     Start the proxy (default command)
   stop      Stop a verified local relay
+  service install     Install the macOS login service
+  service uninstall   Remove the macOS login service
   doctor    Check config, subscription auth, and network reachability
   init      Interactive setup — wires the selected client(s)
   models    Show effective alias table (registry × aliases)
@@ -89,6 +93,10 @@ Flags (stop):
       --port <n>   Select the relay port (default: user config port or ${DEFAULT_PORT})
       --by <label> Add a label to the stop request (1 to 32 lowercase letters,
                    digits, dots, underscores or dashes)
+
+Flags (service install):
+      --port <n>       Override the config port
+      --config <path>  Use an absolute config path instead of the user config
 
 Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults
@@ -128,6 +136,8 @@ type CliCommand =
   | { readonly kind: "version" }
   | { readonly kind: "serve"; readonly verbose: boolean; readonly quiet: boolean; readonly detach: boolean; readonly port?: string }
   | { readonly kind: "stop"; readonly port?: string; readonly label?: string }
+  | { readonly kind: "service"; readonly action: "install"; readonly port?: string; readonly configPath?: string }
+  | { readonly kind: "service"; readonly action: "uninstall" }
   | { readonly kind: "doctor"; readonly client: Client }
   | { readonly kind: "models"; readonly json: boolean; readonly client: Client; readonly schemaVersion?: 3 }
   | { readonly kind: "limits"; readonly json: boolean; readonly port?: string }
@@ -138,6 +148,8 @@ type CliCommand =
 const GLOBAL_FLAGS = new Set(["help", "version"]);
 const SERVE_FLAGS = new Set(["verbose", "quiet", "port", "detach"]);
 const STOP_FLAGS = new Set(["by", "port"]);
+const SERVICE_INSTALL_FLAGS = new Set(["port", "config"]);
+const SERVICE_UNINSTALL_FLAGS = new Set<string>();
 const DOCTOR_FLAGS = new Set(["client"]);
 const MODELS_FLAGS = new Set(["json", "client", "schema-version"]);
 const LIMITS_FLAGS = new Set(["json", "port"]);
@@ -177,6 +189,7 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
         client:            { type: "string" },
         "schema-version":  { type: "string" },
         by:                { type: "string" },
+        config:            { type: "string" },
       },
       allowPositionals: true,
       strict: true,
@@ -194,11 +207,16 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
     if (!client) return { ok: false, error: { message: `client must be ${CLIENT_IDS.join(", ")}, or all` } };
 
     // Unknown command
-    if (command !== "serve" && command !== "stop" && command !== "doctor" && command !== "init" && command !== "models" && command !== "limits") {
+    if (command !== "serve" && command !== "stop" && command !== "service" && command !== "doctor" && command !== "init" && command !== "models" && command !== "limits") {
       return {
         ok: false,
         error: { message: `unknown command "${command}" — run \`subswitch --help\` for usage` },
       };
+    }
+
+    const serviceAction = positionals[1];
+    if (command === "service" && (positionals.length !== 2 || (serviceAction !== "install" && serviceAction !== "uninstall"))) {
+      return { ok: false, error: { message: "service requires install or uninstall with no extra arguments" } };
     }
 
     // Per-command flag validation from tokens (A3.19)
@@ -207,6 +225,8 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
       allowedFlags = SERVE_FLAGS;
     } else if (command === "stop") {
       allowedFlags = STOP_FLAGS;
+    } else if (command === "service") {
+      allowedFlags = serviceAction === "install" ? SERVICE_INSTALL_FLAGS : SERVICE_UNINSTALL_FLAGS;
     } else if (command === "doctor") {
       allowedFlags = DOCTOR_FLAGS;
     } else if (command === "models") {
@@ -243,6 +263,14 @@ const parseCliArgs = (argv: string[]): { ok: true; value: CliCommand } | { ok: f
       return { ok: true, value: { kind: "stop",
         ...(values.port === undefined ? {} : { port: values.port }),
         ...(values.by === undefined ? {} : { label: values.by }),
+      } };
+    }
+
+    if (command === "service") {
+      if (serviceAction === "uninstall") return { ok: true, value: { kind: "service", action: "uninstall" } };
+      return { ok: true, value: { kind: "service", action: "install",
+        ...(values.port === undefined ? {} : { port: values.port }),
+        ...(values.config === undefined ? {} : { configPath: values.config }),
       } };
     }
 
@@ -620,6 +648,13 @@ const runInit = async (command: Extract<CliCommand, { kind: "init" }>): Promise<
 // main — exhaustive switch with never guard
 // ---------------------------------------------------------------------------
 
+const runStop = (home: string, uid: number | undefined, port?: string, label?: string): Promise<0 | 1> => stopRelay({
+  home, uid, port, pid: process.pid, ppid: process.ppid,
+  ...(label === undefined ? {} : { label }),
+  kill: (pid, signal) => process.kill(pid, signal), requestHealth: requestLoopbackHealth,
+  clock: { now: Date.now, monotonic: () => performance.now() }, sleep, loadConfig, out, errOut,
+});
+
 const main = async (): Promise<void> => {
   const parsed = parseCliArgs(process.argv.slice(2));
   if (!parsed.ok) {
@@ -671,14 +706,32 @@ const main = async (): Promise<void> => {
       return;
     }
 
-    case "stop": {
-      process.exitCode = await stopRelay({
-        home: homedir(), pid: process.pid, ppid: process.ppid, uid: process.getuid?.(),
-        ...(command.port === undefined ? {} : { port: command.port }),
-        ...(command.label === undefined ? {} : { label: command.label }),
-        kill: (pid, signal) => process.kill(pid, signal), requestHealth: requestLoopbackHealth,
-        clock: { now: Date.now, monotonic: () => performance.now() }, sleep, loadConfig, out, errOut,
-      });
+    case "stop":
+      process.exitCode = await runStop(homedir(), process.getuid?.(), command.port, command.label);
+      return;
+
+    case "service": {
+      const platform = process.platform;
+      if (platform !== "darwin") { fail("the service needs launchd on macOS"); return; }
+      const uid = process.getuid?.();
+      if (uid === undefined) { fail("the service needs a user ID"); return; }
+      const home = homedir();
+      const deps: ServiceDeps = {
+        home, uid, platform, execPath: process.execPath, entry: process.argv[1] ?? "",
+        runner: runLaunchctl, probe: classifyRelay, stop: (port) => runStop(home, uid, String(port)),
+        vet: vetConfig, logger: noopLogger, monotonic: () => performance.now(), sleep, errOut,
+      };
+      if (command.action === "install") {
+        const ca = process.env["NODE_EXTRA_CA_CERTS"];
+        process.exitCode = await installService({
+          ...deps,
+          ...(command.port === undefined ? {} : { port: command.port }),
+          ...(command.configPath === undefined ? {} : { configPath: command.configPath }),
+          ...(ca === undefined ? {} : { nodeExtraCaCerts: ca }),
+        });
+      } else {
+        process.exitCode = await uninstallService(deps);
+      }
       return;
     }
 

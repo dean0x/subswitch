@@ -154,6 +154,9 @@ describe("CLI --help", () => {
     assert.match(result.stdout, /^      --detach +\S/m);
     assert.match(result.stdout, /^  stop +\S/m);
     assert.match(result.stdout, /^Flags \(stop\):\n      --port <n> +\S[^\n]*\n      --by <label> +\S/m);
+    assert.match(result.stdout, /^  service install +\S/m);
+    assert.match(result.stdout, /^  service uninstall +\S/m);
+    assert.match(result.stdout, /^Flags \(service install\):\n      --port <n> +\S[^\n]*\n      --config <path> +\S/m);
   });
 });
 

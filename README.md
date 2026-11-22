@@ -111,6 +111,8 @@ Usage: subswitch [command] [flags]
 Commands:
   serve     Start the proxy (default command)
   stop      Stop a verified local relay
+  service install     Install the macOS login service
+  service uninstall   Remove the macOS login service
   doctor    Check config, subscription auth, and network reachability
   init      Interactive setup — wires the selected client(s)
   models    Show effective alias table (registry × aliases)
@@ -134,6 +136,10 @@ Flags (stop):
       --port <n>   Select the relay port (default: user config port or 4141)
       --by <label> Add a label to the stop request (1 to 32 lowercase letters,
                    digits, dots, underscores or dashes)
+
+Flags (service install):
+      --port <n>       Override the config port
+      --config <path>  Use an absolute config path instead of the user config
 
 Flags (init):
   -y, --yes                  Non-interactive mode — use flags + defaults

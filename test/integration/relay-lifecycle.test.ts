@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { access, appendFile, mkdir, readFile, stat, symlink, truncate, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, readFile, rm, stat, symlink, truncate, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createConnection, Server } from "node:net";
 import { homedir } from "node:os";
@@ -10,6 +10,7 @@ import { DEFAULT_PORT } from "../../src/config.js";
 import { isPlainObject } from "../../src/plain-object.js";
 import { classifyRelay, ensureRelayFolder, readRelayRecord, writeStopRequest, type StopRequest } from "../../src/relay-record.js";
 import { SUBSWITCH_VERSION } from "../../src/version.js";
+import { cliChildFolders, readExecLog, runCliChild } from "../helpers/cli-child.js";
 import { startRelayChild, type RelayChild, type RelayChildOptions } from "../helpers/relay-child.js";
 
 async function launch(t: TestContext, options: Omit<RelayChildOptions, "env"> & { readonly env?: NodeJS.ProcessEnv } = {}) {
@@ -179,6 +180,88 @@ for (const signal of ["SIGHUP", "SIGINT"] as const) {
 const stopRequestPath = (relay: RelayChild) => join(state(relay), "stop-request.json");
 const requestFields = { requesterPid: 51001, requesterPpid: 51002, uid: 501, label: "test-request-label" } as const;
 const requestCanaries = /test-env-canary|test-argv-canary/;
+
+it("stops a verified relay, attributes the request and then reports an idle port", async (t) => {
+  const relay = await launch(t);
+  await relay.waitFor("subswitch ready");
+  const { pid } = relay.child;
+  assert.ok(pid && pid !== 37926 && pid !== 98325);
+  const args = ["stop", "--port", String(relay.port)];
+  const result = await runCliChild(relay.folders, [...args, "--by", "test-stop"]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  const match = /^subswitch: stop request (\{[^\n]+\})\n$/.exec(result.stderr);
+  assert.ok(match?.[1], result.stderr);
+  const request: unknown = JSON.parse(match[1]);
+  assert.ok(isPlainObject(request) && typeof request["requesterPid"] === "number");
+  assert.equal(request["targetPid"], pid);
+  assert.equal(request["requesterPpid"], process.pid);
+  assert.equal(request["label"], "test-stop");
+  assert.deepEqual(await relay.exited, [0, null]);
+  assert.match(lifecycleLines(await log(relay))[0] ?? "",
+    stopped(pid, 0, "SIGTERM", ` requesterPid=${request["requesterPid"]} requesterPpid=${process.pid}`));
+  await assert.rejects(access(stopRequestPath(relay)), { code: "ENOENT" });
+  assert.deepEqual(await runCliChild(relay.folders, args), {
+    code: 0, stdout: `No relay is active on port ${relay.port}.\n`, stderr: "",
+  });
+});
+
+for (const mode of ["legacy", "launchd"] as const) {
+  it(`refuses to stop a ${mode} relay`, async (t) => {
+    const relay = await launch(t, { env: { SUBSWITCH_MANAGED_BY: mode === "launchd" ? mode : undefined } });
+    await relay.waitFor("subswitch ready");
+    const { pid } = relay.child;
+    assert.ok(pid && pid !== 37926 && pid !== 98325);
+    if (mode === "legacy") await unlink(join(state(relay), "relay.json"));
+    const result = await runCliChild(relay.folders, ["stop", "--port", String(relay.port)]);
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, mode === "launchd" ? /run subswitch service uninstall/ : /has no record/);
+    assert.equal((await classifyRelay(relay.port, { home: relay.folders.home })).kind,
+      mode === "launchd" ? "verified" : "legacy");
+    await assert.rejects(access(stopRequestPath(relay)), { code: "ENOENT" });
+  });
+}
+
+const serviceEnv = (platform: "darwin" | "linux") => ({ NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(`
+  Object.defineProperty(process, "platform", { value: ${JSON.stringify(platform)} });
+  delete process.getuid;
+`)}` });
+
+for (const [args, message] of [
+  [["service"], /service requires install or uninstall/],
+  [["service", "unknown"], /service requires install or uninstall/],
+  [["service", "install", "extra"], /service requires install or uninstall/],
+  [["service", "uninstall", "extra"], /service requires install or uninstall/],
+  [["service", "uninstall", "--port", "23123"], /flag '--port' is not valid/],
+  [["service", "uninstall", "--config", "test.json"], /flag '--config' is not valid/],
+  [["service", "install", "--detach"], /flag '--detach' is not valid/],
+  [["serve", "--port", "0", "--config", "test.json"], /flag '--config' is not valid/],
+] as const) {
+  it(`refuses ${args.join(" ")}`, async (t) => {
+    const folders = await cliChildFolders();
+    t.after(() => rm(folders.home, { recursive: true, force: true }));
+    const result = await runCliChild(folders, args, { env: serviceEnv("linux") });
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, message);
+    assert.deepEqual(await readExecLog(folders), ["preload"]);
+  });
+}
+
+for (const platform of ["linux", "darwin"] as const) {
+  for (const action of ["install", "uninstall"] as const) {
+    it(`refuses service ${action} ${platform === "linux" ? "outside macOS" : "without a user ID"}`, async (t) => {
+      const folders = await cliChildFolders();
+      t.after(() => rm(folders.home, { recursive: true, force: true }));
+      const args = action === "install" ? ["--port", "23123", "--config", folders.configFile] : [];
+      const result = await runCliChild(folders, ["service", action, ...args], { env: serviceEnv(platform) });
+      assert.equal(result.code, 1, result.stderr);
+      assert.match(result.stderr, platform === "linux" ? /the service needs launchd on macOS/ : /the service needs a user ID/);
+      await assert.rejects(access(join(folders.home, "Library")), { code: "ENOENT" });
+      await assert.rejects(access(join(folders.home, ".cache")), { code: "ENOENT" });
+      assert.deepEqual(await readExecLog(folders), ["preload"]);
+    });
+  }
+}
 
 function makeStopRequest(relay: RelayChild, changes: Partial<StopRequest> = {}): StopRequest {
   const saved = readRelayRecord(relay.port, relay.folders.home);

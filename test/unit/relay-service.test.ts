@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -173,7 +173,7 @@ it("refuses relative and control paths, writable config, symlink parents and sym
   const agents = join(library, "LaunchAgents");
   symlinkSync(f.deps.home, agents);
   assert.equal(await f.install(), 1);
-  rmSync(agents);
+  unlinkSync(agents);
   mkdirSync(agents);
   symlinkSync(f.configPath, f.plist);
   assert.equal(await f.install(), 1);
