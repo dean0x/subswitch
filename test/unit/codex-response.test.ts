@@ -684,6 +684,76 @@ describe("cache observability logging", () => {
 
 });
 
+describe("cached input usage (#120)", () => {
+  const textSse = (usage: Record<string, unknown>): string => [
+    'data: {"type":"response.created","response":{"id":"resp_cache","model":"gpt-5.5"}}',
+    "",
+    'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}',
+    "",
+    'data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"hi"}',
+    "",
+    'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}',
+    "",
+    `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_cache", model: "gpt-5.5", status: "completed", usage } })}`,
+    "",
+    "data: [DONE]",
+    "",
+    "",
+  ].join("\n");
+
+  const streamUsage = async (usage: Record<string, unknown>): Promise<unknown> => {
+    const { frames } = await translate(textSse(usage));
+    const delta = frames.map(frameData).find((data) => data["type"] === "message_delta");
+    assert.ok(delta !== undefined, "expected a message_delta frame");
+    return delta["usage"];
+  };
+
+  const bufferedUsage = async (usage: Record<string, unknown>): Promise<unknown> => {
+    const { frames } = await translate(textSse(usage));
+    const result = aggregateFrames(frames, "codex");
+    assert.ok(result.ok);
+    assert.equal(result.value.kind, "message");
+    return result.value.kind === "message" ? result.value.message["usage"] : undefined;
+  };
+
+  const cases: readonly { readonly name: string; readonly usage: Record<string, unknown>; readonly expected: Record<string, unknown> }[] = [
+    {
+      name: "maps cached_tokens to cache_read_input_tokens and removes them from input_tokens",
+      usage: { input_tokens: 100, output_tokens: 5, input_tokens_details: { cached_tokens: 80 } },
+      expected: { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 80 },
+    },
+    {
+      name: "keeps the totals when cached_tokens is 0",
+      usage: { input_tokens: 66, output_tokens: 18, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } },
+      expected: { input_tokens: 66, output_tokens: 18 },
+    },
+    {
+      name: "keeps the totals when the usage has no input_tokens_details",
+      usage: { input_tokens: 12, output_tokens: 5 },
+      expected: { input_tokens: 12, output_tokens: 5 },
+    },
+    {
+      name: "never reports negative input_tokens when cached_tokens exceeds input_tokens",
+      usage: { input_tokens: 10, output_tokens: 1, input_tokens_details: { cached_tokens: 25 } },
+      expected: { input_tokens: 0, output_tokens: 1, cache_read_input_tokens: 10 },
+    },
+  ];
+
+  for (const { name, usage, expected } of cases) {
+    it(`stream: ${name}`, async () => {
+      assert.deepEqual(await streamUsage(usage), expected);
+    });
+    it(`buffered: ${name}`, async () => {
+      assert.deepEqual(await bufferedUsage(usage), expected);
+    });
+  }
+
+  it("keeps the sum of input_tokens and cache_read_input_tokens equal to the upstream input_tokens", async () => {
+    const usage = (await streamUsage({ input_tokens: 4096, output_tokens: 7, input_tokens_details: { cached_tokens: 3584 } })) as Record<string, number>;
+    assert.equal(usage["input_tokens"]! + usage["cache_read_input_tokens"]!, 4096);
+  });
+});
+
 describe("aggregateFrames", () => {
   it("folds streamed frames into a complete message", async () => {
     const { frames } = await translate(loadSse("tool-call-with-reasoning.sse"));
