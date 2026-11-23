@@ -685,7 +685,7 @@ describe("cache observability logging", () => {
 });
 
 describe("cached input usage (#120)", () => {
-  const textSse = (usage: Record<string, unknown>): string => [
+  const textSse = (usage: Record<string, unknown> | null, terminal: Record<string, unknown> = { type: "response.completed", status: "completed" }): string => [
     'data: {"type":"response.created","response":{"id":"resp_cache","model":"gpt-5.5"}}',
     "",
     'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}',
@@ -694,7 +694,10 @@ describe("cached input usage (#120)", () => {
     "",
     'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}',
     "",
-    `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_cache", model: "gpt-5.5", status: "completed", usage } })}`,
+    `data: ${JSON.stringify({
+      type: terminal["type"],
+      response: { id: "resp_cache", model: "gpt-5.5", status: terminal["status"], incomplete_details: terminal["incomplete_details"], usage },
+    })}`,
     "",
     "data: [DONE]",
     "",
@@ -747,6 +750,27 @@ describe("cached input usage (#120)", () => {
       assert.deepEqual(await bufferedUsage(usage), expected);
     });
   }
+
+  it("maps cached_tokens on a response.incomplete terminal (stream and buffered)", async () => {
+    const sse = textSse(
+      { input_tokens: 300, output_tokens: 64, input_tokens_details: { cached_tokens: 256 } },
+      { type: "response.incomplete", status: "incomplete", incomplete_details: { reason: "max_output_tokens" } },
+    );
+    const expected = { input_tokens: 44, output_tokens: 64, cache_read_input_tokens: 256 };
+    const { frames } = await translate(sse);
+    const delta = frames.map(frameData).find((data) => data["type"] === "message_delta");
+    assert.deepEqual(delta?.["delta"], { stop_reason: "max_tokens", stop_sequence: null });
+    assert.deepEqual(delta?.["usage"], expected);
+    const result = aggregateFrames(frames, "codex");
+    assert.ok(result.ok && result.value.kind === "message");
+    assert.deepEqual(result.value.message["usage"], expected);
+  });
+
+  it("reports zero usage when the terminal usage is null", async () => {
+    const { frames } = await translate(textSse(null));
+    const delta = frames.map(frameData).find((data) => data["type"] === "message_delta");
+    assert.deepEqual(delta?.["usage"], { input_tokens: 0, output_tokens: 0 });
+  });
 
   it("keeps the sum of input_tokens and cache_read_input_tokens equal to the upstream input_tokens", async () => {
     const usage = (await streamUsage({ input_tokens: 4096, output_tokens: 7, input_tokens_details: { cached_tokens: 3584 } })) as Record<string, number>;

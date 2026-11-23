@@ -271,7 +271,6 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   let nextBlockIndex = 0;
   const blockIndexByKey = new Map<string, number>();
   const reasoningItems: unknown[] = [];
-  let inputTokens = 0;
   let pingTimer: NodeJS.Timeout | undefined;
   let lastActivityMs = 0;
   // Blocks opened but not yet stopped. Bounded by the number of output items in
@@ -526,13 +525,11 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const filtered =
             response.status === "incomplete" && response.incomplete_details?.reason === "content_filter";
           const stopReason = hitMaxTokens ? "max_tokens" : sawFunctionCall ? "tool_use" : sawRefusal || filtered ? "refusal" : "end_turn";
-          const usage = toAnthropicUsage(response.usage);
-          inputTokens = usage.input_tokens;
           this.push(
             frame("message_delta", {
               type: "message_delta",
               delta: { stop_reason: stopReason, stop_sequence: null },
-              usage,
+              usage: toAnthropicUsage(response.usage),
             }),
           );
           this.push(frame("message_stop", { type: "message_stop" }));
@@ -592,7 +589,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
               frame("message_delta", {
                 type: "message_delta",
                 delta: { stop_reason: "max_tokens", stop_sequence: null },
-                usage: { input_tokens: inputTokens, output_tokens: 0 },
+                usage: { input_tokens: 0, output_tokens: 0 },
               }),
             );
             this.push(frame("message_stop", { type: "message_stop" }));
