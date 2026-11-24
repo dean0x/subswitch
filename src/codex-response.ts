@@ -216,6 +216,34 @@ const frame = (event: string, data: unknown): string => `event: ${event}\ndata: 
 
 const PING_FRAME = frame("ping", { type: "ping" });
 
+interface ResponsesUsage {
+  readonly input_tokens?: number | undefined;
+  readonly output_tokens?: number | undefined;
+  readonly input_tokens_details?: { readonly cached_tokens?: number | undefined } | undefined;
+}
+
+interface AnthropicUsage {
+  readonly input_tokens: number;
+  readonly output_tokens: number;
+  readonly cache_read_input_tokens?: number;
+}
+
+const tokenCount = (value: number | undefined): number => Math.max(0, value ?? 0);
+
+/**
+ * Responses `input_tokens` includes the cached prompt tokens. Anthropic `input_tokens`
+ * excludes cache reads, which it reports as `cache_read_input_tokens`. The sum of the two
+ * stays equal to the upstream input count. A usage with no cached tokens keeps its shape.
+ */
+const toAnthropicUsage = (usage: ResponsesUsage | null | undefined): AnthropicUsage => {
+  const input = tokenCount(usage?.input_tokens);
+  const output = tokenCount(usage?.output_tokens);
+  const cached = Math.min(tokenCount(usage?.input_tokens_details?.cached_tokens), input);
+  return cached > 0
+    ? { input_tokens: input - cached, output_tokens: output, cache_read_input_tokens: cached }
+    : { input_tokens: input, output_tokens: output };
+};
+
 export interface TranslatorOptions {
   readonly model: string;
   readonly logger: Logger;
@@ -243,7 +271,6 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
   let nextBlockIndex = 0;
   const blockIndexByKey = new Map<string, number>();
   const reasoningItems: unknown[] = [];
-  let inputTokens = 0;
   let pingTimer: NodeJS.Timeout | undefined;
   let lastActivityMs = 0;
   // Blocks opened but not yet stopped. Bounded by the number of output items in
@@ -498,12 +525,11 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
           const filtered =
             response.status === "incomplete" && response.incomplete_details?.reason === "content_filter";
           const stopReason = hitMaxTokens ? "max_tokens" : sawFunctionCall ? "tool_use" : sawRefusal || filtered ? "refusal" : "end_turn";
-          inputTokens = response.usage?.input_tokens ?? 0;
           this.push(
             frame("message_delta", {
               type: "message_delta",
               delta: { stop_reason: stopReason, stop_sequence: null },
-              usage: { input_tokens: inputTokens, output_tokens: response.usage?.output_tokens ?? 0 },
+              usage: toAnthropicUsage(response.usage),
             }),
           );
           this.push(frame("message_stop", { type: "message_stop" }));
@@ -563,7 +589,7 @@ export const createAnthropicSseTranslator = (options: TranslatorOptions): Transf
               frame("message_delta", {
                 type: "message_delta",
                 delta: { stop_reason: "max_tokens", stop_sequence: null },
-                usage: { input_tokens: inputTokens, output_tokens: 0 },
+                usage: { input_tokens: 0, output_tokens: 0 },
               }),
             );
             this.push(frame("message_stop", { type: "message_stop" }));
